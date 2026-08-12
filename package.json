@@ -56,6 +56,7 @@
     "test:host": "vitest run --configLoader runner",
     "test:plugins": "node scripts/run-plugin-script.mjs test",
     "test:supply-chain": "node --test scripts/plugin-artifact-provenance.test.mjs scripts/packaged-paths.test.mjs scripts/electron-fuses.test.mjs scripts/generate-release-checksums.test.mjs scripts/verify-windows-update-artifacts.test.mjs",
+    "precheck": "npm run build:plugins",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
     "postinstall": "node scripts/rebuild-native.js"
   },
