@@ -1,0 +1,40 @@
+appId: com.openbox.app
+productName: CrucibleBox
+directories:
+  buildResources: build
+  output: release
+afterPack: scripts/apply-electron-fuses.mjs
+files:
+  - '!src/**/*'
+  - '!shared/**/*'
+  - '!database/**/*'
+  - '!plugin-system/**/*'
+  - '!cli/**/*'
+  - '!templates/**/*'
+  - '!plugins/**/*'
+  - '!artifacts/**/*'
+  - '!tests/**/*'
+  - '!docs/**/*'
+  - '!scripts/**/*'
+  - '!*.zip'
+  - '!AGENTS.md'
+  - '!electron/**/*.ts'
+  - '!electron.vite.config.*'
+  - '!{eslint.config.mjs,.prettierrc,tsconfig.json,tsconfig.node.json}'
+  - '!out/renderer/assets/*.map'
+asarUnpack:
+  - 'node_modules/better-sqlite3/**'
+  - 'out/plugin-frame/**'
+win:
+  signExecutable: false
+  artifactName: CrucibleBox-${version}-windows-${arch}.${ext}
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: CrucibleBox
+  artifactName: CrucibleBox-${version}-windows-${arch}-setup.${ext}

@@ -1,0 +1,22 @@
+{
+  "name": "theme-manager",
+  "version": "0.1.12",
+  "displayName": "主题管理",
+  "description": "切换工具箱主题：内置亮/暗、科幻面板与零号城区，支持自定义颜色、自动保存与导入导出。",
+  "author": "OpenBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["theme:write"],
+  "config": {
+    "customThemes": {
+      "type": "string",
+      "label": "自定义主题",
+      "description": "已保存的自定义主题（JSON 数组）",
+      "default": "[]",
+      "required": false
+    }
+  }
+}

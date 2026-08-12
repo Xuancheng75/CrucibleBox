@@ -1,0 +1,27 @@
+{
+  "name": "{{pluginName}}",
+  "version": "0.1.0",
+  "displayName": "{{displayName}}",
+  "description": "描述您的插件功能",
+  "author": "您的名称",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["notification", "storage:read", "storage:write"],
+  "config": {
+    "apiKey": {
+      "type": "string",
+      "label": "API 密钥",
+      "description": "输入您的 API 密钥",
+      "required": true
+    },
+    "autoStart": {
+      "type": "boolean",
+      "label": "自动启动",
+      "description": "应用启动时自动启用",
+      "default": false
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "cyber",
+  "name": "科幻面板",
+  "mode": "dark",
+  "tokens": {
+    "colorBg": "#0a0e14",
+    "colorBgLayout": "#060a10",
+    "colorBgContainer": "#0d121a",
+    "colorBgElevated": "#131a24",
+    "colorPrimary": "#00e5ff",
+    "colorPrimaryHover": "#66f2ff",
+    "colorPrimaryBg": "#06212e",
+    "colorText": "#d9e4e8",
+    "colorTextSecondary": "#8aa2ad",
+    "colorTextTertiary": "#4d6a75",
+    "colorBorder": "#1e3a4d",
+    "colorBorderSecondary": "#14232e",
+    "colorSuccess": "#00ff9d",
+    "colorSuccessBg": "#0a2b1f",
+    "colorWarning": "#fce205",
+    "colorWarningBg": "#2e2a08",
+    "colorError": "#ff003c",
+    "colorErrorBg": "#330414",
+    "colorLink": "#00e5ff",
+    "borderRadius": 8,
+    "fontFamily": "'Rajdhani', 'Teko', 'Bahnschrift', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', -apple-system, BlinkMacSystemFont, monospace"
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+release/
+artifacts/
+*.zip
+*.tsbuildinfo
+.DS_Store
+Thumbs.db

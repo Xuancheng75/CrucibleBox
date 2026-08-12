@@ -1,0 +1,28 @@
+{
+  "id": "neon-district",
+  "name": "零号城区",
+  "mode": "dark",
+  "tokens": {
+    "colorBg": "#080d19",
+    "colorBgLayout": "#040711",
+    "colorBgContainer": "#0a1220",
+    "colorBgElevated": "#101c2d",
+    "colorPrimary": "#00e5ff",
+    "colorPrimaryHover": "#7df6ff",
+    "colorPrimaryBg": "#052b38",
+    "colorText": "#e6f7fa",
+    "colorTextSecondary": "#91adb6",
+    "colorTextTertiary": "#52727c",
+    "colorBorder": "#175064",
+    "colorBorderSecondary": "#102f3d",
+    "colorSuccess": "#39ff88",
+    "colorSuccessBg": "#09281c",
+    "colorWarning": "#fce205",
+    "colorWarningBg": "#302b06",
+    "colorError": "#ff2b78",
+    "colorErrorBg": "#33091d",
+    "colorLink": "#00e5ff",
+    "borderRadius": 2,
+    "fontFamily": "'Bahnschrift', 'Rajdhani', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', sans-serif"
+  }
+}

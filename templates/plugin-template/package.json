@@ -1,0 +1,23 @@
+{
+  "name": "{{pluginName}}",
+  "version": "0.1.0",
+  "description": "{{displayName}} plugin for OpenBox",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "npm run clean && node esbuild.config.mjs",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "typecheck": "tsc --noEmit",
+    "watch": "node esbuild.config.mjs --watch"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.7.0"
+  }
+}

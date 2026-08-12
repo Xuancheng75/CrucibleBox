@@ -1,0 +1,14 @@
+{
+  "name": "diary",
+  "version": "0.4.11",
+  "displayName": "日记",
+  "description": "支持 Markdown 与 LaTeX 的日记插件，内置月历视图，支持单篇及按月导出",
+  "author": "OpenBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["storage:read", "storage:write"],
+  "config": {}
+}

@@ -1,0 +1,39 @@
+{
+  "name": "unienv",
+  "version": "0.5.7",
+  "displayName": "UniEnv",
+  "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java 的检测、安装、切换与卸载，面向初学者",
+  "author": "UniEnv Team",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["trusted:unienv"],
+  "config": {
+    "installRoot": {
+      "type": "string",
+      "label": "安装根目录",
+      "description": "所有工具将安装在此目录下，默认为 C:\\UniEnv",
+      "default": "C:\\UniEnv"
+    },
+    "downloadMirror": {
+      "type": "select",
+      "label": "下载镜像",
+      "description": "选择下载源，国内用户建议选择镜像以获得更快速度",
+      "default": "direct",
+      "options": [
+        { "label": "官方源 (国际)", "value": "direct" },
+        { "label": "华为云 (国内)", "value": "huawei" },
+        { "label": "阿里云 (国内)", "value": "aliyun" },
+        { "label": "TUNA 清华 (国内)", "value": "tuna" }
+      ]
+    },
+    "customCombos": {
+      "type": "string",
+      "label": "自定义组合包",
+      "description": "JSON 格式的自定义组合包配置",
+      "default": "[]"
+    }
+  }
+}

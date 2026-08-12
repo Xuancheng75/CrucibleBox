@@ -1,0 +1,64 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Quality gates
+        run: npm run check
+
+      - name: Build host and plugins
+        run: npm run build
+
+      - name: Audit dependency graph
+        run: npm run audit:dependencies
+
+      - name: Package and verify plugins
+        run: npm run package:plugins && npm run verify:plugins
+
+      - name: Generate CycloneDX SBOMs
+        run: npm run generate:sbom
+
+      - name: Package unpacked Windows application
+        run: npm run package:dir
+
+      - name: Verify Electron native runtime
+        run: npm run smoke:native
+
+      - name: Launch packaged Windows application
+        run: npm run smoke:packaged
+
+      - name: Upload supply-chain artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openbox-windows-supply-chain
+          if-no-files-found: error
+          path: |
+            artifacts/plugins/
+            artifacts/sbom/

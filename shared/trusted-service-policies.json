@@ -1,0 +1,8 @@
+{
+  "unienv": {
+    "name": "unienv",
+    "version": "0.5.7",
+    "digest": "f18cbba9a0576d74d7cc4eb1abe2402bed3ffe68bde83c1f8f41ce8859074f5d",
+    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
+  }
+}

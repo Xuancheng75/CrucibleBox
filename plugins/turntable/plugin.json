@@ -1,0 +1,29 @@
+{
+  "name": "turntable",
+  "version": "0.1.10",
+  "displayName": "转盘抽奖",
+  "description": "自定义转盘抽奖插件，支持添加、修改、删除选项和权重配置",
+  "author": "openbox-plugin",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["storage:read", "storage:write", "notification"],
+  "config": {
+    "themeColor": {
+      "type": "string",
+      "label": "主题色",
+      "description": "转盘的主色调",
+      "default": "#1677ff",
+      "required": false
+    },
+    "spinDuration": {
+      "type": "number",
+      "label": "旋转持续时间（秒）",
+      "description": "转盘旋转动画的持续时间",
+      "default": 4,
+      "required": false
+    }
+  }
+}

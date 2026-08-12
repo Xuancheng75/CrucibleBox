@@ -1,0 +1,161 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: windows-release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, verify and publish Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Resolve release channel
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "Tag $env:RELEASE_TAG does not match package version v$version"
+          }
+          if ($version.Contains('-')) {
+            $channel = ($version.Split('-', 2)[1].Split('.', 2)[0]).ToLowerInvariant()
+            if ($channel -ne 'beta') { throw "Only beta prereleases are supported, received $channel" }
+            "channel=beta" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "prerelease=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "metadata=beta.yml" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "channel=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "prerelease=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "metadata=latest.yml" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Quality gates
+        run: npm run check
+
+      - name: Build host and plugins
+        run: npm run build
+
+      - name: Audit dependency graph
+        run: npm run audit:dependencies
+
+      - name: Package and sign first-party plugins
+        shell: pwsh
+        env:
+          PLUGIN_SIGNING_KEY_BASE64: ${{ secrets.OPENBOX_PLUGIN_SIGNING_KEY_BASE64 }}
+          PLUGIN_VERIFY_KEY_BASE64: ${{ secrets.OPENBOX_PLUGIN_VERIFY_KEY_BASE64 }}
+          OPENBOX_PLUGIN_SIGNING_KEY_ID: ${{ vars.OPENBOX_PLUGIN_SIGNING_KEY_ID }}
+        run: |
+          if (-not $env:PLUGIN_SIGNING_KEY_BASE64 -or -not $env:PLUGIN_VERIFY_KEY_BASE64 -or -not $env:OPENBOX_PLUGIN_SIGNING_KEY_ID) {
+            throw 'Plugin signing key, public key and key ID are required'
+          }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'openbox-plugin-signing-key.pem'
+          $verifyKeyPath = Join-Path $env:RUNNER_TEMP 'openbox-plugin-verify-key.pem'
+          try {
+            [IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String($env:PLUGIN_SIGNING_KEY_BASE64))
+            [IO.File]::WriteAllBytes($verifyKeyPath, [Convert]::FromBase64String($env:PLUGIN_VERIFY_KEY_BASE64))
+            $env:OPENBOX_PLUGIN_SIGNING_KEY_FILE = $keyPath
+            $env:OPENBOX_PLUGIN_VERIFY_KEY_FILE = $verifyKeyPath
+            $env:OPENBOX_PLUGIN_VERIFY_KEY_ID = $env:OPENBOX_PLUGIN_SIGNING_KEY_ID
+            npm run package:plugins
+            npm run sign:plugins
+            npm run verify:release
+            npm run generate:sbom
+          } finally {
+            Remove-Item -LiteralPath $keyPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $verifyKeyPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Package unsigned Windows installer and updater metadata
+        shell: pwsh
+        env:
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          OPENBOX_GITHUB_REPOSITORY_NAME: ${{ github.event.repository.name }}
+          UPDATE_CHANNEL: ${{ steps.release.outputs.channel }}
+        run: |
+          npx electron-builder --config electron-builder.release.yml --win --x64 --publish never "-c.publish.channel=$env:UPDATE_CHANNEL"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify Windows release payload
+        shell: pwsh
+        env:
+          UPDATE_METADATA: ${{ steps.release.outputs.metadata }}
+        run: |
+          npm run verify:fuses
+          npm run smoke:native
+          npm run smoke:packaged
+          npm run smoke:installer
+          node scripts/verify-windows-update-artifacts.mjs release $env:UPDATE_METADATA
+          $installers = Get-ChildItem release -Filter '*-setup.exe'
+          if ($installers.Count -ne 1) { throw "Expected one Windows installer, found $($installers.Count)" }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installers[0].FullName
+          if ($signature.Status -ne 'NotSigned') {
+            throw "The zero-certificate release policy expects an unsigned installer, received $($signature.Status)"
+          }
+
+      - name: Collect release artifacts
+        shell: pwsh
+        env:
+          UPDATE_METADATA: ${{ steps.release.outputs.metadata }}
+        run: |
+          $publish = 'artifacts/publish'
+          New-Item -ItemType Directory -Force -Path $publish | Out-Null
+          Copy-Item release/*-setup.exe, release/*.blockmap, "release/$env:UPDATE_METADATA" -Destination $publish
+          Copy-Item artifacts/plugins/*.zip, artifacts/plugins/*.json, artifacts/sbom/*.json -Destination $publish
+          node scripts/generate-release-checksums.mjs $publish
+
+      - name: Attest release artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: artifacts/publish/*
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          IS_PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            if ($env:IS_PRERELEASE -eq 'true') {
+              gh release create $env:RELEASE_TAG --verify-tag --title "CrucibleBox $env:RELEASE_TAG" --generate-notes --prerelease
+            } else {
+              gh release create $env:RELEASE_TAG --verify-tag --title "CrucibleBox $env:RELEASE_TAG" --generate-notes
+            }
+          }
+          Get-ChildItem artifacts/publish -File | ForEach-Object {
+            gh release upload $env:RELEASE_TAG $_.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

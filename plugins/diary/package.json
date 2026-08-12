@@ -1,0 +1,28 @@
+{
+  "name": "openbox-plugin-diary",
+  "version": "0.4.11",
+  "private": true,
+  "description": "Diary plugin for OpenBox",
+  "main": "dist/main.js",
+  "scripts": {
+    "clean": "node ../../scripts/clean-plugin-dist.mjs",
+    "build": "npm run clean && node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --configLoader runner",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "watch": "node esbuild.config.mjs --watch"
+  },
+  "dependencies": {
+    "katex": "^0.16.21",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "^9.0.3",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

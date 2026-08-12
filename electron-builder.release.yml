@@ -1,0 +1,8 @@
+extends: ./electron-builder.yml
+forceCodeSigning: false
+publish:
+  provider: github
+  owner: ${env.GITHUB_REPOSITORY_OWNER}
+  repo: ${env.OPENBOX_GITHUB_REPOSITORY_NAME}
+  channel: latest
+  releaseType: release

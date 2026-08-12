@@ -1,0 +1,15 @@
+{
+  "hostMainJavaScriptBytes": 400000,
+  "hostRendererJavaScriptBytes": 3400000,
+  "hostRendererEntryJavaScriptBytes": 1300000,
+  "hostRendererStartupJavaScriptBytes": 2300000,
+  "pluginFrameRuntimeBytes": 280000,
+  "pluginRendererBytes": {
+    "diary": 2300000,
+    "dice-roller": 250000,
+    "gif-editor": 360000,
+    "theme-manager": 260000,
+    "turntable": 270000,
+    "unienv": 280000
+  }
+}

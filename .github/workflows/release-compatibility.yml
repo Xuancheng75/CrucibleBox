@@ -1,0 +1,60 @@
+name: Windows Release Compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      previousTag:
+        description: Previously qualified stable tag
+        required: true
+        type: string
+      candidateTag:
+        description: Candidate tag to qualify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-compatibility-${{ github.event.inputs.candidateTag }}
+  cancel-in-progress: false
+
+jobs:
+  transition:
+    name: Upgrade and rollback on Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.inputs.previousTag }}
+          path: previous
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.inputs.candidateTag }}
+          path: candidate
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+
+      - name: Verify candidate tag and version
+        shell: pwsh
+        working-directory: candidate
+        env:
+          CANDIDATE_TAG: ${{ github.event.inputs.candidateTag }}
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ($env:CANDIDATE_TAG -ne "v$version") { throw 'Candidate tag does not match package version' }
+
+      - name: Build previous release
+        working-directory: previous
+        run: npm ci && npm run build && npm run package:dir
+
+      - name: Build candidate release
+        working-directory: candidate
+        run: npm ci && npm run check && npm run build && npm run package:dir
+
+      - name: Exercise previous -> candidate -> previous transition
+        run: node candidate/scripts/smoke-release-transition.mjs previous candidate

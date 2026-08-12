@@ -1,0 +1,31 @@
+{
+  "name": "openbox-plugin-gif-editor",
+  "version": "0.3.8",
+  "private": true,
+  "description": "GIF frame editor plugin for OpenBox",
+  "main": "dist/main.js",
+  "scripts": {
+    "clean": "node ../../scripts/clean-plugin-dist.mjs",
+    "build": "npm run clean && node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --configLoader runner",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  },
+  "dependencies": {
+    "gifenc": "^1.0.3",
+    "gifuct-js": "^2.1.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true
+  }
+}

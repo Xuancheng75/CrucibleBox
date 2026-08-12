@@ -1,0 +1,25 @@
+{
+  "name": "openbox-plugin-theme-manager",
+  "version": "0.1.12",
+  "private": true,
+  "description": "Theme manager plugin for OpenBox",
+  "main": "dist/main.js",
+  "scripts": {
+    "clean": "node ../../scripts/clean-plugin-dist.mjs",
+    "build": "npm run clean && node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build",
+    "watch": "node esbuild.config.mjs --watch"
+  },
+  "dependencies": {
+    "@openbox/ui": "0.1.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3"
+  }
+}

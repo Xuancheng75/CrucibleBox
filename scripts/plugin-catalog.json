@@ -1,0 +1,26 @@
+[
+  {
+    "id": "diary",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "dice-roller",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "gif-editor",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "theme-manager",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "turntable",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js", "dist/turntable-domain.js"]
+  },
+  {
+    "id": "unienv",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  }
+]
