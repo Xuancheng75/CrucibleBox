@@ -53,14 +53,14 @@ npm run verify:plugins
 
 当前 1.5.23 artifacts manifest 的 SHA-256：
 
-| 插件          | 版本  | SHA-256                                                            |
-| ------------- | ----- | ------------------------------------------------------------------ |
+| 插件          | 版本   | SHA-256                                                            |
+| ------------- | ------ | ------------------------------------------------------------------ |
 | Diary         | 0.4.11 | `bba0677ab738600d031950152e6089207e4760d659fad8aeae68c94625a1984f` |
-| Dice Roller   | 0.1.6 | `c10e29b2fdebf1e8f246629f62b7dcc6843758f8f0a12f2cc19335666d005e14` |
-| GIF Editor    | 0.3.8 | `55c682e02f5a93c6afeb3f99753ba48a7264be2dc5d19b3329552858685424f7` |
+| Dice Roller   | 0.1.6  | `c10e29b2fdebf1e8f246629f62b7dcc6843758f8f0a12f2cc19335666d005e14` |
+| GIF Editor    | 0.3.8  | `55c682e02f5a93c6afeb3f99753ba48a7264be2dc5d19b3329552858685424f7` |
 | Theme Manager | 0.1.12 | `6e27a3c1739cf896114a6ab5f6f8e526fd8803bfecd35dc9ff2f5ac26f4338c5` |
 | Turntable     | 0.1.10 | `b49d47af187add2e5821ada86cb8b84149d3ec2311c3392ccfa3ba536b666898` |
-| UniEnv        | 0.5.7 | `73e0fc5be810402b0223831c57ec801d554bb7917db65493353f916f1d46822f` |
+| UniEnv        | 0.5.7  | `73e0fc5be810402b0223831c57ec801d554bb7917db65493353f916f1d46822f` |
 
 正式发布还需设置仓库外 Ed25519 私钥/公钥和 key ID；`npm run release` 会在构建后强制签名、
 验签并生成七份 CycloneDX SBOM。详见 `docs/plugin-platform-m2.4.md`。

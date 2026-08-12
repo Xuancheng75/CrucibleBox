@@ -207,18 +207,15 @@ export function registerPluginIpc(
     }
   })
 
-  ipcMain.handle(
-    IpcChannel.PluginReorder,
-    async (event, orderedIds: string[]) => {
-      assertTrustedSender(event)
-      try {
-        const plugins = pluginManager.reorderPlugins(orderedIds)
-        return { success: true, data: plugins }
-      } catch (err) {
-        return { success: false, error: (err as Error).message }
-      }
+  ipcMain.handle(IpcChannel.PluginReorder, async (event, orderedIds: string[]) => {
+    assertTrustedSender(event)
+    try {
+      const plugins = pluginManager.reorderPlugins(orderedIds)
+      return { success: true, data: plugins }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
     }
-  )
+  })
 
   ipcMain.handle(
     IpcChannel.PluginUpdateConfig,

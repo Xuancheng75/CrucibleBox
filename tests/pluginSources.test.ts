@@ -125,9 +125,9 @@ describe('production plugin source projects', () => {
         'dist/turntable-domain.js'
       ])
     )
-    expect(turntable?.runtimeFiles.some((file) => file.endsWith('.map') || file.endsWith('.d.ts'))).toBe(
-      false
-    )
+    expect(
+      turntable?.runtimeFiles.some((file) => file.endsWith('.map') || file.endsWith('.d.ts'))
+    ).toBe(false)
     // dist/main.js is tsc-emitted CommonJS, so the shared domain module is a runtime dependency.
     const turntableMain = readFileSync(
       resolve(repositoryRoot, 'plugins', 'turntable', 'src', 'main.ts'),

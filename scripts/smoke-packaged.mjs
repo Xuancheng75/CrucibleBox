@@ -175,9 +175,8 @@ function verifyLegacyMigration(SQL, originalBytes) {
       readSingleValue(database, 'SELECT COUNT(*) FROM plugin_storage_migrations')
     )
     const sortOrderColumnPresent = hasColumn(database, 'plugins', 'sort_order')
-    const pluginRows = database.exec(
-      'SELECT id, sort_order FROM plugins ORDER BY sort_order ASC'
-    )[0]?.values ?? []
+    const pluginRows =
+      database.exec('SELECT id, sort_order FROM plugins ORDER BY sort_order ASC')[0]?.values ?? []
     const pluginSortOrders = new Map(
       pluginRows.map(([id, sortOrder]) => [String(id), Number(sortOrder)])
     )

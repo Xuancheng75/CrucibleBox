@@ -2,10 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const homeSource = readFileSync(
-  resolve(import.meta.dirname, '../src/pages/Home.tsx'),
-  'utf8'
-)
+const homeSource = readFileSync(resolve(import.meta.dirname, '../src/pages/Home.tsx'), 'utf8')
 
 describe('Home plugin load error resilience', () => {
   it('does not short-circuit the whole page when plugin loading fails', () => {
