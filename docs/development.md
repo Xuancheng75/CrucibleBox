@@ -63,7 +63,7 @@ npm run verify:plugins
 | UniEnv        | 0.5.7  | `73e0fc5be810402b0223831c57ec801d554bb7917db65493353f916f1d46822f` |
 
 正式发布还需设置仓库外 Ed25519 私钥/公钥和 key ID；`npm run release` 会在构建后强制签名、
-验签并生成七份 CycloneDX SBOM。详见 `docs/plugin-platform-m2.4.md`。
+验签并生成七份 CycloneDX SBOM。详见 `docs/release-runbook.md`。
 
 ## 插件数据
 
@@ -114,28 +114,30 @@ npm run smoke:packaged
 ## M1.2 UniEnv 验收
 
 UniEnv 0.4.0 的任务协议、输入/路径边界、无 Shell 进程执行、可取消下载及安全 staging
-详见 `docs/unienv-m1.2.md`。插件自身为 9 个测试文件、116 项测试；制品白名单包含 15
+详见 `docs/install-recovery.md`。插件自身为 9 个测试文件、116 项测试；制品白名单包含 15
 个 manifest/runtime 文件，构建只生成可发布 JS，不再产生未打包的 `.d.ts`/`.map` 或
 悬空 `sourceMappingURL`。
 
 M2.10 已为全部受支持的 Python、Node.js、Git、Go 与 Temurin JDK Windows x64 制品固定官方 URL、
 文件名和 SHA-256；下载在原子提升前流式校验，镜像也必须提供逐字节相同制品。来源与失败语义见
-`docs/plugin-platform-m2.10.md`。
+`docs/install-recovery.md`（可信服务一节）与 `docs/security-model.md`。
 
 所有安装测试使用 fake spawn/fetch 和临时目录，未执行真实安装器。真实 Windows VM 的安装、取消、
 切换与回滚 E2E 已在一次性 Windows VM 中完成并通过（1.5.23 基线，用户确认范围）；当前 UniEnv
 版本为 0.5.7、11 个测试文件 132 项。
 
-M2.11 增加静态版本生命周期目录。下拉框把目录首选置顶并显示“维护分支的旧补丁 / 已停止维护 / 旧版”；
-单项与组合安装在创建任务前再次确认。状态依据日期和官方来源见 `docs/plugin-platform-m2.11.md`。
+M2.11 增加静态版本生命周期目录。下拉框把目录首选置顶并显示"维护分支的旧补丁 / 已停止维护 / 旧版"；
+单项与组合安装在创建任务前再次确认。状态依据日期和官方来源见 UniEnv 插件的制品目录设计
+（`plugins/unienv/src/`，历史细节见 `docs/history/plugin-platform-m2.11.md`）。
 
 M2.12 为 Node.js 24.18.1、Git 2.54.0、Go 1.26.5 以及 Temurin 17.0.20、21.0.12、25.0.4
 固定官方 Windows x64 制品和 SHA-256，并升级内置组合。当前维护制品使用成功状态且不显示旧版二次确认；
-旧目录和 Python 3.12.5 兼容项继续保留。依据与边界见 `docs/plugin-platform-m2.12.md`。
+旧目录和 Python 3.12.5 兼容项继续保留。依据与边界见 `plugins/unienv/src/` 的制品目录
+（历史细节见 `docs/history/plugin-platform-m2.12.md`）。
 
 M2.13 增加 Python 3.14.7 当前官方 Windows x64 安装器并设为目录首选。Install Manager 26.3 的
 MSIX/Store 注册、自动更新与全局别名属于显式系统集成，不在后台静默部署；过渡与 3.16 前迁移要求见
-`docs/plugin-platform-m2.13.md`。
+`plugins/unienv/src/` 的制品目录（历史细节见 `docs/history/plugin-platform-m2.13.md`）。
 
 ## 当前已知门禁边界
 
@@ -151,4 +153,4 @@ MSIX/Store 注册、自动更新与全局别名属于显式系统集成，不在
 workflow in `.github/workflows/release.yml`. The Windows runner creates the NSIS installer, `latest.yml` or `beta.yml`
 and blockmap; validates metadata SHA-512, Electron fuses, native ABI and packaged startup; then publishes SBOMs,
 SHA-256 checksums and provenance. No Windows certificate is required. The plugin Ed25519 private key must remain in
-GitHub Secrets and must never enter the repository. See `docs/trusted-release.md`.
+GitHub Secrets and must never enter the repository. See `docs/release-runbook.md`.

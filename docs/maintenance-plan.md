@@ -22,22 +22,22 @@
 
 ## 1. 复杂度热点（审计确认）
 
-| # | 热点 | 结论 |
-|---|---|---|
-| 1 | RPC 三套重复基础设施 | 三套独立信封：backend RPC(v2)、renderer RPC(v1)、host IPC（无版本），外加第 4 个迷你握手；校验器/错误码/pending 追踪三处重复 |
-| 2 | PluginManager 上帝对象 | 888 行；9 张状态 Map；performActivation(~215 行) + handleChildRequest(20 分支 switch) + 日志 SQL + 崩溃恢复编排仍内联 |
-| 3 | 双数据库引擎 | 同接口同步实现，仓储/插件 RPC 零感知；生产仅 database/index.ts 一处用 sql.js；无运行时 fallback |
-| 4 | 安装事务 | 已收敛为事务族（InstallationService/DirectoryTransaction/Journal/Recovery），残留维护锁与恢复编排在 PluginManager |
-| 5 | UniEnv 与宿主强耦合 | 运行期直接 import 插件源码；digest 手工钉死、无生成脚本 |
-| 6 | 发布链缺单一 manifest | 版本散落 ≥7 处；CI 手工重放 release 链（两处维护点） |
-| 7 | openbox-api.d.ts 复制 | 5 插件 + 模板共 6 份 102 行完全一致；unienv 多 1 行 |
-| 8 | 源码镜像 | E:\CrucibleBox_Plugins 为陈旧 CRLF 快照（theme-manager plugin.json 文案落后） |
-| 9 | 文档漂移 | AGENTS.md 1087 行：基线/remote/路径/三平台记录均已漂移或自相矛盾 |
-| 10 | clean checkout 风险 | dist 全局 gitignore、81/347 文本文件含 CR、unienv digest 字节级 pin |
-| 11 | 构建产物膨胀 | ~1.43GB / 35,300 文件（node_modules 721MB + release 673MB + ...） |
-| 12 | theme-manager 无测试 | 无 tests/ 目录、无 vitest 依赖 |
-| 13 | 大文件/大测试 | plugin-system 6 个 300-900 行核心文件；安装/事务/恢复测试 4 文件 2,348 行 |
-| 14 | 主进程同步 DB | 全部 database.* 同步执行，"async 壳、同步内核"；sql.js 全库 export 是主要阻塞源 |
+| #   | 热点                   | 结论                                                                                                                         |
+| --- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1   | RPC 三套重复基础设施   | 三套独立信封：backend RPC(v2)、renderer RPC(v1)、host IPC（无版本），外加第 4 个迷你握手；校验器/错误码/pending 追踪三处重复 |
+| 2   | PluginManager 上帝对象 | 888 行；9 张状态 Map；performActivation(~215 行) + handleChildRequest(20 分支 switch) + 日志 SQL + 崩溃恢复编排仍内联        |
+| 3   | 双数据库引擎           | 同接口同步实现，仓储/插件 RPC 零感知；生产仅 database/index.ts 一处用 sql.js；无运行时 fallback                              |
+| 4   | 安装事务               | 已收敛为事务族（InstallationService/DirectoryTransaction/Journal/Recovery），残留维护锁与恢复编排在 PluginManager            |
+| 5   | UniEnv 与宿主强耦合    | 运行期直接 import 插件源码；digest 手工钉死、无生成脚本                                                                      |
+| 6   | 发布链缺单一 manifest  | 版本散落 ≥7 处；CI 手工重放 release 链（两处维护点）                                                                         |
+| 7   | openbox-api.d.ts 复制  | 5 插件 + 模板共 6 份 102 行完全一致；unienv 多 1 行                                                                          |
+| 8   | 源码镜像               | E:\CrucibleBox_Plugins 为陈旧 CRLF 快照（theme-manager plugin.json 文案落后）                                                |
+| 9   | 文档漂移               | AGENTS.md 1087 行：基线/remote/路径/三平台记录均已漂移或自相矛盾                                                             |
+| 10  | clean checkout 风险    | dist 全局 gitignore、81/347 文本文件含 CR、unienv digest 字节级 pin                                                          |
+| 11  | 构建产物膨胀           | ~1.43GB / 35,300 文件（node_modules 721MB + release 673MB + ...）                                                            |
+| 12  | theme-manager 无测试   | 无 tests/ 目录、无 vitest 依赖                                                                                               |
+| 13  | 大文件/大测试          | plugin-system 6 个 300-900 行核心文件；安装/事务/恢复测试 4 文件 2,348 行                                                    |
+| 14  | 主进程同步 DB          | 全部 database.* 同步执行，"async 壳、同步内核"；sql.js 全库 export 是主要阻塞源                                              |
 
 ## 2. 目标架构
 
@@ -65,14 +65,14 @@ E:\CrucibleBox_Sourses            ← 唯一 canonical monorepo（npm workspaces
 
 保留为当前规范（6 份）：
 
-| 规范文件 | 来源 / 说明 |
-|---|---|
-| `docs/architecture.md` | 已有，更新基线 |
-| `docs/security-model.md` | 从 trusted-release.md + AGENTS 安全模型抽取（新建） |
-| `docs/plugin-sdk.md` | 从 plugin-sdk-migration.md + 模板 + openbox-plugin-api 提炼（新建） |
-| `docs/install-recovery.md` | 从安装事务族 + ADR 提炼，含显式状态机定义（新建） |
-| `docs/release-runbook.md` | 从 trusted-release.md + delivery-package.md + release.yml 提炼（新建） |
-| `docs/development.md` | 已有，更新 |
+| 规范文件                   | 来源 / 说明                                                            |
+| -------------------------- | ---------------------------------------------------------------------- |
+| `docs/architecture.md`     | 已有，更新基线                                                         |
+| `docs/security-model.md`   | 从 trusted-release.md + AGENTS 安全模型抽取（新建）                    |
+| `docs/plugin-sdk.md`       | 从 plugin-sdk-migration.md + 模板 + openbox-plugin-api 提炼（新建）    |
+| `docs/install-recovery.md` | 从安装事务族 + ADR 提炼，含显式状态机定义（新建）                      |
+| `docs/release-runbook.md`  | 从 trusted-release.md + delivery-package.md + release.yml 提炼（新建） |
+| `docs/development.md`      | 已有，更新                                                             |
 
 归档至 `docs/history/`：`plugin-platform-m2.1~m2.13`（13 份）、`theme-release-1.5.0.md`、`gif-editor-m1.1.md`、`unienv-m1.2.md`、历史 AGENTS.md 全文。
 AGENTS.md 压缩为"当前状态"单页（保留文件地图 + 安全模型 + 验证命令）。
@@ -112,23 +112,23 @@ AGENTS.md 压缩为"当前状态"单页（保留文件地图 + 安全模型 + �
 
 > 1.5.25 已含：openbox-plugin-api、digest 脚本、PluginManager runtime record、安装事务状态机。1.6.X 不重复。
 
-| 版本 | 主题 | 内容（文件级） | 出口验证 |
-|---|---|---|---|
-| **1.6.0** | 数据库运行时收敛（单引擎） | `database/index.ts`：删除 `OPENBOX_DB_ENGINE` 生产切换，生产只走 BetterEngine；SqlJsEngine 保留实现但不再可被生产选择；`package.json` 将 sql.js 移入 devDependencies；新增 `scripts/db-recovery-tool.mjs`（用 sql.js 离线读/修 openbox.db）；保留迁移、启动备份、失败抛错路径；`electron-builder.yml` 确认 sql-wasm 不再进安装包 | 全门禁 + `smoke-packaged` 旧库迁移 + `release-compatibility`（previous→candidate 回滚）+ 单引擎 dev 冒烟 |
-| **1.6.1** | RPC 公共基础层 | 新增 `packages/openbox-rpc/`（RpcEnvelope / RequestTracker / TimeoutManager / PayloadBudget / ErrorCodec / SessionRegistry）；`shared/plugin-backend-rpc.ts`、`shared/plugin-renderer-rpc.ts` 改为"内核 + 各自 capability 注册表"；`src/plugin-runtime/frame-entry.ts` 第三套 pending Map 改用内核追踪器；线上信封 v2/v1 字节格式不变 | 新增"新旧构造字节级等价"测试 + RPC 专项测试（backend/renderer/frame-bridge）+ 全门禁 + 6 插件激活冒烟 |
-| **1.6.2** | UniEnv 物理隔离 + trusted 目录整理 | 迁移至 `plugin-system/trusted-services/unienv/`（宿主固定加载，不依赖插件源码相对路径）；`TrustedServiceRuntime` 收敛到稳定内部模块边界；`update-trusted-policy.mjs` 最终定型并挂 CI 门禁；固定文件集/摘要/fail-closed 语义零变化 | trustedServiceRuntime 专项测试 + unienv 插件测试 + VM 冒烟（安装/切换/回滚） |
-| **1.6.3** | 稳定性收尾（按需发布） | 1.6.0–1.6.2 暴露的回归修复；性能预算复测（`verify:performance`）；测试套件按新内部结构重构对齐；无修复需求则跳过，不空发 | 全门禁 + 完整 CI |
+| 版本      | 主题                               | 内容（文件级）                                                                                                                                                                                                                                                                                                                        | 出口验证                                                                                                 |
+| --------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **1.6.0** | 数据库运行时收敛（单引擎）         | `database/index.ts`：删除 `OPENBOX_DB_ENGINE` 生产切换，生产只走 BetterEngine；SqlJsEngine 保留实现但不再可被生产选择；`package.json` 将 sql.js 移入 devDependencies；新增 `scripts/db-recovery-tool.mjs`（用 sql.js 离线读/修 openbox.db）；保留迁移、启动备份、失败抛错路径；`electron-builder.yml` 确认 sql-wasm 不再进安装包      | 全门禁 + `smoke-packaged` 旧库迁移 + `release-compatibility`（previous→candidate 回滚）+ 单引擎 dev 冒烟 |
+| **1.6.1** | RPC 公共基础层                     | 新增 `packages/openbox-rpc/`（RpcEnvelope / RequestTracker / TimeoutManager / PayloadBudget / ErrorCodec / SessionRegistry）；`shared/plugin-backend-rpc.ts`、`shared/plugin-renderer-rpc.ts` 改为"内核 + 各自 capability 注册表"；`src/plugin-runtime/frame-entry.ts` 第三套 pending Map 改用内核追踪器；线上信封 v2/v1 字节格式不变 | 新增"新旧构造字节级等价"测试 + RPC 专项测试（backend/renderer/frame-bridge）+ 全门禁 + 6 插件激活冒烟    |
+| **1.6.2** | UniEnv 物理隔离 + trusted 目录整理 | 迁移至 `plugin-system/trusted-services/unienv/`（宿主固定加载，不依赖插件源码相对路径）；`TrustedServiceRuntime` 收敛到稳定内部模块边界；`update-trusted-policy.mjs` 最终定型并挂 CI 门禁；固定文件集/摘要/fail-closed 语义零变化                                                                                                     | trustedServiceRuntime 专项测试 + unienv 插件测试 + VM 冒烟（安装/切换/回滚）                             |
+| **1.6.3** | 稳定性收尾（按需发布）             | 1.6.0–1.6.2 暴露的回归修复；性能预算复测（`verify:performance`）；测试套件按新内部结构重构对齐；无修复需求则跳过，不空发                                                                                                                                                                                                              | 全门禁 + 完整 CI                                                                                         |
 
 节奏：1.6.0 ≈ 1–2 周末，1.6.1 / 1.6.2 各 ≈ 1 周末，1.6.3 视回归情况。
 
 ### 1.7.X — 兼容性清理 + SDK v2 冻结线（逐 minor 拆分）
 
-| 版本 | 主题 | 内容（文件级） | 出口验证 |
-|---|---|---|---|
-| **1.7.0** | 删除层（production removal） | ① 删除旧 backend/renderer **fallback**（`OPENBOX_PLUGIN_PROCESS=0` 进程内回退、旧 raw SQL 新装路径）——只删回退，不删 utility process 主路径与沙箱；② 删除生产 sql.js（SqlJsEngine、WASM 加载路径、`shared/types/sql.js.d.ts`，恢复工具改为独立脚本+文档）；③ 删除 `E:\CrucibleBox_Plugins` 镜像（确认已冻结备份） | grep 无引用证明 + 全门禁 + installer smoke + VM 冒烟 |
-| **1.7.1** | SDK v2 冻结 + theme-manager 测试 | `docs/plugin-sdk.md` 正式声明 SDK v2 冻结（此后 API 变更走 v3 提案，经 `packages/openbox-plugin-api` 版本化）；新增 CI 门禁（6 插件对冻结 d.ts 构建兼容矩阵）；`plugins/theme-manager/tests/`（manifest 契约 + 渲染入口最小测试）；theme-manager 补 vitest 依赖 | 全门禁 + 插件 190 项（现 189+1） |
-| **1.7.2** | 代码库可维护性 | 拆分 `src/styles/global.css`(1001 行) 按主题/基础/特效分文件；拆分超大测试文件（`pluginInstallTransaction.test.ts` 873 行等）；确认 PluginManager <600 行、renderer-rpc 缩容达标；docs/ 终稿（AGENTS 单页、6 份活文档、history 归档核对） | 全门禁 + format/lint 全绿 |
-| **1.7.3+** | 维护线（按需，不空发） | bugfix、`npm audit` 依赖更新、安全补丁（含 Electron 小版本升级，走独立版本，不与其他重构混发）；无内容则跳过 | 全门禁 + 相关 smoke |
+| 版本       | 主题                             | 内容（文件级）                                                                                                                                                                                                                                                                                                    | 出口验证                                             |
+| ---------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| **1.7.0**  | 删除层（production removal）     | ① 删除旧 backend/renderer **fallback**（`OPENBOX_PLUGIN_PROCESS=0` 进程内回退、旧 raw SQL 新装路径）——只删回退，不删 utility process 主路径与沙箱；② 删除生产 sql.js（SqlJsEngine、WASM 加载路径、`shared/types/sql.js.d.ts`，恢复工具改为独立脚本+文档）；③ 删除 `E:\CrucibleBox_Plugins` 镜像（确认已冻结备份） | grep 无引用证明 + 全门禁 + installer smoke + VM 冒烟 |
+| **1.7.1**  | SDK v2 冻结 + theme-manager 测试 | `docs/plugin-sdk.md` 正式声明 SDK v2 冻结（此后 API 变更走 v3 提案，经 `packages/openbox-plugin-api` 版本化）；新增 CI 门禁（6 插件对冻结 d.ts 构建兼容矩阵）；`plugins/theme-manager/tests/`（manifest 契约 + 渲染入口最小测试）；theme-manager 补 vitest 依赖                                                   | 全门禁 + 插件 190 项（现 189+1）                     |
+| **1.7.2**  | 代码库可维护性                   | 拆分 `src/styles/global.css`(1001 行) 按主题/基础/特效分文件；拆分超大测试文件（`pluginInstallTransaction.test.ts` 873 行等）；确认 PluginManager <600 行、renderer-rpc 缩容达标；docs/ 终稿（AGENTS 单页、6 份活文档、history 归档核对）                                                                         | 全门禁 + format/lint 全绿                            |
+| **1.7.3+** | 维护线（按需，不空发）           | bugfix、`npm audit` 依赖更新、安全补丁（含 Electron 小版本升级，走独立版本，不与其他重构混发）；无内容则跳过                                                                                                                                                                                                      | 全门禁 + 相关 smoke                                  |
 
 节奏：1.7.0 ≈ 1–2 周末，1.7.1 ≈ 半天–1 周末，1.7.2 ≈ 1 周末，1.7.3+ 按需。
 
@@ -174,13 +174,13 @@ main（唯一长期分支，始终可发布）
 
 ### 7.2 分支命名规范
 
-| 分支 | 命名 | 示例 |
-|---|---|---|
-| 功能 | `feat/<版本>-<短描述>` | `feat/1.5.24-release-entry` |
-| 重构 | `refactor/<版本>-<短描述>` | `refactor/1.5.25-runtime-record` |
-| 修复 | `fix/<版本>-<短描述>` | `fix/1.5.24-clean-checkout` |
-| 文档/工程 | `chore/<版本>-<短描述>` | `chore/1.5.24-archive-docs` |
-| 紧急 | `hotfix/<版本>-<短描述>` | `hotfix/1.5.24-crash-recovery` |
+| 分支      | 命名                       | 示例                             |
+| --------- | -------------------------- | -------------------------------- |
+| 功能      | `feat/<版本>-<短描述>`     | `feat/1.5.24-release-entry`      |
+| 重构      | `refactor/<版本>-<短描述>` | `refactor/1.5.25-runtime-record` |
+| 修复      | `fix/<版本>-<短描述>`      | `fix/1.5.24-clean-checkout`      |
+| 文档/工程 | `chore/<版本>-<短描述>`    | `chore/1.5.24-archive-docs`      |
+| 紧急      | `hotfix/<版本>-<短描述>`   | `hotfix/1.5.24-crash-recovery`   |
 
 ### 7.3 每次开发的标准工作流
 

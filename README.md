@@ -77,25 +77,28 @@ tests/         # Vitest 单元测试
 
 ## 插件 backend v2
 
-生产插件声明 `backendApiVersion: 2`，通过带随机会话 token、请求 ID、精确方法契约和负载预算的 RPC 与宿主通信。UniEnv 的进程、文件、下载和解压实现属于宿主固定摘要可信服务，发布插件只包含受限代理。架构、兼容规则和构建方式见 `docs/plugin-platform-m2.3.md`。
+生产插件声明 `backendApiVersion: 2`，通过带随机会话 token、请求 ID、精确方法契约和负载预算的 RPC 与宿主通信。UniEnv 的进程、文件、下载和解压实现属于宿主固定摘要可信服务，发布插件只包含受限代理。架构、兼容规则和构建方式见 `docs/security-model.md` 与 `docs/plugin-sdk.md`。
 
 ## 发布与诊断
 
 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
 宿主和六插件可生成 CycloneDX SBOM。运行时会在 `userData/logs` 写有界 JSONL 诊断日志，并输出
 可机器读取的启动耗时/working-set 指标。完整发布环境变量和验收步骤见
-`docs/plugin-platform-m2.4.md`。
+`docs/release-runbook.md`。
 
 ## 插件渲染隔离
 
-生产插件使用 `rendererApiVersion: 2`。每次打开插件时，宿主签发唯一 `openbox-plugin://<token>.session` origin，在 sandboxed iframe 中加载自包含 browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题、通知和 backend 消息能力。插件 frame 不包含 Electron preload，不能访问宿主 DOM、`window.electronAPI`、Node `process` 或 `require`。迁移和构建说明见 `docs/plugin-platform-m2.2b.md`。
+生产插件使用 `rendererApiVersion: 2`。每次打开插件时，宿主签发唯一 `openbox-plugin://<token>.session` origin，在 sandboxed iframe 中加载自包含 browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题、通知和 backend 消息能力。插件 frame 不包含 Electron preload，不能访问宿主 DOM、`window.electronAPI`、Node `process` 或 `require`。契约与构建说明见 `docs/plugin-sdk.md` 与 `docs/security-model.md`。
 
-## 架构与迁移
+## 架构与文档
 
 - 当前模块、进程、数据流和信任边界：`docs/architecture.md`
-- 2026 重构结果、技术选型与剩余边界：`docs/refactor-summary.md`
-- 插件 SDK v2 与私有存储迁移：`docs/plugin-sdk-migration.md`
+- 安全模型与信任边界：`docs/security-model.md`
+- 插件 SDK v2 契约与私有存储：`docs/plugin-sdk.md`
+- 安装事务与崩溃恢复：`docs/install-recovery.md`
+- 发布与自动更新 runbook：`docs/release-runbook.md`
 - 构建、测试、发布与打包冒烟：`docs/development.md`
+- 2026 重构结果、技术选型与剩余边界：`docs/refactor-summary.md`
 
 ## Windows releases and automatic updates
 
@@ -108,7 +111,7 @@ CrucibleBox supports Windows 10/11 x64 and publishes an NSIS installer from a ve
 Releases provide `latest.yml` or `beta.yml`, blockmaps and installer hashes to the explicit in-app updater. Releases
 also include plugin signatures, CycloneDX SBOMs, SHA-256 checksums and a GitHub provenance attestation. Windows
 installers are currently unsigned and can display Unknown publisher or SmartScreen warnings. See
-`docs/trusted-release.md`.
+`docs/release-runbook.md`.
 
 ## 当前验证基线（1.5.23）
 
@@ -118,7 +121,7 @@ installers are currently unsigned and can display Unknown publisher or SmartScre
 - 内置主题六套：亮色（默认）/深色/清新绿/海洋蓝/科幻面板/零号城区。
 - 插件列表支持长按拖动排序与键盘上移/下移。
 - 工具箱本体与 UniEnv 的 Windows VM 安装/取消/切换/回滚验收已通过。
-- 历史发布文档（如 `docs/theme-release-1.5.0.md`）记录的是当时状态，版本号与测试数量不代表当前。
+- 历史发布文档已归档至 `docs/history/`，记录的是当时状态，版本号与测试数量不代表当前。
 
 ## License
 
