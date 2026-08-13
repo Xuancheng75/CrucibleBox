@@ -13,13 +13,14 @@
 ## 2. 两条本地命令（1.5.24 落地）
 
 ```bash
-npm run release:local     # check → build → package:plugins → sign:plugins → SBOM → package:release
-npm run release:validate  # 全部 smoke + manifest 校验 + checksum
+npm run release:local     # check → build → package:plugins → sign:plugins → SBOM → package:release → manifest → collect
+npm run release:validate  # 全部 smoke + 更新元数据校验 + manifest（--require-signature）+ checksum
 ```
 
 - `release:local` 需要签名密钥环境：`OPENBOX_PLUGIN_SIGNING_KEY_FILE` / `KEY_ID`（仓库外生成，私钥永不入库）。
 - 无密钥时仅本地验证路径可用：`npm run check && npm run build && npm run package:dir && npm run smoke:packaged`。
-- `release:validate` 幂等且不改产物；与 CI 各自生成的 `release-manifest.json` 做 canonical 对比。
+- **本地仅发布 stable**：`electron-builder.release.yml` 固定 `channel: latest`，本地 `release:local` 只产出 `latest.yml`；beta 通道走 CI（release.yml 传 `-c.publish.channel=beta`）。`release:validate` 相应固定校验 `latest.yml`。
+- `release:validate` 会重新生成 `release-manifest.json` 与 `SHA256SUMS`（追加校验产物，不是"不改产物"）；本地与 CI 各自生成后做 canonical 对比。
 
 ## 3. 发布检查单（每版固定）
 
