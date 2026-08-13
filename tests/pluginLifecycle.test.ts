@@ -552,6 +552,46 @@ describe('PluginManager lifecycle coordination', () => {
     expect(manager.getActivePlugins()).toEqual(['plugin-a'])
   })
 
+  it('releases the global shortcut when the plugin explicitly unregisters it', async () => {
+    const activation = manager.activatePlugin('plugin-a')
+    instances[0].resolveStart()
+    await activation
+
+    await instances[0].invoke('shortcut.register', { keys: 'Ctrl+Shift+P' })
+    expect(electronMocks.registerShortcut).toHaveBeenCalledWith(
+      'Ctrl+Shift+P',
+      expect.any(Function)
+    )
+
+    await instances[0].invoke('shortcut.unregister', { keys: 'Ctrl+Shift+P' })
+    expect(electronMocks.unregisterShortcut).toHaveBeenCalledWith('Ctrl+Shift+P')
+
+    // 注销后 stop 不应再次触发清理（cleanup 已消费）
+    const stops = electronMocks.unregisterShortcut.mock.calls.length
+    await manager.deactivatePlugin('plugin-a')
+    expect(electronMocks.unregisterShortcut.mock.calls.length).toBe(stops)
+  })
+
+  it('unsubscribes event handlers when the plugin explicitly unsubscribes', async () => {
+    const activation = manager.activatePlugin('plugin-a')
+    instances[0].resolveStart()
+    await activation
+
+    const pushEvent = vi.spyOn(instances[0], 'pushEvent').mockImplementation(() => undefined)
+    const runtimeApi = instances[0].options.context.api
+
+    await instances[0].invoke('event.subscribe', { subscriptionId: '1', event: 'foo' })
+    runtimeApi.emitEvent('foo', { n: 1 })
+    await Promise.resolve()
+    expect(pushEvent).toHaveBeenCalledWith('foo', { n: 1 })
+
+    pushEvent.mockClear()
+    await instances[0].invoke('event.unsubscribe', { subscriptionId: '1' })
+    runtimeApi.emitEvent('foo', { n: 2 })
+    await Promise.resolve()
+    expect(pushEvent).not.toHaveBeenCalled()
+  })
+
   it('namespaces storage operations by the active plugin id', async () => {
     storageMocks.get.mockReturnValue({ title: 'entry' })
     storageMocks.list.mockReturnValue([{ key: 'entry:1', value: { title: 'entry' } }])

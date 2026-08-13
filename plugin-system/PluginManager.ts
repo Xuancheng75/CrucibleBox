@@ -176,7 +176,16 @@ const childRequestHandlers = new Map<string, ChildRequestHandler>([
   [
     'shortcut.unregister',
     async (ctx, p) => {
-      ctx.cleanups.delete(`shortcut:${String(p.keys)}`)
+      const key = `shortcut:${String(p.keys)}`
+      const cleanup = ctx.cleanups.get(key)
+      if (cleanup) {
+        ctx.cleanups.delete(key)
+        try {
+          cleanup()
+        } catch {
+          // ignore
+        }
+      }
       return null
     }
   ],
@@ -202,7 +211,16 @@ const childRequestHandlers = new Map<string, ChildRequestHandler>([
   [
     'event.unsubscribe',
     async (ctx, p) => {
-      ctx.cleanups.delete(`sub:${String(p.subscriptionId ?? '')}`)
+      const key = `sub:${String(p.subscriptionId ?? '')}`
+      const cleanup = ctx.cleanups.get(key)
+      if (cleanup) {
+        ctx.cleanups.delete(key)
+        try {
+          cleanup()
+        } catch {
+          // ignore
+        }
+      }
       return null
     }
   ],
