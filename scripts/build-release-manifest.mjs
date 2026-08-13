@@ -5,9 +5,10 @@ import {
   lstatSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   writeFileSync
 } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
@@ -17,7 +18,7 @@ import { fileURLToPath } from 'node:url'
  * 输出 artifacts/release-manifest.json，作为版本/插件/摘要/签名/SBOM/安装器/更新元数据的唯一清单。
  * 任何必需输入缺失即失败（fail-closed），不生成残缺清单。
  *
- * 用法：node scripts/build-release-manifest.mjs [--channel latest|beta]
+ * 用法：node scripts/build-release-manifest.mjs [--channel latest|beta] [--require-signature]
  */
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
@@ -30,6 +31,7 @@ const releaseDirectory = resolve(repositoryRoot, 'release')
 const channelArg = process.argv.includes('--channel')
   ? process.argv[process.argv.indexOf('--channel') + 1]
   : undefined
+const requireSignature = process.argv.includes('--require-signature')
 
 function readJson(path, label) {
   if (!existsSync(path)) throw new Error(`${label} does not exist: ${path}`)
@@ -59,7 +61,20 @@ function resolveReleaseFile(filename, label) {
   }
   const path = resolve(releaseDirectory, filename)
   assertRegularFile(path, label)
+  const realRoot = `${realpathSync(releaseDirectory)}${sep}`
+  const realPath = realpathSync(path)
+  if (!realPath.startsWith(realRoot)) throw new Error(`${label} escapes the release root`)
   return path
+}
+
+/** 与 CI release.yml 一致的 channel 推导：仅 stable 或 beta prerelease 合法 */
+function deriveChannel(version) {
+  if (!version.includes('-')) return 'latest'
+  const prerelease = version.split('-', 2)[1].split('.', 2)[0].toLowerCase()
+  if (prerelease !== 'beta') {
+    throw new Error(`Only beta prereleases are supported, received ${prerelease}`)
+  }
+  return 'beta'
 }
 
 async function main() {
@@ -73,20 +88,37 @@ async function main() {
   const pluginSignature = existsSync(pluginSignaturePath)
     ? readJson(pluginSignaturePath, 'plugins artifact manifest.sig.json')
     : null
+  if (requireSignature && !pluginSignature) {
+    throw new Error('Plugin signature is required but manifest.sig.json is missing')
+  }
 
-  // SBOM 文件清单（release 必须完整 7 份）
+  // SBOM 文件清单（必须精确等于 openbox + 6 插件 7 份，不允许残留/改名错位）
+  const catalog = JSON.parse(readFileSync(resolve(scriptDirectory, 'plugin-catalog.json'), 'utf8'))
+  const expectedSbomFiles = [
+    'openbox.cdx.json',
+    ...catalog.map((plugin) => `${plugin.id}.cdx.json`)
+  ].sort()
   if (!existsSync(sbomDirectory)) {
     throw new Error(`SBOM directory does not exist: ${sbomDirectory}`)
   }
   const sbomFiles = readdirSync(sbomDirectory)
     .filter((name) => name.endsWith('.cdx.json'))
     .sort()
-  if (sbomFiles.length !== 7) {
-    throw new Error(`Expected 7 SBOM files (openbox + 6 plugins), found ${sbomFiles.length}`)
+  if (sbomFiles.length !== expectedSbomFiles.length) {
+    throw new Error(
+      `Expected ${expectedSbomFiles.length} SBOM files, found ${sbomFiles.length}: [${sbomFiles.join(', ')}]`
+    )
+  }
+  for (let i = 0; i < expectedSbomFiles.length; i += 1) {
+    if (sbomFiles[i] !== expectedSbomFiles[i]) {
+      throw new Error(
+        `SBOM file set mismatch: expected [${expectedSbomFiles.join(', ')}], found [${sbomFiles.join(', ')}]`
+      )
+    }
   }
 
   // 安装器 + 更新元数据
-  const channel = channelArg ?? (hostPackage.version.includes('-') ? 'beta' : 'latest')
+  const channel = channelArg ?? deriveChannel(hostPackage.version)
   if (channel !== 'latest' && channel !== 'beta') {
     throw new Error(`Unsupported channel: ${channel}`)
   }
