@@ -133,6 +133,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $publish | Out-Null
           Copy-Item release/*-setup.exe, release/*.blockmap, "release/$env:UPDATE_METADATA" -Destination $publish
           Copy-Item artifacts/plugins/*.zip, artifacts/plugins/*.json, artifacts/sbom/*.json -Destination $publish
+          $channel = ($env:UPDATE_METADATA -eq 'beta.yml') ? 'beta' : 'latest'
+          npm run build:release-manifest -- --channel $channel
+          Copy-Item artifacts/release-manifest.json -Destination $publish
           node scripts/generate-release-checksums.mjs $publish
 
       - name: Attest release artifacts
