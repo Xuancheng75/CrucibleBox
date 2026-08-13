@@ -36,6 +36,9 @@ jobs:
       - name: Build host and plugins
         run: npm run build
 
+      - name: Clean checkout gate (clean tree + LF line endings)
+        run: npm run verify:clean-checkout
+
       - name: Audit dependency graph
         run: npm run audit:dependencies
 
