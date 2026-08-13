@@ -1,6 +1,6 @@
 {
   "name": "openbox",
-  "version": "1.5.23",
+  "version": "1.5.25",
   "private": true,
   "workspaces": [
     "plugins/*",

@@ -9,7 +9,7 @@
 - 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/*`）。
 - `E:\CrucibleBox_Plugins` 为**只读镜像 / 发布备份**，不参与构建，不得作为编辑源。
 - 插件模型：Manifest v2 + 自包含 browser renderer（跨源 sandboxed iframe + MessagePort RPC）+ 可选 backend（utility process，backend RPC v2）。UniEnv 为宿主固定摘要可信服务。
-- 当前基线（1.5.23）：宿主 35 文件/254 项、六插件 190 项、供应链 16 项测试全绿；数据库 schema v3（`plugins.sort_order`）；自动更新默认关闭，配置 GitHub Release 后启用。
+- 当前基线（1.5.25）：宿主 35 文件/256 项、六插件 190 项、供应链 16 项测试全绿；数据库 schema v3（`plugins.sort_order`）；自动更新默认关闭，配置 GitHub Release 后启用。
 
 ## 2. 关键文件地图
 
