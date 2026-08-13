@@ -43,6 +43,12 @@ import {
 } from './PluginSandbox'
 import { Permission } from '@shared/types/permissions'
 import { TrustedServiceRuntime } from './TrustedServiceRuntime'
+import {
+  createPluginRuntimeRecord,
+  hasPluginRuntime,
+  type PluginRuntimeRecord
+} from './runtime/PluginRuntimeRecord'
+import { PluginLogService } from './runtime/PluginLogService'
 
 export type { PluginInstallPreview } from './PluginInstallPreparation'
 
@@ -60,20 +66,177 @@ interface PluginRuntimeHostAPI extends PluginHostAPI {
   invokeTrustedService(service: string, operation: string, payload?: unknown): Promise<unknown>
 }
 
+/** 子进程请求分发表上下文：把 handler 依赖的实例状态收敛到单个入参 */
+interface ChildRequestContext {
+  pluginId: string
+  runtimeDb: PluginDatabaseAPI
+  runtimeStorage: PluginStorageAPI
+  runtimeApi: PluginRuntimeHostAPI
+  sandbox: PluginSandboxRuntime
+  cleanups: Map<string, () => void>
+  log(level: string, message: string, args: unknown[]): void
+}
+
+type ChildRequestHandler = (
+  ctx: ChildRequestContext,
+  payload: Record<string, unknown>
+) => Promise<unknown>
+
+/** capability 分发表：与原 switch 逐分支行为一致 */
+const childRequestHandlers = new Map<string, ChildRequestHandler>([
+  ['db.query', async (ctx, p) => ctx.runtimeDb.query(String(p.sql), p.params as unknown[])],
+  [
+    'db.execute',
+    async (ctx, p) => {
+      await ctx.runtimeDb.execute(String(p.sql), p.params as unknown[])
+      return null
+    }
+  ],
+  ['storage.get', async (ctx, p) => ctx.runtimeStorage.get(String(p.key))],
+  [
+    'storage.set',
+    async (ctx, p) => {
+      await ctx.runtimeStorage.set(String(p.key), p.value)
+      return null
+    }
+  ],
+  [
+    'storage.delete',
+    async (ctx, p) => {
+      await ctx.runtimeStorage.delete(String(p.key))
+      return null
+    }
+  ],
+  [
+    'storage.list',
+    async (ctx, p) => ctx.runtimeStorage.list(p.prefix === undefined ? undefined : String(p.prefix))
+  ],
+  [
+    'storage.batch',
+    async (ctx, p) => {
+      await ctx.runtimeStorage.batch(p.mutations as Parameters<PluginStorageAPI['batch']>[0])
+      return null
+    }
+  ],
+  [
+    'log.write',
+    async (ctx, p) => {
+      ctx.log(String(p.level), String(p.message ?? ''), p.args as unknown[])
+      return null
+    }
+  ],
+  [
+    'notification.show',
+    async (ctx, p) => {
+      ctx.runtimeApi.notify(String(p.title ?? ''), p.body == null ? undefined : String(p.body))
+      return null
+    }
+  ],
+  [
+    'dialog.open',
+    async (ctx, p) => ctx.runtimeApi.openDialog(p.type === 'folder' ? 'folder' : 'file')
+  ],
+  [
+    'network.fetch',
+    async (ctx, p) => {
+      const res = await ctx.runtimeApi.fetch(String(p.url), p.options as RequestInit)
+      const headers: Record<string, string> = {}
+      res.headers.forEach((value, key) => {
+        headers[key] = value
+      })
+      const body = await res.text()
+      return { ok: res.ok, status: res.status, statusText: res.statusText, headers, body }
+    }
+  ],
+  [
+    'file.read',
+    async (ctx, p) => {
+      const data = await ctx.runtimeApi.readFile(String(p.path))
+      return { base64: Buffer.from(data).toString('base64') }
+    }
+  ],
+  [
+    'file.write',
+    async (ctx, p) => {
+      await ctx.runtimeApi.writeFile(String(p.path), Buffer.from(String(p.base64), 'base64'))
+      return null
+    }
+  ],
+  [
+    'shortcut.register',
+    async (ctx, p) => {
+      const keys = String(p.keys)
+      const cleanup = ctx.runtimeApi.registerShortcut(keys, () => {
+        ctx.sandbox.pushEvent('openbox:shortcut', keys)
+      })
+      ctx.cleanups.set(`shortcut:${keys}`, cleanup)
+      return null
+    }
+  ],
+  [
+    'shortcut.unregister',
+    async (ctx, p) => {
+      const key = `shortcut:${String(p.keys)}`
+      const cleanup = ctx.cleanups.get(key)
+      if (cleanup) {
+        ctx.cleanups.delete(key)
+        try {
+          cleanup()
+        } catch {
+          // ignore
+        }
+      }
+      return null
+    }
+  ],
+  [
+    'event.emit',
+    async (ctx, p) => {
+      ctx.runtimeApi.emitEvent(String(p.event), p.data)
+      return null
+    }
+  ],
+  [
+    'event.subscribe',
+    async (ctx, p) => {
+      const subId = String(p.subscriptionId ?? '')
+      const event = String(p.event)
+      const cleanup = ctx.runtimeApi.onEvent(event, (data) => {
+        ctx.sandbox.pushEvent(event, data)
+      })
+      ctx.cleanups.set(`sub:${subId}`, cleanup)
+      return null
+    }
+  ],
+  [
+    'event.unsubscribe',
+    async (ctx, p) => {
+      const key = `sub:${String(p.subscriptionId ?? '')}`
+      const cleanup = ctx.cleanups.get(key)
+      if (cleanup) {
+        ctx.cleanups.delete(key)
+        try {
+          cleanup()
+        } catch {
+          // ignore
+        }
+      }
+      return null
+    }
+  ],
+  [
+    'trusted.invoke',
+    async (ctx, p) =>
+      ctx.runtimeApi.invokeTrustedService(String(p.service), String(p.operation), p.payload)
+  ]
+])
+
 export class PluginManager {
-  private sandboxes: Map<string, PluginSandboxRuntime> = new Map()
-  private rendererOnlyActivePluginIds = new Set<string>()
-  private childCleanups: Map<string, () => void> = new Map()
+  /** 每插件单一运行时记录（替代原 9 张 Map/Set/WeakSet） */
+  private runtimes = new Map<string, PluginRuntimeRecord>()
   private eventBus: EventBus = new EventBus()
-  private activationPromises = new Map<string, Promise<void>>()
-  private stopPromises = new Map<string, Promise<void>>()
-  private deactivationPromises = new Map<string, Promise<void>>()
-  private maintenancePluginIds = new Set<string>()
-  private expectedStops = new WeakSet<PluginSandboxRuntime>()
-  private reportedErrors = new WeakSet<PluginSandboxRuntime>()
   private crashPolicy: PluginCrashPolicy
-  private quarantinedPluginIds = new Set<string>()
-  private restartTimers = new Map<string, NodeJS.Timeout>()
+  private logService: PluginLogService
   private sandboxFactory: PluginSandboxFactory
   private shuttingDown = false
   private startupActivationConcurrency: number
@@ -92,6 +255,9 @@ export class PluginManager {
         ? Math.min(8, requestedConcurrency)
         : 2
     this.manifestReader = options.manifestReader ?? readPluginManifest
+    this.logService = new PluginLogService({
+      emitLog: (entry) => this.eventBus.emit('plugin:log', entry)
+    })
     if (!existsSync(this.pluginsDir)) {
       mkdirSync(this.pluginsDir, { recursive: true })
     }
@@ -102,11 +268,20 @@ export class PluginManager {
         hasRuntime: (id) => this.hasRuntime(id),
         stopRuntime: (id) => this.stopPlugin(id),
         activateRuntime: (id) => this.activatePluginRuntime(id),
-        getPendingDeactivation: (id) => this.deactivationPromises.get(id),
+        getPendingDeactivation: (id) => this.runtime(id).deactivationPromise ?? undefined,
         acquireMaintenance: (id) => this.acquireMaintenance(id)
       }
     })
     if (options.registerProtocol !== false) PluginProtocol.register(this.pluginsDir)
+  }
+
+  private runtime(id: string): PluginRuntimeRecord {
+    let record = this.runtimes.get(id)
+    if (!record) {
+      record = createPluginRuntimeRecord(id)
+      this.runtimes.set(id, record)
+    }
+    return record
   }
 
   get pluginsPath(): string {
@@ -140,25 +315,24 @@ export class PluginManager {
 
   activatePlugin(id: string): Promise<void> {
     this.clearCrashRecovery(id, true)
-    if (this.maintenancePluginIds.has(id)) {
+    if (this.runtime(id).maintenance) {
       return Promise.reject(new Error(`Plugin ${id} is currently being upgraded`))
     }
     return this.activatePluginRuntime(id)
   }
 
   private activatePluginRuntime(id: string): Promise<void> {
-    if (this.quarantinedPluginIds.has(id)) {
+    const record = this.runtime(id)
+    if (record.quarantine) {
       return Promise.reject(new Error(`Plugin ${id} is quarantined after repeated crashes`))
     }
-    const stopping = this.stopPromises.get(id)
-    if (stopping) return stopping.then(() => this.activatePluginRuntime(id))
+    if (record.stopPromise) return record.stopPromise.then(() => this.activatePluginRuntime(id))
 
-    const pending = this.activationPromises.get(id)
-    if (pending) return pending
-    if (this.rendererOnlyActivePluginIds.has(id)) return Promise.resolve()
-    if (this.sandboxes.get(id)?.isRunning) return Promise.resolve()
+    if (record.activationPromise) return record.activationPromise
+    if (record.rendererOnly) return Promise.resolve()
+    if (record.sandbox?.isRunning) return Promise.resolve()
 
-    return this.startTrackedOperation(this.activationPromises, id, () => this.performActivation(id))
+    return this.startTrackedOperation(record, 'activationPromise', () => this.performActivation(id))
   }
 
   private async performActivation(id: string): Promise<void> {
@@ -177,10 +351,11 @@ export class PluginManager {
       throw new Error(`Plugin metadata does not match its installed manifest: ${plugin.name}`)
     }
 
+    const record = this.runtime(id)
     if (manifest.backend === false) {
       this.emitStatus(plugin.id, PluginLifecycleStatus.Activating)
       PluginRepository.updateEnabled(id, true)
-      this.rendererOnlyActivePluginIds.add(id)
+      record.rendererOnly = true
       console.log(`Plugin activated: ${plugin.name} (renderer-only)`)
       this.emitStatus(plugin.id, PluginLifecycleStatus.Active)
       return
@@ -191,10 +366,10 @@ export class PluginManager {
     ensureLegacyPluginStorageMigrated(getDatabase(), plugin.id, plugin.name)
 
     const logger: PluginLogger = {
-      info: (msg, ...args) => this.log(plugin.id, 'info', msg, args),
-      warn: (msg, ...args) => this.log(plugin.id, 'warn', msg, args),
-      error: (msg, ...args) => this.log(plugin.id, 'error', msg, args),
-      debug: (msg, ...args) => this.log(plugin.id, 'debug', msg, args)
+      info: (msg, ...args) => this.logService.log(plugin.id, 'info', msg, args),
+      warn: (msg, ...args) => this.logService.log(plugin.id, 'warn', msg, args),
+      error: (msg, ...args) => this.logService.log(plugin.id, 'error', msg, args),
+      debug: (msg, ...args) => this.logService.log(plugin.id, 'debug', msg, args)
     }
     const trustedServiceRuntime = new TrustedServiceRuntime({
       pluginId: plugin.id,
@@ -316,16 +491,20 @@ export class PluginManager {
       context,
       handler: (op, payload) =>
         this.handleChildRequest(
-          plugin.id,
-          runtimeDb,
-          runtimeStorage,
-          runtimeApi,
-          sandbox,
+          {
+            pluginId: plugin.id,
+            runtimeDb,
+            runtimeStorage,
+            runtimeApi,
+            sandbox,
+            cleanups: record.cleanups,
+            log: (level, message, args) => this.logService.log(plugin.id, level, message, args)
+          },
           op,
           payload
         )
     })
-    this.childCleanups.set(`${plugin.id}:trusted-services`, () => {
+    record.cleanups.set('trusted-services', () => {
       void trustedServiceRuntime.dispose().catch((error) => {
         logger.error(`Trusted service cleanup failed: ${(error as Error).message}`)
       })
@@ -337,13 +516,15 @@ export class PluginManager {
     })
 
     sandbox.on('error', (err: Error) => {
-      if (!this.expectedStops.has(sandbox)) this.reportSandboxError(plugin.id, logger, sandbox, err)
+      if (!record.expectedStopSandboxes.has(sandbox)) {
+        this.reportSandboxError(plugin.id, logger, sandbox, err)
+      }
     })
 
     sandbox.on('exit', (code: number | null, details?: SandboxExitDetails) => {
-      const expected = details?.expected ?? this.expectedStops.has(sandbox)
-      if (this.sandboxes.get(plugin.id) === sandbox) this.sandboxes.delete(plugin.id)
-      this.runPluginCleanups(plugin.id)
+      const expected = details?.expected ?? record.expectedStopSandboxes.has(sandbox)
+      if (record.sandbox === sandbox) record.sandbox = null
+      this.runPluginCleanups(record)
       if (!expected) {
         this.reportSandboxError(
           plugin.id,
@@ -355,18 +536,18 @@ export class PluginManager {
       }
     })
 
-    this.sandboxes.set(id, sandbox)
+    record.sandbox = sandbox
     this.emitStatus(plugin.id, PluginLifecycleStatus.Activating)
     try {
       await sandbox.start()
-      if (this.sandboxes.get(id) !== sandbox || !sandbox.isRunning) {
+      if (record.sandbox !== sandbox || !sandbox.isRunning) {
         throw new Error('插件启动完成前已停止')
       }
     } catch (error) {
-      if (this.sandboxes.get(id) === sandbox) this.sandboxes.delete(id)
-      this.runPluginCleanups(plugin.id)
+      if (record.sandbox === sandbox) record.sandbox = null
+      this.runPluginCleanups(record)
       await sandbox.stop().catch(() => undefined)
-      if (!this.expectedStops.has(sandbox)) {
+      if (!record.expectedStopSandboxes.has(sandbox)) {
         this.reportSandboxError(plugin.id, logger, sandbox, error as Error)
       }
       throw error
@@ -383,28 +564,30 @@ export class PluginManager {
     sandbox: PluginSandboxRuntime,
     error: Error
   ): void {
-    if (this.reportedErrors.has(sandbox)) return
-    this.reportedErrors.add(sandbox)
+    const record = this.runtime(pluginId)
+    if (record.reportedErrorSandboxes.has(sandbox)) return
+    record.reportedErrorSandboxes.add(sandbox)
     logger.error(`插件运行错误: ${error.message}`)
     this.emitStatus(pluginId, PluginLifecycleStatus.Error)
     this.eventBus.emit('plugin:error', { pluginId, error: error.message })
   }
 
   private clearCrashRecovery(pluginId: string, resetPolicy: boolean): void {
-    const timer = this.restartTimers.get(pluginId)
-    if (timer) clearTimeout(timer)
-    this.restartTimers.delete(pluginId)
+    const record = this.runtime(pluginId)
+    if (record.restartTimer) clearTimeout(record.restartTimer)
+    record.restartTimer = null
     if (resetPolicy) {
       this.crashPolicy.reset(pluginId)
-      this.quarantinedPluginIds.delete(pluginId)
+      record.quarantine = false
     }
   }
 
   private scheduleCrashRecovery(plugin: PluginMeta, logger: PluginLogger): void {
-    if (this.shuttingDown || this.restartTimers.has(plugin.id)) return
+    const record = this.runtime(plugin.id)
+    if (this.shuttingDown || record.restartTimer) return
     const decision = this.crashPolicy.record(plugin.id)
     if (decision.action === 'quarantine') {
-      this.quarantinedPluginIds.add(plugin.id)
+      record.quarantine = true
       try {
         PluginRepository.updateEnabled(plugin.id, false)
       } catch (error) {
@@ -422,13 +605,13 @@ export class PluginManager {
       `插件异常退出，将在 ${decision.delayMs}ms 后尝试第 ${decision.crashesInWindow} 次恢复`
     )
     const timer = setTimeout(() => {
-      this.restartTimers.delete(plugin.id)
+      record.restartTimer = null
       const current = PluginRepository.findById(plugin.id)
       if (
         this.shuttingDown ||
         !current?.enabled ||
-        this.maintenancePluginIds.has(plugin.id) ||
-        this.deactivationPromises.has(plugin.id)
+        record.maintenance ||
+        record.deactivationPromise
       ) {
         return
       }
@@ -437,120 +620,22 @@ export class PluginManager {
       })
     }, decision.delayMs)
     timer.unref?.()
-    this.restartTimers.set(plugin.id, timer)
+    record.restartTimer = timer
   }
 
   private async handleChildRequest(
-    pluginId: string,
-    runtimeDb: PluginDatabaseAPI,
-    runtimeStorage: PluginStorageAPI,
-    runtimeApi: PluginRuntimeHostAPI,
-    sandbox: PluginSandboxRuntime,
+    ctx: ChildRequestContext,
     op: string,
     payload: unknown
   ): Promise<unknown> {
-    const p = (payload ?? {}) as Record<string, unknown>
-
-    switch (op) {
-      case 'db.query':
-        return runtimeDb.query(String(p.sql), p.params as unknown[])
-      case 'db.execute':
-        await runtimeDb.execute(String(p.sql), p.params as unknown[])
-        return null
-      case 'storage.get':
-        return runtimeStorage.get(String(p.key))
-      case 'storage.set':
-        await runtimeStorage.set(String(p.key), p.value)
-        return null
-      case 'storage.delete':
-        await runtimeStorage.delete(String(p.key))
-        return null
-      case 'storage.list':
-        return runtimeStorage.list(p.prefix === undefined ? undefined : String(p.prefix))
-      case 'storage.batch':
-        await runtimeStorage.batch(p.mutations as Parameters<PluginStorageAPI['batch']>[0])
-        return null
-      case 'log.write': {
-        const level = String(p.level)
-        this.log(pluginId, level, String(p.message ?? ''), p.args as unknown[])
-        return null
-      }
-      case 'notification.show':
-        runtimeApi.notify(String(p.title ?? ''), p.body == null ? undefined : String(p.body))
-        return null
-      case 'dialog.open':
-        return runtimeApi.openDialog(p.type === 'folder' ? 'folder' : 'file')
-      case 'network.fetch': {
-        const res = await runtimeApi.fetch(String(p.url), p.options as RequestInit)
-        const headers: Record<string, string> = {}
-        res.headers.forEach((value, key) => {
-          headers[key] = value
-        })
-        const body = await res.text()
-        return { ok: res.ok, status: res.status, statusText: res.statusText, headers, body }
-      }
-      case 'file.read': {
-        const data = await runtimeApi.readFile(String(p.path))
-        return { base64: Buffer.from(data).toString('base64') }
-      }
-      case 'file.write':
-        await runtimeApi.writeFile(String(p.path), Buffer.from(String(p.base64), 'base64'))
-        return null
-      case 'shortcut.register': {
-        const keys = String(p.keys)
-        const cleanup = runtimeApi.registerShortcut(keys, () => {
-          sandbox.pushEvent('openbox:shortcut', keys)
-        })
-        this.childCleanups.set(`${pluginId}:shortcut:${keys}`, cleanup)
-        return null
-      }
-      case 'shortcut.unregister': {
-        const key = `${pluginId}:shortcut:${String(p.keys)}`
-        this.releaseCleanup(key)
-        return null
-      }
-      case 'event.emit':
-        runtimeApi.emitEvent(String(p.event), p.data)
-        return null
-      case 'event.subscribe': {
-        const subId = String(p.subscriptionId ?? '')
-        const event = String(p.event)
-        const key = `${pluginId}:sub:${subId}`
-        const cleanup = runtimeApi.onEvent(event, (data) => {
-          sandbox.pushEvent(event, data)
-        })
-        this.childCleanups.set(key, cleanup)
-        return null
-      }
-      case 'event.unsubscribe': {
-        const key = `${pluginId}:sub:${String(p.subscriptionId ?? '')}`
-        this.releaseCleanup(key)
-        return null
-      }
-      case 'trusted.invoke':
-        return runtimeApi.invokeTrustedService(String(p.service), String(p.operation), p.payload)
-      default:
-        throw new Error(`未知子进程请求: ${op}`)
-    }
+    const handler = childRequestHandlers.get(op)
+    if (!handler) throw new Error(`未知子进程请求: ${op}`)
+    return handler(ctx, (payload ?? {}) as Record<string, unknown>)
   }
 
-  private runPluginCleanups(pluginId: string): void {
-    for (const [key, cleanup] of this.childCleanups) {
-      if (key.startsWith(`${pluginId}:`)) {
-        this.childCleanups.delete(key)
-        try {
-          cleanup()
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }
-
-  private releaseCleanup(key: string): void {
-    const cleanup = this.childCleanups.get(key)
-    if (cleanup) {
-      this.childCleanups.delete(key)
+  private runPluginCleanups(record: PluginRuntimeRecord): void {
+    for (const [suffix, cleanup] of record.cleanups) {
+      record.cleanups.delete(suffix)
       try {
         cleanup()
       } catch {
@@ -569,30 +654,27 @@ export class PluginManager {
   }
 
   private acquireMaintenance(id: string): () => void {
-    if (this.maintenancePluginIds.has(id)) {
+    const record = this.runtime(id)
+    if (record.maintenance) {
       throw new Error(`Plugin ${id} already has a maintenance operation in progress`)
     }
-    this.maintenancePluginIds.add(id)
+    record.maintenance = true
     let released = false
     return () => {
       if (released) return
       released = true
-      this.maintenancePluginIds.delete(id)
+      record.maintenance = false
     }
   }
 
   private hasRuntime(id: string): boolean {
-    return (
-      this.rendererOnlyActivePluginIds.has(id) ||
-      this.sandboxes.has(id) ||
-      this.activationPromises.has(id) ||
-      this.stopPromises.has(id)
-    )
+    const record = this.runtimes.get(id)
+    return record !== undefined && hasPluginRuntime(record)
   }
 
   private startTrackedOperation(
-    operations: Map<string, Promise<void>>,
-    id: string,
+    record: PluginRuntimeRecord,
+    field: 'activationPromise' | 'stopPromise' | 'deactivationPromise',
     task: () => Promise<void>
   ): Promise<void> {
     let resolveOperation!: () => void
@@ -601,9 +683,9 @@ export class PluginManager {
       resolveOperation = resolve
       rejectOperation = reject
     })
-    operations.set(id, operation)
+    record[field] = operation
     const clear = (): void => {
-      if (operations.get(id) === operation) operations.delete(id)
+      if (record[field] === operation) record[field] = null
     }
     operation.then(clear, clear)
     void task().then(resolveOperation, rejectOperation)
@@ -611,52 +693,54 @@ export class PluginManager {
   }
 
   private stopPlugin(id: string): Promise<void> {
-    const pending = this.stopPromises.get(id)
-    if (pending) return pending
+    const record = this.runtime(id)
+    if (record.stopPromise) return record.stopPromise
 
-    return this.startTrackedOperation(this.stopPromises, id, () => this.performStop(id))
+    return this.startTrackedOperation(record, 'stopPromise', () => this.performStop(id))
   }
 
   private async performStop(id: string): Promise<void> {
-    this.rendererOnlyActivePluginIds.delete(id)
-    const sandbox = this.sandboxes.get(id)
+    const record = this.runtime(id)
+    record.rendererOnly = false
+    const sandbox = record.sandbox
     if (sandbox) {
-      this.expectedStops.add(sandbox)
-      if (this.sandboxes.get(id) === sandbox) this.sandboxes.delete(id)
+      record.expectedStopSandboxes.add(sandbox)
+      if (record.sandbox === sandbox) record.sandbox = null
       try {
         await sandbox.stop()
       } finally {
-        this.runPluginCleanups(id)
+        this.runPluginCleanups(record)
       }
     }
 
     // If the stop raced with activation, wait for its cancellation/failure so
     // callers never observe a runtime reappearing after stopPlugin resolves.
-    const activation = this.activationPromises.get(id)
-    if (activation) await activation.catch(() => undefined)
-    this.rendererOnlyActivePluginIds.delete(id)
+    if (record.activationPromise) {
+      await record.activationPromise.catch(() => undefined)
+    }
+    record.rendererOnly = false
 
-    const lateSandbox = this.sandboxes.get(id)
+    const lateSandbox = record.sandbox
     if (lateSandbox && lateSandbox !== sandbox) {
-      this.expectedStops.add(lateSandbox)
-      this.sandboxes.delete(id)
+      record.expectedStopSandboxes.add(lateSandbox)
+      record.sandbox = null
       try {
         await lateSandbox.stop()
       } finally {
-        this.runPluginCleanups(id)
+        this.runPluginCleanups(record)
       }
     }
   }
 
   deactivatePlugin(id: string): Promise<void> {
     this.clearCrashRecovery(id, true)
-    if (this.maintenancePluginIds.has(id)) {
+    if (this.runtime(id).maintenance) {
       return Promise.reject(new Error(`Plugin ${id} is currently being upgraded`))
     }
-    const pending = this.deactivationPromises.get(id)
-    if (pending) return pending
+    const record = this.runtime(id)
+    if (record.deactivationPromise) return record.deactivationPromise
     const hadRuntime = this.hasRuntime(id)
-    const completion = this.startTrackedOperation(this.deactivationPromises, id, async () => {
+    const completion = this.startTrackedOperation(record, 'deactivationPromise', async () => {
       try {
         await this.stopPlugin(id)
         PluginRepository.updateEnabled(id, false)
@@ -692,32 +776,35 @@ export class PluginManager {
 
   async deactivateAll(): Promise<void> {
     this.shuttingDown = true
-    for (const pluginId of this.restartTimers.keys()) this.clearCrashRecovery(pluginId, false)
+    for (const record of this.runtimes.values()) {
+      this.clearCrashRecovery(record.pluginId, false)
+    }
     // Application shutdown only stops plugin runtimes. It must not turn the
     // user's enabled plugins into disabled plugins in persistent storage.
-    const activeIds = new Set([
-      ...this.rendererOnlyActivePluginIds,
-      ...this.sandboxes.keys(),
-      ...this.activationPromises.keys()
-    ])
+    const activeIds = new Set<string>()
+    for (const record of this.runtimes.values()) {
+      if (record.rendererOnly || record.sandbox || record.activationPromise) {
+        activeIds.add(record.pluginId)
+      }
+    }
     await Promise.all(Array.from(activeIds, (id) => this.stopPlugin(id)))
   }
 
   async sendMessage(id: string, message: unknown): Promise<unknown> {
-    if (this.stopPromises.has(id)) {
+    const record = this.runtime(id)
+    if (record.stopPromise) {
       throw new Error(`Plugin ${id} is stopping`)
     }
-    const activation = this.activationPromises.get(id)
-    if (activation) await activation
-    let sandbox = this.sandboxes.get(id)
+    if (record.activationPromise) await record.activationPromise
+    let sandbox = record.sandbox
     if (!sandbox?.isRunning) {
       const plugin = PluginRepository.findById(id)
       if (plugin?.enabled) {
         await this.activatePlugin(id)
-        sandbox = this.sandboxes.get(id)
+        sandbox = record.sandbox
       }
     }
-    if (this.rendererOnlyActivePluginIds.has(id)) {
+    if (record.rendererOnly) {
       throw new Error(`Plugin ${id} is renderer-only and does not expose backend messages`)
     }
     if (!sandbox?.isRunning) {
@@ -727,7 +814,8 @@ export class PluginManager {
   }
 
   async updateConfig(id: string, config: PluginConfig): Promise<void> {
-    if (this.maintenancePluginIds.has(id)) {
+    const record = this.runtime(id)
+    if (record.maintenance) {
       throw new Error(`Plugin ${id} is currently being upgraded`)
     }
     const plugin = PluginRepository.findById(id)
@@ -735,8 +823,7 @@ export class PluginManager {
     this.installationService.assertPluginCanRun(plugin.name)
     const releaseMaintenance = this.acquireMaintenance(id)
     try {
-      const pendingDeactivation = this.deactivationPromises.get(id)
-      if (pendingDeactivation) await pendingDeactivation
+      if (record.deactivationPromise) await record.deactivationPromise
       const currentPlugin = PluginRepository.findById(id)
       if (!currentPlugin) throw new Error(`Plugin metadata disappeared during config update: ${id}`)
       this.installationService.assertPluginCanRun(currentPlugin.name)
@@ -793,53 +880,19 @@ export class PluginManager {
   }
 
   getActivePlugins(): string[] {
-    const activeIds = new Set(this.rendererOnlyActivePluginIds)
-    for (const [id, sandbox] of this.sandboxes.entries()) {
-      if (sandbox.isRunning) activeIds.add(id)
+    const activeIds = new Set<string>()
+    for (const record of this.runtimes.values()) {
+      if (record.rendererOnly || record.sandbox?.isRunning) activeIds.add(record.pluginId)
     }
     return Array.from(activeIds)
   }
 
   getLogs(filter: PluginLogFilter = {}): PluginLogEntry[] {
-    const conditions: string[] = []
-    const params: Array<string | number> = []
-    if (filter.pluginId) {
-      conditions.push('plugin_id = ?')
-      params.push(filter.pluginId)
-    }
-    if (filter.level) {
-      conditions.push('level = ?')
-      params.push(filter.level)
-    }
-    const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''
-    const limit = Math.min(Math.max(filter.limit ?? 500, 1), 2000)
-    params.push(limit)
-    const rows = dbQueryAll<{
-      id: number
-      pluginId: string
-      level: string
-      message: string
-      timestamp: string
-    }>(
-      `SELECT id, plugin_id AS pluginId, level, message, timestamp
-       FROM plugin_logs${where} ORDER BY timestamp DESC, id DESC LIMIT ?`,
-      params
-    )
-    return rows.map((row) => ({
-      id: row.id,
-      pluginId: row.pluginId,
-      level: row.level as PluginLogEntry['level'],
-      message: row.message,
-      timestamp: row.timestamp
-    }))
+    return this.logService.getLogs(filter)
   }
 
   clearLogs(pluginId?: string): void {
-    if (pluginId) {
-      dbExecute('DELETE FROM plugin_logs WHERE plugin_id = ?', [pluginId])
-      return
-    }
-    dbExecute('DELETE FROM plugin_logs')
+    this.logService.clearLogs(pluginId)
   }
 
   onEvent(event: string, handler: (data: unknown) => void): () => void {
@@ -848,38 +901,6 @@ export class PluginManager {
 
   notifyThemeChanged(theme: ToolboxTheme): void {
     this.eventBus.emit('openbox:theme-changed', theme)
-  }
-
-  private log(pluginId: string, level: string, message: string, _args: unknown[]): void {
-    const MAX_LOG_LENGTH = 4000
-    const trimmed =
-      message.length > MAX_LOG_LENGTH ? `${message.slice(0, MAX_LOG_LENGTH)}…` : message
-    try {
-      dbExecute('INSERT INTO plugin_logs (plugin_id, level, message) VALUES (?, ?, ?)', [
-        pluginId,
-        level,
-        trimmed
-      ])
-      this.trimPluginLogs(pluginId)
-    } catch (err) {
-      // db 已关闭/未初始化时降级为控制台输出，避免日志写入抛未捕获异常
-      console.error('[plugin-log] drop:', (err as Error)?.message ?? err)
-    }
-    this.eventBus.emit('plugin:log', { pluginId, level, message: trimmed })
-  }
-
-  /** Keep at most 2000 log rows per plugin to avoid unbounded growth. */
-  private trimPluginLogs(pluginId: string): void {
-    try {
-      dbExecute(
-        `DELETE FROM plugin_logs WHERE plugin_id = ? AND id NOT IN (
-           SELECT id FROM plugin_logs WHERE plugin_id = ? ORDER BY id DESC LIMIT 2000
-         )`,
-        [pluginId, pluginId]
-      )
-    } catch {
-      // ignore
-    }
   }
 
   private emitStatus(pluginId: string, status: PluginLifecycleStatus): void {
