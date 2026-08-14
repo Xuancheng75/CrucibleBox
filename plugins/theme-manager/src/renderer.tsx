@@ -42,6 +42,8 @@ const FALLBACK_TOKENS: Record<string, string> = {
   colorLink: '#6366f1'
 }
 
+export { FALLBACK_TOKENS, DEFAULT_CUSTOM }
+
 function readToken(theme: Theme | undefined, key: string): string {
   const value = theme?.tokens?.[key]
   if (typeof value === 'string' && value && !value.startsWith('var-')) {
@@ -95,6 +97,8 @@ function isValidTheme(value: unknown): value is Theme {
     typeof t.tokens === 'object'
   )
 }
+
+export { buildCustomTheme, isValidTheme }
 
 const inputStyle: Record<string, string | number> = {
   width: '100%',

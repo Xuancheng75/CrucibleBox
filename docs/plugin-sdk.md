@@ -2,6 +2,10 @@
 
 > 当前规范（替代 plugin-sdk-migration.md；模板在 `templates/plugin-template`）。
 > 契约版本：Manifest v2（`manifestVersion: 2`）、backend API v2（`backendApiVersion: 2`）、renderer API v2（`rendererApiVersion: 2`）。
+>
+> **SDK v2 已冻结（1.7.0 起）**：本契约不再原位修改。任何 API 变更必须作为 **v3 提案**处理——
+> 在 `packages/openbox-plugin-api` 发布新的 major 版本（`3.0.0`），升级模板与全部插件声明，
+> 并同步本文档的契约版本。CI 通过 6 插件对冻结类型的构建兼容矩阵（`typecheck:plugins`）强制约束。
 
 ## 1. Manifest 契约
 
