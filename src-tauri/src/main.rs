@@ -1,4 +1,4 @@
-// CrucibleBox Tauri 主进程（1.8.1）
+// CrucibleBox Tauri 主进程（1.8.4）
 // 启动序（对等 electron/main.ts mainLoop 的 DB 相关步骤）：
 //   1) L3 数据路径迁移（%APPDATA%\openbox → %APPDATA%\cruciblebox）
 //   2) 打开 DB（WAL + v3 迁移 + 日志清理）；失败则安全退出
