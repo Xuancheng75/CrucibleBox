@@ -1,11 +1,11 @@
 {
   "name": "cruciblebox-plugin-gif-editor",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "private": true,
   "description": "GIF frame editor plugin for OpenBox",
   "main": "dist/main.js",
   "scripts": {
-    "clean": "node ../../scripts/clean-plugin-dist.mjs",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "typecheck": "tsc --noEmit",

@@ -1,17 +1,36 @@
 #!/usr/bin/env node
-const { run } = require('./create-plugin')
+const { run: createPlugin } = require('./create-plugin')
+const { run: bumpPlugin } = require('./bump-plugin')
+const { run: signPlugin } = require('./plugin-sign')
 const args = process.argv.slice(2)
 
-if (args[0] === 'create-plugin') {
-  run(args[1])
-} else if (args[0] === 'dev') {
-  const { startDev } = require('./dev-mode')
-  startDev(args[1] || process.cwd())
-} else {
-  console.log(`
-CrucibleBox CLI v0.5.0
+const COMMAND = args[0]
+const SUBARGS = args.slice(1)
+
+switch (COMMAND) {
+  case 'create-plugin':
+    createPlugin(SUBARGS[0])
+    break
+  case 'bump':
+    bumpPlugin(SUBARGS[0], SUBARGS[1])
+    break
+  case 'sign':
+    signPlugin(SUBARGS)
+    break
+  case 'dev':
+    {
+      const { startDev } = require('./dev-mode')
+      startDev(SUBARGS[0] || process.cwd())
+    }
+    break
+  default:
+    console.log(`
+CrucibleBox CLI v0.6.0
 用法:
-  openbox create-plugin <名称>    创建一个新插件项目
-  openbox dev [路径]              启动插件开发模式
-  `)
+  openbox create-plugin <名称>         创建新插件项目（脚手架，自包含模板）
+  openbox bump <插件目录> [类型]        版本管理（patch|minor|major|prerelease，默认 patch）
+  openbox sign --key-file <pem> --key-id <id>
+                                       签名插件产物清单（Ed25519，产出 manifest.sig.json）
+  openbox dev [路径]                   启动插件开发模式
+`)
 }

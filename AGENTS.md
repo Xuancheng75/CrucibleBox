@@ -33,7 +33,7 @@
 共享：
 
 - `shared/plugin-backend-rpc.ts`（backend RPC v2）、`shared/plugin-renderer-rpc.ts`（renderer RPC v1）、`shared/types/`（ipc/permissions/plugin/theme/rpc types）、`shared/themes/presets.ts`、`shared/trusted-service-policies.json`。
-- `packages/openbox-ui`：插件共享语义 CSS 变量入口（`@openbox/ui`）。
+- `@openbox/ui` 已内联进 theme-manager（1.9.0 插件 SDK 独立化，`plugins/theme-manager/src/theme-vars.ts`），作为插件共享语义 CSS 变量入口。
 
 构建与发布：
 

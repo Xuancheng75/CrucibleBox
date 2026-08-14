@@ -55,7 +55,11 @@ describe('production plugin source projects', () => {
   })
 
   it('uses the root workspace lockfile as the only dependency lock', () => {
-    expect(rootPackage.workspaces).toEqual(['plugins/*', 'packages/*'])
+    expect(rootPackage.workspaces).toEqual([
+      'plugins/*',
+      'packages/cruciblebox-plugin-api',
+      'packages/openbox-rpc'
+    ])
 
     for (const plugin of catalog) {
       expect(existsSync(resolve(repositoryRoot, 'plugins', plugin.id, 'package-lock.json'))).toBe(
@@ -160,5 +164,36 @@ describe('production plugin source projects', () => {
     expect(packageJson.scripts?.build).toContain('esbuild.config.mjs')
     expect(existsSync(resolve(templateDirectory, 'esbuild.config.mjs'))).toBe(true)
     expect(existsSync(resolve(templateDirectory, 'src', 'renderer-entry.tsx'))).toBe(true)
+  })
+
+  it('vendors an identical renderer builder into the template and every plugin', () => {
+    const builderPath = (project: string) =>
+      resolve(repositoryRoot, project, 'scripts', 'build-plugin-renderer.mjs')
+    const copies = [...catalog.map((plugin) => `plugins/${plugin.id}`), 'templates/plugin-template']
+    const reference = readFileSync(builderPath(copies[0]), 'utf8')
+    expect(reference.length).toBeGreaterThan(0)
+    for (const project of copies.slice(1)) {
+      expect(readFileSync(builderPath(project), 'utf8')).toBe(reference)
+    }
+  })
+
+  it('keeps the six plugin build scripts free of repository-escape references', () => {
+    for (const plugin of catalog) {
+      const pluginDirectory = resolve(repositoryRoot, 'plugins', plugin.id)
+      const packageJson = JSON.parse(
+        readFileSync(resolve(pluginDirectory, 'package.json'), 'utf8')
+      ) as PackageMetadata
+      const scannedScripts = ['build', 'clean', 'typecheck', 'watch']
+      const combined = scannedScripts
+        .map((name) => packageJson.scripts?.[name])
+        .filter((script): script is string => typeof script === 'string')
+        .join('\n')
+      expect(combined).not.toContain('../../')
+
+      const configPath = resolve(pluginDirectory, 'esbuild.config.mjs')
+      if (existsSync(configPath)) {
+        expect(readFileSync(configPath, 'utf8')).not.toContain('../../')
+      }
+    }
   })
 })

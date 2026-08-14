@@ -1,36 +1,27 @@
-import { build, context } from 'esbuild'
+import esbuild from 'esbuild'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { buildPluginRenderer } from './scripts/build-plugin-renderer.mjs'
 
-const watch = process.argv.includes('--watch')
-const common = {
+const isWatch = process.argv.includes('--watch')
+const projectRoot = dirname(fileURLToPath(import.meta.url))
+
+/** @type {esbuild.BuildOptions} */
+const mainConfig = {
+  absWorkingDir: projectRoot,
+  entryPoints: [resolve(projectRoot, 'src/main.ts')],
+  outfile: resolve(projectRoot, 'dist/main.js'),
   bundle: true,
-  sourcemap: false,
+  format: 'cjs',
+  platform: 'node',
   target: 'es2022',
-  logLevel: 'info'
+  logLevel: 'info',
+  external: ['cruciblebox-plugin-api']
 }
 
-const builds = [
-  {
-    ...common,
-    entryPoints: ['src/main.ts'],
-    outfile: 'dist/main.js',
-    platform: 'node',
-    format: 'cjs',
-    external: ['cruciblebox-plugin-api']
-  },
-  {
-    ...common,
-    entryPoints: ['src/renderer-entry.tsx'],
-    outfile: 'dist/renderer.js',
-    platform: 'browser',
-    format: 'iife',
-    jsx: 'automatic',
-    define: { 'process.env.NODE_ENV': '"production"' }
-  }
-]
-
-if (watch) {
-  const contexts = await Promise.all(builds.map((options) => context(options)))
-  await Promise.all(contexts.map((buildContext) => buildContext.watch()))
+if (isWatch) {
+  const mainContext = await esbuild.context(mainConfig)
+  await Promise.all([mainContext.watch(), buildPluginRenderer({ projectRoot, watch: true })])
 } else {
-  await Promise.all(builds.map((options) => build(options)))
+  await Promise.all([esbuild.build(mainConfig), buildPluginRenderer({ projectRoot })])
 }

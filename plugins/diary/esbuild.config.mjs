@@ -1,7 +1,7 @@
 import esbuild from 'esbuild'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildPluginRenderer } from '../../scripts/build-plugin-renderer.mjs'
+import { buildPluginRenderer } from './scripts/build-plugin-renderer.mjs'
 
 const isWatch = process.argv.includes('--watch')
 const projectRoot = dirname(fileURLToPath(import.meta.url))

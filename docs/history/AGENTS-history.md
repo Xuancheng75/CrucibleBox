@@ -941,7 +941,7 @@
   销毁时恢复，即使插件 MessagePort 已关闭也不会遗留预览状态。
 - 自定义/旧主题统一补齐语义 token，拒绝未知字段与 CSS 注入；旧 camel-case CSS 变量在迁移期与新 kebab-case
   变量同时输出。
-- 新增无 Electron 能力的 `@openbox/ui` workspace，作为插件共享语义 CSS 变量与后续组件的稳定入口。
+- 新增无 Electron 能力的 `@openbox/ui` workspace，作为插件共享语义 CSS 变量与后续组件的稳定入口。（该 workspace 于 1.9.0 插件 SDK 独立化时内联进 theme-manager：`plugins/theme-manager/src/theme-vars.ts`。）
 - 验收覆盖六主题唯一性、文字对比度、旧数据迁移、RPC 与预览竞态；宿主 29 文件/183 项、GIF 42 项、
   UniEnv 131 项、供应链 9 项全绿。完整 check/build、0 漏洞、六插件确定性制品、七份 SBOM、Electron 43
   ABI 148、fuse 与临时 userData packaged smoke 通过（1,951 ms、465,512 KiB）。ThemeManager ZIP SHA-256 为

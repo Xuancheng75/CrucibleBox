@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-08-11
 - Scope: M6 theme architecture
+- Update (2026-08-14, 1.9.0): `@openbox/ui` 已内联进 theme-manager（`plugins/theme-manager/src/theme-vars.ts`），不再是独立 workspace 包。
 
 ## Context
 
@@ -32,7 +33,8 @@ persistent with no rollback affordance.
   user settings.
 - Partial old custom themes are completed from mode-specific defaults; invalid stored themes fall back to the default.
 - Existing plugins using `--ob-colorBgContainer` and related camel-case variables continue to render. New code uses
-  `--ob-color-bg-container` through `@openbox/ui`.
+  `--ob-color-bg-container` through the primitives inlined from `@openbox/ui` into theme-manager
+  (`plugins/theme-manager/src/theme-vars.ts`, 1.9.0).
 - `theme.get` and `theme.set` are unchanged. `theme.list` is additive to renderer API v2.
 
 ## Verification

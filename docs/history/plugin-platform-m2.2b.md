@@ -44,7 +44,7 @@ window.__OPENBOX_PLUGIN_RUNTIME__.mount((container, initialProps, subscribeProps
 })
 ```
 
-renderer 必须以 browser IIFE 自包含 React/ReactDOM。根脚本 `scripts/build-plugin-renderer.mjs` 统一构建，`scripts/verify-plugin-renderers.mjs` 在正式 build 中拒绝残留 `require`、`import`、动态执行或缺失 mount 标记的产物。
+renderer 必须以 browser IIFE 自包含 React/ReactDOM。根脚本 `scripts/build-plugin-renderer.mjs` 统一构建，`scripts/verify-plugin-renderers.mjs` 在正式 build 中拒绝残留 `require`、`import`、动态执行或缺失 mount 标记的产物。（1.9.0 插件 SDK 独立化后，`build-plugin-renderer.mjs` 已 vendor 为各插件 `plugins/<id>/scripts/` 下的副本，不再由根目录共享。）
 
 ## 六插件迁移
 
