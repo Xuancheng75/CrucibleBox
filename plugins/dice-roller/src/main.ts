@@ -1,4 +1,4 @@
-import type { PluginMain } from 'openbox-plugin-api'
+import type { PluginMain } from 'cruciblebox-plugin-api'
 
 const plugin: PluginMain = {
   activate(ctx) {

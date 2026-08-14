@@ -1,4 +1,4 @@
-import type { PluginRenderProps } from 'openbox-plugin-api'
+import type { PluginRenderProps } from 'cruciblebox-plugin-api'
 
 export default function MyPlugin({ config, api }: PluginRenderProps) {
   return (

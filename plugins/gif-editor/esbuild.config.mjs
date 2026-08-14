@@ -46,7 +46,7 @@ const mainConfig = {
   format: 'cjs',
   platform: 'node',
   target: 'node18',
-  external: ['openbox-plugin-api']
+  external: ['cruciblebox-plugin-api']
 }
 
 if (isWatch) {

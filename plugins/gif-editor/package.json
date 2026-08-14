@@ -1,5 +1,5 @@
 {
-  "name": "openbox-plugin-gif-editor",
+  "name": "cruciblebox-plugin-gif-editor",
   "version": "0.3.8",
   "private": true,
   "description": "GIF frame editor plugin for OpenBox",

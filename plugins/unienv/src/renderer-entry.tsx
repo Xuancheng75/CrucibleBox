@@ -1,6 +1,6 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import type { PluginRenderProps } from 'openbox-plugin-api'
+import type { PluginRenderProps } from 'cruciblebox-plugin-api'
 import UniEnvUI from './renderer'
 
 declare global {

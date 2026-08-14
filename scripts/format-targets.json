@@ -25,7 +25,7 @@
   "plugins/*/tsconfig.json",
   "plugins/*/esbuild.config.mjs",
   "plugins/*/src/{main,renderer-entry.tsx}",
-  "packages/openbox-plugin-api/src/**/*.ts",
+  "packages/cruciblebox-plugin-api/src/**/*.ts",
   "plugins/theme-manager/src/renderer.tsx",
   "plugins/theme-manager/tests/**/*.ts",
   "plugins/theme-manager/vitest.config.ts",

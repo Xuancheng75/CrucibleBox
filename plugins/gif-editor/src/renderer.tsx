@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PluginRenderProps } from 'openbox-plugin-api'
+import type { PluginRenderProps } from 'cruciblebox-plugin-api'
 import {
   decodeGifFile,
   encodeGif,

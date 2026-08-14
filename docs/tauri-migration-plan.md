@@ -96,7 +96,7 @@
 ### 1.9.0 — 插件 SDK 独立化
 
 - 插件契约精简：Manifest v2 保持，消除对宿主构建链的隐式依赖（插件 package.json 不再引用 `../../scripts/*`）→ 插件成为自包含工程（独立 build/test/发布），宿主只消费 dist。
-- openbox-plugin-api 唯一化：插件纯类型依赖、零宿主运行时引用（仅 invoke 面）。
+- cruciblebox-plugin-api 唯一化：插件纯类型依赖、零宿主运行时引用（仅 invoke 面）。
 - 插件后端标准化：通用 sidecar 协议模板化（新插件后端零样板）；@openbox/ui 收敛。
 - 插件目录/签名工具：独立 create-plugin CLI 完善（脚手架 + 签名 + 版本管理）。
 

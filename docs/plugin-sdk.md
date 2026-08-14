@@ -4,7 +4,7 @@
 > 契约版本：Manifest v2（`manifestVersion: 2`）、backend API v2（`backendApiVersion: 2`）、renderer API v2（`rendererApiVersion: 2`）。
 >
 > **SDK v2 已冻结（1.7.0 起）**：本契约不再原位修改。任何 API 变更必须作为 **v3 提案**处理——
-> 在 `packages/openbox-plugin-api` 发布新的 major 版本（`3.0.0`），升级模板与全部插件声明，
+> 在 `packages/cruciblebox-plugin-api` 发布新的 major 版本（`3.0.0`），升级模板与全部插件声明，
 > 并同步本文档的契约版本。CI 通过 6 插件对冻结类型的构建兼容矩阵（`typecheck:plugins`）强制约束。
 
 ## 1. Manifest 契约
@@ -70,7 +70,7 @@
 
 ## 6. 类型与构建
 
-- API 类型唯一事实源：`packages/openbox-plugin-api`（1.5.25 落地；此前各插件本地 `openbox-api.d.ts`）。
+- API 类型唯一事实源：`packages/cruciblebox-plugin-api`（1.5.25 落地；此前各插件本地 `openbox-api.d.ts`）。
 - 模板提供双 API v2 构建：backend 用 esbuild 独立 main CJS，renderer 用 esbuild browser IIFE。
-- renderer 外部化 `react` + `openbox-plugin-api`；产物进 `dist/`（`dist/main.js` + `dist/renderer.js`）。
+- renderer 外部化 `react` + `cruciblebox-plugin-api`；产物进 `dist/`（`dist/main.js` + `dist/renderer.js`）。
 - 六个生产插件（Diary/DiceRoller/GIF Editor/ThemeManager/Turntable/UniEnv）均声明双 v2。

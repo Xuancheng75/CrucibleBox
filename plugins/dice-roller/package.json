@@ -1,5 +1,5 @@
 {
-  "name": "openbox-plugin-diceroller",
+  "name": "cruciblebox-plugin-diceroller",
   "version": "0.1.6",
   "private": true,
   "description": "Dice and random number plugin for OpenBox",

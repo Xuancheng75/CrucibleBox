@@ -1,5 +1,5 @@
 {
-  "name": "openbox-plugin-api",
+  "name": "cruciblebox-plugin-api",
   "version": "2.0.0",
   "private": true,
   "sideEffects": false,
