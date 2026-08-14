@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import type { PluginRenderProps } from 'openbox-plugin-api'
+import type { PluginRenderProps } from 'cruciblebox-plugin-api'
 import CalendarPage from './components/CalendarPage'
 import DiaryPage from './components/DiaryPage'
 import { setApi } from './utils/db'

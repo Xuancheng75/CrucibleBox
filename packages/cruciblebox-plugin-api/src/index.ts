@@ -4,7 +4,7 @@ import type { ComponentType } from 'react'
  * 插件 API 类型唯一事实源（Plugin SDK v2）。
  *
  * 此文件由各插件本地复制的 openbox-api.d.ts 收敛而来：
- * - 6 插件 + 模板的 `declare module 'openbox-plugin-api' { ... }` 环境声明合并为真实模块；
+ * - 6 插件 + 模板的 `declare module 'cruciblebox-plugin-api' { ... }` 环境声明合并为真实模块；
  * - unienv 特有的 `PluginHostAPI.invokeTrustedService`（trusted:unienv 权限）并入通用接口；
  * - 宿主侧类型契约见 `shared/types/plugin.types.ts`（本包为插件视角的权威声明）。
  *

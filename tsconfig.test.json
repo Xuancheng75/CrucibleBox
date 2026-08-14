@@ -10,7 +10,7 @@
   },
   "include": [
     "tests/**/*.ts",
-    "packages/openbox-plugin-api/src/index.ts",
+    "packages/cruciblebox-plugin-api/src/index.ts",
     "packages/openbox-rpc/src/**/*.ts",
     "vitest.config.ts"
   ]

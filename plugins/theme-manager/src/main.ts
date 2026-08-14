@@ -1,4 +1,4 @@
-import type { PluginContext, PluginMain } from 'openbox-plugin-api'
+import type { PluginContext, PluginMain } from 'cruciblebox-plugin-api'
 
 let disposeThemeListener: (() => void) | null = null
 

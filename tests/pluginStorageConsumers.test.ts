@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { PluginContext } from 'openbox-plugin-api'
+import type { PluginContext } from 'cruciblebox-plugin-api'
 import diaryPlugin from '../plugins/diary/src/main'
 import turntablePlugin from '../plugins/turntable/src/main'
 import type { PluginStorageEntry } from '../shared/types/plugin.types'

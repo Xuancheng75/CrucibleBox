@@ -1,4 +1,4 @@
-import type { PluginContext, PluginMain } from 'openbox-plugin-api'
+import type { PluginContext, PluginMain } from 'cruciblebox-plugin-api'
 import { secureRandomUnit, selectWeightedItem } from './turntable-domain'
 import type {
   AddItemPayload,

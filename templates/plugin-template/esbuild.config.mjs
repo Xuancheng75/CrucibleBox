@@ -15,7 +15,7 @@ const builds = [
     outfile: 'dist/main.js',
     platform: 'node',
     format: 'cjs',
-    external: ['openbox-plugin-api']
+    external: ['cruciblebox-plugin-api']
   },
   {
     ...common,

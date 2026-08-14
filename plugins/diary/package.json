@@ -1,5 +1,5 @@
 {
-  "name": "openbox-plugin-diary",
+  "name": "cruciblebox-plugin-diary",
   "version": "0.4.11",
   "private": true,
   "description": "Diary plugin for OpenBox",

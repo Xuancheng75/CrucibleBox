@@ -45,7 +45,7 @@
 E:\CrucibleBox_Sourses            ← 唯一 canonical monorepo（npm workspaces）
 ├── packages/
 │   ├── openbox-rpc/              ← RPC 共享内核（Envelope/RequestTracker/Timeout/PayloadBudget/ErrorCodec/SessionRegistry）
-│   └── openbox-plugin-api/       ← 插件 API 类型唯一事实源（替代 6 份 openbox-api.d.ts）
+│   └── cruciblebox-plugin-api/       ← 插件 API 类型唯一事实源（替代 6 份 openbox-api.d.ts）
 ├── shared/                       ← 双 RPC 能力注册表 + ipc.types + themes + trusted policy
 ├── plugin-system/
 │   ├── PluginManager.ts          ← 瘦身为纯运行时编排（per-plugin runtime record）
@@ -65,14 +65,14 @@ E:\CrucibleBox_Sourses            ← 唯一 canonical monorepo（npm workspaces
 
 保留为当前规范（6 份）：
 
-| 规范文件                   | 来源 / 说明                                                            |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `docs/architecture.md`     | 已有，更新基线                                                         |
-| `docs/security-model.md`   | 从 trusted-release.md + AGENTS 安全模型抽取（新建）                    |
-| `docs/plugin-sdk.md`       | 从 plugin-sdk-migration.md + 模板 + openbox-plugin-api 提炼（新建）    |
-| `docs/install-recovery.md` | 从安装事务族 + ADR 提炼，含显式状态机定义（新建）                      |
-| `docs/release-runbook.md`  | 从 trusted-release.md + delivery-package.md + release.yml 提炼（新建） |
-| `docs/development.md`      | 已有，更新                                                             |
+| 规范文件                   | 来源 / 说明                                                             |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `docs/architecture.md`     | 已有，更新基线                                                          |
+| `docs/security-model.md`   | 从 trusted-release.md + AGENTS 安全模型抽取（新建）                     |
+| `docs/plugin-sdk.md`       | 从 plugin-sdk-migration.md + 模板 + cruciblebox-plugin-api 提炼（新建） |
+| `docs/install-recovery.md` | 从安装事务族 + ADR 提炼，含显式状态机定义（新建）                       |
+| `docs/release-runbook.md`  | 从 trusted-release.md + delivery-package.md + release.yml 提炼（新建）  |
+| `docs/development.md`      | 已有，更新                                                              |
 
 归档至 `docs/history/`：`plugin-platform-m2.1~m2.13`（13 份）、`theme-release-1.5.0.md`、`gif-editor-m1.1.md`、`unienv-m1.2.md`、历史 AGENTS.md 全文。
 AGENTS.md 压缩为"当前状态"单页（保留文件地图 + 安全模型 + 验证命令）。
@@ -101,7 +101,7 @@ AGENTS.md 压缩为"当前状态"单页（保留文件地图 + 安全模型 + �
 
 ### 1.5.25 — 实现层合并（类型 + 状态）
 
-- 共享插件 API 类型：新增 `packages/openbox-plugin-api/`，模板 + 6 插件改引用，删除复制 d.ts
+- 共享插件 API 类型：新增 `packages/cruciblebox-plugin-api/`，模板 + 6 插件改引用，删除复制 d.ts
 - digest 生成脚本化：`scripts/update-trusted-policy.mjs`（unienv 重建后自动重钉）
 - PluginManager 状态记录：`plugin-system/runtime/PluginRuntimeRecord.ts`，9 张 Map 合并，capability 分发表
 - 安装事务收敛为显式状态机：`prepared → awaiting-confirmation → staged → stopping-old → applied → committed / recovery-required`；`PluginInstallPreparation/InstallationService/DirectoryTransaction/TransactionRecovery` 职责对齐
@@ -110,7 +110,7 @@ AGENTS.md 压缩为"当前状态"单页（保留文件地图 + 安全模型 + �
 
 ### 1.6.X — 运行时简化线（逐 minor 拆分）
 
-> 1.5.25 已含：openbox-plugin-api、digest 脚本、PluginManager runtime record、安装事务状态机。1.6.X 不重复。
+> 1.5.25 已含：cruciblebox-plugin-api、digest 脚本、PluginManager runtime record、安装事务状态机。1.6.X 不重复。
 
 | 版本      | 主题                               | 内容（文件级）                                                                                                                                                                                                                                                                                                                        | 出口验证                                                                                                 |
 | --------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -126,7 +126,7 @@ AGENTS.md 压缩为"当前状态"单页（保留文件地图 + 安全模型 + �
 | 版本       | 主题                             | 内容（文件级）                                                                                                                                                                                                                                                                                                                                                                  | 出口验证                                             |
 | ---------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | **1.7.0**  | 删除层（production removal）     | ① 删除旧 backend/renderer **fallback**（`OPENBOX_PLUGIN_PROCESS=0` 进程内回退、旧 raw SQL 新装路径）——只删回退，不删 utility process 主路径与沙箱；② 删除生产 sql.js（SqlJsEngine、WASM 加载路径；**`shared/types/sql.js.d.ts` 保留作测试类型声明**——sql.js 无自带 types，测试仍 import 它，删除会破坏 typecheck:test）；③ 删除 `E:\CrucibleBox_Plugins` 镜像（确认已冻结备份） | grep 无引用证明 + 全门禁 + installer smoke + VM 冒烟 |
-| **1.7.1**  | SDK v2 冻结 + theme-manager 测试 | `docs/plugin-sdk.md` 正式声明 SDK v2 冻结（此后 API 变更走 v3 提案，经 `packages/openbox-plugin-api` 版本化）；新增 CI 门禁（6 插件对冻结 d.ts 构建兼容矩阵）；`plugins/theme-manager/tests/`（manifest 契约 + 渲染入口最小测试）；theme-manager 补 vitest 依赖                                                                                                                 | 全门禁 + 插件 190 项（现 189+1）                     |
+| **1.7.1**  | SDK v2 冻结 + theme-manager 测试 | `docs/plugin-sdk.md` 正式声明 SDK v2 冻结（此后 API 变更走 v3 提案，经 `packages/cruciblebox-plugin-api` 版本化）；新增 CI 门禁（6 插件对冻结 d.ts 构建兼容矩阵）；`plugins/theme-manager/tests/`（manifest 契约 + 渲染入口最小测试）；theme-manager 补 vitest 依赖                                                                                                             | 全门禁 + 插件 190 项（现 189+1）                     |
 | **1.7.2**  | 代码库可维护性                   | 拆分 `src/styles/global.css`(1001 行) 按主题/基础/特效分文件；拆分超大测试文件（`pluginInstallTransaction.test.ts` 873 行等）；确认 PluginManager <600 行、renderer-rpc 缩容达标；docs/ 终稿（AGENTS 单页、6 份活文档、history 归档核对）                                                                                                                                       | 全门禁 + format/lint 全绿                            |
 | **1.7.3+** | 维护线（按需，不空发）           | bugfix、`npm audit` 依赖更新、安全补丁（含 Electron 小版本升级，走独立版本，不与其他重构混发）；无内容则跳过                                                                                                                                                                                                                                                                    | 全门禁 + 相关 smoke                                  |
 
@@ -145,7 +145,7 @@ AGENTS.md 压缩为"当前状态"单页（保留文件地图 + 安全模型 + �
 ## 6. 依赖锁与调整说明（相对原始建议的修正）
 
 1. **文档目标清单**：security-model/plugin-sdk/install-recovery/release-runbook 四文件当前不存在，需按 §3 映射新建后再归档旧文档。
-2. **共享 API 类型依赖锁**：抽包会触发 6 插件 dist 重建 → unienv digest 变化 → 必须先有 digest 脚本（update-trusted-policy.mjs）。故 openbox-plugin-api 与 digest 脚本化同批（1.5.25），不放入 1.5.24。
+2. **共享 API 类型依赖锁**：抽包会触发 6 插件 dist 重建 → unienv digest 变化 → 必须先有 digest 脚本（update-trusted-policy.mjs）。故 cruciblebox-plugin-api 与 digest 脚本化同批（1.5.25），不放入 1.5.24。
 3. **PluginManager 状态拆分**：回归风险最高（生命周期核心），移入 1.5.25 与 RPC 基础层同批，由现有 702 行 lifecycle 测试 + 254 项宿主测试兜底。
 4. **release-manifest 存储策略**：构建时生成、不入库（避免手工漂移），发布时作为 release 附件上传；本地与 CI 各自生成后 canonical 对比校验。
 

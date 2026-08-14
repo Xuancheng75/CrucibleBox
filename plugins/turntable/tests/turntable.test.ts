@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PluginContext, PluginStorageEntry, PluginStorageMutation } from 'openbox-plugin-api'
+import type { PluginContext, PluginStorageEntry, PluginStorageMutation } from 'cruciblebox-plugin-api'
 import turntablePlugin from '../src/main'
 import {
   normalizeAngle,

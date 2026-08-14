@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { PluginRenderProps } from 'openbox-plugin-api'
+import type { PluginRenderProps } from 'cruciblebox-plugin-api'
 import type { TurntableItem, SpinResult } from './types'
 import { secureRandomUnit, targetRotationForWinner } from './turntable-domain'
 

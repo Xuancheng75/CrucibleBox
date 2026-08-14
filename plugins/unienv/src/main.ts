@@ -1,4 +1,4 @@
-import type { PluginContext } from 'openbox-plugin-api'
+import type { PluginContext } from 'cruciblebox-plugin-api'
 
 let context: PluginContext | null = null
 

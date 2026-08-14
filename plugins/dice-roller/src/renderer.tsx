@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
-import type { PluginRenderProps } from 'openbox-plugin-api'
+import type { PluginRenderProps } from 'cruciblebox-plugin-api'
 import { rollDice } from './random.js'
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
