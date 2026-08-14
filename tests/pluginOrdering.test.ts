@@ -3,12 +3,12 @@
 /// <reference path="../shared/types/sql.js.d.ts" />
 
 import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EngineDb } from '../database/index'
-import { closeDatabase, getDatabase, initDatabase, runMigrations } from '../database/index'
+import { closeDatabase, getDatabase, runMigrations, setDatabaseForTesting } from '../database/index'
 import { PluginRepository } from '../database/repositories/plugin.repository'
 
 vi.mock('electron', () => ({
@@ -82,6 +82,19 @@ function createPlugin(id: string, name: string, enabled = 0): void {
   })
 }
 
+/**
+ * 1.7.0 起生产仅 better-sqlite3（node 测试环境无法加载 Electron ABI 原生模块），
+ * 迁移/排序测试改用 sql.js 内存引擎注入全局数据库。
+ */
+async function initMemoryDb(dbPath: string): Promise<MemoryEngine> {
+  const SQL = await initSqlJs()
+  const database = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database()
+  const engine = new MemoryEngine(database)
+  runMigrations(engine)
+  setDatabaseForTesting(engine)
+  return engine
+}
+
 function orderedRows(): { id: string; sort_order: number }[] {
   return getDatabase().all<{ id: string; sort_order: number }>(
     'SELECT id, sort_order FROM plugins ORDER BY sort_order ASC, installed_at DESC'
@@ -144,7 +157,7 @@ describe('plugin ordering', () => {
     writeFileSync(dbPath, Buffer.from(legacy.export()))
     legacy.close()
 
-    await initDatabase(dbPath, 'sqljs')
+    await initMemoryDb(dbPath)
 
     expect(getDatabase().version).toBe(3)
     // installed_at DESC, then id ASC → p-b, p-d, p-c, p-a
@@ -160,7 +173,7 @@ describe('plugin ordering', () => {
   })
 
   it('reorders plugins transactionally and returns the list in the new order', async () => {
-    await initDatabase(dbPath, 'sqljs')
+    await initMemoryDb(dbPath)
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
     createPlugin('p-c', 'plugin-c')
@@ -185,7 +198,7 @@ describe('plugin ordering', () => {
   })
 
   it('rejects incomplete, duplicate or unknown permutations without changing order', async () => {
-    await initDatabase(dbPath, 'sqljs')
+    await initMemoryDb(dbPath)
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
     createPlugin('p-c', 'plugin-c')
@@ -238,7 +251,7 @@ describe('plugin ordering', () => {
   })
 
   it('appends newly installed plugins to the end of the order', async () => {
-    await initDatabase(dbPath, 'sqljs')
+    await initMemoryDb(dbPath)
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
 
@@ -251,14 +264,16 @@ describe('plugin ordering', () => {
   })
 
   it('persists the reorder across a restart', async () => {
-    await initDatabase(dbPath, 'sqljs')
+    const first = await initMemoryDb(dbPath)
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
     createPlugin('p-c', 'plugin-c')
     PluginRepository.reorder(['p-c', 'p-a', 'p-b'])
-
+    // 模拟落盘：内存引擎导出写回 dbPath 后再"重启"
+    writeFileSync(dbPath, Buffer.from(first.exportBytes()))
     closeDatabase()
-    await initDatabase(dbPath, 'sqljs')
+
+    await initMemoryDb(dbPath)
 
     expect(PluginRepository.findAll().map((plugin) => plugin.id)).toEqual(['p-c', 'p-a', 'p-b'])
     expect(orderedRows().map((row) => row.sort_order)).toEqual([1, 2, 3])

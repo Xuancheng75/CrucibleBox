@@ -27,7 +27,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { closeDatabase, getDatabase, initDatabase, runMigrations } from '../database/index'
+import { runMigrations } from '../database/index'
 
 class MemoryEngine implements EngineDb {
   constructor(private readonly database: SqlJsDatabase) {}
@@ -235,7 +235,7 @@ describe('plugin storage', () => {
     expect(engine.version).toBe(0)
   })
 
-  it('closes the global database and preserves legacy bytes when initialization migration fails', async () => {
+  it('preserves legacy bytes when initialization migration fails', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'openbox-db-failure-'))
     const path = join(directory, 'openbox.db')
     const SQL = await initSqlJs()
@@ -249,25 +249,25 @@ describe('plugin storage', () => {
     writeFileSync(path, Buffer.from(legacy.export()))
     legacy.close()
 
-    try {
-      await expect(initDatabase(path, 'sqljs')).rejects.toThrow(/migration failed/)
-      expect(() => getDatabase()).toThrow(/未初始化/)
+    // 用 sql.js 内存引擎直接执行迁移，验证失败回滚且磁盘字节保留。
+    // （生产 initDatabase 仅 better-sqlite3；node 测试环境无法加载 Electron ABI 原生模块。）
+    const engine = new MemoryEngine(new SQL.Database(readFileSync(path)))
+    expect(() => runMigrations(engine)).toThrow()
+    engine.close()
 
-      const persisted = new SQL.Database(readFileSync(path))
-      const persistedEngine = new MemoryEngine(persisted)
-      expect(persistedEngine.version).toBe(1)
-      expect(
-        persistedEngine.get('SELECT * FROM diary_entries WHERE entry_date = ?', ['2026-08-10'])
-      ).toMatchObject({ title: 'title', content: 'content' })
-      expect(
-        persistedEngine.get(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_storage_migrations'"
-        )
-      ).toBeUndefined()
-      persistedEngine.close()
-    } finally {
-      closeDatabase()
-      rmSync(directory, { recursive: true, force: true })
-    }
+    const persisted = new SQL.Database(readFileSync(path))
+    const persistedEngine = new MemoryEngine(persisted)
+    expect(persistedEngine.version).toBe(1)
+    expect(
+      persistedEngine.get('SELECT * FROM diary_entries WHERE entry_date = ?', ['2026-08-10'])
+    ).toMatchObject({ title: 'title', content: 'content' })
+    expect(
+      persistedEngine.get(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'plugin_storage_migrations'"
+      )
+    ).toBeUndefined()
+    persistedEngine.close()
+
+    rmSync(directory, { recursive: true, force: true })
   })
 })
