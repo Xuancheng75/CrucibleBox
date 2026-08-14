@@ -49,6 +49,7 @@ import {
   type PluginRuntimeRecord
 } from './runtime/PluginRuntimeRecord'
 import { PluginLogService } from './runtime/PluginLogService'
+import { withRollbackErrors } from './runtime/transactionErrors'
 
 export type { PluginInstallPreview } from './PluginInstallPreparation'
 
@@ -644,15 +645,6 @@ export class PluginManager {
     }
   }
 
-  private withRollbackErrors(primary: unknown, rollbackErrors: unknown[]): Error {
-    const primaryError = primary instanceof Error ? primary : new Error(String(primary))
-    if (rollbackErrors.length === 0) return primaryError
-    return new AggregateError(
-      [primaryError, ...rollbackErrors],
-      `${primaryError.message}; rollback encountered ${rollbackErrors.length} additional error(s)`
-    )
-  }
-
   private acquireMaintenance(id: string): () => void {
     const record = this.runtime(id)
     if (record.maintenance) {
@@ -854,7 +846,7 @@ export class PluginManager {
             rollbackErrors.push(rollbackError)
           }
         }
-        throw this.withRollbackErrors(error, rollbackErrors)
+        throw withRollbackErrors(error, rollbackErrors)
       }
     } finally {
       releaseMaintenance()

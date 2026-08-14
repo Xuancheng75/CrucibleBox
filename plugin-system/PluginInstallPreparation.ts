@@ -13,7 +13,8 @@ import {
 } from './PluginManifestPolicy'
 import { assertPluginCandidateHasNoTransactionMarker } from './PluginTransactionRecovery'
 import { trustedUniEnvPolicyFiles } from './TrustedServiceRuntime'
-import { compareVersions } from './semver'
+import { withRollbackErrors } from './runtime/transactionErrors'
+import { assertPluginUpgradeAllowed } from './runtime/installUpgradePolicy'
 
 interface PreparedPluginInstall {
   expiresAt: number
@@ -78,15 +79,6 @@ export function stagePluginCandidate(
   }
 }
 
-function withRollbackErrors(primary: unknown, rollbackErrors: unknown[]): Error {
-  const primaryError = primary instanceof Error ? primary : new Error(String(primary))
-  if (rollbackErrors.length === 0) return primaryError
-  return new AggregateError(
-    [primaryError, ...rollbackErrors],
-    `${primaryError.message}; rollback encountered ${rollbackErrors.length} additional error(s)`
-  )
-}
-
 export class PluginInstallPreparation {
   private readonly preparedInstalls = new Map<string, PreparedPluginInstall>()
   private readonly options: PluginInstallPreparationOptions
@@ -129,13 +121,7 @@ export class PluginInstallPreparation {
       this.options.assertPluginCanRun(manifest.name)
       const existing = this.options.findPluginByName(manifest.name)
       if (existing) {
-        const comparison = compareVersions(manifest.version, existing.version)
-        if (comparison < 0) {
-          throw new Error(`插件 "${manifest.name}" 已安装更高版本 ${existing.version}，无法降级`)
-        }
-        if (comparison === 0) {
-          throw new Error(`插件 "${manifest.name}" 已安装（版本 ${existing.version}）`)
-        }
+        assertPluginUpgradeAllowed(manifest.name, manifest.version, existing.version, '')
       }
 
       preparedTransaction = new PluginDirectoryTransaction({

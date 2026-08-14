@@ -3,7 +3,7 @@
 > 当前规范（汇总 adr-0002 / adr-0010 / adr-0017；ADR 原文保留作决策溯源）。
 > 目标：明确安装/升级/卸载的**显式状态机**、journal 恢复规则与崩溃恢复策略，作为单人维护时的单一事实源。
 
-## 1. 事务状态机（目标形态，1.5.25 收敛）
+## 1. 事务状态机（已实现，1.5.26 收敛）
 
 ```
 prepared ──► awaiting-confirmation ──► staged ──► stopping-old ──► applied ──► committed
@@ -11,6 +11,8 @@ prepared ──► awaiting-confirmation ──► staged ──► stopping-old
    └── discard      └── cancel           └── rollback ←──────────────────┘
                                          └── (崩溃) ──► recovery-required
 ```
+
+状态机定义在 `plugin-system/runtime/InstallTransactionStateMachine.ts`（`INSTALL_TRANSACTION_TRANSITIONS` 转移表 + `assertInstallTransactionStateTransition` 校验）；`PluginInstallationService` 的 install/upgrade/uninstall 编排逐节点调用该校验（非法转移即抛错，fail-closed）。
 
 | 状态                    | 含义                                                       | 进入条件         | 出口                                               |
 | ----------------------- | ---------------------------------------------------------- | ---------------- | -------------------------------------------------- |
@@ -21,6 +23,20 @@ prepared ──► awaiting-confirmation ──► staged ──► stopping-old
 | `applied`               | target→backup；stage→target 原子替换 + 写元数据 + 健康确认 | swap 完成        | commit 清理                                        |
 | `committed`             | 提交完成，清理 backup/journal                              | 健康确认通过     | 完成                                               |
 | `recovery-required`     | 崩溃遗留歧义状态                                           | 任意步骤崩溃     | 启动恢复器按 §3 处理                               |
+
+**状态真源映射**（编排状态 ↔ 持久化/内存标记，供单人维护对照）：
+
+| 状态                | journal phase | 目录 artifact     | DB 行 | 内存标记                     |
+| ------------------- | ------------- | ----------------- | ----- | ---------------------------- |
+| `prepared`          | prepared      | stage / target    | —     | —                            |
+| `awaiting-confirm`  | —             | stage             | —     | `preparedInstalls` token     |
+| `staged`            | prepared      | stage             | —     | —                            |
+| `stopping-old`      | prepared      | stage + target    | 旧行  | `stopRuntime` 进行中         |
+| `applied`           | applied       | target (+ backup) | 新行  | —                            |
+| `committed`         | committed     | —                 | 新行  | —                            |
+| `recovery-required` | 任意          | 任意              | 任意  | `recoveryBlockedPluginNames` |
+
+> 注意：持久化 journal 刻意只保留 3 个崩溃窗口相位（prepared/applied/committed）——那是启动恢复推导的正确粒度（§3）。`awaiting-confirmation` 不跨崩溃（内存 token，15 分钟 TTL）。
 
 **核心不变式**：
 

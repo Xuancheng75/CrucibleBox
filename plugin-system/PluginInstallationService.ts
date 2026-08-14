@@ -35,8 +35,13 @@ import {
   type PluginTransactionJournal,
   type PluginTransactionOperation
 } from './PluginTransactionRecovery'
-import { compareVersions } from './semver'
 import { trustedUniEnvPolicyFiles } from './TrustedServiceRuntime'
+import { withRollbackErrors } from './runtime/transactionErrors'
+import { assertPluginUpgradeAllowed } from './runtime/installUpgradePolicy'
+import {
+  assertInstallTransactionStateTransition,
+  type InstallTransactionState
+} from './runtime/InstallTransactionStateMachine'
 
 interface PluginRecoveryMetadata {
   id: string
@@ -153,13 +158,21 @@ export class PluginInstallationService {
         this.toRecoveryMetadata(plugin)
       )
       let metadataDeleted = false
+      let state: InstallTransactionState = 'prepared'
+      const step = (next: InstallTransactionState): void => {
+        assertInstallTransactionStateTransition(state, next)
+        state = next
+      }
       try {
+        step('stopping-old')
         this.writeTransactionJournal(transaction.targetDir, journal)
         transaction.quarantine()
+        step('applied')
         journal = this.transitionTransactionJournal(transaction.quarantineDir, journal, 'applied')
         PluginRepository.delete(id)
         metadataDeleted = true
         journal = this.transitionTransactionJournal(transaction.quarantineDir, journal, 'committed')
+        step('committed')
         try {
           transaction.commit()
         } catch (error) {
@@ -167,6 +180,7 @@ export class PluginInstallationService {
           console.error(`Plugin ${plugin.name} uninstalled but quarantine cleanup failed:`, error)
         }
       } catch (error) {
+        step('recovery-required')
         const rollbackErrors: unknown[] = []
         if (!metadataDeleted && transaction.phase !== 'committed') {
           try {
@@ -196,7 +210,7 @@ export class PluginInstallationService {
             rollbackErrors.push(rollbackError)
           }
         }
-        throw this.withRollbackErrors(error, rollbackErrors)
+        throw withRollbackErrors(error, rollbackErrors)
       }
     } finally {
       releaseMaintenance()
@@ -219,15 +233,12 @@ export class PluginInstallationService {
     if (existing) {
       const releaseMaintenance = this.runtime.acquireMaintenance(existing.id)
       try {
-        const comparison = compareVersions(manifest.version, existing.version)
-        if (comparison < 0) {
-          throw new Error(`插件 "${manifest.name}" 已安装更高版本 ${existing.version}，无法降级`)
-        }
-        if (comparison === 0) {
-          throw new Error(
-            `插件 "${manifest.name}" 已安装（版本 ${existing.version}），如需覆盖请先卸载`
-          )
-        }
+        assertPluginUpgradeAllowed(
+          manifest.name,
+          manifest.version,
+          existing.version,
+          '，如需覆盖请先卸载'
+        )
         return await this.upgradePlugin(existing, pluginRoot, manifest)
       } finally {
         releaseMaintenance()
@@ -258,9 +269,16 @@ export class PluginInstallationService {
     )
 
     let recordCreated = false
+    let state: InstallTransactionState = 'prepared'
+    const step = (next: InstallTransactionState): void => {
+      assertInstallTransactionStateTransition(state, next)
+      state = next
+    }
     try {
       this.writeTransactionJournal(transaction.stageDir, journal)
+      step('staged')
       transaction.swap()
+      step('applied')
       journal = this.transitionTransactionJournal(transaction.targetDir, journal, 'applied')
       PluginRepository.create({
         id,
@@ -282,8 +300,10 @@ export class PluginInstallationService {
       const installed = PluginRepository.findById(id)
       if (!installed) throw new Error(`Plugin metadata was not persisted: ${stagedManifest.name}`)
       this.commitDirectoryTransaction(transaction, journal)
+      step('committed')
       return installed
     } catch (error) {
+      step('recovery-required')
       const rollbackErrors: unknown[] = []
       let metadataRemoved = !recordCreated
       if (recordCreated) {
@@ -304,7 +324,7 @@ export class PluginInstallationService {
       } else if (!metadataRemoved) {
         this.recoveryBlockedPluginNames.add(stagedManifest.name)
       }
-      throw this.withRollbackErrors(error, rollbackErrors)
+      throw withRollbackErrors(error, rollbackErrors)
     }
   }
 
@@ -330,6 +350,11 @@ export class PluginInstallationService {
     const stagedManifest = stagePluginCandidate(transaction, manifest)
 
     let metadataUpdated = false
+    let state: InstallTransactionState = 'prepared'
+    const step = (next: InstallTransactionState): void => {
+      assertInstallTransactionStateTransition(state, next)
+      state = next
+    }
     try {
       const pendingDeactivation = this.runtime.getPendingDeactivation(existing.id)
       if (pendingDeactivation) await pendingDeactivation
@@ -345,8 +370,13 @@ export class PluginInstallationService {
         this.toRecoveryMetadata(previousPlugin)
       )
       this.writeTransactionJournal(transaction.stageDir, journal)
-      if (this.runtime.hasRuntime(existing.id)) await this.runtime.stopRuntime(existing.id)
+      step('staged')
+      if (this.runtime.hasRuntime(existing.id)) {
+        await this.runtime.stopRuntime(existing.id)
+        step('stopping-old')
+      }
       transaction.swap()
+      step('applied')
       journal = this.transitionTransactionJournal(transaction.targetDir, journal, 'applied')
       PluginRepository.updatePluginVersion(
         existing.id,
@@ -358,8 +388,10 @@ export class PluginInstallationService {
       const upgraded = PluginRepository.findById(existing.id)
       if (!upgraded) throw new Error(`Plugin metadata disappeared during upgrade: ${existing.name}`)
       this.commitDirectoryTransaction(transaction, journal)
+      step('committed')
       return upgraded
     } catch (error) {
+      step('recovery-required')
       const rollbackErrors: unknown[] = []
       if (this.runtime.hasRuntime(existing.id)) {
         try {
@@ -403,7 +435,7 @@ export class PluginInstallationService {
           rollbackErrors.push(rollbackError)
         }
       }
-      throw this.withRollbackErrors(error, rollbackErrors)
+      throw withRollbackErrors(error, rollbackErrors)
     }
   }
 
@@ -593,15 +625,6 @@ export class PluginInstallationService {
     } catch (error) {
       console.error(`Plugin ${journal.pluginName} journal cleanup failed:`, error)
     }
-  }
-
-  private withRollbackErrors(primary: unknown, rollbackErrors: unknown[]): Error {
-    const primaryError = primary instanceof Error ? primary : new Error(String(primary))
-    if (rollbackErrors.length === 0) return primaryError
-    return new AggregateError(
-      [primaryError, ...rollbackErrors],
-      `${primaryError.message}; rollback encountered ${rollbackErrors.length} additional error(s)`
-    )
   }
 
   private getDefaultsFromSchema(schema: Record<string, ConfigField>): PluginConfig {
