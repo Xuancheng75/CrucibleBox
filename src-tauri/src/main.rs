@@ -7,11 +7,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod backend_process;
 mod commands;
 mod data_dir;
 mod db;
+mod envelope_host;
+mod permissions;
 mod plugin_protocol;
 mod plugin_session;
+mod rand_token;
 
 use serde::Serialize;
 use std::path::PathBuf;
@@ -157,9 +161,12 @@ fn main() {
                 db_path.display()
             );
 
-            // 4) manage 状态（commands 以 State<Mutex<Db>> 访问）+ 数据目录
-            app.manage(Mutex::new(db));
+            // 4) manage 状态（commands 以 State<Arc<Mutex<Db>>> 访问）+ 数据目录 + backend 管理器
+            let db = Arc::new(Mutex::new(db));
+            let backend = Arc::new(backend_process::BackendProcessManager::new(db.clone()));
+            app.manage(db.clone());
             app.manage(data_dir);
+            app.manage(backend.clone());
 
             // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）
             let registry = Arc::new(Mutex::new(plugin_session::RendererSessionRegistry::new(
@@ -170,6 +177,10 @@ fn main() {
                 registry,
                 owner_label: "main".into(),
             }));
+
+            // 6) 退出清理：kill 全部存活 backend 进程（对等 PluginManager deactivateAll）
+            //    经 AppHandle.state 访问（run 回调在主线程、事件驱动触发）
+            let _ = app.handle();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -186,6 +197,16 @@ fn main() {
             commands::dispose_renderer_session,
             commands::plugin_send_message,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running CrucibleBox");
+        .build(tauri::generate_context!())
+        .expect("error while building CrucibleBox")
+        .run(|app_handle, event| {
+            // RunEvent::Exit：清理全部存活 backend 进程
+            if let tauri::RunEvent::Exit = event {
+                if let Some(backend) =
+                    app_handle.try_state::<Arc<backend_process::BackendProcessManager>>()
+                {
+                    backend.kill_all();
+                }
+            }
+        });
 }

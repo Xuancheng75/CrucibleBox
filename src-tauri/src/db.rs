@@ -60,14 +60,174 @@ impl Db {
     pub fn status(&self) -> rusqlite::Result<DbStatus> {
         let guard = self.conn.lock().unwrap();
         let version: i64 = pragma_i64(&guard, "user_version")?;
-        let journal: String =
-            guard.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
+        let journal: String = guard
+            .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
         let fk: i64 = pragma_i64(&guard, "foreign_keys")?;
         Ok(DbStatus {
             version,
             journal_mode: journal,
             foreign_keys: fk == 1,
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // 插件存储读写层（1.9.2-a，host 方法 storage.* 用；对等 pluginStorage.ts CRUD）
+    // -----------------------------------------------------------------------
+
+    /// storage.get：返回原始 JSON 字符串（不存在 → None）
+    pub fn storage_get(&self, plugin_id: &str, key: &str) -> rusqlite::Result<Option<String>> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .query_row(
+                "SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+                rusqlite::params![plugin_id, key],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// storage.set：upsert
+    pub fn storage_set(&self, plugin_id: &str, key: &str, value: &str) -> rusqlite::Result<()> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute(
+                "INSERT INTO plugin_storage (plugin_id, key, value, updated_at)
+                 VALUES (?1, ?2, ?3, datetime('now', 'localtime'))
+                 ON CONFLICT(plugin_id, key) DO UPDATE SET
+                   value = excluded.value, updated_at = excluded.updated_at",
+                rusqlite::params![plugin_id, key, value],
+            )
+            .map(|_| ())
+    }
+
+    /// storage.delete
+    pub fn storage_delete(&self, plugin_id: &str, key: &str) -> rusqlite::Result<()> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute(
+                "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+                rusqlite::params![plugin_id, key],
+            )
+            .map(|_| ())
+    }
+
+    /// storage.list：prefix 为空则全量
+    pub fn storage_list(
+        &self,
+        plugin_id: &str,
+        prefix: &str,
+    ) -> rusqlite::Result<Vec<(String, String)>> {
+        let guard = self.conn.lock().unwrap();
+        let rows: Vec<(String, String)> = if prefix.is_empty() {
+            let mut stmt =
+                guard.prepare("SELECT key, value FROM plugin_storage WHERE plugin_id = ?1 ORDER BY key")?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([plugin_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            collected
+        } else {
+            let mut stmt = guard.prepare(
+                "SELECT key, value FROM plugin_storage
+                 WHERE plugin_id = ?1 AND substr(key, 1, ?2) = ?3 ORDER BY key",
+            )?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map(
+                    rusqlite::params![plugin_id, prefix.len() as i64, prefix],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            collected
+        };
+        Ok(rows)
+    }
+
+    /// storage.batch：事务内原子执行 1..=64 条 set/delete
+    pub fn storage_batch(
+        &self,
+        plugin_id: &str,
+        mutations: &[(bool, String, Option<String>)],
+    ) -> rusqlite::Result<()> {
+        if mutations.is_empty() || mutations.len() > 64 {
+            return Err(rusqlite::Error::InvalidParameterCount(0, 64));
+        }
+        let guard = self.conn.lock().unwrap();
+        guard.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> rusqlite::Result<()> {
+            for (is_set, key, value) in mutations {
+                if *is_set {
+                    let v = value.as_deref().unwrap_or("null");
+                    guard
+                        .execute(
+                            "INSERT INTO plugin_storage (plugin_id, key, value, updated_at)
+                             VALUES (?1, ?2, ?3, datetime('now', 'localtime'))
+                             ON CONFLICT(plugin_id, key) DO UPDATE SET
+                               value = excluded.value, updated_at = excluded.updated_at",
+                            rusqlite::params![plugin_id, key, v],
+                        )
+                        .map(|_| ())?;
+                } else {
+                    guard
+                        .execute(
+                            "DELETE FROM plugin_storage WHERE plugin_id = ?1 AND key = ?2",
+                            rusqlite::params![plugin_id, key],
+                        )
+                        .map(|_| ())?;
+                }
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                guard.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = guard.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// log.write：插件日志入库
+    pub fn log_write(
+        &self,
+        plugin_id: &str,
+        level: &str,
+        message: &str,
+    ) -> rusqlite::Result<()> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute(
+                "INSERT INTO plugin_logs (plugin_id, level, message) VALUES (?1, ?2, ?3)",
+                rusqlite::params![plugin_id, level, message],
+            )
+            .map(|_| ())
+    }
+
+    /// 查询单个插件记录（host 方法用：permissions/enabled/installed_path/entry_main）
+    pub fn plugin_backend_record(
+        &self,
+        plugin_id: &str,
+    ) -> rusqlite::Result<Option<PluginBackendRecord>> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .query_row(
+                "SELECT enabled, permissions, installed_path, entry_main, name
+                 FROM plugins WHERE id = ?1",
+                [plugin_id],
+                |row| {
+                    Ok(PluginBackendRecord {
+                        enabled: row.get::<_, i64>(0)? == 1,
+                        permissions: row.get::<_, String>(1)?,
+                        installed_path: row.get::<_, String>(2)?,
+                        entry_main: row.get::<_, String>(3)?,
+                        name: row.get::<_, String>(4)?,
+                    })
+                },
+            )
+            .optional()
     }
 }
 
@@ -76,6 +236,16 @@ pub struct DbStatus {
     pub version: i64,
     pub journal_mode: String,
     pub foreign_keys: bool,
+}
+
+/// 插件 backend 宿主侧所需记录（spawn sidecar 用）
+pub struct PluginBackendRecord {
+    pub enabled: bool,
+    pub permissions: String,
+    pub installed_path: String,
+    pub entry_main: String,
+    #[allow(dead_code)] // 1.9.2-b 日志/诊断用
+    pub name: String,
 }
 
 fn pragma_i64(conn: &Connection, name: &str) -> rusqlite::Result<i64> {

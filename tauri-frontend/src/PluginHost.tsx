@@ -60,7 +60,7 @@ export function PluginHost() {
       initialConfig: {},
       initialTheme: null,
       sendToBackend: (message: unknown) =>
-        invoke('plugin_send_message', { id: '', message }).catch((e) =>
+        invoke('plugin_send_message', { id: active.token, message }).catch((e) =>
           console.error('sendToBackend', e)
         ),
       updateConfig: (config) => console.log('[bridge] config.update', config),
