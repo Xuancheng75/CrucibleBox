@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { PluginRenderProps, Theme } from 'cruciblebox-plugin-api'
-import { themeColorVar } from '@openbox/ui'
+import { themeColorVar } from './theme-vars'
 
 const TONE = themeColorVar
 

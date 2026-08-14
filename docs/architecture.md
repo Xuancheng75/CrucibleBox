@@ -162,7 +162,8 @@ tokens to Ant Design, and publishes both canonical `--ob-color-*` variables and 
 frames obtain registry snapshots through the authenticated `theme.list` RPC and receive live changes through the
 existing `theme.changed` event; they never import host state or Electron IPC.
 
-ThemeManager uses the renderer-safe `@openbox/ui` primitives and host-brokered preview RPC. The frame bridge captures
+ThemeManager uses the renderer-safe semantic CSS-variable primitives (inlined from `@openbox/ui` into
+`plugins/theme-manager/src/theme-vars.ts` in 1.9.0) and host-brokered preview RPC. The frame bridge captures
 the original theme, serializes preview operations, clears the rollback point on Keep, and restores it on Undo or frame
 disposal. Custom themes are normalized onto a complete mode-specific token set before persistence, so old data remains
 readable as the semantic contract grows.

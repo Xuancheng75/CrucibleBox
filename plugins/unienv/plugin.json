@@ -1,6 +1,6 @@
 {
   "name": "unienv",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "displayName": "UniEnv",
   "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java 的检测、安装、切换与卸载，面向初学者",
   "author": "UniEnv Team",

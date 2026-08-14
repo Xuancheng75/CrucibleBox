@@ -88,7 +88,7 @@
 - 打包：`tauri.conf.json`（NSIS + `webviewInstallMode` downloadBootstrapper 兜底 Win10 缺运行时）、updater 签名密钥对（minisign，公钥入库 `tauri.conf.json`，私钥在 CI secret `TAURI_SIGNING_PRIVATE_KEY`）。
 - 更新：tauri-plugin-updater（JSON 清单 + 强制签名）；`@tauri-apps/plugin-updater` 前端 check() 最小接入（下载/安装 UI 随 1.9.x 前端迁移落地）。
 - CI/发布：`.github/workflows/tauri-release.yml`（tauri-v* tag，与 Electron v* 链并存）；SBOM（cargo-cyclonedx，硬门禁）+ artifact attestation（SHA pin）。
-- **L2/L4 改名收尾**：appId `com.openbox.app` → `com.cruciblebox.app`、SBOM 名 `openbox.cdx.json` → `cruciblebox.cdx.json`、宿主 package name/author → cruciblebox、文档产品层全量替换。红线保留：运行时代码（openbox-app scheme/metrics/owner-proof/事件名/openbox.db）、src-tauri L3 数据路径、CI 签名 secret 名、插件 author 元数据、`@openbox/ui`/`openbox-rpc`（1.9.x）。
+- **L2/L4 改名收尾**：appId `com.openbox.app` → `com.cruciblebox.app`、SBOM 名 `openbox.cdx.json` → `cruciblebox.cdx.json`、宿主 package name/author → cruciblebox、文档产品层全量替换。红线保留：运行时代码（openbox-app scheme/metrics/owner-proof/事件名/openbox.db）、src-tauri L3 数据路径、CI 签名 secret 名、插件 author 元数据、`@openbox/ui`（已内联进 theme-manager，1.9.0）/`openbox-rpc`（1.9.x）。
 - **发布决策（2026-08-14）**：1.8.4 **合入但不发布**——Tauri 壳 UI 仍为骨架（仅最小插件宿主），完整宿主前端在 1.9.x。首个 Tauri 正式版移至 **1.9.2**（前端完整后发布），届时打 `tauri-v1.9.2` tag 触发发布链。
 
 > 发布前 checklist（H2）：首次发布前用 `tauri signer sign` 自签一个测试文件并用 conf 公钥验证，确认 CI secret 私钥与仓库公钥配对；`TAURI_SIGNING_PRIVATE_KEY` secret 未配置前发布链会在 updater 阶段失败。
@@ -99,7 +99,7 @@
 
 - 插件契约精简：Manifest v2 保持，消除对宿主构建链的隐式依赖（插件 package.json 不再引用 `../../scripts/*`）→ 插件成为自包含工程（独立 build/test/发布），宿主只消费 dist。
 - cruciblebox-plugin-api 唯一化：插件纯类型依赖、零宿主运行时引用（仅 invoke 面）。
-- 插件后端标准化：通用 sidecar 协议模板化（新插件后端零样板）；@openbox/ui 收敛。
+- 插件后端标准化：通用 sidecar 协议模板化（新插件后端零样板）；`@openbox/ui` 已内联进 theme-manager（1.9.0）。
 - 插件目录/签名工具：独立 create-plugin CLI 完善（脚手架 + 签名 + 版本管理）。
 
 ### 1.9.1 — 宿主复杂度收敛
@@ -121,7 +121,7 @@
 | 层次 | 内容 | 现状 | 时机 |
 |---|---|---|---|
 | L1 纯展示 | 产品名/安装器/仓库名 | 已是 CrucibleBox | 无需改 |
-| L2 内部标识 | package name、appId、协议 scheme、握手消息、CSP、环境变量（OPENBOX_SMOKE_*）、指标名（openbox.startup）、包名（openbox-plugin-*/openbox-rpc/@openbox/ui） | 全部 openbox（215 处/129 文件） | 1.8.1–1.8.4 分批 |
+| L2 内部标识 | package name、appId、协议 scheme、握手消息、CSP、环境变量（OPENBOX_SMOKE_*）、指标名（openbox.startup）、包名（openbox-plugin-*/openbox-rpc；`@openbox/ui` 已内联进 theme-manager，不再是包） | 全部 openbox（215 处/129 文件） | 1.8.1–1.8.4 分批 |
 | L3 用户数据路径 | `%APPDATA%\openbox`（openbox.db / plugins / logs） | openbox | **1.8.1 单独迁移工作包** |
 | L4 供应链/发布 | GitHub repo、release 资产、SBOM 名、attestation subject | 已是 CrucibleBox | 无需改 |
 

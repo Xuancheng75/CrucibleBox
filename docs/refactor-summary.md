@@ -74,7 +74,7 @@ React Server Components 未采用：Electron renderer 是本地静态客户端�
 13. M2.11：UniEnv 版本生命周期目录、首选版本排序和旧版本安装确认。
 14. M2.12：UniEnv 当前维护制品、内置组合升级和当前/旧版差异化安装提示。
 15. M2.13：Python 3.14.7 当前稳定制品与 Install Manager 系统集成边界。
-16. M6：单一主题注册表、隔离 renderer `theme.list`、可逆预览、旧主题迁移与 `@openbox/ui`。
+16. M6：单一主题注册表、隔离 renderer `theme.list`、可逆预览、旧主题迁移与 `@openbox/ui`（1.9.0 起内联进 theme-manager，见 `plugins/theme-manager/src/theme-vars.ts`）。
 17. M7A：Dice renderer-only 执行模式、Web Crypto 无偏随机数与边界/分布测试。
 18. M7B：GIF 可取消 Worker、资源预算、typed-array 执行边界与增量 XOR 撤销。
 19. M7C：由 M6 交付的 Theme v2 capability、宿主单一 PRESETS 注册表与 ThemeManager 预览回滚闭环。

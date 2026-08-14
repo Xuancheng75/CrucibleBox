@@ -1,4 +1,9 @@
-export type OpenBoxColorToken =
+/**
+ * @openbox/ui 内联副本（1.9.0 插件 SDK 独立化）。
+ * 与宿主 shared/themes/css-vars.ts 单源对齐：CSS 变量命名
+ * （--ob-color-*、--ob-radius、--ob-font-family）与原始语义保持逐字一致。
+ */
+export type CrucibleBoxColorToken =
   | 'bg'
   | 'bg-layout'
   | 'bg-container'
@@ -19,7 +24,7 @@ export type OpenBoxColorToken =
   | 'error-bg'
   | 'link'
 
-export function themeColorVar(token: OpenBoxColorToken, fallback: string): string {
+export function themeColorVar(token: CrucibleBoxColorToken, fallback: string): string {
   return `var(--ob-color-${token}, ${fallback})`
 }
 
