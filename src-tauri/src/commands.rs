@@ -9,13 +9,13 @@
 use crate::db::Db;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{State, WebviewWindow};
 
 /// 渲染进程可写 settings key 白名单（对等 electron/ipc/settings.ipc.ts）
 const ALLOWED_SETTINGS_KEYS: &[&str] = &["theme"];
 
-fn lock<'a>(db: &'a Mutex<Db>) -> std::sync::MutexGuard<'a, Db> {
+fn lock<'a>(db: &'a Arc<Mutex<Db>>) -> std::sync::MutexGuard<'a, Db> {
     db.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -32,7 +32,7 @@ fn is_main_window(window: &WebviewWindow) -> bool {
 #[tauri::command(async)]
 pub fn settings_get(
     window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
+    db: State<'_, Arc<Mutex<Db>>>,
     key: String,
 ) -> Result<Option<String>, String> {
     if !is_main_window(&window) {
@@ -51,7 +51,7 @@ pub fn settings_get(
 #[tauri::command(async)]
 pub fn settings_set(
     window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
+    db: State<'_, Arc<Mutex<Db>>>,
     key: String,
     value: String,
 ) -> Result<bool, String> {
@@ -77,7 +77,7 @@ pub fn settings_set(
 #[tauri::command(async)]
 pub fn settings_get_all(
     window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
+    db: State<'_, Arc<Mutex<Db>>>,
 ) -> Result<Vec<(String, String)>, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
@@ -179,7 +179,7 @@ const PLUGIN_COLUMNS: &str = "id, name, version, display_name, description, auth
 #[tauri::command(async)]
 pub fn plugin_list(
     window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
+    db: State<'_, Arc<Mutex<Db>>>,
 ) -> Result<Vec<PluginMetaDto>, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
@@ -204,7 +204,7 @@ pub fn plugin_list(
 #[tauri::command(async)]
 pub fn plugin_get(
     window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
+    db: State<'_, Arc<Mutex<Db>>>,
     id: String,
 ) -> Result<Option<PluginMetaDto>, String> {
     if !is_main_window(&window) {
@@ -229,7 +229,7 @@ pub fn plugin_get(
 #[tauri::command(async)]
 pub fn create_renderer_session(
     window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
+    db: State<'_, Arc<Mutex<Db>>>,
     protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
@@ -313,19 +313,44 @@ pub fn dispose_renderer_session(
 }
 
 /// 插件宿主 → backend 消息转发（对等 plugin:send-message）。
-/// 1.8.2 sidecar 接入宿主后路由到 backend；当前骨架阶段返回成功占位。
+/// 1.9.2-a：惰性 spawn sidecar（首次调用时），消息路由到 backend 的 onMessage。
+/// 前端 bridge 已改传 session token（非 plugin id），宿主从 renderer session registry
+/// 解析 plugin_id（防伪造 id）；无 renderer session 时回退到 id 直传（dev 便捷路径）。
 #[tauri::command(async)]
 pub fn plugin_send_message(
     window: WebviewWindow,
+    backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
+    protocol: State<'_, Arc<crate::plugin_protocol::ProtocolContext>>,
+    db: State<'_, Arc<Mutex<Db>>>,
     id: String,
     message: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
-    // TODO(1.8.4): 路由到对应插件的 sidecar backend
-    eprintln!("[bridge] plugin_send_message id={id} msg={message}");
-    Ok(serde_json::Value::Null)
+    // 解析 plugin_id：session token（前端 bridge 传 id=handshakeToken 时无法直接反查；
+    // 约定：bridge 传 session token 由前端改传 pluginId 或 token —— 当前桥改传 token，
+    // 经 registry get 校验 owner 后取 plugin_id）
+    let mut plugin_id = id.clone();
+    // 尝试把 id 当作 session token 反查 plugin_id（若为 64 hex token）
+    if id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+        let access = protocol.registry.lock().unwrap().get(&id, "main");
+        if access.ok {
+            if let Some(session) = &access.session {
+                plugin_id = session.plugin_id.clone();
+            }
+        }
+    }
+    // 惰性 spawn + 路由
+    let record = {
+        let db = lock(&db);
+        db.plugin_backend_record(&plugin_id)
+            .map_err(|e| format!("plugin lookup failed: {e}"))?
+            .ok_or_else(|| format!("plugin not found: {plugin_id}"))?
+    };
+    let proc = backend.ensure_activated(&plugin_id, record)?;
+    let result = proc.request("plugin.message", serde_json::json!({ "message": message }))?;
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +360,7 @@ pub fn plugin_send_message(
 #[tauri::command(async)]
 pub fn db_status(
     window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
+    db: State<'_, Arc<Mutex<Db>>>,
 ) -> Result<crate::db::DbStatus, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());

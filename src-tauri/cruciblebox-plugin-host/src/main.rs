@@ -115,6 +115,7 @@ fn dispatch(worker: &mut Worker, method: &str, params: &Json) -> Result<Json, Er
         "lifecycle.initialize" => initialize(worker, params),
         "lifecycle.dispose" => dispose(worker),
         "plugin.message" => plugin_message(worker, params),
+        "host.event" => host_event(worker, params),
         _ => Err(("NOT_ALLOWED".into(), Some("unknown worker method".into()))),
     }
 }
@@ -236,6 +237,29 @@ fn dispose(worker: &mut Worker) -> Result<Json, Err2> {
     }
     worker.disposed = true;
     Ok(Json::Null)
+}
+
+fn host_event(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {
+    if worker.engine.is_none() {
+        return Err(("INVALID_MESSAGE".into(), Some("not initialized".into())));
+    }
+    let event = params.get("event").and_then(Json::as_str).unwrap_or("").to_string();
+    let data = params.get("data").cloned().unwrap_or(Json::Null);
+    let engine = worker.engine.clone().expect("checked above");
+    let eng = engine.borrow();
+    eng.ctx.with(|ctx| {
+        let dispatch: Function = ctx
+            .eval("__cbCtx.api.dispatchHostEvent")
+            .map_err(js_err)?;
+        let event_json = serde_json::to_string(&event)
+            .map_err(|e| ("INTERNAL_ERROR".into(), Some(e.to_string())))?;
+        let data_json = serde_json::to_string(&data)
+            .map_err(|e| ("INTERNAL_ERROR".into(), Some(e.to_string())))?;
+        let ev: Value = ctx.json_parse(event_json.as_str()).map_err(js_err)?;
+        let payload: Value = ctx.json_parse(data_json.as_str()).map_err(js_err)?;
+        let _: Value = dispatch.call((ev, payload)).map_err(js_err)?;
+        Ok(Json::Null)
+    })
 }
 
 fn plugin_message(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {

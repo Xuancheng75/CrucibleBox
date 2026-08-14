@@ -207,9 +207,25 @@ function __buildCtx(id, config) {
   };
   api.emitEvent = function (event, data) { __ff('event.emit', { event: event, data: data }); };
   api.onEvent = function (event, handler) {
+    if (typeof handler !== 'function') { throw new Error('onEvent requires a handler function'); }
     var subId = 'sub-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    if (!globalThis.__cbSubscribers) { globalThis.__cbSubscribers = {}; }
+    if (!globalThis.__cbSubscribers[event]) { globalThis.__cbSubscribers[event] = {}; }
+    globalThis.__cbSubscribers[event][subId] = handler;
     __ff('event.subscribe', { event: event, subscriptionId: subId });
-    return function () { __ff('event.unsubscribe', { event: event, subscriptionId: subId }); };
+    return function () {
+      if (globalThis.__cbSubscribers && globalThis.__cbSubscribers[event]) {
+        delete globalThis.__cbSubscribers[event][subId];
+      }
+      __ff('event.unsubscribe', { event: event, subscriptionId: subId });
+    };
+  };
+  api.dispatchHostEvent = function (event, data) {
+    var handlers = globalThis.__cbSubscribers && globalThis.__cbSubscribers[event];
+    if (!handlers) { return; }
+    Object.keys(handlers).forEach(function (subId) {
+      try { handlers[subId](data); } catch (e) { /* handler 异常不中断其余 */ }
+    });
   };
   api.invokeTrustedService = function (service, operation, payload) {
     return __rpc('trusted.invoke', { service: service, operation: operation, payload: payload });
