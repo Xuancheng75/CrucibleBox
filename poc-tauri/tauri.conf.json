@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "poc-tauri-iframe",
+  "version": "0.1.0",
+  "identifier": "com.cruciblebox.poc",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "",
+    "frontendDist": "../poc-tauri-frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PoC: iframe + custom protocol + MessagePort RPC",
+        "width": 900,
+        "height": 700
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": []
+  }
+}

@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>PoC: Tauri 2 iframe + custom protocol + MessagePort RPC</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 24px; }
+      #log { white-space: pre-wrap; background: #f0f0f0; padding: 12px; border-radius: 6px; min-height: 200px; }
+      iframe { width: 100%; height: 240px; border: 2px solid #6366f1; border-radius: 8px; }
+      .ok { color: #16a34a; font-weight: 600; }
+      .fail { color: #dc2626; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>PoC: sandboxed iframe + custom protocol + MessagePort RPC</h1>
+    <p>宿主页在 <code>http://localhost:1430</code>（dev origin）。测试两种自定义协议 URL 形式：<br />
+      A) <code>openbox-plugin://plugin/index.html</code>（scheme 形式）<br />
+      B) <code>http://openbox-plugin.localhost/plugin/index.html</code>（Windows origin 形式）
+    </p>
+
+    <iframe
+      id="pluginFrameB"
+      sandbox="allow-scripts allow-same-origin"
+      src="http://openbox-plugin.localhost/plugin/index.html"
+    ></iframe>
+
+    <h2>状态</h2>
+    <div id="log">pending…</div>
+
+    <script>
+      const log = document.getElementById('log')
+      const append = (line, cls = '') => {
+        const div = document.createElement('div')
+        div.textContent = line
+        if (cls) div.className = cls
+        log.appendChild(div)
+      }
+      const report = (line) => {
+        try {
+          if (window.__TAURI_INTERNALS__) window.__TAURI_INTERNALS__.invoke('report_status', { message: line })
+        } catch {}
+      }
+
+      // A. scheme 形式 fetch
+      fetch('openbox-plugin://plugin/index.html')
+        .then((res) => {
+          append(`A) scheme fetch OK status=${res.status}`, 'ok')
+          report(`A-scheme-fetch-ok status=${res.status}`)
+        })
+        .catch((err) => {
+          append(`A) scheme fetch FAIL: ${err.message}`, 'fail')
+          report(`A-scheme-fetch-fail: ${err.message}`)
+        })
+
+      // B. http://<scheme>.localhost 形式 fetch
+      fetch('http://openbox-plugin.localhost/plugin/index.html')
+        .then((res) => {
+          append(`B) http.localhost fetch OK status=${res.status}`, 'ok')
+          report(`B-http-fetch-ok status=${res.status}`)
+        })
+        .catch((err) => {
+          append(`B) http.localhost fetch FAIL: ${err.message}`, 'fail')
+          report(`B-http-fetch-fail: ${err.message}`)
+        })
+
+      const frame = document.getElementById('pluginFrameB')
+      frame.addEventListener('load', () => {
+        append('iframeB (http.localhost) load fired', 'ok')
+        report('iframeB-load-fired')
+        try {
+          frame.contentWindow.postMessage({ kind: 'ping' }, '*')
+          report('iframeB-postMessage-sent')
+        } catch (err) {
+          append(`iframeB postMessage failed: ${err.message}`, 'fail')
+          report(`iframeB-postMessage-failed: ${err.message}`)
+        }
+      })
+      frame.addEventListener('error', (e) => {
+        append(`iframeB error: ${e.message}`, 'fail')
+        report(`iframeB-error: ${e.message}`)
+      })
+
+      setTimeout(() => {
+        try {
+          const doc = frame.contentDocument
+          const txt = doc ? (doc.getElementById('sub')?.textContent ?? 'n/a') : '(null)'
+          append(`t+5s iframeB.contentDocument=${doc ? 'accessible' : 'null'} sub=${txt}`)
+          report(`t5s iframeB contentDocument=${doc ? 'accessible' : 'null'} sub=${txt}`)
+        } catch (err) {
+          append(`t+5s iframeB access error: ${err.message}`, 'fail')
+          report(`t5s iframeB access-error: ${err.message}`)
+        }
+      }, 5000)
+
+      window.addEventListener('message', (e) => {
+        append(`message origin=${e.origin}: ${JSON.stringify(e.data)}`, 'ok')
+        report(`message origin=${e.origin} data=${JSON.stringify(e.data)}`)
+      })
+    </script>
+  </body>
+</html>
