@@ -39,19 +39,10 @@ pub struct BackendProcess {
     /// spawn 时注入 sidecar 的 token（响应帧必须回显；sidecar validate_host_response 要求）
     token: String,
     db: Arc<Mutex<Db>>,
-    // 以下字段为崩溃恢复策略（1.9.2-a 步骤 6）预留
-    #[allow(dead_code)]
-    sidecar_exe: PathBuf,
-    #[allow(dead_code)]
-    plugin_dir: PathBuf,
-    #[allow(dead_code)]
-    entry_main: String,
-    #[allow(dead_code)]
-    crashes: Mutex<Vec<Instant>>,
-    #[allow(dead_code)]
-    disabled: std::sync::atomic::AtomicBool,
-    #[allow(dead_code)]
-    last_backoff_index: std::sync::atomic::AtomicUsize,
+    /// dispose 显式触发时为 true（读线程 EOF 走正常退出，不触发崩溃恢复）
+    expected_stop: std::sync::atomic::AtomicBool,
+    /// 崩溃上报回调（Manager 注入；读线程 EOF 且非 expected_stop 时调用）
+    on_crash: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 impl BackendProcess {
@@ -62,6 +53,7 @@ impl BackendProcess {
         sidecar_exe: PathBuf,
         plugin_dir: PathBuf,
         entry_main: String,
+        on_crash: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Result<Arc<BackendProcess>, String> {
         // token：32 位随机 [A-Za-z0-9_-]
         let token = crate::rand_token::random_token_alnum(32)?;
@@ -109,12 +101,8 @@ impl BackendProcess {
             next_request_id: AtomicU64::new(1),
             token,
             db,
-            sidecar_exe,
-            plugin_dir,
-            entry_main,
-            crashes: Mutex::new(Vec::new()),
-            disabled: std::sync::atomic::AtomicBool::new(false),
-            last_backoff_index: std::sync::atomic::AtomicUsize::new(0),
+            expected_stop: std::sync::atomic::AtomicBool::new(false),
+            on_crash,
         });
 
         // 读线程：独占 ChildStdout
@@ -134,8 +122,13 @@ impl BackendProcess {
                     Err(_) => continue, // 坏帧忽略
                 },
                 Ok(None) | Err(_) => {
-                    // EOF：dispose 路径由显式 kill 处理，这里视为进程退出
+                    // EOF：dispose 路径已设 expected_stop（正常退出）；否则视为崩溃
                     self.finish_pending_eof();
+                    let expected = self.expected_stop.load(Ordering::SeqCst);
+                    if !expected {
+                        let plugin = self.plugin_id.clone();
+                        (self.on_crash)(&plugin);
+                    }
                     return;
                 }
             };
@@ -268,11 +261,9 @@ impl BackendProcess {
     }
 
     /// 优雅 dispose：lifecycle.dispose → 3s grace → kill
-    #[allow(dead_code)] // 1.9.2-b 插件写路径（deactivate 命令）接入
+    /// 设置 expected_stop（读线程 EOF 不再触发崩溃恢复）。
     pub fn dispose(&self) {
-        if self.disabled.load(Ordering::SeqCst) {
-            return;
-        }
+        self.expected_stop.store(true, Ordering::SeqCst);
         let _ = self.request("lifecycle.dispose", json!({}));
         // 等待退出（grace 3s）
         let mut child = self.child.lock().unwrap();
@@ -298,25 +289,6 @@ impl BackendProcess {
             let _ = child.wait();
         }
         eprintln!("[backend] {reason}: killed {}", self.plugin_id);
-    }
-
-    /// 崩溃恢复：backoff 后重启（不持久化禁用；隔离持久化由上层 PluginManager 等价负责）
-    #[allow(dead_code)] // 1.9.2-a 步骤 6（崩溃策略接入）后启用
-    pub fn should_restart_after_crash(&self) -> Option<Duration> {
-        let now = Instant::now();
-        let mut crashes = self.crashes.lock().unwrap();
-        crashes.retain(|t| now.duration_since(*t) < CRASH_WINDOW);
-        crashes.push(now);
-        if crashes.len() >= MAX_CRASHES as usize {
-            self.disabled.store(true, Ordering::SeqCst);
-            None // 5 分钟内 3 次崩溃 → 隔离
-        } else {
-            let idx = self
-                .last_backoff_index
-                .fetch_add(1, Ordering::SeqCst)
-                .min(BACKOFFS.len() - 1);
-            Some(BACKOFFS[idx])
-        }
     }
 }
 
@@ -378,12 +350,16 @@ pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> std::io::Result<
 
 pub struct BackendProcessManager {
     processes: Mutex<HashMap<String, Arc<BackendProcess>>>,
+    /// 崩溃历史（plugin_id → 最近崩溃时间戳，跨进程/跨重启计数）
+    crash_history: Mutex<HashMap<String, Vec<Instant>>>,
     db: Arc<Mutex<Db>>,
     sidecar_exe: PathBuf,
+    /// 自引用（Weak，避免循环）：崩溃回调与重启线程经它访问 Manager
+    self_weak: std::sync::OnceLock<std::sync::Weak<BackendProcessManager>>,
 }
 
 impl BackendProcessManager {
-    pub fn new(db: Arc<Mutex<Db>>) -> Self {
+    pub fn new(db: Arc<Mutex<Db>>) -> Arc<Self> {
         // sidecar exe：dev 态 target/debug/；打包态 tauri externalBin（1.9.2-e 落）
         let sidecar_exe = std::env::current_dir()
             .ok()
@@ -403,14 +379,19 @@ impl BackendProcessManager {
                 cands.into_iter().find(|p| p.exists()).unwrap_or_default()
             })
             .unwrap_or_default();
-        BackendProcessManager {
+        let mgr = Arc::new(BackendProcessManager {
             processes: Mutex::new(HashMap::new()),
+            crash_history: Mutex::new(HashMap::new()),
             db,
             sidecar_exe,
-        }
+            self_weak: std::sync::OnceLock::new(),
+        });
+        let _ = mgr.self_weak.set(Arc::downgrade(&mgr));
+        mgr
     }
 
     /// 惰性 spawn：返回已激活进程（若不存在则创建）
+    /// 注入 on_crash 回调：读线程 EOF（非 dispose）时上报，触发崩溃恢复策略。
     pub fn ensure_activated(
         &self,
         plugin_id: &str,
@@ -430,6 +411,7 @@ impl BackendProcessManager {
             self.sidecar_exe.clone(),
             PathBuf::from(&record.installed_path),
             record.entry_main,
+            self.crash_callback(),
         )?;
         // initialize
         proc.request(
@@ -441,6 +423,65 @@ impl BackendProcessManager {
             .unwrap()
             .insert(plugin_id.to_string(), proc.clone());
         Ok(proc)
+    }
+
+    /// 崩溃恢复策略：记录崩溃 → backoff 重启或隔离。
+    /// 返回 self 的崩溃回调（Arc<dyn Fn(&str)>），读线程 EOF 非 dispose 时触发。
+    fn crash_callback(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+        let weak = self
+            .self_weak
+            .get()
+            .expect("BackendProcessManager::new must set self_weak")
+            .clone();
+        Arc::new(move |pid| {
+            if let Some(mgr) = weak.upgrade() {
+                mgr.handle_crash(pid);
+            }
+        })
+    }
+
+    /// 崩溃处理：记录 → 判断隔离或 backoff 重启。
+    fn handle_crash(&self, plugin_id: &str) {
+        // 从进程表移除（读线程已死，进程对象应清理）
+        let exited = self.processes.lock().unwrap().remove(plugin_id);
+        // 记录崩溃时间
+        let now = Instant::now();
+        let mut history = self.crash_history.lock().unwrap();
+        let entries = history.entry(plugin_id.to_string()).or_default();
+        entries.retain(|t| now.duration_since(*t) < CRASH_WINDOW);
+        entries.push(now);
+        let count = entries.len();
+        drop(history);
+
+        if count >= MAX_CRASHES as usize {
+            // 5 分钟内 3 次崩溃 → 隔离（持久化 enabled=false）
+            eprintln!("[backend] {plugin_id} isolated after {count} crashes in 5m");
+            let _ = self.db.lock().unwrap().set_plugin_enabled(plugin_id, false);
+            return;
+        }
+
+        // backoff 重启（1s/5s/30s）
+        let backoff = BACKOFFS[(count - 1).min(BACKOFFS.len() - 1)];
+        eprintln!("[backend] {plugin_id} crashed (attempt {count}), restart in {backoff:?}");
+        let weak = self
+            .self_weak
+            .get()
+            .expect("BackendProcessManager::new must set self_weak")
+            .clone();
+        let db = self.db.clone();
+        let pid = plugin_id.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(backoff);
+            // 重启：重新读 DB 记录并 ensure_activated
+            if let Ok(Some(record)) = db.lock().unwrap().plugin_backend_record(&pid) {
+                if let Some(mgr) = weak.upgrade() {
+                    if let Err(e) = mgr.ensure_activated(&pid, record) {
+                        eprintln!("[backend] restart {pid} failed: {e}");
+                    }
+                }
+            }
+        });
+        let _ = exited;
     }
 
     #[allow(dead_code)] // 1.9.2-b 插件写路径（deactivate 命令）接入
@@ -459,7 +500,7 @@ impl BackendProcessManager {
             .map(|(_, p)| p)
             .collect();
         for p in procs {
-            p.kill_now("app shutdown");
+            p.dispose();
         }
     }
 
@@ -527,6 +568,7 @@ mod tests {
             exe,
             plugin_dir.clone(),
             "dist/main.js".into(),
+            Arc::new(|_pid: &str| {}), // 测试：崩溃回调 no-op
         )
         .expect("spawn sidecar");
 

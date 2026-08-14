@@ -163,7 +163,7 @@ fn main() {
 
             // 4) manage 状态（commands 以 State<Arc<Mutex<Db>>> 访问）+ 数据目录 + backend 管理器
             let db = Arc::new(Mutex::new(db));
-            let backend = Arc::new(backend_process::BackendProcessManager::new(db.clone()));
+            let backend = backend_process::BackendProcessManager::new(db.clone());
             app.manage(db.clone());
             app.manage(data_dir);
             app.manage(backend.clone());
