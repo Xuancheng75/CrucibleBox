@@ -1,0 +1,380 @@
+/* ============================================================
+   CYBERPUNK THEME — industrial HUD, holographic glass and neon
+   ============================================================ */
+
+[data-ob-theme='cyber'] body,
+[data-ob-theme='cyber'] .ob-layout {
+  background-color: #060a10 !important;
+  background-image:
+    radial-gradient(ellipse 90% 45% at 50% 115%, rgba(0, 229, 255, 0.2), transparent 62%),
+    radial-gradient(ellipse 42% 32% at 0% 0%, rgba(0, 229, 255, 0.13), transparent 60%),
+    linear-gradient(rgba(0, 229, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.045) 1px, transparent 1px),
+    repeating-linear-gradient(0deg, rgba(0, 229, 255, 0.025) 0 1px, transparent 1px 4px),
+    linear-gradient(145deg, #060a10 0%, #08111b 52%, #0a0e14 100%);
+  background-size:
+    auto,
+    auto,
+    48px 48px,
+    48px 48px,
+    100% 4px,
+    100% 100%;
+  background-attachment: fixed;
+}
+
+[data-ob-theme='cyber'] .ob-rail-shell {
+  border-right-color: rgba(0, 229, 255, 0.28) !important;
+  box-shadow:
+    8px 0 32px rgba(0, 0, 0, 0.34),
+    inset -1px 0 rgba(0, 229, 255, 0.12);
+}
+
+[data-ob-theme='cyber'] .ob-rail-shell::after {
+  content: '0F 3A\A 7C 9E\A 2B D4\A 5A 8C\A 1F E3\A 6B 9D\A 40 C2\A 7F 15';
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  width: 48px;
+  max-height: 130px;
+  overflow: hidden;
+  transform: translateX(-50%);
+  font-family: 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 9px;
+  line-height: 1.65;
+  letter-spacing: 1px;
+  color: rgba(0, 229, 255, 0.5);
+  white-space: pre;
+  animation: ob-hex-drift 12s ease-in-out infinite;
+  pointer-events: none;
+  text-align: center;
+  text-shadow: 0 0 7px rgba(0, 229, 255, 0.65);
+}
+
+[data-ob-theme='cyber'] .ob-main-content {
+  position: relative;
+  border-top: 1px solid rgba(0, 229, 255, 0.16);
+  background: linear-gradient(135deg, rgba(13, 18, 26, 0.2), rgba(6, 10, 16, 0.04));
+}
+
+.ob-hud-strip {
+  display: none;
+}
+
+.ob-main-surface {
+  min-width: 0;
+}
+
+[data-ob-theme='cyber'] .ob-hud-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 26px;
+  margin: 0 0 14px;
+  padding: 0 14px;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  background: color-mix(in srgb, var(--ob-color-bg-container) 82%, transparent);
+  box-shadow: inset 0 -1px rgba(0, 229, 255, 0.12);
+  color: var(--ob-color-text-secondary);
+  font-family: 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  clip-path: polygon(
+    0 10px,
+    10px 0,
+    calc(100% - 10px) 0,
+    100% 10px,
+    100% calc(100% - 10px),
+    calc(100% - 10px) 100%,
+    10px 100%,
+    0 calc(100% - 10px)
+  );
+}
+
+[data-ob-theme='cyber'] .ob-hud-strip:hover > span {
+  animation: ob-glitch 0.36s steps(2, jump-none) 1;
+}
+
+/* Holographic surfaces with a narrow metallic reflection. */
+[data-ob-theme='cyber'] .ob-surface-card,
+[data-ob-theme='cyber'] .ob-data-table,
+[data-ob-theme='cyber'] .ob-launcher,
+[data-ob-theme='cyber'] .ob-palette {
+  border-color: rgba(0, 229, 255, 0.2) !important;
+  background:
+    linear-gradient(
+      115deg,
+      rgba(255, 255, 255, 0.035),
+      transparent 28%,
+      transparent 72%,
+      rgba(0, 229, 255, 0.025)
+    ),
+    color-mix(in srgb, var(--ob-color-bg-container) 88%, transparent) !important;
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    inset 0 0 24px rgba(0, 229, 255, 0.018),
+    0 14px 34px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px) saturate(118%);
+  -webkit-backdrop-filter: blur(12px) saturate(118%);
+}
+
+[data-ob-theme='cyber'] .ob-modal-surface {
+  border-color: rgba(0, 229, 255, 0.2) !important;
+  background: var(--ob-color-bg-container) !important;
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.035),
+    0 14px 34px rgba(0, 0, 0, 0.28);
+}
+
+/* Angled geometry is reserved for large controls and surfaces. */
+[data-ob-theme='cyber'] .ob-surface-card,
+[data-ob-theme='cyber'] .ob-button[data-ob-kind='primary'],
+[data-ob-theme='cyber'] .ob-button[data-ob-kind='danger'],
+[data-ob-theme='cyber'] .ob-modal-surface,
+[data-ob-theme='cyber'] .ob-data-table,
+[data-ob-theme='cyber'] .ob-alert,
+[data-ob-theme='cyber'] .ob-launcher,
+[data-ob-theme='cyber'] .ob-palette,
+[data-ob-theme='cyber'] .ob-search-btn,
+[data-ob-theme='cyber'] .ob-input,
+[data-ob-theme='cyber'] .ob-select-content,
+[data-ob-theme='cyber'] .ob-plugin-glyph {
+  clip-path: polygon(
+    0 10px,
+    10px 0,
+    calc(100% - 10px) 0,
+    100% 10px,
+    100% calc(100% - 10px),
+    calc(100% - 10px) 100%,
+    10px 100%,
+    0 calc(100% - 10px)
+  );
+}
+
+[data-ob-theme='cyber'] .ob-button,
+[data-ob-theme='cyber'] .ob-tag,
+[data-ob-theme='cyber'] .ob-input,
+[data-ob-theme='cyber'] .ob-select-content {
+  border-radius: 2px !important;
+}
+
+[data-ob-theme='cyber'] .ob-button[data-ob-kind='primary'] {
+  border-color: rgba(0, 229, 255, 0.8);
+  box-shadow:
+    0 0 16px rgba(0, 229, 255, 0.4),
+    inset 0 0 8px rgba(0, 229, 255, 0.18);
+  text-shadow: 0 0 8px rgba(0, 229, 255, 0.85);
+  filter: drop-shadow(0 0 9px rgba(0, 229, 255, 0.25));
+}
+
+[data-ob-theme='cyber'] .ob-button[data-ob-kind='danger'] {
+  border-color: rgba(255, 0, 60, 0.72);
+  box-shadow: 0 0 14px rgba(255, 0, 60, 0.32);
+  text-shadow: 0 0 8px rgba(255, 0, 60, 0.72);
+}
+
+[data-ob-theme='cyber'] .ob-tone-warning,
+[data-ob-theme='cyber'] .ob-alert-warning {
+  box-shadow: 0 0 10px rgba(252, 226, 5, 0.24);
+  color: var(--ob-color-warning);
+}
+
+[data-ob-theme='cyber'] .ob-tone-error,
+[data-ob-theme='cyber'] .ob-alert-error {
+  box-shadow: 0 0 10px rgba(255, 0, 60, 0.22);
+}
+
+[data-ob-theme='cyber'] .ob-tone-success,
+[data-ob-theme='cyber'] .ob-alert-success {
+  box-shadow: 0 0 10px rgba(0, 255, 157, 0.2);
+}
+
+[data-ob-theme='cyber'] .ob-rail-btn {
+  box-shadow: inset 0 0 10px rgba(0, 229, 255, 0.035);
+}
+
+[data-ob-theme='cyber'] .ob-rail-btn[data-active='true'] {
+  border: 1px solid rgba(0, 229, 255, 0.65) !important;
+  box-shadow:
+    0 0 16px rgba(0, 229, 255, 0.42),
+    inset 0 0 12px rgba(255, 255, 255, 0.08);
+}
+
+[data-ob-theme='cyber'] .ob-rail-btn:hover {
+  box-shadow: 0 0 16px rgba(0, 229, 255, 0.42);
+}
+
+[data-ob-theme='cyber'] .ob-brand-wordmark,
+[data-ob-theme='cyber'] .ob-monogram {
+  font-family: 'Bahnschrift', 'Rajdhani', 'Teko', sans-serif;
+  font-stretch: condensed;
+  letter-spacing: 1.8px !important;
+  text-transform: uppercase;
+  text-shadow: 0 0 11px rgba(0, 229, 255, 0.82);
+}
+
+[data-ob-theme='cyber'] .ob-monogram img {
+  filter: drop-shadow(0 0 9px rgba(0, 229, 255, 0.65));
+}
+
+[data-ob-theme='cyber'] .ob-page-subtitle,
+[data-ob-theme='cyber'] .ob-theme-status,
+[data-ob-theme='cyber'] kbd,
+[data-ob-theme='cyber'] .ob-table-cell,
+[data-ob-theme='cyber'] .ob-statistic-content {
+  font-family: 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+  letter-spacing: 0.35px;
+}
+
+[data-ob-theme='cyber'] .ob-theme-status > span:first-child {
+  animation: ob-neon-pulse 2.8s ease-in-out infinite;
+}
+
+[data-ob-theme='cyber'] :focus-visible {
+  outline: 2px solid var(--ob-color-primary) !important;
+  outline-offset: 3px;
+  box-shadow:
+    0 0 0 1px #060a10,
+    0 0 14px rgba(0, 229, 255, 0.55) !important;
+}
+
+/* Glitch is brief and only user-triggered. */
+[data-ob-theme='cyber'] .ob-brand-wordmark:hover,
+[data-ob-theme='cyber'] .ob-search-btn:hover {
+  animation: ob-glitch 0.36s steps(2, jump-none) 1;
+}
+
+[data-ob-theme='cyber'] .ob-monogram:hover img {
+  filter: drop-shadow(0 0 14px rgba(0, 229, 255, 0.95));
+}
+
+[data-ob-theme='cyber'] .ob-launcher {
+  position: relative;
+}
+
+[data-ob-theme='cyber'] .ob-launcher::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -65%;
+  width: 42%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.065), transparent);
+  transform: skewX(-18deg);
+  transition: left 0.55s ease;
+}
+
+[data-ob-theme='cyber'] .ob-launcher::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.92), transparent);
+  opacity: 0;
+  transform: translateX(-100%);
+}
+
+[data-ob-theme='cyber'] .ob-launcher:hover {
+  border-color: rgba(0, 229, 255, 0.62) !important;
+  filter: drop-shadow(0 5px 14px rgba(0, 229, 255, 0.22));
+}
+
+[data-ob-theme='cyber'] .ob-launcher:hover::before {
+  left: 125%;
+}
+
+[data-ob-theme='cyber'] .ob-launcher:hover::after {
+  opacity: 1;
+  animation: ob-launcher-scan 0.65s ease forwards;
+}
+
+[data-ob-theme='cyber'] .ob-app-header {
+  position: relative;
+  background: linear-gradient(180deg, rgba(6, 10, 16, 0.82), rgba(6, 10, 16, 0.34)) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+
+[data-ob-theme='cyber'] .ob-app-header::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 229, 255, 0.9),
+    rgba(252, 226, 5, 0.55),
+    transparent
+  );
+  animation: ob-cyber-flow 3.5s linear infinite;
+}
+
+@keyframes ob-hex-drift {
+  0%,
+  100% {
+    opacity: 0.38;
+    transform: translateX(-50%) translateY(0);
+  }
+  50% {
+    opacity: 0.8;
+    transform: translateX(-50%) translateY(-8px);
+  }
+}
+
+@keyframes ob-neon-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    filter: brightness(0.92);
+  }
+  50% {
+    opacity: 1;
+    filter: brightness(1.35);
+  }
+}
+
+@keyframes ob-glitch {
+  0% {
+    text-shadow:
+      2px 0 rgba(255, 0, 60, 0.8),
+      -2px 0 rgba(0, 229, 255, 0.8);
+    transform: translateX(-1px);
+  }
+  50% {
+    text-shadow:
+      -2px 0 rgba(255, 0, 60, 0.8),
+      2px 0 rgba(0, 229, 255, 0.8);
+    transform: translateX(1px);
+  }
+  100% {
+    text-shadow: 0 0 10px rgba(0, 229, 255, 0.85);
+    transform: translateX(0);
+  }
+}
+
+@keyframes ob-launcher-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes ob-cyber-flow {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}

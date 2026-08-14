@@ -16,7 +16,9 @@ import { normalizeTheme } from '../shared/themes/normalize'
 import cyberThemeJson from '../themes/cyber.json'
 import neonDistrictThemeJson from '../themes/neon-district.json'
 
-const globalCss = readFileSync(resolve(__dirname, '../src/styles/global.css'), 'utf-8')
+const globalCss = ['base', 'cyber', 'neon']
+  .map((part) => readFileSync(resolve(__dirname, `../src/styles/${part}.css`), 'utf-8'))
+  .join('\n')
 const themeManagerPluginJson = JSON.parse(
   readFileSync(resolve(__dirname, '../plugins/theme-manager/plugin.json'), 'utf-8')
 )

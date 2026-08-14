@@ -78,7 +78,9 @@ describe('Ant Design 6 migration boundary', () => {
       join(projectRoot, 'src', 'components', 'CommandPalette.tsx'),
       'utf8'
     )
-    const styles = readFileSync(join(projectRoot, 'src', 'styles', 'global.css'), 'utf8')
+    const styles = ['base', 'cyber', 'neon']
+      .map((part) => readFileSync(join(projectRoot, 'src', 'styles', `${part}.css`), 'utf8'))
+      .join('\n')
 
     expect(launcher).toContain('className="ob-launcher-open"')
     expect(launcher).toContain('type="button"')
