@@ -6,6 +6,11 @@ export default defineConfig({
   main: {
     build: {
       outDir: 'out/main',
+      externalizeDeps: {
+        // sql.js 已降级为 devDependency（测试/恢复工具）；生产主进程不得内联它，
+        // 且 initSqlJsEngine 已改为动态 import，生产路径永不触碰。
+        include: ['sql.js']
+      },
       lib: {
         entry: {
           index: resolve(__dirname, 'electron/main.ts'),
