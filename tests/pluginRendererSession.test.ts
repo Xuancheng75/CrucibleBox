@@ -66,7 +66,7 @@ describe('PluginRendererSessionRegistry', () => {
     expect(first.token).toBe(token(1))
     expect(first.handshakeToken).toBe(token(2))
     expect(first.token).not.toBe(first.handshakeToken)
-    expect(first.origin).toBe(`openbox-plugin://${token(1)}.session`)
+    expect(first.origin).toBe(`cruciblebox-plugin://${token(1)}.session`)
     expect(first.indexUrl).toBe(`${first.origin}/index.html`)
     expect(second.origin).not.toBe(first.origin)
     expect(first.permissions).toEqual(['database:read'])

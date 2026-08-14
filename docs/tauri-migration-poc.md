@@ -7,17 +7,17 @@
 
 | # | PoC 项 | 结果 | 证据 |
 |---|---|---|---|
-| P1 | 插件 iframe + 自定义协议 + MessagePort RPC（Windows） | ✅ **PASS** | `http://openbox-plugin.localhost/plugin/index.html` 经自定义协议 handler 加载成功；子资源 `plugin.js` 同协议加载并执行；跨源 postMessage 双向往返；`contentDocument=null`（隔离生效）；**#11505 未命中** |
+| P1 | 插件 iframe + 自定义协议 + MessagePort RPC（Windows） | ✅ **PASS** | `http://cruciblebox-plugin.localhost/plugin/index.html` 经自定义协议 handler 加载成功；子资源 `plugin.js` 同协议加载并执行；跨源 postMessage 双向往返；`contentDocument=null`（隔离生效）；**#11505 未命中** |
 | P2 | sidecar 独立进程 + 帧协议 | ⏳ 未做（1.8.2） | 计划内，lib-1 确认 sidecar 为独立子进程 |
 | P3 | rusqlite 打开现有 v3 openbox.db | ⏳ 未做（1.8.1） | 计划内 |
 | P4 | 内存 A/B 基准 | ✅ **量级明确** | 见 §2 |
 
 ### P1 细节（PoC 工程 `poc-tauri/`，已合入 main）
 
-- 宿主页在 `http://tauri.localhost`（生产 origin）；iframe 指向 `http://openbox-plugin.localhost/plugin/index.html`（Windows 上 Tauri 自定义协议的 origin 形式）。
-- Rust 侧 `register_uri_scheme_protocol("openbox-plugin", ...)` 处理 index.html 与 plugin.js 两个资源，响应带 `Cross-Origin-Resource-Policy: cross-origin` + `Access-Control-Allow-Origin: *`。
-- 前端 report_status 命令把检测结果写日志，证据链：`[protocol-request] openbox-plugin://localhost/plugin/index.html` → 子资源请求 → `plugin-subresource`/`plugin-reply` 消息往返 → `contentDocument=null`。
-- **适配点**：Electron 的 `openbox-plugin://<token>` 在 Windows 映射为 `http://<scheme>.localhost`；`scheme://` 形式 fetch 被 WebView2 拒绝（预期，迁移时按 http.localhost 形式改造）。
+- 宿主页在 `http://tauri.localhost`（生产 origin）；iframe 指向 `http://cruciblebox-plugin.localhost/plugin/index.html`（Windows 上 Tauri 自定义协议的 origin 形式）。
+- Rust 侧 `register_uri_scheme_protocol("cruciblebox-plugin", ...)` 处理 index.html 与 plugin.js 两个资源，响应带 `Cross-Origin-Resource-Policy: cross-origin` + `Access-Control-Allow-Origin: *`。
+- 前端 report_status 命令把检测结果写日志，证据链：`[protocol-request] cruciblebox-plugin://localhost/plugin/index.html` → 子资源请求 → `plugin-subresource`/`plugin-reply` 消息往返 → `contentDocument=null`。
+- **适配点**：Electron 的 `cruciblebox-plugin://<token>` 在 Windows 映射为 `http://<scheme>.localhost`；`scheme://` 形式 fetch 被 WebView2 拒绝（预期，迁移时按 http.localhost 形式改造）。
 
 ## 2. P4 内存基准（同机实测，2026-08-14）
 

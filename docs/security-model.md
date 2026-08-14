@@ -20,7 +20,7 @@
 
 ## 2. 渲染隔离（renderer）
 
-- 插件 renderer 运行在跨源 sandboxed iframe，唯一 `openbox-plugin://<token>.session` origin（`PluginRendererSessionRegistry` 签发，TTL + owner 绑定）。
+- 插件 renderer 运行在跨源 sandboxed iframe，唯一 `cruciblebox-plugin://<token>.session` origin（`PluginRendererSessionRegistry` 签发，TTL + owner 绑定）。
 - 会话绑定主窗口 owner，index 单次消费；请求 owner 由 Electron `webRequest` 注入的进程内 HMAC 证明（`PluginRendererRequestOwnerProof`），不信任 renderer 自报字段。
 - 宿主与 frame 用专用 MessagePort + 严格版本化 RPC（renderer RPC v1）：参数/结果/事件/JSON 预算/请求 ID/64 并发上限均验证。
 - 宿主页 CSP：`default-src 'self'`；v2 frame 只允许 self script、禁止 connect；启动断言 `electronAPI`/Node 全局不存在且父 document 不可达。

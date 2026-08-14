@@ -7,9 +7,9 @@ describe('IPC sender URL policy', () => {
     expect(isAllowedHostRendererUrl(packagedUrl, '', packagedUrl)).toBe(true)
     expect(isAllowedHostRendererUrl(`${packagedUrl}#settings`, '', packagedUrl)).toBe(true)
     expect(isAllowedHostRendererUrl('openbox-app://other/index.html', '', packagedUrl)).toBe(false)
-    expect(isAllowedHostRendererUrl('openbox-plugin://session/index.html', '', packagedUrl)).toBe(
-      false
-    )
+    expect(
+      isAllowedHostRendererUrl('cruciblebox-plugin://session/index.html', '', packagedUrl)
+    ).toBe(false)
   })
 
   it('accepts the configured development origin and rejects lookalikes', () => {

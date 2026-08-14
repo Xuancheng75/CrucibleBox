@@ -99,7 +99,7 @@ function response(status: number, body: string | ArrayBuffer, contentType = 'tex
     headers: {
       'Cache-Control': 'no-store, max-age=0',
       'Content-Security-Policy':
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: plugin:; connect-src 'self'; frame-src openbox-plugin:; object-src 'none'; base-uri 'none'; font-src 'self' data:",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: plugin:; connect-src 'self'; frame-src cruciblebox-plugin:; object-src 'none'; base-uri 'none'; font-src 'self' data:",
       'Content-Type': contentType,
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Resource-Policy': 'same-origin',

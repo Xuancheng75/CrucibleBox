@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
-export const PLUGIN_RENDERER_SCHEME = 'openbox-plugin'
+export const PLUGIN_RENDERER_SCHEME = 'cruciblebox-plugin'
 export const DEFAULT_PLUGIN_RENDERER_SESSION_TTL_MS = 30 * 60 * 1_000
 export const MAX_PLUGIN_RENDERER_SESSION_TTL_MS = 24 * 60 * 60 * 1_000
 

@@ -19,8 +19,8 @@ import type {
 import type { PluginConfig } from '../../shared/types/plugin.types'
 import type { ToolboxTheme } from '../../shared/types/theme.types'
 
-const CONNECT_MESSAGE_KIND = 'openbox-plugin-connect'
-const PORT_MESSAGE_KIND = 'openbox-plugin-port'
+const CONNECT_MESSAGE_KIND = 'cruciblebox-plugin-connect'
+const PORT_MESSAGE_KIND = 'cruciblebox-plugin-port'
 
 export interface PluginFrameMessageTarget {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void

@@ -14,14 +14,14 @@
   <body>
     <h1>PoC: sandboxed iframe + custom protocol + MessagePort RPC</h1>
     <p>宿主页在 <code>http://localhost:1430</code>（dev origin）。测试两种自定义协议 URL 形式：<br />
-      A) <code>openbox-plugin://plugin/index.html</code>（scheme 形式）<br />
-      B) <code>http://openbox-plugin.localhost/plugin/index.html</code>（Windows origin 形式）
+      A) <code>cruciblebox-plugin://plugin/index.html</code>（scheme 形式）<br />
+      B) <code>http://cruciblebox-plugin.localhost/plugin/index.html</code>（Windows origin 形式）
     </p>
 
     <iframe
       id="pluginFrameB"
       sandbox="allow-scripts allow-same-origin"
-      src="http://openbox-plugin.localhost/plugin/index.html"
+      src="http://cruciblebox-plugin.localhost/plugin/index.html"
     ></iframe>
 
     <h2>状态</h2>
@@ -42,7 +42,7 @@
       }
 
       // A. scheme 形式 fetch
-      fetch('openbox-plugin://plugin/index.html')
+      fetch('cruciblebox-plugin://plugin/index.html')
         .then((res) => {
           append(`A) scheme fetch OK status=${res.status}`, 'ok')
           report(`A-scheme-fetch-ok status=${res.status}`)
@@ -53,7 +53,7 @@
         })
 
       // B. http://<scheme>.localhost 形式 fetch
-      fetch('http://openbox-plugin.localhost/plugin/index.html')
+      fetch('http://cruciblebox-plugin.localhost/plugin/index.html')
         .then((res) => {
           append(`B) http.localhost fetch OK status=${res.status}`, 'ok')
           report(`B-http-fetch-ok status=${res.status}`)

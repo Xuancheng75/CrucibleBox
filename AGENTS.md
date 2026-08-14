@@ -43,7 +43,7 @@
 ## 3. 安全模型（详见 docs/security-model.md）
 
 - 插件为**可信代码**（信任模型 A）：权限声明是 SDK 能力门控，非安全边界；控制点为 安装确认 + renderer 隔离 + IPC 校验 + 供应链可追溯。
-- 渲染：跨源 sandboxed iframe + `openbox-plugin://<token>.session` 唯一 origin；MessagePort 版本化 RPC + JSON 预算 + 64 并发上限。
+- 渲染：跨源 sandboxed iframe + `cruciblebox-plugin://<token>.session` 唯一 origin；MessagePort 版本化 RPC + JSON 预算 + 64 并发上限。
 - backend：utility process（故障隔离非安全沙箱）；backend RPC v2（token/requestId/预算）；主进程统一权限断言。
 - 安装：staging、journal、原子替换、崩溃恢复；manifest/ZIP 策略校验。
 - UniEnv：固定文件集 + 版本 + SHA-256 digest + fail-closed；构造失败即拒绝激活。

@@ -21,7 +21,7 @@ fn report(line: &str) {
     }
 }
 
-/// 最小插件资源服务器：openbox-plugin://plugin/<path>
+/// 最小插件资源服务器：cruciblebox-plugin://plugin/<path>
 /// 复刻 CrucibleBox 插件 iframe 场景：宿主页 index.html 内嵌 sandboxed iframe，
 /// iframe src 指向本协议；插件目录含 index.html + 一个 js 子资源（#11505 关注点）。
 const PLUGIN_INDEX_HTML: &str = r#"<!doctype html>
@@ -62,7 +62,7 @@ fn make_response(body: &'static str, content_type: &'static str) -> Response<Vec
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, content_type)
         .header("Cross-Origin-Resource-Policy", "cross-origin")
-        // PoC: 允许宿主页跨源访问（Windows origin 为 http://openbox-plugin.localhost）
+        // PoC: 允许宿主页跨源访问（Windows origin 为 http://cruciblebox-plugin.localhost）
         .header("Access-Control-Allow-Origin", "*")
         .body(body.as_bytes().to_vec())
         .expect("valid response")
@@ -89,8 +89,8 @@ fn main() {
         })
         // 前端宿主页把 iframe 检测结果上报到这里，一并写日志
         .invoke_handler(tauri::generate_handler![report_status])
-        // 自定义协议：Windows 上 origin 形如 http://openbox-plugin.localhost/
-        .register_uri_scheme_protocol("openbox-plugin", |_ctx, request: Request<Vec<u8>>| {
+        // 自定义协议：Windows 上 origin 形如 http://cruciblebox-plugin.localhost/
+        .register_uri_scheme_protocol("cruciblebox-plugin", |_ctx, request: Request<Vec<u8>>| {
             let uri = request.uri();
             let path = uri.path().trim_start_matches('/');
             report(&format!("[protocol-request] {uri} (path={path})"));

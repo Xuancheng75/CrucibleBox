@@ -88,7 +88,7 @@ tests/         # Vitest 单元测试
 
 ## 插件渲染隔离
 
-生产插件使用 `rendererApiVersion: 2`。每次打开插件时，宿主签发唯一 `openbox-plugin://<token>.session` origin，在 sandboxed iframe 中加载自包含 browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题、通知和 backend 消息能力。插件 frame 不包含 Electron preload，不能访问宿主 DOM、`window.electronAPI`、Node `process` 或 `require`。契约与构建说明见 `docs/plugin-sdk.md` 与 `docs/security-model.md`。
+生产插件使用 `rendererApiVersion: 2`。每次打开插件时，宿主签发唯一 `cruciblebox-plugin://<token>.session` origin，在 sandboxed iframe 中加载自包含 browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题、通知和 backend 消息能力。插件 frame 不包含 Electron preload，不能访问宿主 DOM、`window.electronAPI`、Node `process` 或 `require`。契约与构建说明见 `docs/plugin-sdk.md` 与 `docs/security-model.md`。
 
 ## 架构与文档
 
