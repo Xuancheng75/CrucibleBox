@@ -60,8 +60,8 @@ impl Db {
     pub fn status(&self) -> rusqlite::Result<DbStatus> {
         let guard = self.conn.lock().unwrap();
         let version: i64 = pragma_i64(&guard, "user_version")?;
-        let journal: String = guard
-            .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
+        let journal: String =
+            guard.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
         let fk: i64 = pragma_i64(&guard, "foreign_keys")?;
         Ok(DbStatus {
             version,
@@ -197,9 +197,7 @@ fn migrate_v3(conn: &Connection) -> rusqlite::Result<()> {
         cols.iter().any(|c| c == "sort_order")
     };
     if !has_sort_order {
-        conn.execute_batch(
-            "ALTER TABLE plugins ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
-        )?;
+        conn.execute_batch("ALTER TABLE plugins ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")?;
     }
     // 稳定回填：installed_at DESC, id ASC（无 installed_at 则 id ASC）
     let has_installed_at: bool = {
@@ -266,8 +264,8 @@ fn migrate_legacy_for_plugin(
     }
 
     if plugin_name == "diary" && table_exists(conn, "diary_entries")? {
-        let mut stmt =
-            conn.prepare("SELECT entry_date, title, content FROM diary_entries ORDER BY entry_date")?;
+        let mut stmt = conn
+            .prepare("SELECT entry_date, title, content FROM diary_entries ORDER BY entry_date")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -277,20 +275,16 @@ fn migrate_legacy_for_plugin(
         })?;
         for row in rows {
             let (entry_date, title, content) = row?;
-            let value = serde_json::json!({ "entry_date": entry_date, "title": title, "content": content });
+            let value =
+                serde_json::json!({ "entry_date": entry_date, "title": title, "content": content });
             insert_migrated_value(conn, plugin_id, &format!("entry:{}", entry_date), &value)?;
         }
     }
 
     if plugin_name == "turntable" && table_exists(conn, "turntable_items")? {
-        let mut stmt = conn.prepare(
-            "SELECT * FROM turntable_items ORDER BY sort_order ASC, id ASC",
-        )?;
-        let cols: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|c| c.to_string())
-            .collect();
+        let mut stmt =
+            conn.prepare("SELECT * FROM turntable_items ORDER BY sort_order ASC, id ASC")?;
+        let cols: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
         let rows = stmt.query_map([], |row| {
             let mut map = serde_json::Map::new();
             for (i, col) in cols.iter().enumerate() {
@@ -441,9 +435,11 @@ mod tests {
         }
         let guard = db.conn.lock().unwrap();
         let v: String = guard
-            .query_row("SELECT value FROM settings WHERE key = ?1", ["updateChannel"], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                ["updateChannel"],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(v, "stable");
     }

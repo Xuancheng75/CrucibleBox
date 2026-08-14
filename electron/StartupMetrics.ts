@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 export interface ProcessMetricSnapshot {
   memory: {
     workingSetSize: number

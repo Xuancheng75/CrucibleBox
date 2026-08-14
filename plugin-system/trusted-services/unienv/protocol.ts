@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 export const SUPPORTED_TOOL_VERSIONS = {
   python: ['3.8.10', '3.9.13', '3.10.11', '3.11.9', '3.12.5', '3.14.7'],
   node: ['16.20.2', '18.20.4', '20.15.1', '22.5.1', '24.18.1'],

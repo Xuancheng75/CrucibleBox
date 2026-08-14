@@ -55,11 +55,11 @@ fn get_process_memory() -> Result<ProcessMemory, String> {
         if ok == 0 {
             return Err("GetProcessMemoryInfo failed".into());
         }
-        return Ok(ProcessMemory {
+        Ok(ProcessMemory {
             working_set_kib: (counters.WorkingSetSize / 1024) as u64,
             private_kib: (counters.PrivateUsage / 1024) as u64,
             pid,
-        });
+        })
     }
     #[cfg(not(windows))]
     {
@@ -79,9 +79,17 @@ fn show_fatal_error(message: &str) -> ! {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
-    let wide: Vec<u16> = OsStr::new(message).encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = OsStr::new(message)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     unsafe {
-        MessageBoxW(std::ptr::null_mut(), wide.as_ptr(), wide.as_ptr(), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            std::ptr::null_mut(),
+            wide.as_ptr(),
+            wide.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
     }
     std::process::exit(1)
 }
@@ -98,15 +106,12 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 插件 renderer 自定义协议（1.8.3）：http://cruciblebox-plugin.localhost/<token>/<res>
         // handler 经 app_handle.state 取 registry（setup 中 manage）
-        .register_uri_scheme_protocol(
-            plugin_session::PLUGIN_RENDERER_SCHEME,
-            |ctx, request| {
-                let protocol = ctx
-                    .app_handle()
-                    .state::<Arc<plugin_protocol::ProtocolContext>>();
-                plugin_protocol::handle_protocol(&protocol, request.uri().to_string())
-            },
-        )
+        .register_uri_scheme_protocol(plugin_session::PLUGIN_RENDERER_SCHEME, |ctx, request| {
+            let protocol = ctx
+                .app_handle()
+                .state::<Arc<plugin_protocol::ProtocolContext>>();
+            plugin_protocol::handle_protocol(&protocol, request.uri().to_string())
+        })
         .setup(|app| {
             // 1) L3 数据路径迁移。
             //    策略：迁移失败是数据完整性风险（checkpoint 失败/IO 错误），中止启动并给
@@ -122,7 +127,11 @@ fn main() {
             if migration.migrated {
                 eprintln!(
                     "[DB] L3 data migration: {} -> {} ({} entries copied, checkpoint={})",
-                    migration.source.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                    migration
+                        .source
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
                     migration.target.display(),
                     migration.copied_entries.len(),
                     migration.checkpointed
@@ -153,11 +162,9 @@ fn main() {
             app.manage(data_dir);
 
             // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）
-            let registry = Arc::new(Mutex::new(
-                plugin_session::RendererSessionRegistry::new(
-                    plugin_session::DEFAULT_TTL,
-                ),
-            ));
+            let registry = Arc::new(Mutex::new(plugin_session::RendererSessionRegistry::new(
+                plugin_session::DEFAULT_TTL,
+            )));
             app.manage(registry.clone());
             app.manage(Arc::new(plugin_protocol::ProtocolContext {
                 registry,
@@ -175,7 +182,6 @@ fn main() {
             commands::plugin_list,
             commands::plugin_get,
             commands::db_status,
-            commands::db_execute,
             commands::create_renderer_session,
             commands::dispose_renderer_session,
             commands::plugin_send_message,

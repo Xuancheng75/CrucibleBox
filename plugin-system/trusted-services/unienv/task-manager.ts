@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { randomUUID } from 'node:crypto'
 
 export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'

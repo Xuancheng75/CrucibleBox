@@ -55,20 +55,34 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # C2: 根依赖 + tauri-frontend 依赖（两个独立 lockfile）
-      - name: Install root deps (check gates)
-        run: npm ci
-
+      # C2: tauri-frontend 依赖（Tauri 前端独立 lockfile）
       - name: Install frontend deps
         working-directory: tauri-frontend
         run: npm ci
 
-      - name: Quality gates (host + plugins)
-        run: npm run check
+      # 根依赖仅用于 build:frame（out/plugin-frame/runtime.js，协议硬依赖）
+      - name: Install root deps (frame runtime)
+        run: npm ci
+
+      # M2 (1.9.1): Tauri 原生门禁替代 Electron 链的 npm run check
+      - name: Cargo fmt check
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Cargo clippy (deny warnings)
+        working-directory: src-tauri
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Cargo test (workspace)
+        working-directory: src-tauri
+        run: cargo test --workspace
 
       - name: Build frontend
         working-directory: tauri-frontend
         run: npm run build
+
+      - name: Build plugin frame runtime
+        run: npm run build:frame
 
       # H1: tag ↔ src-tauri 版本一致性 + dispatch tag 格式校验（M5）
       - name: Resolve and validate release tag

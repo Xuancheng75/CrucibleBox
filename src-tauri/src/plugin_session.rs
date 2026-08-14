@@ -142,11 +142,7 @@ impl RendererSessionRegistry {
         let handshake_token = random_token()?;
         // Tauri Windows 自定义协议形式：http://<scheme>.localhost/<token>/index.html
         // （PoC 结论：scheme:// 形式不被支持；path 型携带 session token）
-        let origin = format!(
-            "http://{}.localhost/{}",
-            PLUGIN_RENDERER_SCHEME,
-            token
-        );
+        let origin = format!("http://{}.localhost/{}", PLUGIN_RENDERER_SCHEME, token);
         let index_url = format!("{}/index.html", origin);
         let created_at = now_ms();
         let expires_at = created_at + self.ttl.as_millis() as u64;
@@ -180,11 +176,7 @@ impl RendererSessionRegistry {
     }
 
     /// 一次性消费 index（issued → active）。对等 consumeIndex。
-    pub fn consume_index(
-        &mut self,
-        token: &str,
-        owner_webview_label: &str,
-    ) -> SessionAccess {
+    pub fn consume_index(&mut self, token: &str, owner_webview_label: &str) -> SessionAccess {
         let access = self.access(token, owner_webview_label);
         if !access.ok {
             return access;
@@ -294,7 +286,11 @@ impl RendererSessionRegistry {
                     owner_webview_label: s.owner_webview_label.clone(),
                     created_at_ms: s.created_at_ms,
                     expires_at_ms: s.expires_at_ms,
-                    state: if s.state == SessionState::Active { "active" } else { "issued" },
+                    state: if s.state == SessionState::Active {
+                        "active"
+                    } else {
+                        "issued"
+                    },
                 }),
                 reason: None,
             },
@@ -334,7 +330,9 @@ mod tests {
         let session = reg.create(make_input("diary")).unwrap();
         assert_eq!(session.token.len(), 64);
         assert_eq!(session.handshake_token.len(), 64);
-        assert!(session.index_url.contains("http://cruciblebox-plugin.localhost"));
+        assert!(session
+            .index_url
+            .contains("http://cruciblebox-plugin.localhost"));
         assert!(session.index_url.ends_with("/index.html"));
         assert_eq!(session.state, "issued");
 

@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { BrowserWindow, ipcMain } from 'electron'
 import { IpcChannel } from '@shared/types/ipc.types'
 import type { ToolboxTheme } from '@shared/types/theme.types'

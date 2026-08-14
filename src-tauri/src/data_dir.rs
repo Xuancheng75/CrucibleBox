@@ -24,13 +24,11 @@ pub struct DataMigrationReport {
 
 /// 解析 APPDATA 根目录（Windows %APPDATA%）。测试可注入 base_dir。
 fn appdata_root(base_dir: Option<&Path>) -> PathBuf {
-    base_dir
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| {
-            std::env::var("APPDATA")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("."))
-        })
+    base_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+    })
 }
 
 pub fn resolve_paths(base_dir: Option<&Path>) -> (PathBuf, PathBuf) {
@@ -63,8 +61,7 @@ pub fn migrate(base_dir: Option<&Path>) -> std::io::Result<DataMigrationReport> 
             CheckpointResult::Done => report.checkpointed = true,
             CheckpointResult::NoWal => {}
             CheckpointResult::Failed => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(std::io::Error::other(
                     format!(
                         "L3 migration aborted: wal_checkpoint failed for {} (WAL holds committed data); \
                          close the old app instance and retry",
@@ -189,8 +186,14 @@ mod tests {
         assert!(report.copied_entries.contains(&"data".into()));
         assert!(report.copied_entries.contains(&"plugins".into()));
         assert!(report.copied_entries.contains(&"logs".into()));
-        assert!(root.join(NEW_DATA_DIR_NAME).join("data/openbox.db").exists());
-        assert!(root.join(NEW_DATA_DIR_NAME).join("plugins/note.txt").exists());
+        assert!(root
+            .join(NEW_DATA_DIR_NAME)
+            .join("data/openbox.db")
+            .exists());
+        assert!(root
+            .join(NEW_DATA_DIR_NAME)
+            .join("plugins/note.txt")
+            .exists());
         assert!(root.join(NEW_DATA_DIR_NAME).join(MIGRATED_MARKER).exists());
     }
 

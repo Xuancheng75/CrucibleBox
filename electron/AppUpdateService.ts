@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import type { AppUpdater, ProgressInfo, UpdateCheckResult, UpdateInfo } from 'electron-updater'
 import type { AppUpdateChannel, AppUpdateState } from '@shared/types/ipc.types'
 

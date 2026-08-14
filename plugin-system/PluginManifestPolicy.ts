@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 import type { ConfigField, PluginManifest } from '@shared/types/plugin.types'
