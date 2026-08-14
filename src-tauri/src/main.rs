@@ -1,10 +1,21 @@
-// CrucibleBox Tauri 骨架（1.8.0）
-// 目标：验证 Tauri 2 + WebView2 壳 + 最小 React 前端可运行，并提供进程内存自检命令供 P4 基准。
+// CrucibleBox Tauri 主进程（1.8.1）
+// 启动序（对等 electron/main.ts mainLoop 的 DB 相关步骤）：
+//   1) L3 数据路径迁移（%APPDATA%\openbox → %APPDATA%\cruciblebox）
+//   2) 打开 DB（WAL + v3 迁移 + 日志清理）；失败则安全退出
+//   3) manage 状态 + 注册命令
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app;
+mod commands;
+mod data_dir;
+mod db;
+
 use serde::Serialize;
+use std::path::PathBuf;
 use std::process;
+use std::sync::Mutex;
+use tauri::Manager;
 
 /// 进程内存信息（供 P4 内存 A/B 基准从前端查询）
 #[derive(Serialize)]
@@ -17,7 +28,6 @@ struct ProcessMemory {
 #[tauri::command]
 fn get_process_memory() -> Result<ProcessMemory, String> {
     let pid = process::id();
-    // Windows: 用 OpenProcess + GetProcessMemoryInfo 精确读 working set
     #[cfg(windows)]
     {
         use std::mem::size_of;
@@ -25,9 +35,7 @@ fn get_process_memory() -> Result<ProcessMemory, String> {
         use windows_sys::Win32::System::ProcessStatus::{
             GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
         };
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_INFORMATION,
-        };
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
 
         let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid) };
         if handle.is_null() {
@@ -57,9 +65,91 @@ fn get_process_memory() -> Result<ProcessMemory, String> {
     }
 }
 
+fn db_path_in(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("data").join("openbox.db")
+}
+
+/// Windows 错误对话框（对等 electron 的 dialog.showErrorBox）；
+/// 非 Windows 平台降级为 stderr。
+#[cfg(windows)]
+fn show_fatal_error(message: &str) -> ! {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let wide: Vec<u16> = OsStr::new(message).encode_wide().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), wide.as_ptr(), wide.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+    std::process::exit(1)
+}
+
+#[cfg(not(windows))]
+fn show_fatal_error(message: &str) -> ! {
+    eprintln!("[FATAL] {message}");
+    std::process::exit(1)
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_process_memory])
+        .setup(|app| {
+            // 1) L3 数据路径迁移。
+            //    策略：迁移失败是数据完整性风险（checkpoint 失败/IO 错误），中止启动并给
+            //    用户可见错误框（源数据未动，可关闭旧实例重试）；无旧数据/已迁移则跳过。
+            let migration = match data_dir::migrate(None) {
+                Ok(m) => m,
+                Err(err) => show_fatal_error(&format!(
+                    "数据库迁移失败：{}\n\n源数据未受影响，请关闭旧版应用后重试。",
+                    err
+                )),
+            };
+            let data_dir = migration.target.clone();
+            if migration.migrated {
+                eprintln!(
+                    "[DB] L3 data migration: {} -> {} ({} entries copied, checkpoint={})",
+                    migration.source.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                    migration.target.display(),
+                    migration.copied_entries.len(),
+                    migration.checkpointed
+                );
+            }
+
+            // 2) 确保数据目录存在（C1：全新安装无 %APPDATA%\openbox 也必须有 data/ 目录）
+            if let Err(err) = std::fs::create_dir_all(data_dir.join("data")) {
+                show_fatal_error(&format!("无法创建数据目录：{}", err));
+            }
+
+            // 3) 打开 DB；失败则安全退出（对等 electron main.ts 行为，含用户提示）
+            let db_path = db_path_in(&data_dir);
+            let db = match db::Db::open(&db_path) {
+                Ok(db) => db,
+                Err(err) => show_fatal_error(&format!(
+                    "数据库打开失败：{}\n\n数据库未被修改，应用将安全退出。",
+                    err
+                )),
+            };
+            eprintln!(
+                "[DB] engine: rusqlite bundled (WAL) @ {}",
+                db_path.display()
+            );
+
+            // 4) manage 状态（commands 以 State<Mutex<Db>> 访问）+ 数据目录
+            app.manage(Mutex::new(db));
+            app.manage(data_dir);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_process_memory,
+            commands::settings_get,
+            commands::settings_set,
+            commands::settings_get_all,
+            commands::app_get_version,
+            commands::app_get_platform,
+            commands::plugin_list,
+            commands::plugin_get,
+            commands::db_status,
+            commands::db_execute,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running CrucibleBox");
 }

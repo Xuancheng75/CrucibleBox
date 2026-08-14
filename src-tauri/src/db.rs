@@ -1,0 +1,487 @@
+// CrucibleBox DB 层（1.8.1）
+// rusqlite (bundled) 对等迁移自 better-sqlite3 引擎（database/index.ts）。
+// - 文件格式零迁移：SQLite 3.x 向后兼容，直接打开现有 openbox.db
+// - bundled 默认 foreign_keys=ON；仍显式设置以保持可读性
+// - journal_mode=WAL + busy_timeout 默认 5000ms（rusqlite 内置）
+
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+use std::path::Path;
+use std::sync::Mutex;
+
+pub struct Db {
+    conn: Mutex<Connection>,
+}
+
+impl Db {
+    /// 打开数据库并执行 v3 迁移与日志清理。与 better-sqlite3 引擎语义对等：
+    /// 迁移失败则抛错（调用方安全退出）；日志清理失败仅记录（不阻断）。
+    /// 注意：调用方需确保父目录已创建（对等 TS getDbPath 的 mkdirSync）。
+    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // 行为变更记录（oracle L8）：better-sqlite3 引擎从未开启 FK，因此 ON DELETE CASCADE
+        // 此前不生效；rusqlite bundled 默认 foreign_keys=ON。对存量孤儿行无回溯影响，
+        // 但插件卸载时 cascade 删除 plugin_logs/plugin_storage 从此真正生效（属预期改进）。
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        // rusqlite 新连接默认 busy_timeout=5000ms；显式声明保持可读性
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+
+        let db = Db {
+            conn: Mutex::new(conn),
+        };
+        run_migrations(&db)?;
+        // 日志清理 best-effort（对等 TS 的 try/catch 忽略路径）
+        if let Err(err) = cleanup_plugin_logs(&db) {
+            eprintln!("[DB] cleanup plugin logs failed (ignored): {err}");
+        }
+        Ok(db)
+    }
+
+    /// 关闭数据库（进程退出时由 OS 兜底；此方法保留以供显式关闭路径）
+    #[allow(dead_code)]
+    pub fn close(&self) {
+        // rusqlite Connection::close 需所有权；Mutex 包裹下无法移出。
+        // 进程退出时 OS 自动释放，DB 事务由 WAL 保证一致性。
+    }
+
+    /// 暴露内部连接（调用方自行加锁；仅用于对等现有 TS 语义的命令层）
+    pub fn conn(&self) -> &Mutex<Connection> {
+        &self.conn
+    }
+
+    /// 读取 user_version（schema 版本）
+    pub fn version(&self) -> rusqlite::Result<i64> {
+        let guard = self.conn.lock().unwrap();
+        pragma_i64(&guard, "user_version")
+    }
+
+    /// 返回数据库自检信息（供前端诊断/基准）
+    pub fn status(&self) -> rusqlite::Result<DbStatus> {
+        let guard = self.conn.lock().unwrap();
+        let version: i64 = pragma_i64(&guard, "user_version")?;
+        let journal: String = guard
+            .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
+        let fk: i64 = pragma_i64(&guard, "foreign_keys")?;
+        Ok(DbStatus {
+            version,
+            journal_mode: journal,
+            foreign_keys: fk == 1,
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct DbStatus {
+    pub version: i64,
+    pub journal_mode: String,
+    pub foreign_keys: bool,
+}
+
+fn pragma_i64(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
+    conn.pragma_query_value(None, name, |row| row.get(0))
+}
+
+// ---------------------------------------------------------------------------
+// 迁移（对等 database/index.ts MIGRATIONS 数组，v1..=v3）
+// ---------------------------------------------------------------------------
+
+const MIGRATIONS_COUNT: i64 = 3;
+
+fn run_migrations(db: &Db) -> rusqlite::Result<()> {
+    let mut version = db.version().unwrap_or(0);
+    while version < MIGRATIONS_COUNT {
+        {
+            let guard = db.conn.lock().unwrap();
+            guard.execute_batch("BEGIN IMMEDIATE")?;
+        }
+        match migrate_one(db, version) {
+            Ok(()) => {
+                let guard = db.conn.lock().unwrap();
+                guard.pragma_update(None, "user_version", version + 1)?;
+                guard.execute_batch("COMMIT")?;
+                version += 1;
+            }
+            Err(err) => {
+                let guard = db.conn.lock().unwrap();
+                let _ = guard.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn migrate_one(db: &Db, version: i64) -> rusqlite::Result<()> {
+    let guard = db.conn.lock().unwrap();
+    match version {
+        0 => migrate_v1(&guard),
+        1 => migrate_v2(&guard),
+        2 => migrate_v3(&guard),
+        _ => Ok(()),
+    }
+}
+
+/// v1：plugins / settings / plugin_logs + 索引
+fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS plugins (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          version TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          description TEXT DEFAULT '',
+          author TEXT DEFAULT '',
+          icon TEXT DEFAULT '',
+          entry_main TEXT NOT NULL,
+          entry_renderer TEXT DEFAULT '',
+          permissions TEXT DEFAULT '[]',
+          config_schema TEXT DEFAULT '{}',
+          config_data TEXT DEFAULT '{}',
+          enabled INTEGER DEFAULT 1,
+          installed_path TEXT NOT NULL,
+          installed_at DATETIME DEFAULT (datetime('now', 'localtime')),
+          updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS plugin_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          plugin_id TEXT NOT NULL,
+          level TEXT NOT NULL DEFAULT 'info',
+          message TEXT NOT NULL,
+          timestamp DATETIME DEFAULT (datetime('now', 'localtime')),
+          FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_plugin_logs_plugin_id ON plugin_logs(plugin_id);
+        CREATE INDEX IF NOT EXISTS idx_plugin_logs_timestamp ON plugin_logs(timestamp);
+        "#,
+    )
+}
+
+/// v2：plugin_storage / plugin_storage_migrations + legacy sql.js 存储迁移
+fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS plugin_storage (
+          plugin_id TEXT NOT NULL,
+          key TEXT NOT NULL,
+          value TEXT NOT NULL,
+          updated_at DATETIME DEFAULT (datetime('now', 'localtime')),
+          PRIMARY KEY (plugin_id, key),
+          FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS plugin_storage_migrations (
+          plugin_id TEXT NOT NULL,
+          migration TEXT NOT NULL,
+          applied_at DATETIME DEFAULT (datetime('now', 'localtime')),
+          PRIMARY KEY (plugin_id, migration),
+          FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
+        );
+        "#,
+    )?;
+    migrate_legacy_plugin_storage(conn)
+}
+
+/// v3：plugins.sort_order ALTER + 稳定回填
+fn migrate_v3(conn: &Connection) -> rusqlite::Result<()> {
+    // 检查 sort_order 是否已存在（与 TS 的 PRAGMA table_info 等值）
+    let has_sort_order: bool = {
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(plugins)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        cols.iter().any(|c| c == "sort_order")
+    };
+    if !has_sort_order {
+        conn.execute_batch(
+            "ALTER TABLE plugins ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    // 稳定回填：installed_at DESC, id ASC（无 installed_at 则 id ASC）
+    let has_installed_at: bool = {
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(plugins)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        cols.iter().any(|c| c == "installed_at")
+    };
+    let order_by = if has_installed_at {
+        "ORDER BY installed_at DESC, id ASC"
+    } else {
+        "ORDER BY id ASC"
+    };
+    let ids: Vec<String> = {
+        let sql = format!("SELECT id FROM plugins {}", order_by);
+        let rows: Vec<String> = conn
+            .prepare(&sql)?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        rows
+    };
+    for (index, id) in ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE plugins SET sort_order = ?1 WHERE id = ?2",
+            params![(index + 1) as i64, id],
+        )?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// legacy plugin storage 迁移（对等 database/pluginStorage.ts）
+// ---------------------------------------------------------------------------
+
+fn migrate_legacy_plugin_storage(conn: &Connection) -> rusqlite::Result<()> {
+    if let Some(diary_id) = plugin_id_by_name(conn, "diary")? {
+        migrate_legacy_for_plugin(conn, &diary_id, "diary")?;
+    }
+    if let Some(turntable_id) = plugin_id_by_name(conn, "turntable")? {
+        migrate_legacy_for_plugin(conn, &turntable_id, "turntable")?;
+    }
+    Ok(())
+}
+
+/// 已知缺口（oracle L9）：TS 侧在 diary/turntable 插件安装/加载时也会补迁 legacy 数据
+/// （ensureLegacyPluginStorageMigrated）；Rust 侧仅在 v2 迁移时做一次。对既有库（v2 时已迁移）
+/// 无影响；仅影响"迁移后再全新安装 diary/turntable 插件"的库。1.8.2 sidecar 落地时补齐。
+fn migrate_legacy_for_plugin(
+    conn: &Connection,
+    plugin_id: &str,
+    plugin_name: &str,
+) -> rusqlite::Result<()> {
+    let migration = format!("legacy:{}:v1", plugin_name);
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM plugin_storage_migrations WHERE plugin_id = ?1 AND migration = ?2",
+            params![plugin_id, migration],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if applied.is_some() {
+        return Ok(());
+    }
+
+    if plugin_name == "diary" && table_exists(conn, "diary_entries")? {
+        let mut stmt =
+            conn.prepare("SELECT entry_date, title, content FROM diary_entries ORDER BY entry_date")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (entry_date, title, content) = row?;
+            let value = serde_json::json!({ "entry_date": entry_date, "title": title, "content": content });
+            insert_migrated_value(conn, plugin_id, &format!("entry:{}", entry_date), &value)?;
+        }
+    }
+
+    if plugin_name == "turntable" && table_exists(conn, "turntable_items")? {
+        let mut stmt = conn.prepare(
+            "SELECT * FROM turntable_items ORDER BY sort_order ASC, id ASC",
+        )?;
+        let cols: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        let rows = stmt.query_map([], |row| {
+            let mut map = serde_json::Map::new();
+            for (i, col) in cols.iter().enumerate() {
+                map.insert(col.clone(), value_ref_to_json(&row.get_ref(i)?)?);
+            }
+            Ok(map)
+        })?;
+        let items: Vec<serde_json::Value> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(serde_json::Value::Object)
+            .collect();
+        insert_migrated_value(conn, plugin_id, "items", &serde_json::Value::Array(items))?;
+    }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO plugin_storage_migrations (plugin_id, migration) VALUES (?1, ?2)",
+        params![plugin_id, migration],
+    )?;
+    Ok(())
+}
+
+fn insert_migrated_value(
+    conn: &Connection,
+    plugin_id: &str,
+    key: &str,
+    value: &serde_json::Value,
+) -> rusqlite::Result<()> {
+    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    conn.execute(
+        "INSERT OR IGNORE INTO plugin_storage (plugin_id, key, value) VALUES (?1, ?2, ?3)",
+        params![plugin_id, key, serialized],
+    )
+    .map(|_| ())
+}
+
+/// 把 rusqlite ValueRef 转成 serde_json，语义对齐 TS `JSON.stringify`：
+/// - 数字保真、布尔/字符串直通、NULL→null
+/// - BLOB → `{"type":"Buffer","data":[...]}`（对等 better-sqlite3 读出 Buffer 后
+///   JSON.stringify 的产物；base64 字符串会与 TS 版本结构不同，不可用）
+fn value_ref_to_json(v: &rusqlite::types::ValueRef) -> rusqlite::Result<serde_json::Value> {
+    use rusqlite::types::ValueRef;
+    Ok(match v {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(i) => serde_json::Value::Number((*i).into()),
+        ValueRef::Real(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        ValueRef::Text(s) => serde_json::Value::String(String::from_utf8_lossy(s).into_owned()),
+        ValueRef::Blob(b) => serde_json::json!({
+            "type": "Buffer",
+            "data": b.iter().copied().map(u64::from).collect::<Vec<_>>(),
+        }),
+    })
+}
+
+fn plugin_id_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT id FROM plugins WHERE name = ?1",
+        params![name],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    let found: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+// ---------------------------------------------------------------------------
+// 日志保留（对等 LOG_RETENTION_DAYS=30）
+// ---------------------------------------------------------------------------
+
+fn cleanup_plugin_logs(db: &Db) -> rusqlite::Result<()> {
+    let guard = db.conn.lock().unwrap();
+    guard.execute(
+        "DELETE FROM plugin_logs WHERE timestamp < datetime('now', 'localtime', '-30 day')",
+        [],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cruciblebox-db-test-{}", name));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("openbox.db");
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn fresh_db_migrates_to_v3() {
+        let path = temp_db("fresh");
+        let db = Db::open(&path).unwrap();
+        let status = db.status().unwrap();
+        assert_eq!(status.version, 3);
+        assert_eq!(status.journal_mode.to_lowercase(), "wal");
+        assert!(status.foreign_keys);
+    }
+
+    #[test]
+    fn open_fails_when_parent_dir_missing() {
+        // C1 场景：Db::open 依赖调用方先创建父目录（对等 TS getDbPath 的 mkdirSync）。
+        // 本测试固化该契约：父目录不存在 → 返回 Err 而非 panic。
+        let dir = std::env::temp_dir().join(format!(
+            "cruciblebox-db-test-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("data").join("openbox.db");
+        assert!(Db::open(&path).is_err());
+        // 调用方补建目录后成功（main.rs 的 create_dir_all 路径）
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        assert!(Db::open(&path).is_ok());
+    }
+
+    #[test]
+    fn idempotent_reopen_keeps_v3() {
+        let path = temp_db("reopen");
+        drop(Db::open(&path).unwrap());
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.status().unwrap().version, 3);
+    }
+
+    #[test]
+    fn settings_roundtrip() {
+        let path = temp_db("settings");
+        let db = Db::open(&path).unwrap();
+        {
+            let guard = db.conn.lock().unwrap();
+            guard
+                .execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                    rusqlite::params!["updateChannel", "stable"],
+                )
+                .unwrap();
+        }
+        let guard = db.conn.lock().unwrap();
+        let v: String = guard
+            .query_row("SELECT value FROM settings WHERE key = ?1", ["updateChannel"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(v, "stable");
+    }
+
+    #[test]
+    fn legacy_turntable_migration() {
+        let path = temp_db("legacy-turntable");
+        let db = Db::open(&path).unwrap();
+        {
+            let guard = db.conn.lock().unwrap();
+            guard
+                .execute_batch(
+                    r#"
+                    CREATE TABLE turntable_items (
+                      id INTEGER PRIMARY KEY,
+                      name TEXT NOT NULL,
+                      sort_order INTEGER DEFAULT 0
+                    );
+                    INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
+                      VALUES ('p1', 'turntable', '1.0.0', 'Turntable', 'index.js', 'C:/plugins/turntable');
+                    INSERT INTO turntable_items (name, sort_order) VALUES ('a', 1), ('b', 2);
+                    "#,
+                )
+                .unwrap();
+            // 模拟旧库已有 user_version=3 但未迁移 legacy（避免重复跑 v1-v3）
+            guard.pragma_update(None, "user_version", 3).unwrap();
+        }
+        // 直接调用 legacy 迁移（模拟 ensureLegacyPluginStorageMigrated 语义）
+        migrate_legacy_plugin_storage(&db.conn.lock().unwrap()).unwrap();
+        let guard = db.conn.lock().unwrap();
+        let stored: String = guard
+            .query_row(
+                "SELECT value FROM plugin_storage WHERE plugin_id = 'p1' AND key = 'items'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(), 2);
+    }
+}
