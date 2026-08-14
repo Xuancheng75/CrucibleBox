@@ -10,11 +10,13 @@ mod app;
 mod commands;
 mod data_dir;
 mod db;
+mod plugin_protocol;
+mod plugin_session;
 
 use serde::Serialize;
 use std::path::PathBuf;
 use std::process;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 /// 进程内存信息（供 P4 内存 A/B 基准从前端查询）
@@ -92,6 +94,17 @@ fn show_fatal_error(message: &str) -> ! {
 
 fn main() {
     tauri::Builder::default()
+        // 插件 renderer 自定义协议（1.8.3）：http://cruciblebox-plugin.localhost/<token>/<res>
+        // handler 经 app_handle.state 取 registry（setup 中 manage）
+        .register_uri_scheme_protocol(
+            plugin_session::PLUGIN_RENDERER_SCHEME,
+            |ctx, request| {
+                let protocol = ctx
+                    .app_handle()
+                    .state::<Arc<plugin_protocol::ProtocolContext>>();
+                plugin_protocol::handle_protocol(&protocol, request.uri().to_string())
+            },
+        )
         .setup(|app| {
             // 1) L3 数据路径迁移。
             //    策略：迁移失败是数据完整性风险（checkpoint 失败/IO 错误），中止启动并给
@@ -136,6 +149,18 @@ fn main() {
             // 4) manage 状态（commands 以 State<Mutex<Db>> 访问）+ 数据目录
             app.manage(Mutex::new(db));
             app.manage(data_dir);
+
+            // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）
+            let registry = Arc::new(Mutex::new(
+                plugin_session::RendererSessionRegistry::new(
+                    plugin_session::DEFAULT_TTL,
+                ),
+            ));
+            app.manage(registry.clone());
+            app.manage(Arc::new(plugin_protocol::ProtocolContext {
+                registry,
+                owner_label: "main".into(),
+            }));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -149,6 +174,8 @@ fn main() {
             commands::plugin_get,
             commands::db_status,
             commands::db_execute,
+            commands::create_renderer_session,
+            commands::dispose_renderer_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CrucibleBox");
