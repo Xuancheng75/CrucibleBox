@@ -6,7 +6,7 @@ import {
   TaskPollingAbortedError,
   TaskPollingTimeoutError
 } from '../src/renderer-task'
-import type { TaskSnapshot } from '../src/task-manager'
+import type { TaskSnapshot } from '../../../plugin-system/trusted-services/unienv/task-manager'
 
 function snapshot(status: TaskSnapshot['status'], progress?: { percent: number }): TaskSnapshot {
   return {

@@ -5,8 +5,11 @@ import {
   pollTask,
   readStartedTaskId
 } from './renderer-task'
-import type { TaskSnapshot, TaskStatus } from './task-manager'
-import type { ToolId } from './protocol'
+import type {
+  TaskSnapshot,
+  TaskStatus
+} from '../../../plugin-system/trusted-services/unienv/task-manager'
+import type { ToolId } from '../../../plugin-system/trusted-services/unienv/protocol'
 import {
   TOOL_VERSION_LIFECYCLE_AS_OF,
   formatComboLifecycleSummary,
@@ -16,7 +19,7 @@ import {
   orderToolVersionsForDisplay,
   requiresComboVersionConfirmation,
   requiresToolVersionConfirmation
-} from './version-lifecycle'
+} from '../../../plugin-system/trusted-services/unienv/version-lifecycle'
 
 // ============================================================
 // 内联样式常量 — 复刻 Ant Design 5.x 视觉风格

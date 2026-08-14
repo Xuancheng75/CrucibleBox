@@ -11,7 +11,7 @@ import {
   parseDownloadMirror,
   parseUniEnvConfig,
   parseUniEnvRequest
-} from '../src/protocol'
+} from '../../../plugin-system/trusted-services/unienv/protocol'
 
 function customCombo(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

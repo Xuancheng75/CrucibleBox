@@ -4,8 +4,8 @@ import {
   PathPolicyError,
   canonicalizeInstallRoot,
   safeJoinVersionDirectory
-} from '../src/path-policy'
-import type { ToolId, ToolVersion } from '../src/protocol'
+} from '../../../plugin-system/trusted-services/unienv/path-policy'
+import type { ToolId, ToolVersion } from '../../../plugin-system/trusted-services/unienv/protocol'
 
 describe('canonicalizeInstallRoot', () => {
   it('canonicalizes drive case, separators, dot segments, and trailing separators', () => {

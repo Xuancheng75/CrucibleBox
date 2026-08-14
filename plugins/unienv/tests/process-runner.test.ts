@@ -8,7 +8,7 @@ import {
   type ProcessChild,
   type ProcessTreeTerminator,
   type SpawnProcess
-} from '../src/process-runner'
+} from '../../../plugin-system/trusted-services/unienv/process-runner'
 
 class FakeChild extends EventEmitter {
   readonly pid = 4242

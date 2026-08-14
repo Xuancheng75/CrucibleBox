@@ -1,4 +1,7 @@
-import type { TaskSnapshot, TaskStatus } from './task-manager'
+import type {
+  TaskSnapshot,
+  TaskStatus
+} from '../../../plugin-system/trusted-services/unienv/task-manager'
 
 export const TASK_POLL_INTERVAL_MS = 1_000
 export const TASK_POLL_TIMEOUT_MS = 90 * 60 * 1_000

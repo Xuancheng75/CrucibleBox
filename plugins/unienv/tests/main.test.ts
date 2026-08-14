@@ -61,13 +61,23 @@ const mocked = vi.hoisted(() => {
   }
 })
 
-vi.mock('../src/tools/python', () => ({ pythonTool: mocked.pythonTool }))
-vi.mock('../src/tools/node', () => ({ nodeTool: mocked.nodeTool }))
-vi.mock('../src/tools/git', () => ({ gitTool: mocked.gitTool }))
-vi.mock('../src/tools/go', () => ({ goTool: mocked.goTool }))
-vi.mock('../src/tools/java', () => ({ javaTool: mocked.javaTool }))
+vi.mock('../../../plugin-system/trusted-services/unienv/tools/python', () => ({
+  pythonTool: mocked.pythonTool
+}))
+vi.mock('../../../plugin-system/trusted-services/unienv/tools/node', () => ({
+  nodeTool: mocked.nodeTool
+}))
+vi.mock('../../../plugin-system/trusted-services/unienv/tools/git', () => ({
+  gitTool: mocked.gitTool
+}))
+vi.mock('../../../plugin-system/trusted-services/unienv/tools/go', () => ({
+  goTool: mocked.goTool
+}))
+vi.mock('../../../plugin-system/trusted-services/unienv/tools/java', () => ({
+  javaTool: mocked.javaTool
+}))
 
-import plugin from '../src/trusted-service'
+import plugin from '../../../plugin-system/trusted-services/unienv/trusted-service'
 
 interface ResponseRecord {
   [key: string]: unknown

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { SUPPORTED_TOOL_VERSIONS } from '../src/protocol'
-import { gitTool } from '../src/tools/git'
-import { goTool } from '../src/tools/go'
-import { javaTool } from '../src/tools/java'
-import { nodeTool } from '../src/tools/node'
-import { pythonTool } from '../src/tools/python'
+import { SUPPORTED_TOOL_VERSIONS } from '../../../plugin-system/trusted-services/unienv/protocol'
+import { gitTool } from '../../../plugin-system/trusted-services/unienv/tools/git'
+import { goTool } from '../../../plugin-system/trusted-services/unienv/tools/go'
+import { javaTool } from '../../../plugin-system/trusted-services/unienv/tools/java'
+import { nodeTool } from '../../../plugin-system/trusted-services/unienv/tools/node'
+import { pythonTool } from '../../../plugin-system/trusted-services/unienv/tools/python'
 
 describe('tool version catalogs', () => {
   it.each([

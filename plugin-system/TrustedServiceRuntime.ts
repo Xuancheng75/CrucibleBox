@@ -148,7 +148,9 @@ export class TrustedServiceRuntime {
     if (!this.authorizedForUniEnv)
       throw new Error('Plugin is not authorized for the UniEnv service')
     if (!this.service) {
-      const loaded = await import('../plugins/unienv/src/trusted-service')
+      // 宿主固定加载：实现位于 plugin-system/trusted-services/unienv/，
+      // 不再依赖插件源码目录相对路径（1.6.2 物理隔离）。
+      const loaded = await import('./trusted-services/unienv/trusted-service')
       this.service = loaded.default as UniEnvTrustedServiceModule
     }
     return this.service
