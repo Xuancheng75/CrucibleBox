@@ -10,10 +10,14 @@ import { fileURLToPath } from 'node:url'
  * 本工具用 sql.js 打开 openbox.db（SQLite 文件），执行只读查询或导出诊断快照，
  * 供宿主无法启动 / 数据库损坏排查时离线使用。不做生产 fallback。
  *
+ * 注意：生产库为 WAL 模式，better 引擎崩溃后未 checkpoint 的 `-wal` 事务在
+ * 直接读取主文件时不可见。排障前请先整体拷贝 `openbox.db` + `openbox.db-wal`
+ * 到安全目录再离线打开。
+ *
  * 用法：
- *   node scripts/db-recovery-tool.mjs <db-path> <sql>            # 执行只读查询
+ *   node scripts/db-recovery-tool.mjs <db-path> <sql>            # 执行只读查询（拒绝分号链/写语句）
  *   node scripts/db-recovery-tool.mjs <db-path> --tables          # 列出表
- *   node scripts/db-recovery-tool.mjs <db-path> --export <out>    # 导出字节级副本
+ *   node scripts/db-recovery-tool.mjs <db-path> --export <out>    # 导出字节级副本（out ≠ 源文件）
  */
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
@@ -54,12 +58,20 @@ async function main() {
     }
     if (command === '--export') {
       if (!arg) throw new Error('--export requires an output path')
-      writeFileSync(arg, Buffer.from(database.export()))
-      console.log(`[db-recovery] exported ${dbPath} -> ${arg}`)
+      const resolvedInput = resolve(dbPath)
+      const resolvedOutput = resolve(arg)
+      if (resolvedOutput === resolvedInput) {
+        throw new Error('--export output path must differ from the source database')
+      }
+      writeFileSync(resolvedOutput, Buffer.from(database.export()))
+      console.log(`[db-recovery] exported ${dbPath} -> ${resolvedOutput}`)
       return
     }
-    // 只读查询（禁止写语句，防误伤）
+    // 只读查询（禁止写语句与分号链，防误伤/绕过）
     const upper = command.trim().toUpperCase()
+    if (upper.includes(';')) {
+      throw new Error('Multi-statement input is not allowed (semicolon)')
+    }
     if (!/^SELECT|^PRAGMA|^EXPLAIN/u.test(upper)) {
       throw new Error('Only read-only queries are allowed (SELECT/PRAGMA/EXPLAIN)')
     }

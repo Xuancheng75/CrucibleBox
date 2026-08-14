@@ -11,6 +11,8 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// 依赖 sql.js（devDependency，仅用于构造旧 schema seed 库）。本脚本须在
+// 完整 `npm ci`（含 devDependencies）环境下运行，勿用 `--omit=dev`。
 import initSqlJs from 'sql.js'
 import { resolvePackagedExecutable } from './packaged-paths.mjs'
 

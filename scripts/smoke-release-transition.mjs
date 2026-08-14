@@ -2,6 +2,8 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
+// 依赖 sql.js（devDependency，仅用于构造过渡数据库）。本脚本须在完整
+// `npm ci`（含 devDependencies）环境下运行，勿用 `--omit=dev`。
 import initSqlJs from 'sql.js'
 import { resolvePackagedExecutable } from './packaged-paths.mjs'
 

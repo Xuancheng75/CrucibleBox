@@ -1,4 +1,5 @@
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js'
+import type initSqlJs from 'sql.js'
+import type { Database as SqlJsDatabase } from 'sql.js'
 import Database from 'better-sqlite3'
 import { join, dirname } from 'path'
 import { existsSync, copyFileSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs'
@@ -21,6 +22,10 @@ let db: EngineDb | null = null
 const PERSIST_DEBOUNCE_MS = 500
 const LOG_RETENTION_DAYS = 30
 
+/**
+ * @deprecated 1.6.0 起生产仅 better-sqlite3；本函数恒返回 'better'，
+ * 仅保留导出兼容（计划 1.7.0 删除）。sql.js 仅供测试/离线恢复工具显式选用。
+ */
 export function getDbEngine(): DbEngineName {
   // 1.6.0 起生产仅 better-sqlite3；sql.js 仅供测试/离线恢复工具显式选用。
   return 'better'
@@ -156,6 +161,9 @@ class SqlJsEngine implements EngineDb {
 
 async function initSqlJsEngine(path: string): Promise<SqlJsEngine> {
   if (!sqlJsRuntime) {
+    // 1.6.0 起 sql.js 是 devDependency（测试/恢复工具）；动态加载避免其被
+    // electron-vite 内联进生产主 bundle（生产路径永不触碰此模块）。
+    const { default: initSqlJs } = await import('sql.js')
     const wasmPath = getWasmPath()
     if (wasmPath && existsSync(wasmPath)) {
       const wasmBinary = readFileSync(wasmPath)
