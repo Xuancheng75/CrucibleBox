@@ -51,7 +51,7 @@ jobs:
       - name: Setup Rust (stable-msvc)
         uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa236d491518944de # v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri
 
