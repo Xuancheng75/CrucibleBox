@@ -138,8 +138,14 @@ mod tests {
     #[test]
     fn permission_mapping() {
         assert_eq!(permission_for_host_method("db.query"), Some(DATABASE_READ));
-        assert_eq!(permission_for_host_method("storage.set"), Some(STORAGE_WRITE));
-        assert_eq!(permission_for_host_method("trusted.invoke"), Some(TRUSTED_UNIENV));
+        assert_eq!(
+            permission_for_host_method("storage.set"),
+            Some(STORAGE_WRITE)
+        );
+        assert_eq!(
+            permission_for_host_method("trusted.invoke"),
+            Some(TRUSTED_UNIENV)
+        );
         assert_eq!(permission_for_host_method("log.write"), None);
         assert_eq!(permission_for_host_method("event.subscribe"), None);
     }

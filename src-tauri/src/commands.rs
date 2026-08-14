@@ -1,4 +1,4 @@
-﻿// 1.8.1 核心 IPC 命令集（Tauri commands）
+// 1.8.1 核心 IPC 命令集（Tauri commands）
 // 对等 electron/ipc/*.ts + settings/theme/plugin 读路径。
 // 并发模型：所有 DB 命令用 #[tauri::command(async)] 跑在线程池（阻塞安全），
 // 经 tauri::State<Mutex<Db>> 单连接串行化（与 better-sqlite3 单连接语义对等）。
@@ -349,10 +349,7 @@ pub fn plugin_send_message(
             .ok_or_else(|| format!("plugin not found: {plugin_id}"))?
     };
     let proc = backend.ensure_activated(&plugin_id, record)?;
-    let result = proc.request(
-        "plugin.message",
-        serde_json::json!({ "message": message }),
-    )?;
+    let result = proc.request("plugin.message", serde_json::json!({ "message": message }))?;
     Ok(result)
 }
 

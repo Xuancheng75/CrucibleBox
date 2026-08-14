@@ -11,7 +11,10 @@ pub fn random_token_alnum(n: usize) -> Result<String, String> {
     }
     let mut buf = vec![0u8; n];
     getrandom::getrandom(&mut buf).map_err(|e| format!("rng failure: {e}"))?;
-    Ok(buf.iter().map(|b| ALNUM[(*b as usize) % ALNUM.len()] as char).collect())
+    Ok(buf
+        .iter()
+        .map(|b| ALNUM[(*b as usize) % ALNUM.len()] as char)
+        .collect())
 }
 
 /// 生成 64 位小写 hex（对等 randomBytes(32).toString('hex')）
@@ -30,14 +33,18 @@ mod tests {
     fn alnum_matches_envelope_token_regex() {
         let t = random_token_alnum(32).unwrap();
         assert_eq!(t.len(), 32);
-        assert!(t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+        assert!(t
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
     }
 
     #[test]
     fn hex_is_64_lowercase() {
         let t = random_token_hex().unwrap();
         assert_eq!(t.len(), 64);
-        assert!(t.chars().all(|c| c.is_ascii_hexdigit() && c.is_lowercase() || c.is_ascii_digit()));
+        assert!(t
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && c.is_lowercase() || c.is_ascii_digit()));
     }
 
     #[test]

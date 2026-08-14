@@ -88,7 +88,9 @@ impl BackendProcess {
                 cmd.env(key, v);
             }
         }
-        let mut child = cmd.spawn().map_err(|e| format!("spawn sidecar failed: {e}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("spawn sidecar failed: {e}"))?;
         let stdin = child
             .stdin
             .take()
@@ -206,14 +208,19 @@ impl BackendProcess {
             }
         }
         // 3) 执行
-        let result = crate::envelope_host::host_dispatch(&self.db, &self.plugin_id, &method, &params);
+        let result =
+            crate::envelope_host::host_dispatch(&self.db, &self.plugin_id, &method, &params);
         let _ = self.send_host_response(&request_id, result);
     }
 
     /// 响应写回 stdin（与 worker 请求共用 stdin 锁，帧原子写）
     /// 信封：{v:2, kind:'response', token, requestId, ok, result|error}
     /// token 必须回显 spawn 时注入值（sidecar validate_host_response 校验）。
-    fn send_host_response(&self, request_id: &str, result: Result<Value, String>) -> std::io::Result<()> {
+    fn send_host_response(
+        &self,
+        request_id: &str,
+        result: Result<Value, String>,
+    ) -> std::io::Result<()> {
         let payload = match result {
             Ok(v) => json!({
                 "v": 2, "kind": "response", "token": self.token,
@@ -225,9 +232,8 @@ impl BackendProcess {
                 "error": { "code": "NOT_ALLOWED", "message": msg },
             }),
         };
-        let bytes = serde_json::to_vec(&payload).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         let mut stdin = self.stdin.lock().unwrap();
         write_frame(&mut *stdin, &bytes)
     }
@@ -305,7 +311,10 @@ impl BackendProcess {
             self.disabled.store(true, Ordering::SeqCst);
             None // 5 分钟内 3 次崩溃 → 隔离
         } else {
-            let idx = self.last_backoff_index.fetch_add(1, Ordering::SeqCst).min(BACKOFFS.len() - 1);
+            let idx = self
+                .last_backoff_index
+                .fetch_add(1, Ordering::SeqCst)
+                .min(BACKOFFS.len() - 1);
             Some(BACKOFFS[idx])
         }
     }
@@ -321,20 +330,29 @@ fn read_frame<R: Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
             if filled == 0 {
                 return Ok(None);
             }
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated frame"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated frame",
+            ));
         }
         filled += n;
     }
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > 8 * 1024 * 1024 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut payload = vec![0u8; len];
     let mut filled = 0;
     while filled < len {
         let n = reader.read(&mut payload[filled..])?;
         if n == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "truncated frame"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated frame",
+            ));
         }
         filled += n;
     }
@@ -344,7 +362,10 @@ fn read_frame<R: Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
 /// 写一帧
 pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> std::io::Result<()> {
     if payload.len() > 8 * 1024 * 1024 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "payload too large"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "payload too large",
+        ));
     }
     writer.write_all(&(payload.len() as u32).to_be_bytes())?;
     writer.write_all(payload)?;
@@ -368,9 +389,15 @@ impl BackendProcessManager {
             .ok()
             .map(|d| {
                 let cands = [
-                    d.join("target").join("debug").join("cruciblebox-plugin-host.exe"),
+                    d.join("target")
+                        .join("debug")
+                        .join("cruciblebox-plugin-host.exe"),
                     d.parent()
-                        .map(|p| p.join("target").join("debug").join("cruciblebox-plugin-host.exe"))
+                        .map(|p| {
+                            p.join("target")
+                                .join("debug")
+                                .join("cruciblebox-plugin-host.exe")
+                        })
                         .unwrap_or_default(),
                 ];
                 cands.into_iter().find(|p| p.exists()).unwrap_or_default()
@@ -409,7 +436,10 @@ impl BackendProcessManager {
             "lifecycle.initialize",
             json!({ "pluginId": plugin_id, "config": {} }),
         )?;
-        self.processes.lock().unwrap().insert(plugin_id.to_string(), proc.clone());
+        self.processes
+            .lock()
+            .unwrap()
+            .insert(plugin_id.to_string(), proc.clone());
         Ok(proc)
     }
 
@@ -421,8 +451,13 @@ impl BackendProcessManager {
     }
 
     pub fn kill_all(&self) {
-        let procs: Vec<Arc<BackendProcess>> =
-            self.processes.lock().unwrap().drain().map(|(_, p)| p).collect();
+        let procs: Vec<Arc<BackendProcess>> = self
+            .processes
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, p)| p)
+            .collect();
         for p in procs {
             p.kill_now("app shutdown");
         }
@@ -445,7 +480,11 @@ mod tests {
         // 测试 cwd = src-tauri/；sidecar exe 在 target/debug/
         std::env::current_dir()
             .ok()
-            .map(|d| d.join("target").join("debug").join("cruciblebox-plugin-host.exe"))
+            .map(|d| {
+                d.join("target")
+                    .join("debug")
+                    .join("cruciblebox-plugin-host.exe")
+            })
             .filter(|p| p.exists())
             .unwrap_or_else(|| PathBuf::from("target/debug/cruciblebox-plugin-host.exe"))
     }
@@ -492,7 +531,10 @@ mod tests {
         .expect("spawn sidecar");
 
         // initialize（gif-editor activate 会写日志 → host log.write → DB）
-        let init = proc.request("lifecycle.initialize", json!({"pluginId": "gif-editor", "config": {}}));
+        let init = proc.request(
+            "lifecycle.initialize",
+            json!({"pluginId": "gif-editor", "config": {}}),
+        );
         assert!(init.is_ok(), "initialize failed: {:?}", init.err());
 
         // plugin.message(ping) → 期望 {"ok":true}
@@ -513,7 +555,10 @@ mod tests {
                 )
                 .unwrap()
         };
-        assert!(log_count >= 1, "expected activate log in plugin_logs, got {log_count}");
+        assert!(
+            log_count >= 1,
+            "expected activate log in plugin_logs, got {log_count}"
+        );
 
         // dispose
         let _ = proc.request("lifecycle.dispose", json!({}));

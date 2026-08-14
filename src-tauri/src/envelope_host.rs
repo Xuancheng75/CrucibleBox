@@ -36,17 +36,21 @@ pub fn host_dispatch(
             let key = str_param(params, "key")?;
             let value = params.get("value").cloned().unwrap_or(Value::Null);
             let serialized = serde_json::to_string(&value).map_err(|e| e.to_string())?;
-            db.storage_set(plugin_id, &key, &serialized).map_err(|e| e.to_string())?;
+            db.storage_set(plugin_id, &key, &serialized)
+                .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "storage.delete" => {
             let key = str_param(params, "key")?;
-            db.storage_delete(plugin_id, &key).map_err(|e| e.to_string())?;
+            db.storage_delete(plugin_id, &key)
+                .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "storage.list" => {
             let prefix = params.get("prefix").and_then(Value::as_str).unwrap_or("");
-            let rows = db.storage_list(plugin_id, prefix).map_err(|e| e.to_string())?;
+            let rows = db
+                .storage_list(plugin_id, prefix)
+                .map_err(|e| e.to_string())?;
             let items: Vec<Value> = rows
                 .into_iter()
                 .map(|(k, v)| json!({ "key": k, "value": parse_stored(&v) }))
@@ -62,18 +66,30 @@ pub fn host_dispatch(
                 .iter()
                 .map(|m| {
                     let is_set = m.get("type").and_then(Value::as_str) == Some("set");
-                    let key = m.get("key").and_then(Value::as_str).unwrap_or("").to_string();
-                    let value = m.get("value").cloned().map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into()));
+                    let key = m
+                        .get("key")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let value = m
+                        .get("value")
+                        .cloned()
+                        .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "null".into()));
                     (is_set, key, value)
                 })
                 .collect::<Vec<_>>();
-            db.storage_batch(plugin_id, &converted).map_err(|e| e.to_string())?;
+            db.storage_batch(plugin_id, &converted)
+                .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "log.write" => {
-            let level = params.get("level").and_then(Value::as_str).unwrap_or("info");
+            let level = params
+                .get("level")
+                .and_then(Value::as_str)
+                .unwrap_or("info");
             let message = str_param(params, "message")?;
-            db.log_write(plugin_id, level, &message).map_err(|e| e.to_string())?;
+            db.log_write(plugin_id, level, &message)
+                .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         // event.*：1.9.2-a 最小面——subscribe/unsubscribe 记录接受（no-op 通过），
@@ -124,15 +140,14 @@ fn query_rows(db: &Db, sql: &str, params: &[Value]) -> rusqlite::Result<Value> {
     let mut stmt = guard.prepare(sql)?;
     let sql_values: Vec<rusqlite::types::Value> = params.iter().map(to_sql_value).collect();
     let col_names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(sql_values.iter()), |row| {
-            let mut map = serde_json::Map::new();
-            for (idx, name) in col_names.iter().enumerate() {
-                let v = value_ref_to_json(&row.get_ref(idx)?)?;
-                map.insert(name.clone(), v);
-            }
-            Ok(map)
-        })?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(sql_values.iter()), |row| {
+        let mut map = serde_json::Map::new();
+        for (idx, name) in col_names.iter().enumerate() {
+            let v = value_ref_to_json(&row.get_ref(idx)?)?;
+            map.insert(name.clone(), v);
+        }
+        Ok(map)
+    })?;
     let out: Vec<Value> = rows
         .collect::<rusqlite::Result<Vec<_>>>()?
         .into_iter()

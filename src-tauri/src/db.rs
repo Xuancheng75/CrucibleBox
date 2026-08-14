@@ -60,8 +60,8 @@ impl Db {
     pub fn status(&self) -> rusqlite::Result<DbStatus> {
         let guard = self.conn.lock().unwrap();
         let version: i64 = pragma_i64(&guard, "user_version")?;
-        let journal: String = guard
-            .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
+        let journal: String =
+            guard.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))?;
         let fk: i64 = pragma_i64(&guard, "foreign_keys")?;
         Ok(DbStatus {
             version,
@@ -119,8 +119,9 @@ impl Db {
     ) -> rusqlite::Result<Vec<(String, String)>> {
         let guard = self.conn.lock().unwrap();
         let rows: Vec<(String, String)> = if prefix.is_empty() {
-            let mut stmt =
-                guard.prepare("SELECT key, value FROM plugin_storage WHERE plugin_id = ?1 ORDER BY key")?;
+            let mut stmt = guard.prepare(
+                "SELECT key, value FROM plugin_storage WHERE plugin_id = ?1 ORDER BY key",
+            )?;
             let collected: Vec<(String, String)> = stmt
                 .query_map([plugin_id], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -191,12 +192,7 @@ impl Db {
     }
 
     /// log.write：插件日志入库
-    pub fn log_write(
-        &self,
-        plugin_id: &str,
-        level: &str,
-        message: &str,
-    ) -> rusqlite::Result<()> {
+    pub fn log_write(&self, plugin_id: &str, level: &str, message: &str) -> rusqlite::Result<()> {
         let guard = self.conn.lock().unwrap();
         guard
             .execute(
