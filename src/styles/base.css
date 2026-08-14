@@ -1,0 +1,105 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: var(
+    --ob-font-family,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    'Noto Sans',
+    sans-serif
+  );
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ob-color-border-secondary, #c0c0c0);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ob-color-text-tertiary, #a0a0a0);
+}
+
+.ob-upload-drag-icon {
+  margin-bottom: 12px;
+  color: var(--ob-color-primary);
+  font-size: 48px;
+  line-height: 1;
+}
+
+.ob-launcher-actions {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.ob-launcher:hover .ob-launcher-actions,
+.ob-launcher:focus-within .ob-launcher-actions {
+  opacity: 1;
+}
+
+/* Command palette entrance */
+@keyframes ob-palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ============================================================
+   DARK TEXTURED LAYOUT — glass rail + layered cards (dark modes)
+   ============================================================ */
+
+[data-ob-theme='dark'] .ob-layout,
+[data-ob-theme='ocean'] .ob-layout,
+[data-ob-theme='cyber'] .ob-layout {
+  background-image: linear-gradient(
+    180deg,
+    var(--ob-color-bg-layout, #08090d),
+    var(--ob-color-bg, #0a0c10)
+  );
+  background-attachment: fixed;
+}
+
+[data-ob-theme='dark'] .ob-rail-shell,
+[data-ob-theme='ocean'] .ob-rail-shell,
+[data-ob-theme='cyber'] .ob-rail-shell {
+  background: color-mix(in srgb, var(--ob-color-bg-container, #171a21) 72%, transparent) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+[data-ob-theme='dark'] .ob-launcher,
+[data-ob-theme='ocean'] .ob-launcher,
+[data-ob-theme='cyber'] .ob-launcher {
+  border-color: rgba(255, 255, 255, 0.06);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
+}

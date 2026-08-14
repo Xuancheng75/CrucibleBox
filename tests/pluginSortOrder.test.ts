@@ -115,7 +115,9 @@ describe('plugin sort order frontend contract', () => {
   })
 
   it('styles sortable states with ob- classes and respects reduced motion', () => {
-    const styles = readSrc('styles', 'global.css')
+    const styles = ['base', 'cyber', 'neon']
+      .map((part) => readSrc('styles', `${part}.css`))
+      .join('\n')
     expect(styles).toContain('.ob-sr-only')
     expect(styles).toContain('.ob-sortable-list')
     expect(styles).toContain('.ob-launcher[data-dragging')
