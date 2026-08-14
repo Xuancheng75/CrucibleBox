@@ -1,0 +1,15 @@
+[package]
+name = "cruciblebox-plugin-host"
+version = "1.8.2"
+edition = "2021"
+description = "CrucibleBox plugin backend sidecar (quickjs-ng) - runs plugin backend CJS in an isolated process"
+
+[dependencies]
+rquickjs = { version = "0.12", features = ["futures"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
