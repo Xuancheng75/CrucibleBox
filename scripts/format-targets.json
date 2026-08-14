@@ -3,6 +3,8 @@
   "tests/**/*.ts",
   "database/{index,pluginStorage}.ts",
   "plugin-system/{PluginArchivePolicy,PluginCrashPolicy,PluginDirectoryTransaction,PluginInstallationService,PluginInstallPreparation,PluginManager,PluginManifestPolicy,PluginProcessEntry,PluginProtocol,PluginRendererProtocol,PluginRendererRequestOwnerProof,PluginRendererSessionRegistry,PluginSandbox,PluginTransactionFs,PluginTransactionJournal,PluginTransactionRecovery,TrustedServiceRuntime,semver}.ts",
+  "plugin-system/runtime/*.ts",
+  "tests/installTransactionStateMachine.test.ts",
   "electron/{AppUpdateService,DiagnosticLog,StartupMetrics,main,pluginRendererSmoke,preload,theme.service,windowSecurityPolicy}.ts",
   "electron/ipc/{index,ipcGuard,ipcGuardPolicy,plugin.ipc,update.ipc}.ts",
   "shared/{plugin-backend-rpc,plugin-renderer-rpc}.ts",
