@@ -1,4 +1,4 @@
-appId: com.openbox.app
+appId: com.cruciblebox.app
 productName: CrucibleBox
 directories:
   buildResources: build

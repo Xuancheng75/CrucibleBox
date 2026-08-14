@@ -9,7 +9,7 @@ if (args[0] === 'create-plugin') {
   startDev(args[1] || process.cwd())
 } else {
   console.log(`
-OpenBox CLI v0.5.0
+CrucibleBox CLI v0.5.0
 用法:
   openbox create-plugin <名称>    创建一个新插件项目
   openbox dev [路径]              启动插件开发模式

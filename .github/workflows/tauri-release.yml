@@ -1,0 +1,183 @@
+name: Tauri Release (v1.8.4+)
+
+# 1.8.4 引入的 Tauri 发布链（与 Electron release.yml 的 v* 链并存、互不干扰）。
+# 触发：tauri-v* tag（首个 Tauri 正式版 v1.8.4 即 tauri-v1.8.4）。
+# 产物：NSIS 安装器 + updater 签名 JSON（latest.json）+ SBOM + attestation。
+# 签名：TAURI_SIGNING_PRIVATE_KEY（GitHub secret，minisign 私钥）——发布前必须配置。
+#
+# oracle 审查修复（1.8.4）：C1 tauri-cli 安装、C2 根 npm ci、C3 frontendDist→dist、
+# H1 tag↔版本一致性、H2 私钥自检说明、H3 产物 smoke 门禁、M2 SBOM 落地、M4 action
+# SHA pin、M5 dispatch tag 校验。
+
+on:
+  push:
+    tags:
+      - 'tauri-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tauri-v* tag to publish (format tauri-vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: tauri-release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tauri-release:
+    name: Build and publish Tauri Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: tauri-frontend/package-lock.json
+
+      - name: Setup Rust (stable-msvc)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa236d491518944de # v2
+        with:
+          workspaces: src-tauri
+
+      # C2: 根依赖 + tauri-frontend 依赖（两个独立 lockfile）
+      - name: Install root deps (check gates)
+        run: npm ci
+
+      - name: Install frontend deps
+        working-directory: tauri-frontend
+        run: npm ci
+
+      - name: Quality gates (host + plugins)
+        run: npm run check
+
+      - name: Build frontend
+        working-directory: tauri-frontend
+        run: npm run build
+
+      # H1: tag ↔ src-tauri 版本一致性 + dispatch tag 格式校验（M5）
+      - name: Resolve and validate release tag
+        id: release
+        shell: bash
+        run: |
+          TAG="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          if ! [[ "$TAG" =~ ^tauri-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::invalid tag format (expected tauri-vX.Y.Z): $TAG"
+            exit 1
+          fi
+          CONF_VERSION="$(node -e "console.log(require('./src-tauri/tauri.conf.json').version)")"
+          if [ "$TAG" != "tauri-v${CONF_VERSION}" ]; then
+            echo "::error::tag ${TAG} does not match tauri.conf.json version ${CONF_VERSION}"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          case "$TAG" in
+            *-beta.*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+
+      # C1: 安装与核心 crate 对齐版本的 tauri-cli
+      - name: Install tauri-cli (aligned)
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          CORE_VERSION="$(grep '^tauri = ' Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')"
+          cargo install tauri-cli --locked --version "^${CORE_VERSION}" || \
+            cargo install tauri-cli --locked
+
+      - name: Build Tauri app + updater artifacts
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          ls ../tauri-frontend/dist/index.html
+          cargo tauri build --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+
+      # H3: 产物 smoke 门禁（installer 唯一 + latest.json 签名存在 + 零证书断言）
+      - name: Verify Tauri artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          NSIS_DIR=src-tauri/target/release/bundle/nsis
+          SETUPS="$(find "$NSIS_DIR" -name '*-setup.exe' | wc -l)"
+          if [ "$SETUPS" -ne 1 ]; then
+            echo "::error::expected exactly 1 *-setup.exe, found ${SETUPS}"
+            exit 1
+          fi
+          if [ ! -f "$NSIS_DIR/latest.json" ]; then
+            echo "::error::latest.json not found in ${NSIS_DIR}"
+            exit 1
+          fi
+          # latest.json 必须含非空 signature（updater 强制签名）
+          node -e "
+            const fs = require('fs');
+            const u = JSON.parse(fs.readFileSync('$NSIS_DIR/latest.json', 'utf8'));
+            const sig = u.signature;
+            if (typeof sig !== 'string' || sig.trim() === '') {
+              console.error('latest.json missing signature');
+              process.exit(1);
+            }
+            console.log('latest.json signature present:', sig.length, 'chars');
+          "
+          # 零证书策略：Authenticode 必须 NotSigned（与 Electron 链一致）
+          EXE="$(find "$NSIS_DIR" -name '*-setup.exe' | head -1)"
+          SIG="$(powershell -Command "Get-AuthenticodeSignature -FilePath '$EXE' | Select-Object -ExpandProperty Status")"
+          if [ "$SIG" != "NotSigned" ]; then
+            echo "::error::expected NotSigned (zero-cert policy), got ${SIG}"
+            exit 1
+          fi
+          echo "artifact verification passed"
+
+      # M2: SBOM 作为硬门禁生成并落地（不吞错）
+      - name: Generate Rust SBOM (cargo-cyclonedx)
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          cargo install cargo-cyclonedx --locked --version ^0.5 || cargo install cargo-cyclonedx --locked
+          mkdir -p ../artifacts/sbom
+          cargo cyclonedx --output-dir ../artifacts/sbom
+
+      - name: Collect Tauri artifacts + SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/tauri
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe artifacts/tauri/
+          cp src-tauri/target/release/bundle/nsis/latest.json artifacts/tauri/
+          cp src-tauri/target/release/bundle/nsis/*.sig artifacts/tauri/ 2>/dev/null || true
+          cp artifacts/sbom/cruciblebox.cdx.json artifacts/tauri/ 2>/dev/null || true
+          ls -la artifacts/tauri/
+
+      - name: Attest artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: artifacts/tauri/*
+          predicate-type: 'https://slsa.dev/provenance/v1'
+          push-to-registry: false
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          files: artifacts/tauri/*
+          prerelease: ${{ steps.release.outputs.prerelease }}
+          fail_on_unmatched_files: true

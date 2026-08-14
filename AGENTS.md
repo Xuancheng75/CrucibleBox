@@ -5,7 +5,7 @@
 
 ## 1. 项目简介
 
-- **CrucibleBox**（npm 包名 `openbox`）：Electron 43 + React 19 + Ant Design 6 + zustand + better-sqlite3 构建的 Windows 10/11 x64 可扩展工具箱。
+- **CrucibleBox**（npm 包名 `cruciblebox`）：Electron 43 + React 19 + Ant Design 6 + zustand + better-sqlite3 构建的 Windows 10/11 x64 可扩展工具箱。
 - 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/*`）。
 - `E:\CrucibleBox_Plugins` 为**只读镜像 / 发布备份**，不参与构建，不得作为编辑源。
 - 插件模型：Manifest v2 + 自包含 browser renderer（跨源 sandboxed iframe + MessagePort RPC）+ 可选 backend（utility process，backend RPC v2）。UniEnv 为宿主固定摘要可信服务。

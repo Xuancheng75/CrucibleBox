@@ -1,4 +1,4 @@
-# OpenBox 1.5.23 架构
+# CrucibleBox 1.5.23 架构
 
 ## 总览
 

@@ -13,7 +13,7 @@ if (!npmCli) throw new Error('generate:sbom must be run through npm')
 mkdirSync(outputDirectory, { recursive: true })
 
 for (const target of [
-  { id: 'openbox', directory: repositoryRoot },
+  { id: 'cruciblebox', directory: repositoryRoot },
   ...catalog.map((plugin) => ({
     id: plugin.id,
     directory: resolve(repositoryRoot, 'plugins', plugin.id)

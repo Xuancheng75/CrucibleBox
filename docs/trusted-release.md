@@ -67,7 +67,7 @@ CrucibleBox-<version>-windows-x64-setup.exe
 CrucibleBox-<version>-windows-x64-setup.exe.blockmap
 latest.yml
 SHA256SUMS
-openbox-*.cdx.json
+cruciblebox-*.cdx.json
 first-party plugin ZIPs and signed manifests
 ```
 

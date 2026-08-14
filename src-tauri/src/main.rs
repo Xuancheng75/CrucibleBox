@@ -1,4 +1,4 @@
-// CrucibleBox Tauri 主进程（1.8.1）
+// CrucibleBox Tauri 主进程（1.8.4）
 // 启动序（对等 electron/main.ts mainLoop 的 DB 相关步骤）：
 //   1) L3 数据路径迁移（%APPDATA%\openbox → %APPDATA%\cruciblebox）
 //   2) 打开 DB（WAL + v3 迁移 + 日志清理）；失败则安全退出
@@ -94,6 +94,8 @@ fn show_fatal_error(message: &str) -> ! {
 
 fn main() {
     tauri::Builder::default()
+        // tauri-plugin-updater（1.8.4：JSON 清单 + 强制签名；密钥走 CI secret）
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // 插件 renderer 自定义协议（1.8.3）：http://cruciblebox-plugin.localhost/<token>/<res>
         // handler 经 app_handle.state 取 registry（setup 中 manage）
         .register_uri_scheme_protocol(

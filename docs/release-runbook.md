@@ -51,7 +51,7 @@ npm run release:validate  # 全部 smoke + 更新元数据校验 + manifest（--
 - `CrucibleBox-<ver>-windows-x64-setup.exe` + `.blockmap`
 - `latest.yml` / `beta.yml`（含 installer SHA-512）
 - `SHA256SUMS`
-- 7 份 CycloneDX SBOM（`openbox` + 6 插件 `.cdx.json`）
+- 7 份 CycloneDX SBOM（`cruciblebox` + 6 插件 `.cdx.json`）
 - 6 个插件 ZIP + `manifest.json` + `manifest.sig.json`（Ed25519）
 - `release-manifest.json`（应用版本、插件版本、ZIP 清单、SHA-256、签名 key ID、SBOM、安装器摘要、attestation subject）
 - GitHub artifact attestation（`actions/attest@v4`）
