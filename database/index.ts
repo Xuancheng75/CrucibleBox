@@ -22,7 +22,8 @@ const PERSIST_DEBOUNCE_MS = 500
 const LOG_RETENTION_DAYS = 30
 
 export function getDbEngine(): DbEngineName {
-  return process.env.OPENBOX_DB_ENGINE === 'sqljs' ? 'sqljs' : 'better'
+  // 1.6.0 起生产仅 better-sqlite3；sql.js 仅供测试/离线恢复工具显式选用。
+  return 'better'
 }
 
 export function getDbPath(): string {
@@ -217,13 +218,15 @@ function scheduleSqlJsPersist(): void {
   }, PERSIST_DEBOUNCE_MS)
 }
 
-export async function initDatabase(dbPath?: string): Promise<EngineDb> {
+export async function initDatabase(
+  dbPath?: string,
+  engine: DbEngineName = 'better'
+): Promise<EngineDb> {
   if (db) {
     return db
   }
 
   const path = dbPath || getDbPath()
-  const engine = getDbEngine()
 
   if (engine === 'better') {
     const backupPath = `${path}.bak-sqljs`

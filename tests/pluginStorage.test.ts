@@ -238,7 +238,6 @@ describe('plugin storage', () => {
   it('closes the global database and preserves legacy bytes when initialization migration fails', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'openbox-db-failure-'))
     const path = join(directory, 'openbox.db')
-    const previousEngine = process.env.OPENBOX_DB_ENGINE
     const SQL = await initSqlJs()
     const legacy = new SQL.Database()
     legacy.run('CREATE TABLE plugins (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE)')
@@ -251,8 +250,7 @@ describe('plugin storage', () => {
     legacy.close()
 
     try {
-      process.env.OPENBOX_DB_ENGINE = 'sqljs'
-      await expect(initDatabase(path)).rejects.toThrow(/migration failed/)
+      await expect(initDatabase(path, 'sqljs')).rejects.toThrow(/migration failed/)
       expect(() => getDatabase()).toThrow(/未初始化/)
 
       const persisted = new SQL.Database(readFileSync(path))
@@ -269,8 +267,6 @@ describe('plugin storage', () => {
       persistedEngine.close()
     } finally {
       closeDatabase()
-      if (previousEngine === undefined) delete process.env.OPENBOX_DB_ENGINE
-      else process.env.OPENBOX_DB_ENGINE = previousEngine
       rmSync(directory, { recursive: true, force: true })
     }
   })

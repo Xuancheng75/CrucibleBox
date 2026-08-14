@@ -91,20 +91,15 @@ function orderedRows(): { id: string; sort_order: number }[] {
 describe('plugin ordering', () => {
   let directory: string
   let dbPath: string
-  let previousEngine: string | undefined
 
   beforeEach(() => {
     closeDatabase()
-    previousEngine = process.env.OPENBOX_DB_ENGINE
-    process.env.OPENBOX_DB_ENGINE = 'sqljs'
     directory = mkdtempSync(join(tmpdir(), 'openbox-plugin-order-'))
     dbPath = join(directory, 'openbox.db')
   })
 
   afterEach(() => {
     closeDatabase()
-    if (previousEngine === undefined) delete process.env.OPENBOX_DB_ENGINE
-    else process.env.OPENBOX_DB_ENGINE = previousEngine
     rmSync(directory, { recursive: true, force: true })
   })
 
@@ -149,7 +144,7 @@ describe('plugin ordering', () => {
     writeFileSync(dbPath, Buffer.from(legacy.export()))
     legacy.close()
 
-    await initDatabase(dbPath)
+    await initDatabase(dbPath, 'sqljs')
 
     expect(getDatabase().version).toBe(3)
     // installed_at DESC, then id ASC → p-b, p-d, p-c, p-a
@@ -165,7 +160,7 @@ describe('plugin ordering', () => {
   })
 
   it('reorders plugins transactionally and returns the list in the new order', async () => {
-    await initDatabase(dbPath)
+    await initDatabase(dbPath, 'sqljs')
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
     createPlugin('p-c', 'plugin-c')
@@ -190,7 +185,7 @@ describe('plugin ordering', () => {
   })
 
   it('rejects incomplete, duplicate or unknown permutations without changing order', async () => {
-    await initDatabase(dbPath)
+    await initDatabase(dbPath, 'sqljs')
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
     createPlugin('p-c', 'plugin-c')
@@ -243,7 +238,7 @@ describe('plugin ordering', () => {
   })
 
   it('appends newly installed plugins to the end of the order', async () => {
-    await initDatabase(dbPath)
+    await initDatabase(dbPath, 'sqljs')
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
 
@@ -256,14 +251,14 @@ describe('plugin ordering', () => {
   })
 
   it('persists the reorder across a restart', async () => {
-    await initDatabase(dbPath)
+    await initDatabase(dbPath, 'sqljs')
     createPlugin('p-a', 'plugin-a')
     createPlugin('p-b', 'plugin-b')
     createPlugin('p-c', 'plugin-c')
     PluginRepository.reorder(['p-c', 'p-a', 'p-b'])
 
     closeDatabase()
-    await initDatabase(dbPath)
+    await initDatabase(dbPath, 'sqljs')
 
     expect(PluginRepository.findAll().map((plugin) => plugin.id)).toEqual(['p-c', 'p-a', 'p-b'])
     expect(orderedRows().map((row) => row.sort_order)).toEqual([1, 2, 3])
