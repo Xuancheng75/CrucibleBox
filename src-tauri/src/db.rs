@@ -225,6 +225,17 @@ impl Db {
             )
             .optional()
     }
+
+    /// 持久化插件启用状态（崩溃隔离时置 disabled；对等 Electron 的持久化隔离结果）
+    pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool) -> rusqlite::Result<()> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute(
+                "UPDATE plugins SET enabled = ?1, updated_at = datetime('now', 'localtime') WHERE id = ?2",
+                rusqlite::params![if enabled { 1 } else { 0 }, plugin_id],
+            )
+            .map(|_| ())
+    }
 }
 
 #[derive(Serialize)]
