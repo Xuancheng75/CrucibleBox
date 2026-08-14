@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { PluginFrameBridge } from '../../src/plugin-runtime/PluginFrameBridge'
+import { getThemeSync, listThemes, loadTheme, setTheme as persistTheme } from './themeCache'
+import type { ToolboxTheme } from '../../shared/types/theme.types'
 
 interface RendererSessionDescriptor {
   token: string
@@ -29,6 +31,11 @@ export function PluginHost() {
 
   useEffect(() => {
     invoke<PluginMeta[]>('plugin_list').then(setPlugins).catch(console.error)
+  }, [])
+
+  // 挂载时载入持久化主题（themeCache 幂等，供插件 theme.get）
+  useEffect(() => {
+    loadTheme().catch((e) => console.error('[theme] load failed', e))
   }, [])
 
   const dispose = useCallback(() => {
@@ -72,12 +79,9 @@ export function PluginHost() {
           console.log(`[bridge] notify: ${title} ${body ?? ''}`)
         }
       },
-      getTheme: () => null,
-      listThemes: () => [],
-      setTheme: (theme) => {
-        console.log('[bridge] theme.set', theme)
-        return null
-      },
+      getTheme: () => getThemeSync(),
+      listThemes: () => listThemes(),
+      setTheme: (theme: ToolboxTheme) => persistTheme(theme),
       confirm: (message: string) => window.confirm(message),
       resize: (h: number) => {
         setHeight(Math.min(16384, Math.max(100, h)))
