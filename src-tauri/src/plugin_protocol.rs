@@ -81,9 +81,7 @@ fn resolve_safe_asset(session: &RendererSession, resource: &str) -> Option<PathB
     if relative.is_empty() || relative.split('/').any(|s| s.is_empty()) {
         return None;
     }
-    if mime_for(relative).is_none() {
-        return None;
-    }
+    mime_for(relative)?;
     let root = PathBuf::from(&session.plugin_directory);
     let candidate = root.join(relative);
     // 规范化后必须仍在 pluginDirectory 内
@@ -120,10 +118,7 @@ pub struct ProtocolContext {
 }
 
 /// Tauri URI scheme handler 主体。uri 形如 http://cruciblebox-plugin.localhost/<token>/<resource>
-pub fn handle_protocol(
-    ctx: &ProtocolContext,
-    uri: String,
-) -> tauri::http::Response<Vec<u8>> {
+pub fn handle_protocol(ctx: &ProtocolContext, uri: String) -> tauri::http::Response<Vec<u8>> {
     let response = handle_inner(ctx, &uri);
     match response {
         Ok((status, content_type, body)) => tauri::http::Response::builder()
@@ -132,12 +127,22 @@ pub fn handle_protocol(
             .header("Cross-Origin-Resource-Policy", "cross-origin")
             .header("Access-Control-Allow-Origin", "*")
             .body(body)
-            .unwrap_or_else(|_| tauri::http::Response::builder().status(500).body(Vec::new()).unwrap()),
+            .unwrap_or_else(|_| {
+                tauri::http::Response::builder()
+                    .status(500)
+                    .body(Vec::new())
+                    .unwrap()
+            }),
         Err((status, message)) => tauri::http::Response::builder()
             .status(status)
             .header("Content-Type", "text/plain; charset=utf-8")
             .body(message.into_bytes())
-            .unwrap_or_else(|_| tauri::http::Response::builder().status(500).body(Vec::new()).unwrap()),
+            .unwrap_or_else(|_| {
+                tauri::http::Response::builder()
+                    .status(500)
+                    .body(Vec::new())
+                    .unwrap()
+            }),
     }
 }
 
@@ -150,12 +155,14 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
         .nth(1)
         .map(|rest| {
             // 去掉 host（<scheme>.localhost），剩余 /<token>/<resource>
-            rest.split_once('/').map(|(_, p)| format!("/{p}")).unwrap_or("/".into())
+            rest.split_once('/')
+                .map(|(_, p)| format!("/{p}"))
+                .unwrap_or("/".into())
         })
         .unwrap_or_else(|| uri.to_string());
 
-    let (token, resource) = token_from_path(&pathname)
-        .ok_or((400, "invalid session token".to_string()))?;
+    let (token, resource) =
+        token_from_path(&pathname).ok_or((400, "invalid session token".to_string()))?;
 
     // 路由
     match resource.as_str() {
@@ -165,7 +172,11 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
             match access.ok {
                 true => {
                     let session = access.session.ok_or((500, "session missing".into()))?;
-                    Ok((200, "text/html; charset=utf-8", generated_index(&session).into_bytes()))
+                    Ok((
+                        200,
+                        "text/html; charset=utf-8",
+                        generated_index(&session).into_bytes(),
+                    ))
                 }
                 false => {
                     let reason = access
@@ -180,7 +191,8 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
             let reg = ctx.registry.lock().unwrap();
             let access = reg.get(&token, &ctx.owner_label);
             let session = access.session.ok_or((403, "session denied".into()))?;
-            let body = std::fs::read(&session.runtime_path).map_err(|e| (404, format!("runtime missing: {e}")))?;
+            let body = std::fs::read(&session.runtime_path)
+                .map_err(|e| (404, format!("runtime missing: {e}")))?;
             Ok((200, "text/javascript; charset=utf-8", body))
         }
         _ => {
@@ -190,7 +202,8 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
             let session = access.session.ok_or((403, "session denied".into()))?;
             let path = resolve_safe_asset(&session, &format!("/{resource}"))
                 .ok_or((404, "asset not found".into()))?;
-            let body = std::fs::read(&path).map_err(|e| (404, format!("asset read failed: {e}")))?;
+            let body =
+                std::fs::read(&path).map_err(|e| (404, format!("asset read failed: {e}")))?;
             let mime = mime_for(&resource).unwrap_or("application/octet-stream");
             Ok((200, mime, body))
         }
@@ -211,10 +224,7 @@ pub fn session_dto(session: &RendererSession) -> serde_json::Value {
 
 /// 便捷访问器（供 1.8.4 宿主集成使用）
 #[allow(dead_code)]
-pub fn access_session(
-    ctx: &ProtocolContext,
-    token: &str,
-) -> SessionAccess {
+pub fn access_session(ctx: &ProtocolContext, token: &str) -> SessionAccess {
     ctx.registry.lock().unwrap().get(token, &ctx.owner_label)
 }
 
@@ -308,7 +318,7 @@ mod tests {
         assert!(resolve_safe_asset(&session, "/../../evil.js").is_none());
         assert!(resolve_safe_asset(&session, "/dist/../renderer.js").is_none());
         assert!(resolve_safe_asset(&session, "/dist/renderer.js").is_none()); // 文件不存在
-        // mime 白名单外
+                                                                              // mime 白名单外
         assert!(resolve_safe_asset(&session, "/dist/evil.exe").is_none());
     }
 }

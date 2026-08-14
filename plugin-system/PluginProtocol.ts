@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { protocol } from 'electron'
 import { extname } from 'path'
 import { existsSync, readFileSync } from 'fs'

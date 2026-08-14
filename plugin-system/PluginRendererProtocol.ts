@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import {

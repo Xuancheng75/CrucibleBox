@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export const PLUGIN_RENDERER_OWNER_PROOF_HEADER = 'x-openbox-renderer-owner'

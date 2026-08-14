@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import AdmZip from 'adm-zip'

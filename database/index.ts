@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import Database from 'better-sqlite3'
 import { join } from 'path'
 import { existsSync, copyFileSync, mkdirSync } from 'fs'

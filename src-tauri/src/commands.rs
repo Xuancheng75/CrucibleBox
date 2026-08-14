@@ -7,7 +7,6 @@
 // - settings_set 仅允许白名单 key（当前仅 'theme'；对等 settings.ipc.ts）
 
 use crate::db::Db;
-use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -42,11 +41,9 @@ pub fn settings_get(
     let db = lock(&db);
     let guard = db.conn().lock().unwrap();
     let v: Option<String> = guard
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [&key],
-            |row| row.get(0),
-        )
+        .query_row("SELECT value FROM settings WHERE key = ?1", [&key], |row| {
+            row.get(0)
+        })
         .map_err(|e| e.to_string())?;
     Ok(v)
 }
@@ -91,7 +88,9 @@ pub fn settings_get_all(
         .prepare("SELECT key, value FROM settings")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
@@ -194,9 +193,7 @@ pub fn plugin_list(
             PLUGIN_COLUMNS
         ))
         .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], row_to_meta)
-        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], row_to_meta).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row.map_err(|e| e.to_string())?);
@@ -264,8 +261,7 @@ pub fn create_renderer_session(
     if api_version != 1 && api_version != 2 {
         return Err("unsupported rendererApiVersion".into());
     }
-    let permissions: Vec<String> =
-        serde_json::from_str(&permissions_json).unwrap_or_default();
+    let permissions: Vec<String> = serde_json::from_str(&permissions_json).unwrap_or_default();
 
     // runtimePath：dev 态 src-tauri/../out/plugin-frame/runtime.js；打包态 resources
     // （1.8.4 用 bundle 资源路径替换）
@@ -273,7 +269,7 @@ pub fn create_renderer_session(
         let candidates = [
             std::env::current_dir()
                 .ok()
-                .and_then(|d| Some(d.join("out").join("plugin-frame").join("runtime.js"))),
+                .map(|d| d.join("out").join("plugin-frame").join("runtime.js")),
             Some(PathBuf::from("out/plugin-frame/runtime.js")),
             std::env::current_dir()
                 .ok()
@@ -297,8 +293,7 @@ pub fn create_renderer_session(
             renderer_api_version: api_version as u8,
             permissions,
             owner_webview_label: "main".into(),
-        })
-        .map_err(|e| e)?
+        })?
     };
     Ok(crate::plugin_protocol::session_dto(&session))
 }
@@ -347,43 +342,4 @@ pub fn db_status(
     }
     let db = lock(&db);
     db.status().map_err(|e| e.to_string())
-}
-
-/// 插件侧 db.query/db.execute 在 1.8.2 sidecar 落地前的最小直通。
-/// 安全说明：token 为编译期常量（非安全边界，见 oracle M1）；1.8.2 由 sidecar 携带
-/// 随机令牌并经权限守卫替换。渲染进程不可获得该常量。
-#[tauri::command(async)]
-pub fn db_execute(
-    window: WebviewWindow,
-    db: State<'_, Mutex<Db>>,
-    token: String,
-    sql: String,
-    params: Vec<serde_json::Value>,
-) -> Result<usize, String> {
-    if !is_main_window(&window) {
-        return Err("unauthorized".into());
-    }
-    if token != crate::app::INTERNAL_DB_TOKEN {
-        return Err("unauthorized".into());
-    }
-    let db = lock(&db);
-    let values: Vec<SqlValue> = params
-        .iter()
-        .map(|v| match v {
-            serde_json::Value::String(s) => SqlValue::Text(s.clone()),
-            serde_json::Value::Number(n) => n
-                .as_i64()
-                .map(SqlValue::Integer)
-                .or_else(|| n.as_f64().map(SqlValue::Real))
-                .unwrap_or(SqlValue::Null),
-            serde_json::Value::Bool(b) => SqlValue::Integer(*b as i64),
-            serde_json::Value::Null => SqlValue::Null,
-            _ => SqlValue::Text(v.to_string()),
-        })
-        .collect();
-    let guard = db.conn().lock().unwrap();
-    let n = guard
-        .execute(&sql, rusqlite::params_from_iter(values.iter()))
-        .map_err(|e| e.to_string())?;
-    Ok(n)
 }

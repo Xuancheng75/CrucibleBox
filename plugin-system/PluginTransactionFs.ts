@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { lstatSync, readdirSync, realpathSync, renameSync, rmSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 

@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 /**
  * 事务与运行时编排共享的聚合错误工具。
  *

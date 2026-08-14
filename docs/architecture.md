@@ -1,182 +1,153 @@
-# CrucibleBox 1.5.23 架构
+# CrucibleBox 架构（Tauri 2 基线，1.9.1）
+
+> 运行时基线自 1.9.1 起为 **Tauri 2 + Rust core + WebView2 + 插件 Rust sidecar**。
+> Electron 43 历史架构（1.5.23 ~ 1.7.3 生产线）已冻结并归档至 `docs/history/` 与
+> `docs/electron-legacy-registry.md`（快照 tag `electron-1.7.3-production`）。
+> 插件生态契约（Manifest v2 / renderer RPC / backend RPC / 主题 / UniEnv）跨两条线保留。
 
 ## 总览
 
 ```mermaid
 flowchart LR
-  UI["宿主 React renderer"] -->|"contextBridge / validated IPC"| MAIN["Electron main"]
+  UI["tauri-frontend React renderer (WebView2)"] -->|"tauri invoke / event"| CORE["Rust core"]
   UI -->|"sandboxed iframe + MessagePort RPC"| FRAME["插件 renderer"]
-  MAIN --> PM["PluginManager"]
-  PM --> INSTALL["安装事务与恢复"]
-  PM -->|"typed RPC v2"| WORKER["utilityProcess backend"]
-  PM --> STORE["插件私有 KV"]
-  PM --> TRUSTED["宿主可信服务"]
-  STORE --> DB["better-sqlite3 WAL"]
+  CORE -->|"stdin/stdout 帧协议 v2"| SIDECAR["cruciblebox-plugin-host (quickjs-ng)"]
+  CORE --> SESSION["renderer session registry + 自定义协议"]
+  CORE --> DB["rusqlite bundled WAL"]
+  CORE --> TRUSTED["宿主可信服务 (UniEnv)"]
   TRUSTED --> UNIENV["UniEnv 安装能力"]
-  MAIN --> OBS["启动指标与有界 JSONL 日志"]
+  CORE --> UPDATER["tauri-plugin-updater"]
 ```
 
-宿主使用 Electron 43.3.0、React 19、Ant Design 6、zustand、electron-vite 5 和
-electron-builder 26。React Server Components 不适用于离线静态 Electron renderer；宿主采用现代
-Client Components、显式 store 与 IPC 边界。
+宿主使用 Tauri 2.11.x（Rust）、React 19、Ant Design 6、zustand 与 rusqlite（bundled SQLite）。
+WebView2（Chromium）承载宿主 React UI 与插件 sandboxed iframe；Rust core 进程承载 DB、IPC、
+会话管理、插件协议与更新。React Server Components 不适用于离线桌面 renderer。
 
 ## 进程与信任边界
 
-| 区域                | 能力                                               | 信任假设                    |
-| ------------------- | -------------------------------------------------- | --------------------------- |
-| Electron main       | 窗口、文件、网络、通知、SQLite、安装事务、可信服务 | 应用信任根                  |
-| preload             | 最小 `contextBridge`，只转发已注册 IPC             | 宿主代码                    |
-| 宿主 renderer       | React UI，无 Node integration，Chromium sandbox    | 宿主代码，不能直接使用 Node |
-| 插件 renderer frame | 唯一跨源、sandboxed iframe、MessagePort RPC        | 不可信 UI                   |
-| 普通插件 backend    | utility process 中的 Node API 与 SDK RPC           | 用户明确确认安装的可信代码  |
-| UniEnv 可信服务     | 进程、下载、文件、解压和安装                       | 宿主固定摘要代码            |
+| 区域                     | 能力                                                   | 信任假设                         |
+| ------------------------ | ------------------------------------------------------ | -------------------------------- |
+| Rust core                | 窗口、文件、通知、SQLite、会话管理、协议 handler、更新 | 应用信任根                       |
+| WebView2 (宿主 renderer) | React UI，无 Node integration，Chromium sandbox        | 宿主代码，不能直接使用 Node/Rust |
+| 插件 renderer frame      | 唯一跨源、sandboxed iframe、MessagePort RPC            | 不可信 UI                        |
+| 插件 backend sidecar     | quickjs-ng 内的 JS + 帧协议 RPC（无 Node builtin）     | 用户明确确认安装的可信代码       |
+| UniEnv 可信服务          | 进程、下载、文件、解压和安装                           | 宿主固定摘要代码                 |
 
-utility process 是故障隔离，不是恶意 Node 代码的强制沙箱。普通 backend 仍必须被用户视为可信代码；
-高权限 UniEnv 实现不随插件包分发，而由宿主按版本、文件集合和 SHA-256 策略固定。
+Rust sidecar 是故障隔离，不是恶意 JS 的强制沙箱（quickjs 无 fs/net + 单一管道，隔离仅到
+"无 Node 能力"）。普通 backend 必须被用户视为可信代码；高权限 UniEnv 实现不随插件包分发，
+而由宿主按版本、文件集合和 SHA-256 策略固定（`shared/trusted-service-policies.json`，
+`verify-trusted-services.mjs` 构建期 + `TrustedServiceRuntime` 运行期双 fail-closed）。
 
-UniEnv 支持的每个工具版本还绑定唯一 Windows x64 文件名、官方 HTTPS URL 与 SHA-256。镜像仅是同一
-制品的传输来源，不是信任来源；下载流在写入 `.part` 时增量计算摘要，只有匹配固定目录后才会 fsync
-并原子提升。镜像摘要不匹配会清理临时文件并尝试官方源，官方源仍不匹配则安装失败关闭。
-
-可信服务启动时只扫描严格目录表推导出的版本根，并清理其中受命名和真实路径约束的残留
-`.unienv-staging-*` 普通目录。已安装 runtime 不参与清理；若恢复检查失败，所有环境写操作 fail-closed，
-避免在不明确的崩溃现场继续安装、卸载或切换版本。manifest 的稳定 wire 权限 `trusted:unienv` 即宿主
-固定摘要实现的 `environment.manage` 能力，不向第三方 backend 开放。
-
-版本完整性与版本维护状态是两条独立边界。UniEnv 另维护完整类型覆盖的生命周期目录，标注维护分支、
-EOL 与无 LTS 的旧版，并记录官方依据日期。UI 将目录首选置顶而非默认最老版本；单项和组合安装均在
-启动任务前展示固定旧补丁/EOL 风险。目录仍保留旧版本供遗留项目使用，不把摘要正确误称为安全受支持。
-
-宿主 renderer 使用类型安全页面注册表与 `React.lazy`。工作台、日志、设置和插件详情各自形成 Vite
-动态入口；默认首页启动闭包、宿主静态入口和全部 renderer JavaScript 分别受独立字节预算约束。
+宿主 renderer 使用类型安全页面注册表与 `React.lazy`；默认首页启动闭包、宿主静态入口和全部
+renderer JavaScript 分别受独立字节预算约束（`scripts/performance-budgets.json`）。
 
 ## 插件安装与生命周期
+
+> 安装事务链（staging / journal / 原子替换 / 崩溃恢复）当前仍是 **Electron 层冻结实现**
+> （`plugin-system/PluginInstallationService.ts` 及事务族，见 `docs/electron-legacy-registry.md`
+> §二）。Rust 侧等价随 1.9.2 宿主集成落地；本章描述**契约语义**，两线一致。
 
 安装分为不可变准备和提交两段。ZIP/目录先经过普通文件、大小、条目数、路径、symlink、manifest、
 SemVer 和权限校验，再创建一次性 stage token。用户确认和最终提交消费同一个快照，避免 TOCTOU。
 
-安装、升级和卸载使用同卷 rename、补偿动作与持久 transaction journal。启动恢复会处理 prepared、
-applied、committed 各崩溃点；无法无歧义恢复时保留现场并阻止插件激活。每个插件的 activate、stop、
-deactivate 和维护操作使用 single-flight/维护租约，配置重启失败会恢复旧配置和旧 runtime。
-
-应用先创建窗口，再并行恢复已启用插件。启动超时或失败会停止并等待 worker 退出；意外退出会清理
-快捷键、订阅和 runtime 引用，插件可以显式重启。
+安装、升级和卸载使用同卷 rename、补偿动作与持久 transaction journal。启动恢复处理 prepared、
+applied、committed 各崩溃点；无法无歧义恢复时保留现场并阻止插件激活。每个插件的 activate、
+stop、deactivate 和维护操作使用 single-flight/维护租约，配置重启失败会恢复旧配置和旧 runtime。
 
 ### 插件排序
 
-插件列表以 `plugins.sort_order` 为稳定排序契约，读取统一按 `sort_order ASC, installed_at DESC`；
-启用插件的激活顺序跟随列表顺序。重排要求提交全部已安装插件 ID 的完整排列，重复、缺失与未知 ID
-都在写入前被拒绝，新顺序在 `BEGIN IMMEDIATE` 事务内持久化，失败回滚并保持原列表。新安装插件
-通过原子 `MAX(sort_order)+1` 追加到列表末尾。
-
-排序数据链路：`Home` 页（长按卡片约半秒触发 PointerSensor 拖动，或卡片操作区上移/下移按钮）
-→ zustand `plugin.store.reorderPlugins`（乐观更新，失败回滚并恢复原列表）
-→ `plugin.api` → preload `IpcChannel.PluginReorder` → main `plugin.ipc.ts`
-（`assertTrustedSender` 校验发送方）→ `PluginManager.reorderPlugins`
-→ `PluginRepository.reorder`（事务化 `UPDATE plugins SET sort_order = ?`）。
+插件列表以 `plugins.sort_order` 为稳定排序契约（v3 schema 引入），读取统一按
+`sort_order ASC, installed_at DESC`；启用插件的激活顺序跟随列表顺序。重排要求提交全部已安装
+插件 ID 的完整排列，重复、缺失与未知 ID 都在写入前被拒绝，新顺序在 `BEGIN IMMEDIATE` 事务内
+持久化，失败回滚并保持原列表。新安装插件通过原子 `MAX(sort_order)+1` 追加到列表末尾。
 
 ## Renderer 隔离
 
-每次打开插件，主进程签发随机 session token、handshake token 与唯一
-`cruciblebox-plugin://<token>.session` origin。index 只能消费一次，资源读取只允许该插件目录内的普通文件，
-拒绝穿越、symlink、超限和读取中变化。owner 绑定由主进程 HMAC 证明，不采用 renderer 自报 ID。
+每次打开插件，Rust core 签发随机 session token、handshake token 与唯一 origin。Tauri 自定义协议
+在 Windows 使用 **path 型**形式（`http://cruciblebox-plugin.localhost/<token>/index.html`，
+PoC 结论：`scheme://` 形式不被支持）。`src-tauri/src/plugin_session.rs`（session registry：
+token/handshakeToken、owner-webview 绑定、TTL、一次性 index 消费）与 `src-tauri/src/plugin_protocol.rs`
+（资源路由：index 生成 / runtime.js / renderer.js + MIME 白名单 + 穿越防护）为对等实现。
 
-frame 没有 Electron preload，不能访问父 DOM、`window.electronAPI`、Node `process` 或 `require`。
-宿主与 frame 只通过专用 MessagePort 通信；envelope、方法、结果、事件、requestId、深度、节点、字节和
-最多 64 个 pending request 均严格验证。通知、主题写入等在宿主 bridge 再次检查权限。
+frame 没有 Electron preload / Node / Rust 访问能力。宿主与 frame 只通过专用 MessagePort 通信
+（`src/plugin-runtime/PluginFrameBridge.ts` + `frame-entry.ts`，握手消息
+`cruciblebox-plugin-connect/port`）；envelope、方法、结果、事件、requestId、深度、节点、字节和
+最多 64 个 pending request 均严格验证（`shared/plugin-renderer-rpc.ts`）。
 
-GIF Editor 的重型残影检测与修复在 frame 内创建一次性 Blob Worker。Worker 源码在插件构建时嵌入自包含 renderer，运行时不扩大协议资源白名单；输入在读取前执行文件预算校验，`ArrayBuffer` 与 RGBA 结果通过 transferable 传递。切换文件、关闭页面或用户停止会立即 terminate Worker 并回收 Blob URL。修复复用检测阶段返回的污染帧号，避免再次执行 O(n²) 分析。
+GIF Editor 的重型残影检测与修复在 frame 内创建一次性 Blob Worker，源码在插件构建时嵌入自包含
+renderer，运行时不扩大协议资源白名单。
 
-同画布编辑的撤销记录保存可逆 XOR 字节区间，只复制发生变化的帧；结构变化回退到有界全量快照。残影
-算法直接处理 RGBA typed arrays，未采用会增加整帧复制的 OffscreenCanvas；只有未来出现能替换现有 CPU
-pass 的绘制/缩放工作负载时才启用。
+## Backend SDK（Rust sidecar）
 
-## Backend SDK
+插件 backend 是**纯 JS + 宿主注入 ctx**（零 Node builtin，6 生产插件已核验）。`cruciblebox-plugin-host`
+（独立 Rust crate）用 quickjs-ng 在独立进程内加载插件 `dist/main.js`（CJS），注入
+`ctx = { id, config, logger, database, storage, api }` 全量方法面，经 `__hostRequest` 与宿主同步往返。
 
-backend API v2 使用随机会话 token 和类型化 request/response。worker 只继承 SystemRoot、临时目录、
-区域和时区等最小环境，不继承 PATH、HOME 或云凭证。宿主支持日志、通知、对话框、网络、文件、快捷键、
-事件、兼容数据库、私有存储和固定可信服务方法。
+- **帧协议**：stdin/stdout 长度前缀 JSON 帧（4 字节大端，8MB 上限），`frame.rs`。
+- **信封 v2**：token/requestId 正则、WORKER_METHODS（4：initialize/dispose/plugin.message/host.event）、
+  HOST_METHODS（19：db/storage/log/notification/dialog/network/file/shortcut/event/trusted）、
+  payload 预算（256KB/深度 16/数组 512/对象键 256/字符串 64KB），`envelope.rs`。
+- **CJS loader**：esbuild 单文件（`module.exports.default`）与 tsc 多文件（`exports.default` + 相对
+  require）双流派；路径防逃逸（normalize + plugin 根前缀 + `__cjsLoad` 二次校验）。
+- **同步往返模型**：`ctx.with` + job-drain（`execute_pending_job`）解析同步 settle 的 Promise，
+  无需 AsyncRuntime/tokio 桥接（1.8.2 PoC 结论）。
 
 旧 manifest 缺 API 版本时按 v1 语义兼容；带 backend 的新插件必须同时声明：
 
 ```json
-{
-  "manifestVersion": 2,
-  "backendApiVersion": 2,
-  "rendererApiVersion": 2
-}
+{ "manifestVersion": 2, "backendApiVersion": 2, "rendererApiVersion": 2 }
 ```
 
-纯 renderer 插件可声明 `"backend": false` 并省略 `backendApiVersion`。宿主仍校验兼容 `main` 入口，但不会
-加载它或创建 utility process；生命周期状态、启停和活跃插件查询保持一致。缺少 `backend` 等价于 `true`，
-因此既有插件行为不变。
+纯 renderer 插件可声明 `"backend": false` 并省略 `backendApiVersion`；宿主仍校验兼容 `main` 入口，
+但不会加载它或创建 sidecar 进程。
 
 ## 数据层
 
-默认数据库是 better-sqlite3 WAL；sql.js 仅作为显式 A/B fallback。repository 管理设置、插件元数据与
-日志。schema 使用 `PRAGMA user_version` 顺序迁移，升级在 `BEGIN IMMEDIATE` 事务中提交。当前
-schema v3 增加 `plugins.sort_order`：v2→v3 迁移按既有显示顺序（`installed_at DESC, id ASC`，
-旧表回退 `id ASC`）稳定回填，重排后的顺序从迁移前的显示顺序开始，避免迁移改变用户已见到的排列。
+Rust core 使用 **rusqlite（bundled SQLite 3.53.x）**，与 better-sqlite3 文件格式零迁移兼容。
+`src-tauri/src/db.rs` 对等实现：WAL + `foreign_keys=ON` + v1-v3 迁移（`BEGIN IMMEDIATE` 事务内
+`user_version`）+ legacy sql.js 插件存储迁移 + 30 天日志清理。schema v3 含 `plugins.sort_order`。
 
-引擎或 migration 失败会回滚、关闭数据库并在 PluginManager/窗口创建前终止启动；宿主不会以缺表或
-半迁移状态继续运行。Windows packaged smoke 从真实 schema v1 文件验证字节备份、v2/v3 迁移以及
-`sort_order` 回填后的列表顺序。
+引擎或 migration 失败会回滚、关闭数据库并在窗口创建前终止启动（`show_fatal_error` 用户提示）；
+宿主不会以缺表或半迁移状态继续运行。
 
-插件业务数据使用 `ctx.storage`。表主键为 `(plugin_id, key)`，插件 RPC 不接受 namespace；单值为最多
-1 MiB 的严格 JSON。Diary 和 Turntable 的旧全局表在 schema v2 复制到新格式并保留原表，迁移 marker
-保证幂等且防止删除后的数据复活。`storage.batch` 在宿主 `BEGIN IMMEDIATE` 中原子提交最多 64 个已预校验
-的 set/delete，插件仍不能选择 namespace 或提交 SQL。Diary 用它原子提交正文并清除恢复草稿。原始 SQL
-API 只为旧插件保留，不作为新 SDK 的推荐能力。
-
-Turntable 将整个有序选项列表作为一个私有值提交，backend mutation queue 串行化 read-modify-write，
-`storage.batch` 提供提交原子性。中奖样本来自 Web Crypto；renderer 共享纯几何公式，保证后端 winner 的
-加权扇区中心最终落在顶部指针，而不是历史实现中的右侧轴线。
+插件业务数据使用 `ctx.storage`（表主键 `(plugin_id, key)`，单值最多 1 MiB 严格 JSON，
+`storage.batch` 原子提交最多 64 个预校验 set/delete）。
 
 ## 主题系统
 
-主题以 `ToolboxTheme` 和 `--ob-*` CSS 变量为单一契约，同时映射为 antd tokens。宿主 renderer、插件
-frame 和 canvas 工具从相同 token 快照更新。ThemeManager 负责内置主题、自定义主题与导入导出；主题
-变更通过版本化 renderer RPC 和 backend event 广播。插件只在需要修改主题时申请 `theme:write`。
+主题以 `ToolboxTheme` 和 `--ob-*` CSS 变量为单一契约，同时映射为 antd tokens。宿主 renderer、
+插件 frame 从相同 token 快照更新。ThemeManager 负责内置主题、自定义主题与导入导出；主题变更通过
+版本化 renderer RPC 广播。插件只在需要修改主题时申请 `theme:write`。
+
+`shared/themes/presets.ts` 是内置主题单一注册表（静态数据，前端直读，不跨 Rust 边界）。
+插件 frame 经 `theme.list` RPC 获取快照、`theme.changed` 事件接收变更。ThemeManager 使用
+renderer-safe 语义 CSS 变量原语（`plugins/theme-manager/src/theme-vars.ts`，1.9.0 从 `@openbox/ui`
+内联）。宿主侧 theme 命令接线（get/set/list + 广播）随 1.9.2 前端完整迁移落地。
 
 ## 可观测性与恢复
 
-- 启动里程碑输出 `openbox.startup` schema v1，并记录 Electron working set 与 utility 数量。
-- `userData/logs/main.jsonl` 限制为 2 MiB 并保留一个轮转文件。
-- session marker 检测上次异常退出；renderer 崩溃恢复每 60 秒最多一次。
-- 插件日志按插件限制 2,000 行，并清理 30 天前记录。
-- 构建对宿主总量、宿主静态入口、默认首页启动闭包、frame 和六插件 renderer 分别执行体积预算。
+- Rust core 启动里程碑与内存探针（`get_process_memory`，P4 A/B 基准）。
+- 日志与指标：Electron 时代的 JSONL/指标实现冻结中；Rust 侧等价随 1.9.2 落地。
+- 插件日志按插件限制 2,000 行并清理 30 天前记录（DB `plugin_logs`）。
+- 构建对宿主（tauri-frontend dist）、frame runtime（`out/plugin-frame/runtime.js`）和六插件
+  renderer 分别执行体积预算。
 
 ## 发布边界
 
-六插件构建为自包含 browser renderer；需要 backend 的插件同时构建 CJS 入口。确定性 ZIP 清单记录版本、
-执行模式、API、ZIP 与逐文件 SHA-256。正式 release 要求仓库外 Ed25519 私钥并强制验签，同时生成宿主和
-六插件 CycloneDX SBOM。
-Windows CI 构建并启动 x64 unpacked 应用；同一个临时 userData 冒烟验证 Electron ABI、SQLite 迁移、
-renderer sandbox、跨源插件、utility backend、UniEnv 可信服务和启动/内存预算。macOS、Linux 与 Windows
-ARM64 不属于当前支持范围。
+六插件构建为自包含 browser renderer（1.9.0 独立化：插件自包含 `scripts/` 构建器 + 统一 esbuild
+0.28.2，宿主只消费 `plugin.json + dist/main.js + dist/renderer.js`）。确定性 ZIP 清单记录版本、
+执行模式、API、ZIP 与逐文件 SHA-256；Ed25519 插件签名（canonical JSON，`plugin-artifact-provenance.mjs`）。
 
-## Theme v2
+- **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2 downloadBootstrapper
+  兜底）+ tauri-plugin-updater（minisign 强制签名 JSON `latest.json`）+ cargo-cyclonedx Rust SBOM +
+  GitHub artifact attestation。首个 Tauri 正式版 = **v1.9.2**。
+- **Electron 发布链**（`release.yml`，`v*` tag）：冻结中，归档于 1.9.2。
+- 安装器 intentionally unsigned（零证书政策），Windows 声誉警告为明确产品限制。
+- macOS、Linux 与 Windows ARM64 不属于当前支持范围。
 
-`shared/themes/presets.ts` is the single built-in registry. The host owns persistence and normalization, maps semantic
-tokens to Ant Design, and publishes both canonical `--ob-color-*` variables and migration aliases. Isolated plugin
-frames obtain registry snapshots through the authenticated `theme.list` RPC and receive live changes through the
-existing `theme.changed` event; they never import host state or Electron IPC.
+## Theme v2 与 Manifest 契约
 
-ThemeManager uses the renderer-safe semantic CSS-variable primitives (inlined from `@openbox/ui` into
-`plugins/theme-manager/src/theme-vars.ts` in 1.9.0) and host-brokered preview RPC. The frame bridge captures
-the original theme, serializes preview operations, clears the rollback point on Keep, and restores it on Undo or frame
-disposal. Custom themes are normalized onto a complete mode-specific token set before persistence, so old data remains
-readable as the semantic contract grows.
-
-## Desktop updates and release trust
-
-Online updates are an optional adapter. Packaged builds without `resources/app-update.yml` expose a disabled update
-state, do not schedule network checks, and retain the complete offline application surface. Release builds configured
-for public GitHub Releases use an explicit stable/beta update state machine. Checks may
-run in the background, but downloads and installation require user actions. Only an explicit beta-to-stable transition
-permits downgrade. The tag workflow emits NSIS metadata and blockmaps, validates installer SHA-512, verifies Electron
-fuses, and publishes CycloneDX SBOMs, deterministic SHA-256 checksums and GitHub provenance attestations. Installers are
-intentionally unsigned, so Windows reputation warnings remain an explicit product limitation.
-
-Manifest v1 remains readable only for already-installed plugins. Installation and upgrade boundaries reject new
-Legacy Full Trust packages; ecosystem distribution is Manifest v2-only.
+- `shared/themes/presets.ts` 单一内置注册表；宿主拥有持久化与归一化，发布规范 `--ob-color-*`
+  变量与迁移别名；隔离插件 frame 经 `theme.list` RPC 获取快照、`theme.changed` 接收变更。
+- Manifest v1 仅对已安装插件可读；安装/升级边界拒绝 Legacy Full Trust 包，生态分发仅
+  Manifest v2。

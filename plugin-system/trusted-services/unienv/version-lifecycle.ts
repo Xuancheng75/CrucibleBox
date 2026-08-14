@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { SUPPORTED_TOOL_VERSIONS, type ToolId } from './protocol'
 
 export const TOOL_VERSION_LIFECYCLE_AS_OF = '2026-08-11'

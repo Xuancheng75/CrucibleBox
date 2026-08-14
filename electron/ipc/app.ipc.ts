@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { ipcMain, app } from 'electron'
 import { IpcChannel } from '@shared/types/ipc.types'
 import { assertTrustedSender } from './ipcGuard'

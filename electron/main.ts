@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { app, BrowserWindow, dialog, shell, globalShortcut, protocol, session } from 'electron'
 import electronUpdater from 'electron-updater'
 import { existsSync } from 'node:fs'

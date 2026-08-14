@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { isAllowedHostRendererUrl } from './ipc/ipcGuardPolicy'
 
 export function isAllowedExternalUrl(candidate: string): boolean {

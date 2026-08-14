@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { app, Menu, BrowserWindow, dialog } from 'electron'
 
 export function createAppMenu(): void {

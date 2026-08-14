@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { execute as dbExecute, queryAll as dbQueryAll } from '@database/index'
 import type { PluginLogEntry, PluginLogFilter } from '@shared/types/plugin.types'
 

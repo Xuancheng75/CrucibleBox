@@ -1,3 +1,4 @@
+// ARCHIVED (Electron line, frozen until 1.9.2) - see docs/electron-legacy-registry.md
 import { BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { HOST_RENDERER_URL } from '../HostRendererProtocol'
 import { isAllowedHostRendererUrl } from './ipcGuardPolicy'
