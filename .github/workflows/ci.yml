@@ -60,7 +60,7 @@ jobs:
       - name: Upload supply-chain artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: openbox-windows-supply-chain
+          name: cruciblebox-windows-supply-chain
           if-no-files-found: error
           path: |
             artifacts/plugins/

@@ -1,5 +1,5 @@
 {
-  "name": "openbox",
+  "name": "cruciblebox",
   "version": "1.7.3",
   "private": true,
   "workspaces": [
@@ -8,7 +8,7 @@
   ],
   "description": "A extensible toolbox built with Electron",
   "main": "./out/main/index.js",
-  "author": "openbox",
+  "author": "cruciblebox",
   "license": "MIT",
   "packageManager": "npm@11.12.1",
   "engines": {

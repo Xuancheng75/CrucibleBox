@@ -45,7 +45,7 @@ npm run package      # 打包安装程序（electron-builder）
   "version": "1.0.0",
   "displayName": "示例插件",
   "description": "一个示例插件",
-  "author": "openbox",
+  "author": "cruciblebox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,

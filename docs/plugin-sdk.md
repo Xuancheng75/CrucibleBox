@@ -14,7 +14,7 @@
   "name": "<plugin-id>",
   "version": "0.4.11",
   "displayName": "日记",
-  "author": "openbox",
+  "author": "cruciblebox",
   "main": "dist/main.js", // 必须存在；renderer-only 时宿主只校验不加载
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,

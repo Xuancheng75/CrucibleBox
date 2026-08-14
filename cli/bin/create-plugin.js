@@ -80,7 +80,7 @@ function run(pluginName) {
   2. npm install
   3. 编辑 src/main.ts 和 src/renderer.tsx
   4. 构建: npm run build
-  5. 将插件目录导入 OpenBox
+  5. 将插件目录导入 CrucibleBox
 
 插件结构:
   ${pluginName}/

@@ -2,7 +2,7 @@
 
 ## 结果
 
-OpenBox 保持 Electron + React 技术栈，从单文档动态执行、无恢复安装、宽泛 backend 能力和全局插件表，
+CrucibleBox 保持 Electron + React 技术栈，从单文档动态执行、无恢复安装、宽泛 backend 能力和全局插件表，
 演进为 Electron 43 / React 19 基线、跨源 renderer、utility backend RPC v2、可恢复安装事务、宿主可信
 服务、插件私有存储、页面级加载、Theme v2、可观测性和可验证发布链。主工程版本为 1.5.23。内置主题
 共六套（亮色/深色/清新绿/海洋蓝/科幻面板/零号城区）；插件列表以 schema v3 `plugins.sort_order`

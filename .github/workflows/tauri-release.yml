@@ -1,0 +1,116 @@
+name: Tauri Release (v1.8.4+)
+
+# 1.8.4 引入的 Tauri 发布链（与 Electron release.yml 的 v* 链并存、互不干扰）。
+# 触发：tauri-v* tag（首个 Tauri 正式版 v1.8.4 即 tauri-v1.8.4）。
+# 产物：NSIS 安装器 + updater 签名 JSON（latest.json）+ SBOM + attestation。
+# 签名：TAURI_SIGNING_PRIVATE_KEY（GitHub secret，minisign 私钥）——发布前必须配置，
+#       否则 updater 无法签名、tauri build 会在 updater 阶段失败。
+
+on:
+  push:
+    tags:
+      - 'tauri-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tauri-v* tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: tauri-release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tauri-release:
+    name: Build and publish Tauri Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust (stable-msvc)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa236d491518944de # v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        working-directory: tauri-frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: tauri-frontend
+        run: npm run build
+
+      - name: Quality gates (host)
+        run: npm run check
+
+      - name: Resolve release channel
+        id: release
+        shell: bash
+        run: |
+          TAG="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          case "$TAG" in
+            *-beta.*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+
+      - name: Build Tauri app + updater artifacts
+        working-directory: src-tauri
+        run: cargo tauri build --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+
+      - name: Generate Rust SBOM (cargo-cyclonedx)
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          cargo install cargo-cyclonedx --locked --no-default-features || true
+          cargo cyclonedx --output-dir ../artifacts/sbom || echo "SBOM generation skipped (cargo-cyclonedx unavailable)"
+
+      - name: Collect Tauri artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts/tauri
+          cp src-tauri/target/release/bundle/nsis/*.exe artifacts/tauri/ 2>/dev/null || true
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe artifacts/tauri/ 2>/dev/null || true
+          # updater JSON（默认 latest.json）
+          cp src-tauri/target/release/bundle/nsis/latest.json artifacts/tauri/ 2>/dev/null || true
+          ls -la artifacts/tauri/
+
+      - name: Attest artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/tauri/*
+          predicate-type: 'https://slsa.dev/provenance/v1'
+          push-to-registry: false
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          files: artifacts/tauri/*
+          prerelease: ${{ steps.release.outputs.prerelease }}
+          fail_on_unmatched_files: true

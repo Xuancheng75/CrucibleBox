@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CrucibleBox",
-  "version": "1.8.1",
+  "version": "1.8.4",
   "identifier": "com.cruciblebox.app",
   "build": {
     "beforeDevCommand": "",
@@ -36,14 +36,20 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
       }
     },
     "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
-      "endpoints": []
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExOTNCREQ1RUIzQTBCRTQKUldUa0N6cnIxYjJURWE2RXVqMGI1Q1hSUDFHUm9mNWhKVzNOVmdQWjJKNi9LeGEwaUpsOTJaZlYK",
+      "endpoints": [
+        "https://github.com/Xuancheng75/CrucibleBox/releases/latest/download/latest.json"
+      ]
     }
   }
 }
