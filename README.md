@@ -113,11 +113,11 @@ also include plugin signatures, CycloneDX SBOMs, SHA-256 checksums and a GitHub 
 installers are currently unsigned and can display Unknown publisher or SmartScreen warnings. See
 `docs/release-runbook.md`.
 
-## 当前验证基线（1.5.25）
+## 当前验证基线（1.5.26）
 
-- 主程序版本 1.5.25；数据库 schema v3（`plugins.sort_order`）。
+- 主程序版本 1.5.26；数据库 schema v3（`plugins.sort_order`）。
 - 六插件版本：diary 0.4.11、dice-roller 0.1.6、gif-editor 0.3.8、theme-manager 0.1.12、turntable 0.1.10、unienv 0.5.7。
-- 测试：宿主 35 个测试文件、256 项；六插件 190 项；供应链 16 项全部通过（当前 0 跳过）。
+- 测试：宿主 36 个测试文件、261 项；六插件 190 项；供应链 16 项全部通过（当前 0 跳过）。
 - 内置主题六套：亮色（默认）/深色/清新绿/海洋蓝/科幻面板/零号城区。
 - 插件列表支持长按拖动排序与键盘上移/下移。
 - 工具箱本体与 UniEnv 的 Windows VM 安装/取消/切换/回滚验收已通过。
