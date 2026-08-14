@@ -176,6 +176,7 @@ fn main() {
             commands::db_execute,
             commands::create_renderer_session,
             commands::dispose_renderer_session,
+            commands::plugin_send_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CrucibleBox");

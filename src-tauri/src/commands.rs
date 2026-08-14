@@ -267,10 +267,24 @@ pub fn create_renderer_session(
     let permissions: Vec<String> =
         serde_json::from_str(&permissions_json).unwrap_or_default();
 
-    // runtimePath：打包态 out/plugin-frame/runtime.js；dev 态 src-tauri 相对路径
-    let runtime_path = std::env::current_dir()
-        .map(|d| d.join("out").join("plugin-frame").join("runtime.js"))
-        .unwrap_or_else(|_| PathBuf::from("out/plugin-frame/runtime.js"));
+    // runtimePath：dev 态 src-tauri/../out/plugin-frame/runtime.js；打包态 resources
+    // （1.8.4 用 bundle 资源路径替换）
+    let runtime_path = {
+        let candidates = [
+            std::env::current_dir()
+                .ok()
+                .and_then(|d| Some(d.join("out").join("plugin-frame").join("runtime.js"))),
+            Some(PathBuf::from("out/plugin-frame/runtime.js")),
+            std::env::current_dir()
+                .ok()
+                .and_then(|d| d.parent().map(|p| p.join("out/plugin-frame/runtime.js"))),
+        ];
+        candidates
+            .into_iter()
+            .flatten()
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from("out/plugin-frame/runtime.js"))
+    };
 
     let session = {
         let mut reg = protocol.registry.lock().unwrap();
@@ -301,6 +315,22 @@ pub fn dispose_renderer_session(
     }
     let removed = protocol.registry.lock().unwrap().dispose(&token);
     Ok(removed)
+}
+
+/// 插件宿主 → backend 消息转发（对等 plugin:send-message）。
+/// 1.8.2 sidecar 接入宿主后路由到 backend；当前骨架阶段返回成功占位。
+#[tauri::command(async)]
+pub fn plugin_send_message(
+    window: WebviewWindow,
+    id: String,
+    message: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if window.label() != "main" {
+        return Err("unauthorized".into());
+    }
+    // TODO(1.8.4): 路由到对应插件的 sidecar backend
+    eprintln!("[bridge] plugin_send_message id={id} msg={message}");
+    Ok(serde_json::Value::Null)
 }
 
 // ---------------------------------------------------------------------------
