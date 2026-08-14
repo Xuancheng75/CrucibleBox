@@ -19,6 +19,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "shared/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "shared/**/*.ts", "packages/openbox-rpc/src/**/*.ts"],
   "exclude": ["node_modules", "out", "dist"]
 }

@@ -20,6 +20,7 @@
   "plugins/*/package.json",
   "packages/*/package.json",
   "packages/*/src/**/*.ts",
+  "packages/*/src/**/*.ts",
   "plugins/*/plugin.json",
   "plugins/*/tsconfig.json",
   "plugins/*/esbuild.config.mjs",

@@ -23,6 +23,7 @@
     "database/**/*.ts",
     "plugin-system/**/*.ts",
     "shared/**/*.ts",
+    "packages/openbox-rpc/src/**/*.ts",
     "plugins/unienv/src/artifact-integrity.ts",
     "plugins/unienv/src/trusted-service.ts",
     "plugins/unienv/src/combo.ts",
