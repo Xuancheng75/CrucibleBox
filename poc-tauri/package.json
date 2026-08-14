@@ -1,0 +1,13 @@
+{
+  "name": "poc-tauri-iframe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "serve": "node serve.mjs E:\\CrucibleBox_Sourses\\poc-tauri-frontend 1430"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}
