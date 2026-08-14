@@ -113,9 +113,9 @@ also include plugin signatures, CycloneDX SBOMs, SHA-256 checksums and a GitHub 
 installers are currently unsigned and can display Unknown publisher or SmartScreen warnings. See
 `docs/release-runbook.md`.
 
-## 当前验证基线（1.6.2）
+## 当前验证基线（1.7.0）
 
-- 主程序版本 1.6.2；数据库 schema v3（`plugins.sort_order`）；生产仅 better-sqlite3 单引擎（sql.js 降级为测试/离线恢复工具）；UniEnv trusted service 已物理隔离至宿主侧 `plugin-system/trusted-services/unienv/`。
+- 主程序版本 1.7.0；数据库 schema v3（`plugins.sort_order`）；生产仅 better-sqlite3 单引擎（sql.js 已从生产移除，保留为测试/离线恢复工具）；UniEnv trusted service 已物理隔离至宿主侧 `plugin-system/trusted-services/unienv/`。
 - 六插件版本：diary 0.4.11、dice-roller 0.1.6、gif-editor 0.3.8、theme-manager 0.1.12、turntable 0.1.10、unienv 0.5.7。
 - 测试：宿主 36 个测试文件、261 项；六插件 190 项；供应链 16 项全部通过（当前 0 跳过）。
 - 内置主题六套：亮色（默认）/深色/清新绿/海洋蓝/科幻面板/零号城区。

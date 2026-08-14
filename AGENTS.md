@@ -9,7 +9,7 @@
 - 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/*`）。
 - `E:\CrucibleBox_Plugins` 为**只读镜像 / 发布备份**，不参与构建，不得作为编辑源。
 - 插件模型：Manifest v2 + 自包含 browser renderer（跨源 sandboxed iframe + MessagePort RPC）+ 可选 backend（utility process，backend RPC v2）。UniEnv 为宿主固定摘要可信服务。
-- 当前基线（1.6.2）：宿主 36 文件/261 项、六插件 190 项、供应链 16 项测试全绿；数据库 schema v3（`plugins.sort_order`）；生产仅 better-sqlite3 单引擎（sql.js 降级为测试/离线恢复工具）；UniEnv trusted service 已物理隔离至宿主侧 `plugin-system/trusted-services/unienv/`（固定文件集/摘要/fail-closed 不变）；自动更新默认关闭，配置 GitHub Release 后启用。
+- 当前基线（1.7.0）：宿主 36 文件/261 项、六插件 190 项、供应链 16 项测试全绿；数据库 schema v3（`plugins.sort_order`）；生产仅 better-sqlite3 单引擎（sql.js 已从生产移除，保留为测试/离线恢复工具）；UniEnv trusted service 已物理隔离至宿主侧 `plugin-system/trusted-services/unienv/`（固定文件集/摘要/fail-closed 不变）；自动更新默认关闭，配置 GitHub Release 后启用。
 
 ## 2. 关键文件地图
 
