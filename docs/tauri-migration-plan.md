@@ -83,13 +83,15 @@
 - 主题/配置/通知链路：插件 `--ob-*` 变量、theme RPC、notify/confirm 走 Tauri 命令。
 - **L2 改名**：协议 scheme `openbox-plugin` → `cruciblebox-plugin`、握手消息 `openbox-plugin-connect/port` → `cruciblebox-*`；CSP/测试同步。
 
-### 1.8.4 — 打包 / 更新 / 发布链 + 改名收尾 → 发布 v1.8.4
+### 1.8.4 — 打包 / 更新 / 发布链 + 改名收尾（已完成，发布延后）
 
-- 打包：`tauri.conf.json`（NSIS + `webviewInstallMode` 兜底 Win10 缺运行时）、代码签名策略。
-- 更新：tauri-plugin-updater（JSON 清单 + 强制签名：公钥入库、私钥走 CI secret）；与旧 latest.yml 通道切换。
-- CI/发布：tauri-action + GitHub Release；SBOM（cargo-cyclonedx + 现有前端 SBOM 双源）；artifact attestation。
-- **L2/L4 改名收尾**：appId `com.openbox.app` → `com.cruciblebox.app`、SBOM 名、update JSON 端点、文档全量替换 openbox → cruciblebox。
-- 全量验证 + 内存/体积对比报告定稿 → **发布 v1.8.4**（第一个 Tauri 正式版）。
+- 打包：`tauri.conf.json`（NSIS + `webviewInstallMode` downloadBootstrapper 兜底 Win10 缺运行时）、updater 签名密钥对（minisign，公钥入库 `tauri.conf.json`，私钥在 CI secret `TAURI_SIGNING_PRIVATE_KEY`）。
+- 更新：tauri-plugin-updater（JSON 清单 + 强制签名）；`@tauri-apps/plugin-updater` 前端 check() 最小接入（下载/安装 UI 随 1.9.x 前端迁移落地）。
+- CI/发布：`.github/workflows/tauri-release.yml`（tauri-v* tag，与 Electron v* 链并存）；SBOM（cargo-cyclonedx，硬门禁）+ artifact attestation（SHA pin）。
+- **L2/L4 改名收尾**：appId `com.openbox.app` → `com.cruciblebox.app`、SBOM 名 `openbox.cdx.json` → `cruciblebox.cdx.json`、宿主 package name/author → cruciblebox、文档产品层全量替换。红线保留：运行时代码（openbox-app scheme/metrics/owner-proof/事件名/openbox.db）、src-tauri L3 数据路径、CI 签名 secret 名、插件 author 元数据、`@openbox/ui`/`openbox-rpc`（1.9.x）。
+- **发布决策（2026-08-14）**：1.8.4 **合入但不发布**——Tauri 壳 UI 仍为骨架（仅最小插件宿主），完整宿主前端在 1.9.x。首个 Tauri 正式版移至 **1.9.2**（前端完整后发布），届时打 `tauri-v1.9.2` tag 触发发布链。
+
+> 发布前 checklist（H2）：首次发布前用 `tauri signer sign` 自签一个测试文件并用 conf 公钥验证，确认 CI secret 私钥与仓库公钥配对；`TAURI_SIGNING_PRIVATE_KEY` secret 未配置前发布链会在 updater 阶段失败。
 
 ## 4. 1.9.X 版本计划（插件独立性 + 复杂度收敛）
 
