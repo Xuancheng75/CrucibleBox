@@ -9,6 +9,7 @@
 use crate::db::Db;
 use rusqlite::types::Value as SqlValue;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{State, WebviewWindow};
 
@@ -221,6 +222,85 @@ pub fn plugin_get(
         .map_err(|e| e.to_string())?;
     let first = rows.next().transpose().map_err(|e| e.to_string())?;
     Ok(first)
+}
+
+// ---------------------------------------------------------------------------
+// plugin renderer session（1.8.3，对等 plugin.ipc.ts create/dispose-renderer-session）
+// ---------------------------------------------------------------------------
+
+/// 创建 renderer 会话。校验插件启用 + manifest 一致性后签发 session。
+#[tauri::command(async)]
+pub fn create_renderer_session(
+    window: WebviewWindow,
+    db: State<'_, Mutex<Db>>,
+    protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    if window.label() != "main" {
+        return Err("unauthorized".into());
+    }
+    // 读插件记录（enabled 校验 + 字段透传）
+    let db = lock(&db);
+    let guard = db.conn().lock().unwrap();
+    let row = guard
+        .query_row(
+            "SELECT name, entry_renderer, permissions, renderer_api_version, installed_path FROM plugins WHERE id = ?1 AND enabled = 1",
+            [&id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("plugin not found or disabled: {e}"))?;
+    let (name, entry_renderer, permissions_json, api_version, installed_path) = row;
+    if entry_renderer.is_empty() {
+        return Err("plugin has no renderer entry".into());
+    }
+    if api_version != 1 && api_version != 2 {
+        return Err("unsupported rendererApiVersion".into());
+    }
+    let permissions: Vec<String> =
+        serde_json::from_str(&permissions_json).unwrap_or_default();
+
+    // runtimePath：打包态 out/plugin-frame/runtime.js；dev 态 src-tauri 相对路径
+    let runtime_path = std::env::current_dir()
+        .map(|d| d.join("out").join("plugin-frame").join("runtime.js"))
+        .unwrap_or_else(|_| PathBuf::from("out/plugin-frame/runtime.js"));
+
+    let session = {
+        let mut reg = protocol.registry.lock().unwrap();
+        reg.create(crate::plugin_session::CreateSessionInput {
+            plugin_id: id,
+            plugin_name: name,
+            plugin_directory: installed_path,
+            renderer_entry: entry_renderer,
+            runtime_path: runtime_path.to_string_lossy().into_owned(),
+            renderer_api_version: api_version as u8,
+            permissions,
+            owner_webview_label: "main".into(),
+        })
+        .map_err(|e| e)?
+    };
+    Ok(crate::plugin_protocol::session_dto(&session))
+}
+
+/// 释放 renderer 会话（对等 disposeRendererSession）。
+#[tauri::command(async)]
+pub fn dispose_renderer_session(
+    window: WebviewWindow,
+    protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
+    token: String,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("unauthorized".into());
+    }
+    let removed = protocol.registry.lock().unwrap().dispose(&token);
+    Ok(removed)
 }
 
 // ---------------------------------------------------------------------------
