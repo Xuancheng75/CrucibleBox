@@ -278,8 +278,7 @@ pub fn plugin_reorder(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    lock(&db)
-        .plugin_reorder(&ordered_ids)?;
+    lock(&db).plugin_reorder(&ordered_ids)?;
     Ok(serde_json::json!({ "success": true }))
 }
 
@@ -313,8 +312,8 @@ pub fn plugin_get_logs(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let logs = lock(&db)
-        .plugin_logs(plugin_id.as_deref(), level.as_deref(), limit.unwrap_or(200))?;
+    let logs =
+        lock(&db).plugin_logs(plugin_id.as_deref(), level.as_deref(), limit.unwrap_or(200))?;
     Ok(serde_json::json!({ "success": true, "data": logs }))
 }
 

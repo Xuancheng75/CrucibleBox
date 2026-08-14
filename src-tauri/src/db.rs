@@ -263,7 +263,9 @@ impl Db {
             }
             seen.insert(id.as_str());
         }
-        guard.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+        guard
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
         let result = (|| -> Result<(), String> {
             for (index, id) in ordered_ids.iter().enumerate() {
                 guard
@@ -288,11 +290,7 @@ impl Db {
     }
 
     /// 更新插件配置（对等 updateConfig）
-    pub fn plugin_update_config(
-        &self,
-        plugin_id: &str,
-        config: &str,
-    ) -> rusqlite::Result<()> {
+    pub fn plugin_update_config(&self, plugin_id: &str, config: &str) -> rusqlite::Result<()> {
         let guard = self.conn.lock().unwrap();
         guard
             .execute(
@@ -310,21 +308,22 @@ impl Db {
         limit: i64,
     ) -> Result<Vec<PluginLogEntry>, String> {
         let guard = self.conn.lock().unwrap();
-        let (where_clause, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = match (plugin_id, level) {
-            (Some(pid), Some(lv)) => (
-                "WHERE plugin_id = ?1 AND level = ?2".to_string(),
-                vec![Box::new(pid.to_string()), Box::new(lv.to_string())],
-            ),
-            (Some(pid), None) => (
-                "WHERE plugin_id = ?1".to_string(),
-                vec![Box::new(pid.to_string())],
-            ),
-            (None, Some(lv)) => (
-                "WHERE level = ?1".to_string(),
-                vec![Box::new(lv.to_string())],
-            ),
-            (None, None) => ("".to_string(), vec![]),
-        };
+        let (where_clause, params): (String, Vec<Box<dyn rusqlite::ToSql>>) =
+            match (plugin_id, level) {
+                (Some(pid), Some(lv)) => (
+                    "WHERE plugin_id = ?1 AND level = ?2".to_string(),
+                    vec![Box::new(pid.to_string()), Box::new(lv.to_string())],
+                ),
+                (Some(pid), None) => (
+                    "WHERE plugin_id = ?1".to_string(),
+                    vec![Box::new(pid.to_string())],
+                ),
+                (None, Some(lv)) => (
+                    "WHERE level = ?1".to_string(),
+                    vec![Box::new(lv.to_string())],
+                ),
+                (None, None) => ("".to_string(), vec![]),
+            };
         let sql = format!(
             "SELECT id, plugin_id, level, message, timestamp FROM plugin_logs {} \
              ORDER BY id DESC LIMIT ?3",
@@ -344,7 +343,8 @@ impl Db {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 清空插件日志（对等 clearLogs：pluginId 可选）
