@@ -9,7 +9,6 @@ interface ProcessMemory {
 function App() {
   const [memory, setMemory] = useState<ProcessMemory | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [tauriReady, setTauriReady] = useState(false)
 
   const probe = useCallback(async () => {
     try {
@@ -36,7 +35,8 @@ function App() {
       }}
     >
       <h1 style={{ color: 'var(--ob-color-primary)', fontSize: 22, marginBottom: 8 }}>
-        CrucibleBox <span style={{ fontSize: 13, color: 'var(--ob-color-text)' }}>Tauri 2 骨架</span>
+        CrucibleBox{' '}
+        <span style={{ fontSize: 13, color: 'var(--ob-color-text)' }}>Tauri 2 骨架</span>
       </h1>
       <p style={{ marginBottom: 12 }}>
         进程内存基准（P4）：点击按钮读取 Rust core 进程的 working set / private usage。
@@ -56,14 +56,24 @@ function App() {
         查询进程内存
       </button>
       {memory && (
-        <pre style={{ marginTop: 12, background: 'var(--ob-color-bg)', padding: 12, borderRadius: 6 }}>
+        <pre
+          style={{ marginTop: 12, background: 'var(--ob-color-bg)', padding: 12, borderRadius: 6 }}
+        >
           working_set_kib: {memory.working_set_kib}
           {'\n'}private_kib: {memory.private_kib}
           {'\n'}pid: {memory.pid}
         </pre>
       )}
       {error && (
-        <pre style={{ marginTop: 12, background: '#fff1f0', padding: 12, borderRadius: 6, color: '#cf1322' }}>
+        <pre
+          style={{
+            marginTop: 12,
+            background: '#fff1f0',
+            padding: 12,
+            borderRadius: 6,
+            color: '#cf1322'
+          }}
+        >
           error: {error}
         </pre>
       )}
