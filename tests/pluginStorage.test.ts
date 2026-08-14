@@ -250,7 +250,9 @@ describe('plugin storage', () => {
     legacy.close()
 
     // 用 sql.js 内存引擎直接执行迁移，验证失败回滚且磁盘字节保留。
-    // （生产 initDatabase 仅 better-sqlite3；node 测试环境无法加载 Electron ABI 原生模块。）
+    // （生产 initDatabase 仅 better-sqlite3；node 测试环境无法加载 Electron ABI 原生模块。
+    //   initDatabase 的 fail-closed 分支——迁移失败置空全局 db + close + rethrow——
+    //   因上述 ABI 限制无法单测，由代码审查覆盖：database/index.ts 迁移失败路径。）
     const engine = new MemoryEngine(new SQL.Database(readFileSync(path)))
     expect(() => runMigrations(engine)).toThrow()
     engine.close()

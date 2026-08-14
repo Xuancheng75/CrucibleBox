@@ -3,6 +3,7 @@
 > P7 交付物之一。结论先行：**建议迁移，但单独成阶段（P9），不并入本里程碑**。
 > 当前仍使用 sql.js。本文记录对比结论、迁移成本与前置条件，供后续阶段决策。
 > **状态：P9 已完成**——双引擎（better/sqljs A/B）已落地并验证，默认引擎为 better-sqlite3（WAL），`OPENBOX_DB_ENGINE=sqljs` 可回退。
+> **状态：1.7.0 已完成**——生产 sql.js 已删除（SqlJsEngine/WASM 路径/persist/engine 参数全部移除），生产仅 better-sqlite3（WAL）；sql.js 保留为 devDependency，仅供测试（`setDatabaseForTesting` 注入 sql.js 内存引擎）与离线恢复工具（`scripts/db-recovery-tool.mjs`）。本文为历史评估记录。
 
 ## 1. 现状
 
@@ -12,17 +13,17 @@
 
 ## 2. 对比维度
 
-| 维度 | sql.js（现状） | better-sqlite3 |
-|---|---|---|
-| 运行形态 | WASM，纯内存，每次 `export()` 整库序列化 | 原生 Node 扩展，直接读写磁盘文件 |
-| 并发 | 引入进程锁+手动原子写，仍是全量覆盖 | WAL 模式，读写并发、崩溃安全 |
-| 性能 | 全库序列化为目标文件，库越大越慢 | 只有脏页写盘 |
-| 事务 | 手动 | `db.transaction()` 原子批处理，批量写提速巨大（Turntable reorder 循环） |
-| 崩溃安全 | export 序列化窗口内崩溃丢数据 | SQLite 自身 ACID |
-| 内存 | wasm 二进制 + 全库镜像在堆中 | 默认 page cache，可控 |
-| 打包 | `sql-wasm.wasm` 需随产物打包（AGENTS 已列工作项） | native `.node` 需按 Electron ABI 预编译随包 |
-| Electron 集成 | 纯 JS/WASM，零 prebuild | 需 `@electron/rebuild`（或 prebuild-install 预编译）对齐 ABI；`externalizeDepsPlugin` 处理 |
-| 插件兼容 | 0（当前插件只用 query/execute） | 0（保持仓储层 API 不变即可） |
+| 维度          | sql.js（现状）                                    | better-sqlite3                                                                             |
+| ------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 运行形态      | WASM，纯内存，每次 `export()` 整库序列化          | 原生 Node 扩展，直接读写磁盘文件                                                           |
+| 并发          | 引入进程锁+手动原子写，仍是全量覆盖               | WAL 模式，读写并发、崩溃安全                                                               |
+| 性能          | 全库序列化为目标文件，库越大越慢                  | 只有脏页写盘                                                                               |
+| 事务          | 手动                                              | `db.transaction()` 原子批处理，批量写提速巨大（Turntable reorder 循环）                    |
+| 崩溃安全      | export 序列化窗口内崩溃丢数据                     | SQLite 自身 ACID                                                                           |
+| 内存          | wasm 二进制 + 全库镜像在堆中                      | 默认 page cache，可控                                                                      |
+| 打包          | `sql-wasm.wasm` 需随产物打包（AGENTS 已列工作项） | native `.node` 需按 Electron ABI 预编译随包                                                |
+| Electron 集成 | 纯 JS/WASM，零 prebuild                           | 需 `@electron/rebuild`（或 prebuild-install 预编译）对齐 ABI；`externalizeDepsPlugin` 处理 |
+| 插件兼容      | 0（当前插件只用 query/execute）                   | 0（保持仓储层 API 不变即可）                                                               |
 
 结论：better-sqlite3 在**正确性（WAL/事务/崩溃安全）与扩展性（大库、并发）**上全面优于 sql.js；主要成本集中在 native 依赖的 Electron 环境构建与打包。
 

@@ -23,7 +23,7 @@
 - `plugin-system/PluginSandbox.ts` / `PluginProcessEntry.ts`：utility process 沙箱与 RPC 客户端。
 - `plugin-system/PluginInstallationService.ts` 及事务族（DirectoryTransaction/Journal/Recovery/Preparation/ArchivePolicy）：安装/升级/卸载/崩溃恢复。
 - `plugin-system/TrustedServiceRuntime.ts`：UniEnv 固定摘要可信服务（fail-closed）。
-- `database/index.ts`：EngineDb 双引擎（默认 better-sqlite3 WAL，`OPENBOX_DB_ENGINE=sqljs` 显式回退）；`repositories/`、`pluginStorage.ts`。
+- `database/index.ts`：`EngineDb` 接口 + 单引擎 better-sqlite3（WAL，生产唯一引擎，1.7.0 起）；测试经 `setDatabaseForTesting` 注入 sql.js 内存引擎；`repositories/`、`pluginStorage.ts`。
 
 渲染端：
 
