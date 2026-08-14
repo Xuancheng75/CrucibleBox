@@ -222,6 +222,142 @@ pub fn plugin_get(
 }
 
 // ---------------------------------------------------------------------------
+// plugin 写路径（1.9.2-b，对等 plugin.ipc.ts enable/disable/reorder/updateConfig/
+// getLogs/clearLogs/uninstall + PluginManager 等价）
+// ---------------------------------------------------------------------------
+
+/// 启用插件：持久化 enabled + 惰性激活 backend（对等 activatePlugin）
+#[tauri::command(async)]
+pub fn plugin_enable(
+    window: WebviewWindow,
+    backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let db_guard = lock(&db);
+    let record = db_guard
+        .plugin_backend_record(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("plugin not found: {id}"))?;
+    db_guard
+        .set_plugin_enabled(&id, true)
+        .map_err(|e| e.to_string())?;
+    // 惰性激活 backend（若插件有 backend）
+    let _ = backend.ensure_activated(&id, record);
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 禁用插件：停用 backend + 持久化 enabled=false（对等 deactivatePlugin）
+#[tauri::command(async)]
+pub fn plugin_disable(
+    window: WebviewWindow,
+    backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    backend.deactivate(&id);
+    lock(&db)
+        .set_plugin_enabled(&id, false)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 重排插件（事务化完整排列校验，对等 reorderPlugins）
+#[tauri::command(async)]
+pub fn plugin_reorder(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    ordered_ids: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).plugin_reorder(&ordered_ids)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 更新插件配置（对等 updateConfig）
+#[tauri::command(async)]
+pub fn plugin_update_config(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: String,
+    config: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let serialized = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    lock(&db)
+        .plugin_update_config(&id, &serialized)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 查询插件日志（对等 getLogs）
+#[tauri::command(async)]
+pub fn plugin_get_logs(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    plugin_id: Option<String>,
+    level: Option<String>,
+    limit: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let logs =
+        lock(&db).plugin_logs(plugin_id.as_deref(), level.as_deref(), limit.unwrap_or(200))?;
+    Ok(serde_json::json!({ "success": true, "data": logs }))
+}
+
+/// 清空插件日志（对等 clearLogs）
+#[tauri::command(async)]
+pub fn plugin_clear_logs(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    plugin_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db)
+        .plugin_clear_logs(plugin_id.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 卸载插件：停用 backend + 删除 DB 记录（对等 uninstall）。
+/// 1.9.2-b 最小面：不执行文件系统删除（安装事务链 1.9.2 后续/发布前补齐）。
+#[tauri::command(async)]
+pub fn plugin_uninstall(
+    window: WebviewWindow,
+    backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    backend.deactivate(&id);
+    let guard = lock(&db);
+    let conn = guard.conn().lock().unwrap();
+    let removed = conn
+        .execute("DELETE FROM plugins WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    if removed == 0 {
+        return Err(format!("plugin not found: {id}"));
+    }
+    Ok(serde_json::json!({ "success": true }))
+}
+
+// ---------------------------------------------------------------------------
 // plugin renderer session（1.8.3，对等 plugin.ipc.ts create/dispose-renderer-session）
 // ---------------------------------------------------------------------------
 
