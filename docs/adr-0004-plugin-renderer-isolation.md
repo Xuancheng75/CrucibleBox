@@ -10,13 +10,13 @@
 
 ## 决策
 
-- 每次打开插件创建一个不可预测、单次消费的 `openbox-plugin://<token>.session` 会话和唯一 origin。
+- 每次打开插件创建一个不可预测、单次消费的 `cruciblebox-plugin://<token>.session` 会话和唯一 origin。
 - 插件界面运行在跨源 sandboxed iframe。v2 只启用 `allow-scripts allow-same-origin allow-downloads`；迁移期 v1 额外保留 `allow-modals`，只用于旧同步 `confirm` 兼容。
 - 宿主与 iframe 只通过一次性 handshake token 和专用 `MessageChannel` 通信；不向 frame 暴露 preload、Electron IPC、Node 全局或插件 ID。
-- `openbox-plugin` 协议要求主窗口 `webContentsId` 的进程内 HMAC 证明。会话绑定 owner、有限时、index 只能消费一次，资源请求只有激活后才可读取。
+- `cruciblebox-plugin` 协议要求主窗口 `webContentsId` 的进程内 HMAC 证明。会话绑定 owner、有限时、index 只能消费一次，资源请求只有激活后才可读取。
 - renderer RPC 固定为版本 1 envelope，采用严格字段、方法特定参数/结果校验、JSON 深度/节点/字节预算、请求 ID 去重和 64 个并发请求上限。
 - v2 插件 renderer 必须是自包含 browser IIFE，显式注册 `window.__OPENBOX_PLUGIN_RUNTIME__.mount(...)`，产物禁止 CommonJS `require`、ESM `import`、`eval` 和 `new Function`。
-- 宿主页 CSP 删除 `unsafe-eval` 以及 `plugin:` script/connect，只允许 `frame-src openbox-plugin:`；插件 frame 使用独立响应头 CSP。v2 frame 的 `script-src` 只有 `'self'`、`connect-src 'none'`。
+- 宿主页 CSP 删除 `unsafe-eval` 以及 `plugin:` script/connect，只允许 `frame-src cruciblebox-plugin:`；插件 frame 使用独立响应头 CSP。v2 frame 的 `script-src` 只有 `'self'`、`connect-src 'none'`。
 
 ## 能力面
 

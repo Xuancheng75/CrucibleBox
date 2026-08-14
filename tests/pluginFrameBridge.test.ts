@@ -45,9 +45,9 @@ function createHarness(permissions: Permission[] = []) {
       framePort.start()
       const transferEvent = {
         source: targetWindow,
-        origin: 'openbox-plugin://session.test',
+        origin: 'cruciblebox-plugin://session.test',
         ports: [channel.port2],
-        data: { kind: 'openbox-plugin-port', v: 1, token: TOKEN }
+        data: { kind: 'cruciblebox-plugin-port', v: 1, token: TOKEN }
       } as unknown as MessageEvent<unknown>
       for (const listener of hostListeners) listener(transferEvent)
     }
@@ -61,7 +61,7 @@ function createHarness(permissions: Permission[] = []) {
   })
   const bridge = new PluginFrameBridge({
     token: TOKEN,
-    origin: 'openbox-plugin://session.test',
+    origin: 'cruciblebox-plugin://session.test',
     permissions,
     initialConfig: { value: 1 },
     initialTheme: DEFAULT_THEME,
@@ -112,8 +112,12 @@ afterEach(() => vi.restoreAllMocks())
 describe('PluginFrameBridge', () => {
   it('uses the exact session origin and initializes through a transferred port', async () => {
     const harness = createHarness()
-    expect(harness.connectOrigin).toBe('openbox-plugin://session.test')
-    expect(harness.connectMessage).toEqual({ kind: 'openbox-plugin-connect', v: 1, token: TOKEN })
+    expect(harness.connectOrigin).toBe('cruciblebox-plugin://session.test')
+    expect(harness.connectMessage).toEqual({
+      kind: 'cruciblebox-plugin-connect',
+      v: 1,
+      token: TOKEN
+    })
     await ready(harness)
     harness.bridge.dispose()
   })

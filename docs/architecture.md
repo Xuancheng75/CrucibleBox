@@ -78,7 +78,7 @@ deactivate 和维护操作使用 single-flight/维护租约，配置重启失败
 ## Renderer 隔离
 
 每次打开插件，主进程签发随机 session token、handshake token 与唯一
-`openbox-plugin://<token>.session` origin。index 只能消费一次，资源读取只允许该插件目录内的普通文件，
+`cruciblebox-plugin://<token>.session` origin。index 只能消费一次，资源读取只允许该插件目录内的普通文件，
 拒绝穿越、symlink、超限和读取中变化。owner 绑定由主进程 HMAC 证明，不采用 renderer 自报 ID。
 
 frame 没有 Electron preload，不能访问父 DOM、`window.electronAPI`、Node `process` 或 `require`。

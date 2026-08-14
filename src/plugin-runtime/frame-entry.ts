@@ -38,8 +38,8 @@ declare global {
   }
 }
 
-const CONNECT_MESSAGE_KIND = 'openbox-plugin-connect'
-const PORT_MESSAGE_KIND = 'openbox-plugin-port'
+const CONNECT_MESSAGE_KIND = 'cruciblebox-plugin-connect'
+const PORT_MESSAGE_KIND = 'cruciblebox-plugin-port'
 const REQUEST_TIMEOUT_MS = 30_000
 const rootElementCandidate = document.getElementById('root')
 
