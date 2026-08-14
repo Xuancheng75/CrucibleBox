@@ -6,7 +6,7 @@
   "main": "dist/main.js",
   "scripts": {
     "clean": "node ../../scripts/clean-plugin-dist.mjs",
-    "build": "npm run clean && tsc && node ../../scripts/build-plugin-renderer.mjs .",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node ../../scripts/build-plugin-renderer.mjs .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --configLoader runner",
     "check": "npm run typecheck && npm test && npm run build",

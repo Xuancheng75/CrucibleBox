@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { getOfficialToolArtifactUrl, getToolArtifactIntegrity } from '../src/artifact-integrity'
-import { SUPPORTED_TOOL_VERSIONS, type ToolId } from '../src/protocol'
+import {
+  getOfficialToolArtifactUrl,
+  getToolArtifactIntegrity
+} from '../../../plugin-system/trusted-services/unienv/artifact-integrity'
+import {
+  SUPPORTED_TOOL_VERSIONS,
+  type ToolId
+} from '../../../plugin-system/trusted-services/unienv/protocol'
 
 describe('tool artifact integrity catalog', () => {
   it('pins exactly one valid artifact for every supported tool version', () => {

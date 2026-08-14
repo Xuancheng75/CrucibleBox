@@ -8,7 +8,7 @@ import {
   prepareDirectInstallDirectory,
   promoteStagedRuntime,
   recoverInterruptedInstallStaging
-} from '../src/tools/base'
+} from '../../../plugin-system/trusted-services/unienv/tools/base'
 
 describe('install staging directories', () => {
   let testDir: string

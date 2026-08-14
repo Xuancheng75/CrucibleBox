@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DuplicateResourceTaskError, TaskManager, type TaskSnapshot } from '../src/task-manager'
+import {
+  DuplicateResourceTaskError,
+  TaskManager,
+  type TaskSnapshot
+} from '../../../plugin-system/trusted-services/unienv/task-manager'
 
 interface Deferred<T> {
   promise: Promise<T>

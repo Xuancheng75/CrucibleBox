@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { SUPPORTED_TOOL_VERSIONS, type ToolId } from '../src/protocol'
-import { getBuiltinCombos } from '../src/combo'
+import {
+  SUPPORTED_TOOL_VERSIONS,
+  type ToolId
+} from '../../../plugin-system/trusted-services/unienv/protocol'
+import { getBuiltinCombos } from '../../../plugin-system/trusted-services/unienv/combo'
 import {
   TOOL_VERSION_LIFECYCLE_AS_OF,
   formatComboLifecycleSummary,
@@ -10,7 +13,7 @@ import {
   orderToolVersionsForDisplay,
   requiresComboVersionConfirmation,
   requiresToolVersionConfirmation
-} from '../src/version-lifecycle'
+} from '../../../plugin-system/trusted-services/unienv/version-lifecycle'
 
 describe('tool version lifecycle catalog', () => {
   it('covers every supported version with an official HTTPS source', () => {

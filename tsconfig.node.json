@@ -24,14 +24,6 @@
     "plugin-system/**/*.ts",
     "shared/**/*.ts",
     "packages/openbox-rpc/src/**/*.ts",
-    "plugins/unienv/src/artifact-integrity.ts",
-    "plugins/unienv/src/trusted-service.ts",
-    "plugins/unienv/src/combo.ts",
-    "plugins/unienv/src/path-policy.ts",
-    "plugins/unienv/src/process-runner.ts",
-    "plugins/unienv/src/protocol.ts",
-    "plugins/unienv/src/task-manager.ts",
-    "plugins/unienv/src/tools/**/*.ts",
     "electron.vite.config.ts"
   ],
   "exclude": ["node_modules", "out", "dist"]

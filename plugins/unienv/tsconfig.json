@@ -8,13 +8,13 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist",
-    "rootDir": "src",
+    "resolveJsonModule": true,
     "types": ["node", "react", "react-dom"],
     "declaration": false,
     "sourceMap": false,
-    "newLine": "lf"
+    "newLine": "lf",
+    "noEmit": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "../../plugin-system/trusted-services/unienv/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

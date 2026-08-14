@@ -7,7 +7,7 @@ import {
   DownloadIntegrityError,
   downloadWithFallback,
   downloadWithProgress
-} from '../src/tools/base'
+} from '../../../plugin-system/trusted-services/unienv/tools/base'
 
 const ZERO_SHA256 = '0'.repeat(64)
 
