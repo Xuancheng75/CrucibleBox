@@ -6,6 +6,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -236,6 +237,126 @@ impl Db {
             )
             .map(|_| ())
     }
+
+    /// 事务化重排所有插件（对等 PluginRepository.reorder：完整排列校验 + 原子提交）
+    pub fn plugin_reorder(&self, ordered_ids: &[String]) -> Result<Vec<String>, String> {
+        let guard = self.conn.lock().unwrap();
+        // 校验：必须是全部已安装插件 ID 的完整排列
+        let existing: Vec<String> = {
+            let ids: Vec<String> = guard
+                .prepare("SELECT id FROM plugins")
+                .map_err(|e| e.to_string())?
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            ids
+        };
+        if ordered_ids.len() != existing.len() {
+            return Err("排序列表必须包含全部已安装插件".into());
+        }
+        let existing_set: HashSet<&str> = existing.iter().map(|s| s.as_str()).collect();
+        let mut seen = HashSet::new();
+        for id in ordered_ids {
+            if id.is_empty() || seen.contains(id.as_str()) || !existing_set.contains(id.as_str()) {
+                return Err("排序列表包含重复、缺失或未知的插件 ID".into());
+            }
+            seen.insert(id.as_str());
+        }
+        guard.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+        let result = (|| -> Result<(), String> {
+            for (index, id) in ordered_ids.iter().enumerate() {
+                guard
+                    .execute(
+                        "UPDATE plugins SET sort_order = ?1 WHERE id = ?2",
+                        rusqlite::params![(index + 1) as i64, id],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                guard.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                Ok(ordered_ids.to_vec())
+            }
+            Err(e) => {
+                let _ = guard.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// 更新插件配置（对等 updateConfig）
+    pub fn plugin_update_config(
+        &self,
+        plugin_id: &str,
+        config: &str,
+    ) -> rusqlite::Result<()> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute(
+                "UPDATE plugins SET config_data = ?1, updated_at = datetime('now', 'localtime') WHERE id = ?2",
+                rusqlite::params![config, plugin_id],
+            )
+            .map(|_| ())
+    }
+
+    /// 查询插件日志（对等 getLogs：pluginId/level/limit 过滤）
+    pub fn plugin_logs(
+        &self,
+        plugin_id: Option<&str>,
+        level: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<PluginLogEntry>, String> {
+        let guard = self.conn.lock().unwrap();
+        let (where_clause, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = match (plugin_id, level) {
+            (Some(pid), Some(lv)) => (
+                "WHERE plugin_id = ?1 AND level = ?2".to_string(),
+                vec![Box::new(pid.to_string()), Box::new(lv.to_string())],
+            ),
+            (Some(pid), None) => (
+                "WHERE plugin_id = ?1".to_string(),
+                vec![Box::new(pid.to_string())],
+            ),
+            (None, Some(lv)) => (
+                "WHERE level = ?1".to_string(),
+                vec![Box::new(lv.to_string())],
+            ),
+            (None, None) => ("".to_string(), vec![]),
+        };
+        let sql = format!(
+            "SELECT id, plugin_id, level, message, timestamp FROM plugin_logs {} \
+             ORDER BY id DESC LIMIT ?3",
+            where_clause
+        );
+        let mut stmt = guard.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut q_params: Vec<Box<dyn rusqlite::ToSql>> = params;
+        q_params.push(Box::new(limit));
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(q_params.iter()), |row| {
+                Ok(PluginLogEntry {
+                    id: row.get(0)?,
+                    plugin_id: row.get(1)?,
+                    level: row.get(2)?,
+                    message: row.get(3)?,
+                    timestamp: row.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 清空插件日志（对等 clearLogs：pluginId 可选）
+    pub fn plugin_clear_logs(&self, plugin_id: Option<&str>) -> rusqlite::Result<()> {
+        let guard = self.conn.lock().unwrap();
+        match plugin_id {
+            Some(pid) => guard
+                .execute("DELETE FROM plugin_logs WHERE plugin_id = ?1", [pid])
+                .map(|_| ()),
+            None => guard.execute("DELETE FROM plugin_logs", []).map(|_| ()),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -253,6 +374,16 @@ pub struct PluginBackendRecord {
     pub entry_main: String,
     #[allow(dead_code)] // 1.9.2-b 日志/诊断用
     pub name: String,
+}
+
+/// 插件日志条目（对等 PluginLogEntry）
+#[derive(Serialize)]
+pub struct PluginLogEntry {
+    pub id: i64,
+    pub plugin_id: String,
+    pub level: String,
+    pub message: String,
+    pub timestamp: String,
 }
 
 fn pragma_i64(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
