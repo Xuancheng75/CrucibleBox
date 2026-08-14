@@ -1,4 +1,8 @@
-import { inspectPluginRendererRpcPayload } from './plugin-renderer-rpc'
+import {
+  DEFAULT_RPC_PAYLOAD_BUDGET,
+  inspectRpcPayload,
+  isPlainObject
+} from '../packages/openbox-rpc/src/index'
 import {
   PLUGIN_BACKEND_RPC_VERSION,
   type PluginBackendHostMethod,
@@ -62,12 +66,6 @@ function fail(message: string): never {
   throw new PluginBackendRpcValidationError(message)
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
-
 function exactObject(
   value: unknown,
   required: readonly string[],
@@ -96,7 +94,8 @@ function boundedString(value: unknown, max: number): string {
 }
 
 function json(value: unknown): PluginBackendRpcJsonValue {
-  inspectPluginRendererRpcPayload(value)
+  // 共享预算检查；fail 适配为 backend 裸字符串报错（测试仅断言 toThrow，不断言文案）
+  inspectRpcPayload(value, DEFAULT_RPC_PAYLOAD_BUDGET, (_code, message) => fail(message))
   return value as PluginBackendRpcJsonValue
 }
 
@@ -304,7 +303,7 @@ export function validatePluginBackendRpcEnvelope(value: unknown): PluginBackendR
     boundedString(error.message, 4096)
   } else fail('unknown envelope kind')
 
-  inspectPluginRendererRpcPayload(value)
+  inspectRpcPayload(value, DEFAULT_RPC_PAYLOAD_BUDGET, (_code, message) => fail(message))
   return value as PluginBackendRpcEnvelope
 }
 
