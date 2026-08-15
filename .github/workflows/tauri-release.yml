@@ -230,5 +230,5 @@ jobs:
           tag_name: ${{ steps.release.outputs.tag }}
           files: artifacts/tauri/*
           prerelease: ${{ steps.release.outputs.prerelease }}
-          overwrite: true
+          overwrite_files: true
           fail_on_unmatched_files: true
