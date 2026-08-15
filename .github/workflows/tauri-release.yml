@@ -176,13 +176,16 @@ jobs:
           echo "artifact verification passed"
 
       # M2: SBOM 作为硬门禁生成并落地（不吞错）
+      # 注（lib-2）：cargo-cyclonedx v0.5.x 无 --output-dir/-o 参数——在 crate 根
+      # `-f json` 生成 `<crate>.cdx.json`（此处 cruciblebox.cdx.json）后移动到 sbom 目录。
       - name: Generate Rust SBOM (cargo-cyclonedx)
         working-directory: src-tauri
         shell: bash
         run: |
           cargo install cargo-cyclonedx --locked --version ^0.5 || cargo install cargo-cyclonedx --locked
           mkdir -p ../artifacts/sbom
-          cargo cyclonedx --output-dir ../artifacts/sbom
+          cargo cyclonedx -f json
+          mv cruciblebox.cdx.json ../artifacts/sbom/
 
       - name: Collect Tauri artifacts + SBOM
         shell: bash
