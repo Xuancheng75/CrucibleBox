@@ -242,7 +242,7 @@ impl BackendProcess {
         self.pending.lock().unwrap().insert(request_id.clone(), tx);
         let payload = json!({
             "v": 2, "kind": "request", "requestId": request_id,
-            "method": method, "params": params,
+            "token": self.token, "method": method, "params": params,
         });
         let bytes = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
         {
@@ -361,22 +361,26 @@ pub struct BackendProcessManager {
 impl BackendProcessManager {
     pub fn new(db: Arc<Mutex<Db>>) -> Arc<Self> {
         // sidecar exe：dev 态 target/debug/；打包态 tauri externalBin（1.9.2-e 落）
+        let sidecar_name = "cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe";
         let sidecar_exe = std::env::current_dir()
             .ok()
             .map(|d| {
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(PathBuf::from));
                 let cands = [
-                    d.join("target")
-                        .join("debug")
-                        .join("cruciblebox-plugin-host.exe"),
+                    d.join("target/debug/cruciblebox-plugin-host.exe"),
+                    d.join("cruciblebox-plugin-host/target/debug/cruciblebox-plugin-host.exe"),
                     d.parent()
-                        .map(|p| {
-                            p.join("target")
-                                .join("debug")
-                                .join("cruciblebox-plugin-host.exe")
-                        })
+                        .map(|p| p.join("target/debug/cruciblebox-plugin-host.exe"))
                         .unwrap_or_default(),
+                    exe_dir.clone().unwrap_or_default().join(sidecar_name),
+                    exe_dir
+                        .unwrap_or_default()
+                        .join("resources")
+                        .join(sidecar_name),
                 ];
-                cands.into_iter().find(|p| p.exists()).unwrap_or_default()
+                cands.into_iter().find(|p| p.is_file()).unwrap_or_default()
             })
             .unwrap_or_default();
         let mgr = Arc::new(BackendProcessManager {
@@ -535,7 +539,24 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("openbox.db");
         let _ = std::fs::remove_file(&path);
-        Arc::new(Mutex::new(Db::open(&path).unwrap()))
+        let db = Db::open(&path).unwrap();
+        // FK 外键（foreign_keys=ON）：log.write/storage 需 plugins 行存在
+        db.conn()
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
+                 VALUES ('gif-editor', 'gif-editor', '1.0.0', 'GIF Editor', 'dist/main.js', ?1)
+                 ON CONFLICT(id) DO NOTHING",
+                rusqlite::params![std::env::current_dir()
+                    .ok()
+                    .and_then(|d| d.parent().map(|p| p.join("plugins/gif-editor")))
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()],
+            )
+            .unwrap();
+        Arc::new(Mutex::new(db))
     }
 
     fn gif_plugin_dir() -> PathBuf {

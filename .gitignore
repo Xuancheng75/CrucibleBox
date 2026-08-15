@@ -3,6 +3,9 @@ out/
 dist/
 release/
 artifacts/
+src-tauri/binaries/
+src-tauri/target/
+src-tauri/cruciblebox-plugin-host/target/
 *.zip
 *.tsbuildinfo
 .DS_Store

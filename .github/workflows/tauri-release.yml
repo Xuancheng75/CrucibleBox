@@ -49,7 +49,7 @@ jobs:
           cache-dependency-path: tauri-frontend/package-lock.json
 
       - name: Setup Rust (stable-msvc)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master snapshot
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
@@ -62,7 +62,7 @@ jobs:
 
       # 根依赖仅用于 build:frame（out/plugin-frame/runtime.js，协议硬依赖）
       - name: Install root deps (frame runtime)
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # M2 (1.9.1): Tauri 原生门禁替代 Electron 链的 npm run check
       - name: Cargo fmt check
@@ -83,6 +83,18 @@ jobs:
 
       - name: Build plugin frame runtime
         run: npm run build:frame
+
+      - name: Build plugin host sidecar
+        working-directory: src-tauri/cruciblebox-plugin-host
+        run: cargo build --release
+
+      - name: Stage plugin host sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
+            src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
 
       # H1: tag ↔ src-tauri 版本一致性 + dispatch tag 格式校验（M5）
       - name: Resolve and validate release tag
@@ -186,6 +198,9 @@ jobs:
           mkdir -p ../artifacts/sbom
           cargo cyclonedx -f json
           mv cruciblebox.cdx.json ../artifacts/sbom/
+          cd cruciblebox-plugin-host
+          cargo cyclonedx -f json
+          mv cruciblebox-plugin-host.cdx.json ../../artifacts/sbom/
 
       - name: Collect Tauri artifacts + SBOM
         shell: bash
@@ -195,7 +210,7 @@ jobs:
           cp src-tauri/target/release/bundle/nsis/*-setup.exe artifacts/tauri/
           cp src-tauri/target/release/bundle/nsis/latest.json artifacts/tauri/
           cp src-tauri/target/release/bundle/nsis/*.sig artifacts/tauri/ 2>/dev/null || true
-          cp artifacts/sbom/cruciblebox.cdx.json artifacts/tauri/ 2>/dev/null || true
+          cp artifacts/sbom/*.cdx.json artifacts/tauri/
           ls -la artifacts/tauri/
 
       - name: Attest artifacts
@@ -212,4 +227,5 @@ jobs:
           tag_name: ${{ steps.release.outputs.tag }}
           files: artifacts/tauri/*
           prerelease: ${{ steps.release.outputs.prerelease }}
+          overwrite: true
           fail_on_unmatched_files: true

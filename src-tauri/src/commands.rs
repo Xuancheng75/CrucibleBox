@@ -399,13 +399,19 @@ pub fn create_renderer_session(
     }
     let permissions: Vec<String> = serde_json::from_str(&permissions_json).unwrap_or_default();
 
-    // runtimePath：dev 态 src-tauri/../out/plugin-frame/runtime.js；打包态 resources
-    // （1.8.4 用 bundle 资源路径替换）
+    // runtimePath：dev 态仓库 out/；打包态 exe 目录/resources/out/（tauri.conf resources）。
     let runtime_path = {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(PathBuf::from));
         let candidates = [
             std::env::current_dir()
                 .ok()
                 .map(|d| d.join("out").join("plugin-frame").join("runtime.js")),
+            exe_dir
+                .clone()
+                .map(|d| d.join("out/plugin-frame/runtime.js")),
+            exe_dir.map(|d| d.join("resources/out/plugin-frame/runtime.js")),
             Some(PathBuf::from("out/plugin-frame/runtime.js")),
             std::env::current_dir()
                 .ok()

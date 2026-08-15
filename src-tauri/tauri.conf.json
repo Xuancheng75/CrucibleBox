@@ -42,13 +42,17 @@
         "silent": true
       }
     },
+    "externalBin": ["binaries/cruciblebox-plugin-host"],
+    "resources": {
+      "../out/plugin-frame/runtime.js": "out/plugin-frame/runtime.js"
+    },
     "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExOTNCREQ1RUIzQTBCRTQKUldUa0N6cnIxYjJURWE2RXVqMGI1Q1hSUDFHUm9mNWhKVzNOVmdQWjJKNi9LeGEwaUpsOTJaZlYK",
       "endpoints": [
-        "https://github.com/Xuancheng75/CrucibleBox/releases/latest/download/latest.json"
+        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v1.9.2/latest.json"
       ]
     }
   }
