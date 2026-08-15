@@ -64,6 +64,19 @@ jobs:
       - name: Install root deps (frame runtime)
         run: npm ci --ignore-scripts
 
+      # externalBin 需在 Rust 门禁（tauri-build 校验）前就位
+      - name: Build plugin host sidecar
+        working-directory: src-tauri/cruciblebox-plugin-host
+        run: cargo build --release
+
+      - name: Stage plugin host sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
+            src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
+
       # M2 (1.9.1): Tauri 原生门禁替代 Electron 链的 npm run check
       - name: Cargo fmt check
         working-directory: src-tauri
@@ -83,18 +96,6 @@ jobs:
 
       - name: Build plugin frame runtime
         run: npm run build:frame
-
-      - name: Build plugin host sidecar
-        working-directory: src-tauri/cruciblebox-plugin-host
-        run: cargo build --release
-
-      - name: Stage plugin host sidecar
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p src-tauri/binaries
-          cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
-            src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
 
       # H1: tag ↔ src-tauri 版本一致性 + dispatch tag 格式校验（M5）
       - name: Resolve and validate release tag
