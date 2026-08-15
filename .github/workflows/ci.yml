@@ -94,9 +94,28 @@ jobs:
         working-directory: tauri-frontend
         run: npm ci
 
+      - name: Install root deps (frame runtime)
+        run: npm ci --ignore-scripts
+
       - name: Build frontend
         working-directory: tauri-frontend
         run: npm run build
+
+      - name: Build plugin frame runtime
+        run: npm run build:frame
+
+      # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
+      - name: Build plugin host sidecar
+        working-directory: src-tauri/cruciblebox-plugin-host
+        run: cargo build --release
+
+      - name: Stage plugin host sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
+            src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
 
       - name: Cargo fmt check
         working-directory: src-tauri
