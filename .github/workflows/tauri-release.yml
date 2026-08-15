@@ -126,8 +126,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
 
-      # H3: 产物 smoke 门禁（installer 唯一 + latest.json 签名存在 + 零证书断言）
-      - name: Verify Tauri artifacts
+      # H3: 产物 smoke 门禁（installer 唯一 + .sig 存在 + 零证书断言）
+      # 注（lib-1）：tauri-cli/bundler 从不生成 latest.json（只产 setup.exe + .sig）；
+      # updater 清单在此组装。URL 用固定 tag 下载形式（避免 releases/latest 随 Electron
+      # 发布漂移）。
+      - name: Verify Tauri artifacts + build updater manifest
         shell: bash
         run: |
           set -euo pipefail
@@ -137,28 +140,39 @@ jobs:
             echo "::error::expected exactly 1 *-setup.exe, found ${SETUPS}"
             exit 1
           fi
-          if [ ! -f "$NSIS_DIR/latest.json" ]; then
-            echo "::error::latest.json not found in ${NSIS_DIR}"
+          EXE="$(find "$NSIS_DIR" -name '*-setup.exe' | head -1)"
+          SIG_FILE="${EXE}.sig"
+          if [ ! -f "$SIG_FILE" ]; then
+            echo "::error::signature file not found: ${SIG_FILE}"
             exit 1
           fi
-          # latest.json 必须含非空 signature（updater 强制签名）
-          node -e "
-            const fs = require('fs');
-            const u = JSON.parse(fs.readFileSync('$NSIS_DIR/latest.json', 'utf8'));
-            const sig = u.signature;
-            if (typeof sig !== 'string' || sig.trim() === '') {
-              console.error('latest.json missing signature');
-              process.exit(1);
-            }
-            console.log('latest.json signature present:', sig.length, 'chars');
-          "
           # 零证书策略：Authenticode 必须 NotSigned（与 Electron 链一致）
-          EXE="$(find "$NSIS_DIR" -name '*-setup.exe' | head -1)"
           SIG="$(powershell -Command "Get-AuthenticodeSignature -FilePath '$EXE' | Select-Object -ExpandProperty Status")"
           if [ "$SIG" != "NotSigned" ]; then
             echo "::error::expected NotSigned (zero-cert policy), got ${SIG}"
             exit 1
           fi
+          # 组装 updater 清单（latest.json）：signature = .sig 全文，url = 固定 tag 下载
+          TAG="${{ steps.release.outputs.tag }}"
+          EXE_NAME="$(basename "$EXE")"
+          node -e "
+            const fs = require('fs');
+            const sig = fs.readFileSync('$SIG_FILE', 'utf8').trim();
+            if (!sig) { console.error('empty signature'); process.exit(1); }
+            const manifest = {
+              version: '${{ steps.release.outputs.tag }}'.replace(/^tauri-v/, ''),
+              notes: 'CrucibleBox ${{ steps.release.outputs.tag }}',
+              pub_date: new Date().toISOString(),
+              platforms: {
+                'windows-x86_64': {
+                  signature: sig,
+                  url: 'https://github.com/Xuancheng75/CrucibleBox/releases/download/${{ steps.release.outputs.tag }}/$EXE_NAME'
+                }
+              }
+            };
+            fs.writeFileSync('$NSIS_DIR/latest.json', JSON.stringify(manifest, null, 2));
+            console.log('latest.json assembled, signature', sig.length, 'chars');
+          "
           echo "artifact verification passed"
 
       # M2: SBOM 作为硬门禁生成并落地（不吞错）
