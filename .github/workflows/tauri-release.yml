@@ -66,7 +66,10 @@ jobs:
       - name: Install root deps (frame runtime)
         run: npm ci --ignore-scripts
 
-      # externalBin 需在 Rust 门禁（tauri-build 校验）前就位
+      - name: Build plugin frame runtime
+        run: npm run build:frame
+
+      # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
       - name: Build plugin host sidecar
         working-directory: src-tauri/cruciblebox-plugin-host
         run: cargo build --release
@@ -95,9 +98,6 @@ jobs:
       - name: Build frontend
         working-directory: tauri-frontend
         run: npm run build
-
-      - name: Build plugin frame runtime
-        run: npm run build:frame
 
       # H1: tag ↔ src-tauri 版本一致性 + dispatch tag 格式校验（M5）
       - name: Resolve and validate release tag
