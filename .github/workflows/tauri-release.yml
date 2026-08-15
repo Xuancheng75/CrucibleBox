@@ -115,6 +115,7 @@ jobs:
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#tauri-v}" >> "$GITHUB_OUTPUT"
           case "$TAG" in
             *-beta.*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
             *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
@@ -228,6 +229,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
+          name: CrucibleBox-v${{ steps.release.outputs.version }}
           files: artifacts/tauri/*
           prerelease: ${{ steps.release.outputs.prerelease }}
           overwrite_files: true
