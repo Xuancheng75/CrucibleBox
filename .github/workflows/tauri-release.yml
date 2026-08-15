@@ -202,7 +202,8 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: artifacts/tauri/*
-          predicate-type: 'https://slsa.dev/provenance/v1'
+          # 注：不指定 predicate-type 时 actions/attest 用默认 SLSA provenance；
+          # 指定非默认 predicate-type 必须同时提供 predicate/predicate-path（见 1.9.2 修复）。
           push-to-registry: false
 
       - name: Publish GitHub release
