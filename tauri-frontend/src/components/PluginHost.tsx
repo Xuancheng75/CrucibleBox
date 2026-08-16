@@ -169,7 +169,7 @@ export function PluginHost({
       connectedTokenRef.current = null
       setError(`连接插件界面失败：${reason instanceof Error ? reason.message : String(reason)}`)
     }
-  }, [permissions, pluginId, session])
+  }, [permissions, session])
 
   if (error) return <Alert className="ob-alert-error" type="error" message={error} showIcon />
 
