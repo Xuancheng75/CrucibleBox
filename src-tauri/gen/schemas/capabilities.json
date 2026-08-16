@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for the main CrucibleBox window","local":true,"windows":["main"],"permissions":["core:default","core:webview:allow-create-webview-window","updater:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for the main CrucibleBox window","local":true,"windows":["main"],"permissions":["core:default","core:webview:allow-create-webview-window","updater:default","dialog:default"]}}

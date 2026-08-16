@@ -44,12 +44,12 @@ fn escape_html_attr(value: &str) -> String {
 
 fn generated_index(session: &RendererSession) -> String {
     let renderer_script = if session.renderer_api_version == 2 {
-        "\n    <script src=\"/renderer.js\"></script>"
+        "\n    <script src=\"renderer.js\"></script>"
     } else {
         ""
     };
     format!(
-        "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <title></title>\n  </head>\n  <body>\n    <div id=\"root\" data-session-token=\"{}\" data-api-version=\"{}\" data-renderer-url=\"/renderer.js\"></div>\n    <script src=\"/runtime.js\"></script>{}\n  </body>\n</html>",
+        "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <title></title>\n  </head>\n  <body>\n    <div id=\"root\" data-session-token=\"{}\" data-api-version=\"{}\" data-renderer-url=\"renderer.js\"></div>\n    <script src=\"runtime.js\"></script>{}\n  </body>\n</html>",
         escape_html_attr(&session.handshake_token),
         session.renderer_api_version,
         renderer_script
@@ -195,6 +195,14 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
                 .map_err(|e| (404, format!("runtime missing: {e}")))?;
             Ok((200, "text/javascript; charset=utf-8", body))
         }
+        "renderer.js" => {
+            let reg = ctx.registry.lock().unwrap();
+            let access = reg.get(&token, &ctx.owner_label);
+            let session = access.session.ok_or((403, "session denied".into()))?;
+            let body = std::fs::read(&session.renderer_path)
+                .map_err(|e| (404, format!("renderer missing: {e}")))?;
+            Ok((200, "text/javascript; charset=utf-8", body))
+        }
         _ => {
             // renderer.js 或其他插件资源
             let reg = ctx.registry.lock().unwrap();
@@ -264,7 +272,11 @@ mod tests {
         assert_eq!(resp.0, 200);
         let body = String::from_utf8(resp.2).unwrap();
         assert!(body.contains("data-session-token="));
-        assert!(body.contains("runtime.js"));
+        // 1.9.6：脚本必须用相对路径（token 在 path 而非 host，根路径会丢 token）
+        assert!(body.contains("<script src=\"runtime.js\">"));
+        assert!(!body.contains("<script src=\"/runtime.js\">"));
+        assert!(body.contains("data-renderer-url=\"renderer.js\""));
+        assert!(body.contains("<script src=\"renderer.js\">"));
         // 二次访问 index → 403 already-consumed
         let again = handle_inner(&ctx, &uri);
         assert!(again.is_err());
@@ -281,6 +293,58 @@ mod tests {
         let resp = handle_inner(&ctx, &uri);
         assert!(resp.is_err());
         assert_eq!(resp.err().unwrap().0, 403);
+    }
+
+    #[test]
+    fn protocol_serves_runtime_and_renderer_from_session_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "cruciblebox-protocol-assets-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        let runtime_path = dir.join("runtime.js");
+        let renderer_path = dir.join("dist").join("renderer.js");
+        std::fs::write(&runtime_path, "// runtime").unwrap();
+        std::fs::write(&renderer_path, "// renderer").unwrap();
+
+        let mut reg = RendererSessionRegistry::new(crate::plugin_session::DEFAULT_TTL);
+        let session = reg
+            .create(crate::plugin_session::CreateSessionInput {
+                plugin_id: "demo".into(),
+                plugin_name: "demo".into(),
+                plugin_directory: dir.to_string_lossy().into_owned(),
+                renderer_entry: "dist/renderer.js".into(),
+                runtime_path: runtime_path.to_string_lossy().into_owned(),
+                renderer_api_version: 2,
+                permissions: vec![],
+                owner_webview_label: "main".into(),
+            })
+            .unwrap();
+        let token = session.token.clone();
+        let ctx = ProtocolContext {
+            registry: Arc::new(Mutex::new(reg)),
+            owner_label: "main".into(),
+        };
+
+        // 先消费 index（issued → active），后续 runtime/renderer 读取要求 active 会话
+        let index_uri = format!("http://cruciblebox-plugin.localhost/{token}/index.html");
+        handle_inner(&ctx, &index_uri).unwrap();
+
+        // runtime.js 从 session.runtime_path 读取
+        let runtime_uri = format!("http://cruciblebox-plugin.localhost/{token}/runtime.js");
+        let resp = handle_inner(&ctx, &runtime_uri).unwrap();
+        assert_eq!(resp.0, 200);
+        assert_eq!(String::from_utf8(resp.2).unwrap(), "// runtime");
+
+        // renderer.js 从 session.renderer_path（pluginDirectory/renderer_entry）读取，
+        // 而非 pluginDirectory 根目录（修复前 resolve_safe_asset 会 404）
+        let renderer_uri = format!("http://cruciblebox-plugin.localhost/{token}/renderer.js");
+        let resp = handle_inner(&ctx, &renderer_uri).unwrap();
+        assert_eq!(resp.0, 200);
+        assert_eq!(String::from_utf8(resp.2).unwrap(), "// renderer");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

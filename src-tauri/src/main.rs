@@ -63,6 +63,8 @@ fn main() {
     tauri::Builder::default()
         // tauri-plugin-updater（1.8.4：JSON 清单 + 强制签名；密钥走 CI secret）
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // tauri-plugin-dialog（1.9.6：插件导入 zip/目录选择）
+        .plugin(tauri_plugin_dialog::init())
         // 插件 renderer 自定义协议（1.8.3）：http://cruciblebox-plugin.localhost/<token>/<res>
         // handler 经 app_handle.state 取 registry（setup 中 manage）
         .register_uri_scheme_protocol(plugin_session::PLUGIN_RENDERER_SCHEME, |ctx, request| {

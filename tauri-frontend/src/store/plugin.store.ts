@@ -49,7 +49,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         loading: false
       })
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: toErrorMessage(err, '请求超时，请检查主进程连接'), loading: false })
     }
   },
 
@@ -66,7 +66,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       set({ error: result.error ?? '安装预览失败', loading: false })
       return false
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: toErrorMessage(err, '安装预览失败'), loading: false })
       return false
     }
   },
@@ -85,7 +85,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       set({ error: result.error ?? '安装失败', loading: false })
       return false
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: toErrorMessage(err, '安装失败'), loading: false })
       return false
     }
   },
@@ -113,7 +113,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       set({ error: result.error, loading: false })
       return false
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: toErrorMessage(err, '卸载失败'), loading: false })
       return false
     }
   },
@@ -131,7 +131,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       set({ error: result.error })
       return false
     } catch (err) {
-      set({ error: (err as Error).message })
+      set({ error: toErrorMessage(err, '启用失败') })
       return false
     }
   },
@@ -149,7 +149,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       set({ error: result.error })
       return false
     } catch (err) {
-      set({ error: (err as Error).message })
+      set({ error: toErrorMessage(err, '停用失败') })
       return false
     }
   },
@@ -163,7 +163,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       set({ error: result.error })
       return false
     } catch (err) {
-      set({ error: (err as Error).message })
+      set({ error: toErrorMessage(err, '保存配置失败') })
       return false
     }
   },
@@ -187,7 +187,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       }
       return true
     } catch (err) {
-      set({ plugins: currentPlugins, error: (err as Error).message })
+      set({ plugins: currentPlugins, error: toErrorMessage(err, '排序失败') })
       return false
     }
   },
@@ -198,3 +198,9 @@ export const usePluginStore = create<PluginState>((set, get) => ({
     }))
   }
 }))
+
+function toErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string' && err.trim()) return err
+  return fallback
+}

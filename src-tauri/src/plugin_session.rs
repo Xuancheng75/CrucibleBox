@@ -142,8 +142,10 @@ impl RendererSessionRegistry {
         let handshake_token = random_token()?;
         // Tauri Windows 自定义协议形式：http://<scheme>.localhost/<token>/index.html
         // （PoC 结论：scheme:// 形式不被支持；path 型携带 session token）
-        let origin = format!("http://{}.localhost/{}", PLUGIN_RENDERER_SCHEME, token);
-        let index_url = format!("{}/index.html", origin);
+        // origin 必须是纯 origin（scheme+host，不含 path）：宿主 PluginFrameBridge 用
+        // event.origin 做握手校验，浏览器 event.origin 不含 path。
+        let origin = format!("http://{}.localhost", PLUGIN_RENDERER_SCHEME);
+        let index_url = format!("{origin}/{token}/index.html");
         let created_at = now_ms();
         let expires_at = created_at + self.ttl.as_millis() as u64;
 

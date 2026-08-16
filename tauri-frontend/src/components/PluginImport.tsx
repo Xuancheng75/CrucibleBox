@@ -47,6 +47,9 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
+  const errorText = (err: unknown): string =>
+    err instanceof Error ? err.message : typeof err === 'string' ? err : String(err)
+
   const showInstallError = () => {
     const detail = installError?.trim()
     if (!detail) {
@@ -85,7 +88,7 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
         showInstallError()
       }
     } catch (err) {
-      message.error(`导入失败: ${(err as Error).message}`)
+      message.error(`导入失败: ${errorText(err)}`)
     } finally {
       setImporting(false)
     }
@@ -98,7 +101,7 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
         await installZipPath(path)
       }
     } catch (err) {
-      message.error(`导入失败: ${(err as Error).message}`)
+      message.error(`导入失败: ${errorText(err)}`)
       setImporting(false)
     }
   }
@@ -117,7 +120,7 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
         setImporting(false)
       }
     } catch (err) {
-      message.error(`导入失败: ${(err as Error).message}`)
+      message.error(`导入失败: ${errorText(err)}`)
       setImporting(false)
     }
   }

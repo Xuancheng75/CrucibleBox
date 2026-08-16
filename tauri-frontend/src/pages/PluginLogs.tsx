@@ -25,9 +25,11 @@ export default function PluginLogs() {
       const res = await tauriApi.plugin.getLogs({ pluginId, level, limit: 500 })
       if (res.success && res.data) {
         setLogs(res.data)
+      } else {
+        message.error(res.error ?? '加载日志失败')
       }
-    } catch {
-      message.error('加载日志失败')
+    } catch (err) {
+      message.error(`加载日志失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setLoading(false)
     }
@@ -158,7 +160,10 @@ export default function PluginLogs() {
           alignItems: 'center',
           marginBottom: 24,
           flexWrap: 'wrap',
-          gap: 12
+          gap: 12,
+          padding: '12px 16px',
+          borderRadius: token.borderRadius,
+          background: token.colorBgContainer
         }}
       >
         <div>

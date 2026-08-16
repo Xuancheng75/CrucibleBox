@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CrucibleBox",
-  "version": "1.9.5",
+  "version": "1.9.6",
   "identifier": "com.cruciblebox.app",
   "build": {
     "beforeDevCommand": "",
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-src 'self' cruciblebox-plugin:",
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-src 'self' http://cruciblebox-plugin.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
@@ -52,7 +52,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExOTNCREQ1RUIzQTBCRTQKUldUa0N6cnIxYjJURWE2RXVqMGI1Q1hSUDFHUm9mNWhKVzNOVmdQWjJKNi9LeGEwaUpsOTJaZlYK",
       "endpoints": [
-        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v1.9.5/latest.json"
+        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v1.9.6/latest.json"
       ]
     }
   }

@@ -326,8 +326,9 @@ impl Db {
             };
         let sql = format!(
             "SELECT id, plugin_id, level, message, timestamp FROM plugin_logs {} \
-             ORDER BY id DESC LIMIT ?3",
-            where_clause
+             ORDER BY id DESC LIMIT ?{}",
+            where_clause,
+            params.len() + 1
         );
         let mut stmt = guard.prepare(&sql).map_err(|e| e.to_string())?;
         let mut q_params: Vec<Box<dyn rusqlite::ToSql>> = params;
@@ -947,5 +948,49 @@ mod tests {
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(parsed.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn plugin_logs_filter_combinations() {
+        let path = temp_db("plugin-logs-filters");
+        let db = Db::open(&path).unwrap();
+        {
+            let guard = db.conn.lock().unwrap();
+            guard
+                .execute_batch(
+                    r#"
+                    INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
+                      VALUES ('p1', 'p1', '1.0.0', 'P1', 'index.js', 'C:/plugins/p1'),
+                             ('p2', 'p2', '1.0.0', 'P2', 'index.js', 'C:/plugins/p2');
+                    "#,
+                )
+                .unwrap();
+        }
+        db.log_write("p1", "info", "hello").unwrap();
+        db.log_write("p1", "error", "boom").unwrap();
+        db.log_write("p2", "warn", "careful").unwrap();
+
+        // 无过滤（默认进入日志页时的路径：修复前 LIMIT ?3 参数错位报错）
+        let all = db.plugin_logs(None, None, 10).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].plugin_id, "p2"); // id DESC
+
+        // 仅 plugin_id 过滤
+        let p1 = db.plugin_logs(Some("p1"), None, 10).unwrap();
+        assert_eq!(p1.len(), 2);
+        assert!(p1.iter().all(|l| l.plugin_id == "p1"));
+
+        // plugin_id + level 过滤
+        let p1_err = db.plugin_logs(Some("p1"), Some("error"), 10).unwrap();
+        assert_eq!(p1_err.len(), 1);
+        assert_eq!(p1_err[0].level, "error");
+
+        // 仅 level 过滤
+        let warns = db.plugin_logs(None, Some("warn"), 10).unwrap();
+        assert_eq!(warns.len(), 1);
+        assert_eq!(warns[0].plugin_id, "p2");
+
+        // limit 生效
+        assert_eq!(db.plugin_logs(None, None, 2).unwrap().len(), 2);
     }
 }
