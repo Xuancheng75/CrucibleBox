@@ -160,10 +160,7 @@ export default function PluginLogs() {
           alignItems: 'center',
           marginBottom: 24,
           flexWrap: 'wrap',
-          gap: 12,
-          padding: '12px 16px',
-          borderRadius: token.borderRadius,
-          background: token.colorBgContainer
+          gap: 12
         }}
       >
         <div>

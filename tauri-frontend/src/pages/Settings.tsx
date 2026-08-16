@@ -187,16 +187,7 @@ export default function Settings() {
 
   return (
     <div>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          marginBottom: 24,
-          padding: '12px 16px',
-          borderRadius: token.borderRadius,
-          background: token.colorBgContainer
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 24 }}>
         <div
           style={{
             width: 40,

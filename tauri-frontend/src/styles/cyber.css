@@ -8,10 +8,16 @@
   background-image:
     radial-gradient(ellipse 90% 45% at 50% 115%, rgba(0, 229, 255, 0.2), transparent 62%),
     radial-gradient(ellipse 42% 32% at 0% 0%, rgba(0, 229, 255, 0.13), transparent 60%),
+    linear-gradient(rgba(0, 229, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.045) 1px, transparent 1px),
+    repeating-linear-gradient(0deg, rgba(0, 229, 255, 0.025) 0 1px, transparent 1px 4px),
     linear-gradient(145deg, #060a10 0%, #08111b 52%, #0a0e14 100%);
   background-size:
     auto,
     auto,
+    48px 48px,
+    48px 48px,
+    100% 4px,
     100% 100%;
   background-attachment: fixed;
 }
@@ -47,14 +53,7 @@
 [data-ob-theme='cyber'] .ob-main-content {
   position: relative;
   border-top: 1px solid rgba(0, 229, 255, 0.16);
-  background-image:
-    linear-gradient(rgba(0, 229, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 229, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(135deg, rgba(13, 18, 26, 0.2), rgba(6, 10, 16, 0.04));
-  background-size:
-    48px 48px,
-    48px 48px,
-    100% 100%;
+  background: linear-gradient(135deg, rgba(13, 18, 26, 0.2), rgba(6, 10, 16, 0.04));
 }
 
 .ob-hud-strip {
