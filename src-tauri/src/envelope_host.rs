@@ -102,6 +102,20 @@ pub fn host_dispatch(
         // event.*：1.9.2-a 最小面——subscribe/unsubscribe 记录接受（no-op 通过），
         // emit 由宿主事件总线后续（1.9.2-c）；当前返回 Null 保证不 NOT_ALLOWED。
         "event.emit" | "event.subscribe" | "event.unsubscribe" => Ok(Value::Null),
+        "trusted.invoke" => {
+            let service = params
+                .get("service")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let operation = params
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let payload = params.get("payload");
+            crate::unienv_service::dispatch(&service, &operation, payload)
+        }
         _ => Err("host method not implemented".into()),
     }
 }

@@ -25,6 +25,11 @@ export function antdThemeConfig(toolboxTheme: ToolboxTheme): ThemeConfig {
       colorBorderSecondary: tokens.colorBorderSecondary,
       borderRadius: tokens.borderRadius,
       fontFamily: tokens.fontFamily
+    },
+    components: {
+      Modal: {
+        headerBg: tokens.colorBgElevated
+      }
     }
   }
 }

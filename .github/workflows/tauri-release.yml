@@ -132,6 +132,18 @@ jobs:
           cargo install tauri-cli --locked --version "^${CORE_VERSION}" || \
             cargo install tauri-cli --locked
 
+      # 1.9.9: 强制重建 exe 图标资源。Swatinem/rust-cache 会缓存 target，而 tauri-build
+      # 未对 icons/*.ico 发 rerun-if-changed，cargo 复用缓存的 .res 资源 → 打包旧图标。
+      # 删除本 crate 的 build 输出目录强制 tauri-build 重跑并重新嵌入 window icon。
+      - name: Force rebuild of app icon resources
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/release/build/cruciblebox-*
+          rm -rf target/debug/build/cruciblebox-*
+          echo "cleared cruciblebox build output for icon resource regeneration"
+
       - name: Build Tauri app + updater artifacts
         working-directory: src-tauri
         shell: bash

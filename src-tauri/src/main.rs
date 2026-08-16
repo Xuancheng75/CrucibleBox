@@ -21,6 +21,7 @@ mod plugin_protocol;
 mod plugin_session;
 mod rand_token;
 mod transaction;
+mod unienv_service;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

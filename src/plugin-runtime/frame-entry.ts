@@ -99,7 +99,10 @@ if (window.parent !== window) {
   }
 }
 
-document.documentElement.style.colorScheme = 'light'
+// 主题由 applyTheme 按 theme.mode 设置 colorScheme；此处只做深色兜底，
+// 避免主题数据到达前 iframe 默认白色背景在深色模式下闪白屏。
+document.documentElement.style.colorScheme = 'dark'
+document.body.style.background = 'var(--ob-color-bg, #0a0c10)'
 document.body.style.margin = '0'
 document.body.style.minHeight = '100%'
 

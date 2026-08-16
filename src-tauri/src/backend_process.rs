@@ -678,4 +678,72 @@ mod tests {
         let _ = proc.request("lifecycle.dispose", json!({}));
         proc.kill_now("test cleanup");
     }
+
+    #[test]
+    fn e2e_diary_backend_initialize_and_message() {
+        let exe = sidecar_exe();
+        let plugin_dir = std::env::current_dir()
+            .ok()
+            .and_then(|d| d.parent().map(|p| p.join("plugins").join("diary")))
+            .filter(|p| p.join("dist").join("main.js").exists())
+            .unwrap_or_else(|| PathBuf::from("../plugins/diary"));
+        if !exe.exists() || !plugin_dir.join("dist/main.js").exists() {
+            eprintln!("skipping diary e2e: sidecar exe or diary dist not built");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("cb-diary-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("openbox.db");
+        let _ = std::fs::remove_file(&path);
+        let db = Db::open(&path).unwrap();
+        db.conn()
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
+                 VALUES ('diary', 'diary', '1.0.0', 'Diary', 'dist/main.js', ?1)
+                 ON CONFLICT(id) DO NOTHING",
+                rusqlite::params![plugin_dir.to_string_lossy().into_owned()],
+            )
+            .unwrap();
+        let db = Arc::new(Mutex::new(db));
+
+        let proc = BackendProcess::spawn(
+            "diary".into(),
+            crate::permissions::PermissionGuard::parse(&[
+                "storage:read".to_string(),
+                "storage:write".to_string(),
+            ]),
+            db.clone(),
+            exe,
+            plugin_dir.clone(),
+            "dist/main.js".into(),
+            Arc::new(|_pid: &str| {}),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+        )
+        .expect("spawn diary sidecar");
+
+        let init = proc.request(
+            "lifecycle.initialize",
+            json!({"pluginId": "diary", "config": {}}),
+        );
+        assert!(init.is_ok(), "diary initialize failed: {:?}", init.err());
+
+        // getMonthEntries → storage.list（storage:read 权限）→ 应返回 [] 而非错误
+        let msg = proc
+            .request(
+                "plugin.message",
+                json!({"message": {"type": "getMonthEntries", "year": 2026, "month": 8}}),
+            )
+            .expect("diary getMonthEntries request failed");
+        let entries = msg.get("entries").cloned().unwrap_or_else(|| json!([]));
+        assert!(
+            entries.is_array(),
+            "getMonthEntries did not return entries array: {msg}"
+        );
+
+        let _ = proc.request("lifecycle.dispose", json!({}));
+        proc.kill_now("test cleanup");
+    }
 }

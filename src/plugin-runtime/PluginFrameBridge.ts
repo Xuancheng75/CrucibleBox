@@ -283,7 +283,12 @@ export class PluginFrameBridge {
     }
     return {
       code: 'INTERNAL_ERROR',
-      message: error instanceof Error ? error.message : 'Plugin renderer request failed',
+      message:
+        error instanceof Error
+          ? error.message
+          : typeof error === 'string'
+            ? error
+            : 'Plugin renderer request failed',
       retryable: false
     }
   }

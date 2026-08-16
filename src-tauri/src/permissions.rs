@@ -105,6 +105,7 @@ pub fn is_host_method_implemented(method: &str) -> bool {
             | "event.emit"
             | "event.subscribe"
             | "event.unsubscribe"
+            | "trusted.invoke"
     )
 }
 
@@ -156,7 +157,7 @@ mod tests {
         assert!(is_host_method_implemented("log.write"));
         assert!(!is_host_method_implemented("dialog.open"));
         assert!(!is_host_method_implemented("network.fetch"));
-        assert!(!is_host_method_implemented("trusted.invoke"));
+        assert!(is_host_method_implemented("trusted.invoke"));
     }
 
     #[test]
