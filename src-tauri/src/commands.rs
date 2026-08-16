@@ -542,7 +542,7 @@ pub fn create_renderer_session(
             plugin_directory: installed_path,
             renderer_entry: entry_renderer,
             runtime_path: runtime_path.to_string_lossy().into_owned(),
-            renderer_api_version: api_version as u8,
+            renderer_api_version: api_version,
             permissions,
             owner_webview_label: "main".into(),
         })?
