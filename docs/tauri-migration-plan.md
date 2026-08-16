@@ -48,6 +48,9 @@
 | P3 | rusqlite 打开现有 v3 openbox.db | 迁移链路等价 + 字节兼容 | 保留 better-sqlite3 侧（不可行）→ 重写 DB 层 |
 | P4 | 内存 A/B 基准（Electron vs Tauri 原型，同机多轮中位） | 报告输出；不达标可中止 | 冻结迁移，保持 Electron |
 
+> 注（1.9.5）：P4 内存基准在 1.8.0 PoC 完成后即转为"方向性结论"；随 1.9.3 移除
+> `get_process_memory` 探针，不再作为后续门禁/特性维护。
+
 ## 3. 1.8.X 版本计划（Tauri 迁移 + 改名）
 
 > 每个小版本沿用既有检查单（check/build/smoke + 相关迁移测试）；关键改动（DB/安全/发布链）走 ora 独立审查。

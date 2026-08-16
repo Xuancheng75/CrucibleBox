@@ -31,7 +31,7 @@
 | electron/AppUpdateService.ts | tauri-plugin-updater 最小接入（check()） | 状态机/broadcast/channel 持久化未迁 |
 | electron/ipc/plugin.ipc.ts | 读路径 + session 命令 | install/uninstall/enable/disable/reorder/updateConfig/getLogs + 对话框 |
 | electron/ipc/update.ipc.ts | tauri-plugin-updater | 状态机 UI |
-| electron/DiagnosticLog.ts / StartupMetrics.ts | eprintln + get_process_memory | 可观测性未迁 |
+| electron/DiagnosticLog.ts / StartupMetrics.ts | eprintln + 启动里程碑 | 可观测性未迁（内存探针已于 1.9.3 移除） |
 | electron/menu.ts / pluginEvents.ts / pluginRendererSmoke.ts | 无 | 未迁 |
 | plugin-system/PluginProcessEntry.ts | cruciblebox-plugin-host（协议/加载/CJS 等价） | 宿主侧 spawn/崩溃恢复/超时未落地 |
 | plugin-system/PluginSandbox.ts | sidecar（quickjs 隔离） | 进程管理不等价 |

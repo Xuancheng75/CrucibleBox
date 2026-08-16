@@ -116,7 +116,7 @@ browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题�
   Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版 = **v1.9.2**。
 - 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
   宿主和六插件可生成 CycloneDX SBOM。
-- 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息；`get_process_memory` 提供进程内存探针。
+- 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息（进程内存探针已于 1.9.3 移除）。
 - 完整发布环境变量和验收步骤见 `docs/release-runbook.md`。
 
 ## 架构与文档

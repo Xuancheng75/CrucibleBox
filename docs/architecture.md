@@ -126,7 +126,7 @@ renderer-safe 语义 CSS 变量原语（`plugins/theme-manager/src/theme-vars.ts
 
 ## 可观测性与恢复
 
-- Rust core 启动里程碑与内存探针（`get_process_memory`，P4 A/B 基准）。
+- Rust core 启动里程碑记录到 stderr/日志；进程内存探针（`get_process_memory`，P4 A/B 基准）已于 1.9.3 移除。
 - 日志与指标：Electron 时代的 JSONL/指标实现冻结中；Rust 侧等价随 1.9.2 落地。
 - 插件日志按插件限制 2,000 行并清理 30 天前记录（DB `plugin_logs`）。
 - 构建对宿主（tauri-frontend dist）、frame runtime（`out/plugin-frame/runtime.js`）和六插件
