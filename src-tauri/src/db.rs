@@ -357,6 +357,105 @@ impl Db {
             None => guard.execute("DELETE FROM plugin_logs", []).map(|_| ()),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // 插件安装链读写层（1.9.3，install.rs 编排层用）
+    // -----------------------------------------------------------------------
+
+    /// 按 name 查询插件全行（name 唯一）
+    pub fn plugin_find_by_name(&self, name: &str) -> Result<Option<PluginRow>, String> {
+        let guard = self.conn.lock().unwrap();
+        let mut stmt = guard
+            .prepare(&format!(
+                "SELECT {PLUGIN_ROW_COLUMNS} FROM plugins WHERE name = ?1"
+            ))
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map([name], row_to_plugin_row)
+            .map_err(|e| e.to_string())?;
+        rows.next().transpose().map_err(|e| e.to_string())
+    }
+
+    /// 按 id 查询插件全行
+    pub fn plugin_find_by_id(&self, id: &str) -> Result<Option<PluginRow>, String> {
+        let guard = self.conn.lock().unwrap();
+        let mut stmt = guard
+            .prepare(&format!(
+                "SELECT {PLUGIN_ROW_COLUMNS} FROM plugins WHERE id = ?1"
+            ))
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map([id], row_to_plugin_row)
+            .map_err(|e| e.to_string())?;
+        rows.next().transpose().map_err(|e| e.to_string())
+    }
+
+    /// 新建插件记录（enabled 恒 0；installed_at/updated_at 由 DB 生成）
+    pub fn plugin_create(&self, row: &PluginRow) -> Result<(), String> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute(
+                "INSERT INTO plugins (id, name, version, display_name, description, author, icon, \
+                 entry_main, entry_renderer, permissions, config_schema, config_data, enabled, \
+                 installed_path, installed_at, updated_at, sort_order) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, ?13, \
+                 datetime('now','localtime'), datetime('now','localtime'), ?14)",
+                rusqlite::params![
+                    row.id,
+                    row.name,
+                    row.version,
+                    row.display_name,
+                    row.description,
+                    row.author,
+                    row.icon,
+                    row.entry_main,
+                    row.entry_renderer,
+                    row.permissions,
+                    row.config_schema,
+                    row.config_data,
+                    row.installed_path,
+                    row.sort_order
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// 升级：更新版本相关字段（updated_at 刷新）
+    pub fn plugin_update_version(&self, id: &str, fields: &VersionFields) -> Result<(), String> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute(
+                "UPDATE plugins SET version = ?1, display_name = ?2, description = ?3, \
+                 author = ?4, icon = ?5, entry_main = ?6, entry_renderer = ?7, \
+                 permissions = ?8, config_schema = ?9, installed_path = ?10, \
+                 updated_at = datetime('now','localtime') WHERE id = ?11",
+                rusqlite::params![
+                    fields.version,
+                    fields.display_name,
+                    fields.description,
+                    fields.author,
+                    fields.icon,
+                    fields.entry_main,
+                    fields.entry_renderer,
+                    fields.permissions,
+                    fields.config_schema,
+                    fields.installed_path,
+                    id
+                ],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// 删除插件记录（级联清理 plugin_logs/plugin_storage）
+    pub fn plugin_delete(&self, id: &str) -> Result<(), String> {
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute("DELETE FROM plugins WHERE id = ?1", [id])
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Serialize)]
@@ -384,6 +483,67 @@ pub struct PluginLogEntry {
     pub level: String,
     pub message: String,
     pub timestamp: String,
+}
+
+/// 插件全行记录（1.9.3 安装链读写用）
+pub struct PluginRow {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub display_name: String,
+    pub description: String,
+    pub author: String,
+    pub icon: String,
+    pub entry_main: String,
+    pub entry_renderer: String,
+    pub permissions: String,
+    pub config_schema: String,
+    pub config_data: String,
+    pub enabled: bool,
+    pub installed_path: String,
+    pub installed_at: String,
+    pub updated_at: String,
+    pub sort_order: i64,
+}
+
+/// 升级时更新的版本相关字段（1.9.3）
+pub struct VersionFields {
+    pub version: String,
+    pub display_name: String,
+    pub description: String,
+    pub author: String,
+    pub icon: String,
+    pub entry_main: String,
+    pub entry_renderer: String,
+    pub permissions: String,
+    pub config_schema: String,
+    pub installed_path: String,
+}
+
+const PLUGIN_ROW_COLUMNS: &str = "id, name, version, display_name, description, author, icon, \
+     entry_main, entry_renderer, permissions, config_schema, config_data, enabled, \
+     installed_path, installed_at, updated_at, sort_order";
+
+fn row_to_plugin_row(row: &rusqlite::Row) -> rusqlite::Result<PluginRow> {
+    Ok(PluginRow {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        version: row.get("version")?,
+        display_name: row.get("display_name")?,
+        description: row.get("description").unwrap_or_default(),
+        author: row.get("author").unwrap_or_default(),
+        icon: row.get("icon").unwrap_or_default(),
+        entry_main: row.get("entry_main")?,
+        entry_renderer: row.get("entry_renderer").unwrap_or_default(),
+        permissions: row.get("permissions").unwrap_or_default(),
+        config_schema: row.get("config_schema").unwrap_or_default(),
+        config_data: row.get("config_data").unwrap_or_default(),
+        enabled: row.get::<_, i64>("enabled").unwrap_or(1) == 1,
+        installed_path: row.get("installed_path")?,
+        installed_at: row.get("installed_at").unwrap_or_default(),
+        updated_at: row.get("updated_at").unwrap_or_default(),
+        sort_order: row.get("sort_order").unwrap_or(0),
+    })
 }
 
 fn pragma_i64(conn: &Connection, name: &str) -> rusqlite::Result<i64> {

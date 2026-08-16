@@ -7,7 +7,7 @@
 // - settings_set 仅允许白名单 key（当前仅 'theme'；对等 settings.ipc.ts）
 
 use crate::db::Db;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{State, WebviewWindow};
@@ -231,6 +231,7 @@ pub fn plugin_get(
 pub fn plugin_enable(
     window: WebviewWindow,
     backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
+    install: State<'_, Arc<crate::install::InstallManager>>,
     db: State<'_, Arc<Mutex<Db>>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
@@ -242,11 +243,18 @@ pub fn plugin_enable(
         .plugin_backend_record(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("plugin not found: {id}"))?;
+    if install.is_blocked(&record.name) {
+        return Err("plugin is blocked after interrupted transaction".into());
+    }
     db_guard
         .set_plugin_enabled(&id, true)
         .map_err(|e| e.to_string())?;
     // 惰性激活 backend（若插件有 backend）
     let _ = backend.ensure_activated(&id, record);
+    backend.emit(
+        "plugin:status-change",
+        serde_json::json!({ "pluginId": id, "status": "active" }),
+    );
     Ok(serde_json::json!({ "success": true }))
 }
 
@@ -255,16 +263,29 @@ pub fn plugin_enable(
 pub fn plugin_disable(
     window: WebviewWindow,
     backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
+    install: State<'_, Arc<crate::install::InstallManager>>,
     db: State<'_, Arc<Mutex<Db>>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
+    let db_guard = lock(&db);
+    let record = db_guard
+        .plugin_backend_record(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("plugin not found: {id}"))?;
+    if install.is_blocked(&record.name) {
+        return Err("plugin is blocked after interrupted transaction".into());
+    }
     backend.deactivate(&id);
-    lock(&db)
+    db_guard
         .set_plugin_enabled(&id, false)
         .map_err(|e| e.to_string())?;
+    backend.emit(
+        "plugin:status-change",
+        serde_json::json!({ "pluginId": id, "status": "inactive" }),
+    );
     Ok(serde_json::json!({ "success": true }))
 }
 
@@ -339,21 +360,100 @@ pub fn plugin_clear_logs(
 pub fn plugin_uninstall(
     window: WebviewWindow,
     backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
+    install: State<'_, Arc<crate::install::InstallManager>>,
     db: State<'_, Arc<Mutex<Db>>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
+    let db_guard = lock(&db);
+    let record = db_guard
+        .plugin_backend_record(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("plugin not found: {id}"))?;
+    if install.is_blocked(&record.name) {
+        return Err("plugin is blocked after interrupted transaction".into());
+    }
     backend.deactivate(&id);
-    let guard = lock(&db);
-    let conn = guard.conn().lock().unwrap();
+    let conn = db_guard.conn().lock().unwrap_or_else(|p| p.into_inner());
     let removed = conn
         .execute("DELETE FROM plugins WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
     if removed == 0 {
         return Err(format!("plugin not found: {id}"));
     }
+    Ok(serde_json::json!({ "success": true }))
+}
+
+// ---------------------------------------------------------------------------
+// plugin install 链（1.9.3，对等 PluginInstaller preview/commit/discard + 导入路径登记）
+// ---------------------------------------------------------------------------
+
+/// 安装来源 DTO（前端传 { type: "zip"|"directory", path }）
+#[derive(Deserialize)]
+pub struct InstallSourceDto {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub path: String,
+}
+
+/// 安装预览：校验来源 + manifest + 升级策略，返回 installToken（对等 previewInstall）。
+/// #[tauri::command(async)] 使命令在 async runtime 线程池执行（阻塞安全）。
+#[tauri::command(async)]
+pub fn plugin_install_preview(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    source: InstallSourceDto,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let source = crate::install::InstallSource {
+        source_type: source.source_type,
+        path: source.path,
+    };
+    install.preview(source)
+}
+
+/// 安装提交：消费 installToken 执行安装/升级（对等 commitInstall）。
+#[tauri::command(async)]
+pub fn plugin_install_commit(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    token: String,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.commit(token)
+}
+
+/// 安装放弃：删除 token + 回滚事务 + 清理 stage（对等 discardInstall）。
+#[tauri::command(async)]
+pub fn plugin_install_discard(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    token: String,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.discard(token)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 登记可信导入路径（对等 PluginInstaller 的 trustedPaths 登记；容量 50）。
+#[tauri::command]
+pub fn plugin_register_import_path(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.remember_trusted_path(PathBuf::from(path));
     Ok(serde_json::json!({ "success": true }))
 }
 
@@ -377,23 +477,33 @@ pub fn create_renderer_session(
     let guard = db.conn().lock().unwrap();
     let row = guard
         .query_row(
-            "SELECT name, entry_renderer, permissions, renderer_api_version, installed_path FROM plugins WHERE id = ?1 AND enabled = 1",
+            "SELECT name, entry_renderer, permissions, installed_path FROM plugins WHERE id = ?1 AND enabled = 1",
             [&id],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(3)?,
                 ))
             },
         )
         .map_err(|e| format!("plugin not found or disabled: {e}"))?;
-    let (name, entry_renderer, permissions_json, api_version, installed_path) = row;
+    let (name, entry_renderer, permissions_json, installed_path) = row;
     if entry_renderer.is_empty() {
         return Err("plugin has no renderer entry".into());
     }
+    // v1 schema 无 renderer_api_version 列：从插件根目录重读 plugin.json（对等
+    // PluginManager 的 manifest 校验语义），并校验 manifest 与 DB 记录一致。
+    let manifest = crate::manifest::read_manifest(std::path::Path::new(&installed_path))
+        .map_err(|e| format!("failed to read plugin manifest: {e}"))?;
+    if manifest.name != name {
+        return Err("plugin manifest name mismatch".into());
+    }
+    if manifest.renderer != entry_renderer {
+        return Err("plugin manifest renderer entry mismatch".into());
+    }
+    let api_version = manifest.renderer_api_version.unwrap_or(1);
     if api_version != 1 && api_version != 2 {
         return Err("unsupported rendererApiVersion".into());
     }

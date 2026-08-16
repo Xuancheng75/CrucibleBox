@@ -7,11 +7,13 @@ use std::sync::{Arc, Mutex};
 
 /// 执行 host 方法。返回 Ok(result) 或 Err(message)。
 /// 前置：调用方已做 is_host_method_implemented + PermissionGuard 校验（backend_process.rs）。
+/// emitter：事件发射回调（log.write 入库后广播 plugin:log）。
 pub fn host_dispatch(
     db: &Arc<Mutex<Db>>,
     plugin_id: &str,
     method: &str,
     params: &Value,
+    emitter: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
 ) -> Result<Value, String> {
     let db = db.lock().unwrap_or_else(|p| p.into_inner());
     match method {
@@ -90,6 +92,11 @@ pub fn host_dispatch(
             let message = str_param(params, "message")?;
             db.log_write(plugin_id, level, &message)
                 .map_err(|e| e.to_string())?;
+            // plugin:log：入库后广播（对等 PluginLogService emitLog → plugin:log）
+            emitter(
+                "plugin:log",
+                json!({ "pluginId": plugin_id, "level": level, "message": message }),
+            );
             Ok(Value::Null)
         }
         // event.*：1.9.2-a 最小面——subscribe/unsubscribe 记录接受（no-op 通过），

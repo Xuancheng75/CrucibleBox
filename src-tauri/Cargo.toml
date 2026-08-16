@@ -1,6 +1,6 @@
 [package]
 name = "cruciblebox"
-version = "1.9.2"
+version = "1.9.3"
 edition = "2021"
 description = "CrucibleBox - extensible Windows toolbox (Tauri 2)"
 authors = ["CrucibleBox"]
@@ -15,6 +15,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = "0.2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

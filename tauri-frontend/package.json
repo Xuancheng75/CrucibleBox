@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox-tauri-frontend",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,10 +9,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/icons": "^5.5.2",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-updater": "^2.10.1",
+    "antd": "^5.24.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",

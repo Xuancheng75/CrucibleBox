@@ -7,69 +7,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod archive;
 mod backend_process;
 mod commands;
 mod data_dir;
 mod db;
 mod envelope_host;
+mod install;
+mod journal;
+mod manifest;
 mod permissions;
 mod plugin_protocol;
 mod plugin_session;
 mod rand_token;
+mod transaction;
 
-use serde::Serialize;
 use std::path::PathBuf;
-use std::process;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
-
-/// 进程内存信息（供 P4 内存 A/B 基准从前端查询）
-#[derive(Serialize)]
-struct ProcessMemory {
-    working_set_kib: u64,
-    private_kib: u64,
-    pid: u32,
-}
-
-#[tauri::command]
-fn get_process_memory() -> Result<ProcessMemory, String> {
-    let pid = process::id();
-    #[cfg(windows)]
-    {
-        use std::mem::size_of;
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::ProcessStatus::{
-            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
-        };
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
-
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return Err(format!("OpenProcess failed for pid {pid}"));
-        }
-        let mut counters: PROCESS_MEMORY_COUNTERS_EX = unsafe { std::mem::zeroed() };
-        let ok = unsafe {
-            GetProcessMemoryInfo(
-                handle,
-                &mut counters as *mut _ as *mut _,
-                size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
-            )
-        };
-        unsafe { CloseHandle(handle) };
-        if ok == 0 {
-            return Err("GetProcessMemoryInfo failed".into());
-        }
-        Ok(ProcessMemory {
-            working_set_kib: (counters.WorkingSetSize / 1024) as u64,
-            private_kib: (counters.PrivateUsage / 1024) as u64,
-            pid,
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        Err("memory probe is Windows-only".into())
-    }
-}
+use tauri::{Emitter, Manager};
 
 fn db_path_in(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join("data").join("openbox.db")
@@ -168,6 +123,25 @@ fn main() {
             app.manage(data_dir);
             app.manage(backend.clone());
 
+            // 4.1) 插件安装链：plugins_dir（app_data_dir/plugins）+ InstallManager + 启动恢复
+            let plugins_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir.join("plugins"),
+                Err(err) => show_fatal_error(&format!("无法解析应用数据目录：{}", err)),
+            };
+            if let Err(err) = std::fs::create_dir_all(&plugins_dir) {
+                show_fatal_error(&format!("无法创建插件目录：{}", err));
+            }
+            let install_mgr =
+                install::InstallManager::new(plugins_dir, db.clone(), backend.clone());
+            install_mgr.run_startup_recovery();
+            app.manage(install_mgr.clone());
+
+            // 4.2) 事件桥：backend 事件 → Tauri 全局事件（plugin:log/message/status-change）
+            let app_handle = app.handle().clone();
+            backend.set_emitter(Arc::new(move |event, payload| {
+                let _ = app_handle.emit(event, payload);
+            }));
+
             // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）
             let registry = Arc::new(Mutex::new(plugin_session::RendererSessionRegistry::new(
                 plugin_session::DEFAULT_TTL,
@@ -184,7 +158,6 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_process_memory,
             commands::settings_get,
             commands::settings_set,
             commands::settings_get_all,
@@ -199,6 +172,10 @@ fn main() {
             commands::plugin_get_logs,
             commands::plugin_clear_logs,
             commands::plugin_uninstall,
+            commands::plugin_install_preview,
+            commands::plugin_install_commit,
+            commands::plugin_install_discard,
+            commands::plugin_register_import_path,
             commands::db_status,
             commands::create_renderer_session,
             commands::dispose_renderer_session,

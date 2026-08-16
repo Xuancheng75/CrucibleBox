@@ -29,6 +29,9 @@ const CRASH_WINDOW: Duration = Duration::from_secs(5 * 60);
 const MAX_CRASHES: u32 = 3;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// 事件发射回调类型（event, payload）——main.rs setup 注入 app.emit
+type Emitter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 pub struct BackendProcess {
     plugin_id: String,
     permissions: crate::permissions::PermissionGuard,
@@ -43,9 +46,12 @@ pub struct BackendProcess {
     expected_stop: std::sync::atomic::AtomicBool,
     /// 崩溃上报回调（Manager 注入；读线程 EOF 且非 expected_stop 时调用）
     on_crash: Arc<dyn Fn(&str) + Send + Sync>,
+    /// 事件发射回调（Manager 注入；plugin:log / plugin:message 经它广播）
+    emitter: Emitter,
 }
 
 impl BackendProcess {
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         plugin_id: String,
         permissions: crate::permissions::PermissionGuard,
@@ -54,6 +60,7 @@ impl BackendProcess {
         plugin_dir: PathBuf,
         entry_main: String,
         on_crash: Arc<dyn Fn(&str) + Send + Sync>,
+        emitter: Emitter,
     ) -> Result<Arc<BackendProcess>, String> {
         // token：32 位随机 [A-Za-z0-9_-]
         let token = crate::rand_token::random_token_alnum(32)?;
@@ -103,6 +110,7 @@ impl BackendProcess {
             db,
             expected_stop: std::sync::atomic::AtomicBool::new(false),
             on_crash,
+            emitter,
         });
 
         // 读线程：独占 ChildStdout
@@ -151,6 +159,13 @@ impl BackendProcess {
                             .unwrap_or("sidecar error")
                             .to_string())
                     };
+                    // plugin:message：sidecar 响应帧即插件发往宿主的消息（对等
+                    // PluginManager sandbox.on('message') → plugin:message 广播）
+                    let message = result.clone().unwrap_or_else(|e| json!(e));
+                    (self.emitter)(
+                        "plugin:message",
+                        json!({ "pluginId": self.plugin_id, "message": message }),
+                    );
                     if let Some(tx) = self.pending.lock().unwrap().remove(&rid) {
                         let _ = tx.send(result);
                     }
@@ -201,8 +216,13 @@ impl BackendProcess {
             }
         }
         // 3) 执行
-        let result =
-            crate::envelope_host::host_dispatch(&self.db, &self.plugin_id, &method, &params);
+        let result = crate::envelope_host::host_dispatch(
+            &self.db,
+            &self.plugin_id,
+            &method,
+            &params,
+            &*self.emitter,
+        );
         let _ = self.send_host_response(&request_id, result);
     }
 
@@ -354,6 +374,8 @@ pub struct BackendProcessManager {
     crash_history: Mutex<HashMap<String, Vec<Instant>>>,
     db: Arc<Mutex<Db>>,
     sidecar_exe: PathBuf,
+    /// 事件发射回调（main.rs setup 注入 app.emit；未注入时 no-op）
+    emitter: Mutex<Option<Emitter>>,
     /// 自引用（Weak，避免循环）：崩溃回调与重启线程经它访问 Manager
     self_weak: std::sync::OnceLock<std::sync::Weak<BackendProcessManager>>,
 }
@@ -388,10 +410,32 @@ impl BackendProcessManager {
             crash_history: Mutex::new(HashMap::new()),
             db,
             sidecar_exe,
+            emitter: Mutex::new(None),
             self_weak: std::sync::OnceLock::new(),
         });
         let _ = mgr.self_weak.set(Arc::downgrade(&mgr));
         mgr
+    }
+
+    /// 注入事件发射回调（main.rs setup 调用；app.emit 广播到所有窗口）。
+    pub fn set_emitter(&self, emitter: Emitter) {
+        *lock(&self.emitter) = Some(emitter);
+    }
+
+    /// 事件发射（未注入时 no-op）。
+    pub fn emit(&self, event: &str, payload: serde_json::Value) {
+        let guard = lock(&self.emitter);
+        if let Some(emitter) = guard.as_ref() {
+            emitter(event, payload);
+        }
+    }
+
+    /// 当前发射回调（未注入时 no-op），供 spawn 时注入 BackendProcess。
+    fn emitter(&self) -> Emitter {
+        lock(&self.emitter)
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(|_, _| {}))
     }
 
     /// 惰性 spawn：返回已激活进程（若不存在则创建）
@@ -416,6 +460,7 @@ impl BackendProcessManager {
             PathBuf::from(&record.installed_path),
             record.entry_main,
             self.crash_callback(),
+            self.emitter(),
         )?;
         // initialize
         proc.request(
@@ -514,6 +559,11 @@ impl BackendProcessManager {
     }
 }
 
+/// 锁辅助（零 unwrap 约束：poisoned 时取内部值继续）
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,6 +640,7 @@ mod tests {
             plugin_dir.clone(),
             "dist/main.js".into(),
             Arc::new(|_pid: &str| {}), // 测试：崩溃回调 no-op
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}), // 测试：发射回调 no-op
         )
         .expect("spawn sidecar");
 
