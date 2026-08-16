@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Typography,
   Descriptions,
@@ -8,21 +8,30 @@ import {
   Button,
   Select,
   Space,
-  Alert
+  Alert,
+  Progress
 } from 'antd'
 import { SettingOutlined, CheckCircleOutlined } from '@ant-design/icons'
-import { check as checkUpdate } from '@tauri-apps/plugin-updater'
+import { check as checkUpdate, Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { tauriApi } from '../api/tauriApi'
 
 const { Title, Text } = Typography
 
 type AppUpdateChannel = 'stable' | 'beta'
 
-type UpdatePhase = 'idle' | 'checking' | 'available' | 'not-available' | 'error'
+type UpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
 
 interface UpdateState {
   phase: UpdatePhase
   availableVersion: string | null
+  progressPercent: number | null
   message: string | null
 }
 
@@ -44,10 +53,13 @@ export default function Settings() {
   const [updateState, setUpdateState] = useState<UpdateState>({
     phase: 'idle',
     availableVersion: null,
+    progressPercent: null,
     message: null
   })
   const [channel, setChannel] = useState<AppUpdateChannel>(loadChannel)
   const [checking, setChecking] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const updateRef = useRef<Update | null>(null)
 
   const descriptionStyles = {
     label: {
@@ -86,24 +98,25 @@ export default function Settings() {
 
   const handleCheck = useCallback(async () => {
     setChecking(true)
-    setUpdateState({ phase: 'checking', availableVersion: null, message: null })
+    setUpdateState({ phase: 'checking', availableVersion: null, progressPercent: null, message: null })
     try {
       const update = await checkUpdate()
       if (update === null) {
-        setUpdateState({ phase: 'not-available', availableVersion: null, message: null })
+        setUpdateState({ phase: 'not-available', availableVersion: null, progressPercent: null, message: null })
       } else {
+        updateRef.current = update
         setUpdateState({
           phase: 'available',
           availableVersion: update.version,
+          progressPercent: null,
           message: update.date ? `发布于 ${update.date}` : null
         })
-        // 1.9.3 最小接入：仅提示；完整下载/安装 UI 随 1.9.4 落地
-        // await update.downloadAndInstall()
       }
     } catch (e) {
       setUpdateState({
         phase: 'error',
         availableVersion: null,
+        progressPercent: null,
         message: e instanceof Error ? e.message : String(e)
       })
     } finally {
@@ -111,11 +124,63 @@ export default function Settings() {
     }
   }, [])
 
+  const handleDownload = useCallback(async () => {
+    const update = updateRef.current
+    if (!update || downloading) return
+    setDownloading(true)
+    setUpdateState((current) => ({
+      ...current,
+      phase: 'downloading',
+      progressPercent: 0,
+      message: null
+    }))
+    try {
+      let contentLength = 0
+      let downloaded = 0
+      await update.download((event: DownloadEvent) => {
+        if (event.event === 'Started') {
+          contentLength = event.data.contentLength ?? 0
+        } else if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength
+          const percent =
+            contentLength > 0 ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : null
+          setUpdateState((current) => ({ ...current, progressPercent: percent }))
+        }
+      })
+      setUpdateState((current) => ({ ...current, phase: 'downloaded', progressPercent: 100, message: null }))
+    } catch (e) {
+      setUpdateState((current) => ({
+        ...current,
+        phase: 'error',
+        message: e instanceof Error ? e.message : String(e)
+      }))
+    } finally {
+      setDownloading(false)
+    }
+  }, [downloading])
+
+  const handleInstall = useCallback(async () => {
+    const update = updateRef.current
+    if (!update) return
+    try {
+      await update.install()
+    } catch (e) {
+      setUpdateState((current) => ({
+        ...current,
+        phase: 'error',
+        message: e instanceof Error ? e.message : String(e)
+      }))
+    }
+  }, [])
+
+  const updateBusy = checking || downloading
   const updateStatus =
     ({
       idle: '尚未检查',
       checking: '正在检查更新',
       available: `发现新版本 v${updateState.availableVersion ?? ''}`,
+      downloading: '正在下载',
+      downloaded: `${updateState.availableVersion ?? '新版本'} 已就绪`,
       'not-available': '当前已是最新版本',
       error: '更新检查失败'
     } satisfies Record<UpdatePhase, string>)[updateState.phase] ?? '读取中'
@@ -189,7 +254,7 @@ export default function Settings() {
               aria-label="更新通道"
               className="ob-update-channel-select"
               value={channel}
-              disabled={checking}
+              disabled={updateBusy}
               options={[
                 { value: 'stable', label: '稳定版' },
                 { value: 'beta', label: '测试版' }
@@ -214,23 +279,38 @@ export default function Settings() {
               showIcon
               icon={<CheckCircleOutlined />}
               message={`发现新版本 v${updateState.availableVersion ?? ''}`}
-              description={
-                updateState.message ?? '下载与安装流程将在 1.9.4 提供，当前仅提示可用更新。'
-              }
+              description={updateState.message ?? '可下载并安装到最新版本。'}
             />
           )}
           {updateState.message && updateState.phase === 'error' && (
             <Alert type="error" message={updateState.message} />
           )}
+          {updateState.phase === 'downloading' && (
+            <Progress percent={Math.round(updateState.progressPercent ?? 0)} />
+          )}
 
           <Space wrap>
             <Button
               loading={checking}
-              disabled={checking}
+              disabled={updateBusy}
               onClick={() => void handleCheck()}
             >
               检查更新
             </Button>
+            {updateState.phase === 'available' && (
+              <Button
+                type="primary"
+                loading={downloading}
+                onClick={() => void handleDownload()}
+              >
+                下载更新
+              </Button>
+            )}
+            {updateState.phase === 'downloaded' && (
+              <Button type="primary" danger onClick={() => void handleInstall()}>
+                重启并安装
+              </Button>
+            )}
           </Space>
         </Space>
       </Card>
