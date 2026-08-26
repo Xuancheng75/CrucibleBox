@@ -68,6 +68,14 @@
 
 > 高权限能力（进程/下载/解压/环境修改）**不扩大通用插件能力**：应设计宿主持有的固定服务 + 操作白名单 + 输入协议 + 资源预算 + 摘要策略（UniEnv 即此模式）。
 
+### 6.1 UniEnv 支持的工具与版本源（1.9.12+）
+
+- 内置工具：Python、Node.js、Git、Go、Java (Temurin)、**Rust (rustup stable)**、**PHP (NTS x64 zip)**。
+- 版本目录：编译期固定 + SHA-256 fail-closed；**node/go/java** 另支持在线发现新版本
+  （官方端点权威摘要校验，交互与安全边界见 `adr-0021-unienv-online-version-feeds.md`；
+  配置项 `onlineVersions` 默认开启，可关闭）。
+- python/git 暂不支持在线新版本（无机器可读校验源），新版本需随插件更新。
+
 ## 6. 类型与构建
 
 - API 类型唯一事实源：`packages/cruciblebox-plugin-api`（1.5.25 落地；此前各插件本地 `openbox-api.d.ts`）。

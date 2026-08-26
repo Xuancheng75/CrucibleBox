@@ -155,6 +155,14 @@ jobs:
           fi
           echo "cleared ${REMOVED} cruciblebox build output dir(s) for icon resource regeneration"
 
+      # 1.9.13：打包官方插件 zip（unienv/diary），随 release 附带供已装用户
+      # 导入升级（NSIS 不更新 %APPDATA% 内的插件）。build:plugins 同时重跑
+      # renderer 自包含与 trusted digest 校验。
+      - name: Package official plugin bundles
+        run: |
+          npm run build:plugins
+          npm run package:plugins
+
       - name: Build Tauri app + updater artifacts
         working-directory: src-tauri
         shell: bash
@@ -263,6 +271,8 @@ jobs:
           cp src-tauri/target/release/bundle/nsis/latest.json artifacts/tauri/
           cp src-tauri/target/release/bundle/nsis/*.sig artifacts/tauri/ 2>/dev/null || true
           cp artifacts/sbom/*.cdx.json artifacts/tauri/
+          # 1.9.13：官方插件包随 release 附带（供已装用户导入升级）
+          cp artifacts/plugins/*.zip artifacts/tauri/
           ls -la artifacts/tauri/
 
       - name: Attest artifacts

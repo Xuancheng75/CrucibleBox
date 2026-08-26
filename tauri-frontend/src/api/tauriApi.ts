@@ -223,10 +223,12 @@ export const tauriApi = {
       invoke<PluginInstallPreviewResponse>('plugin_install_preview', { source }),
 
     installCommit: (installToken: string): Promise<IpcResult> =>
-      invoke<IpcResult>('plugin_install_commit', { installToken }),
+      // Rust 形参名为 token（1.9.3 起即如此；此前误传 installToken 导致确认安装必报
+      // "missing required key token"，1.9.13 修复）
+      invoke<IpcResult>('plugin_install_commit', { token: installToken }),
 
     installDiscard: (installToken: string): Promise<IpcResult> =>
-      invoke<IpcResult>('plugin_install_discard', { installToken })
+      invoke<IpcResult>('plugin_install_discard', { token: installToken })
   },
 
   dialog: {

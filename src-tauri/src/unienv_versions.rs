@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 const HTTP_TIMEOUT_SECS: u64 = 15;
 /// 元数据缓存 TTL：打开插件页频繁轮询时避免打爆官方端点
 const CACHE_TTL: Duration = Duration::from_secs(600);
+/// 网络调用硬超时（含 DNS 解析挂起场景）：超过即放弃并回退内置目录。
+/// 必须显著小于 renderer RPC 的 30s 上限。
+const HARD_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug)]
 pub struct OnlineArtifact {
@@ -67,9 +70,13 @@ pub fn provider_supports(tool: &str) -> bool {
     matches!(tool, "node" | "go" | "java")
 }
 
-/// 在线可用版本号列表（降序）。失败返回空（调用方静默回退内置目录）。
-pub fn online_versions(tool: &str) -> Vec<String> {
-    {
+/// 强制绕过缓存重新拉取（「检查语言新版本」按钮路径）。
+pub fn online_versions_force(tool: &str) -> Vec<String> {
+    online_versions_impl(tool, true)
+}
+
+fn online_versions_impl(tool: &str, force: bool) -> Vec<String> {
+    if !force {
         let cache = list_cache().lock().unwrap();
         if let Some(entry) = cache.get(tool) {
             if entry.at.elapsed() < CACHE_TTL {
@@ -77,19 +84,27 @@ pub fn online_versions(tool: &str) -> Vec<String> {
             }
         }
     }
-    let fetched = (|| -> Result<Vec<String>, String> {
-        match tool {
-            "node" => Ok(fetch_node_versions()?
-                .into_iter()
-                .map(|v| v.trim_start_matches('v').to_string())
-                .collect()),
-            "go" => fetch_go_versions(),
-            "java" => fetch_java_versions(),
-            _ => Err(format!("provider unsupported: {tool}")),
-        }
-    })();
-    match fetched {
-        Ok(mut versions) => {
+    let tool_owned = tool.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name(format!("unienv-online-{tool}"))
+        .spawn(move || {
+            let result = (|| -> Result<Vec<String>, String> {
+                match tool_owned.as_str() {
+                    "node" => Ok(fetch_node_versions()?
+                        .into_iter()
+                        .map(|v| v.trim_start_matches('v').to_string())
+                        .collect()),
+                    "go" => fetch_go_versions(),
+                    "java" => fetch_java_versions(),
+                    _ => Err(format!("provider unsupported: {tool_owned}")),
+                }
+            })();
+            let _ = tx.send(result);
+        })
+        .ok();
+    match rx.recv_timeout(HARD_TIMEOUT) {
+        Ok(Ok(mut versions)) => {
             versions.sort_by(|a, b| compare_version_desc(b, a));
             versions.dedup();
             list_cache().lock().unwrap().insert(
@@ -101,10 +116,41 @@ pub fn online_versions(tool: &str) -> Vec<String> {
             );
             versions
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             eprintln!("[unienv] online version fetch failed for {tool}: {e}");
             Vec::new()
         }
+        Err(_) => {
+            eprintln!(
+                "[unienv] online version fetch hard-timeout({}ms) for {tool}",
+                HARD_TIMEOUT.as_millis()
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// 安装前解析在线制品（带硬超时）：超时返回 Err，避免阻塞宿主 RPC。
+pub fn online_artifact_bounded(
+    tool: &str,
+    version: &str,
+    mirror: &str,
+) -> Result<OnlineArtifact, String> {
+    let tool_owned = tool.to_string();
+    let version_owned = version.to_string();
+    let mirror_owned = mirror.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name(format!("unienv-artifact-{tool}"))
+        .spawn(move || {
+            let _ = tx.send(online_artifact(&tool_owned, &version_owned, &mirror_owned));
+        })
+        .ok();
+    match rx.recv_timeout(HARD_TIMEOUT) {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "TIMEOUT: resolving online artifact for {tool} {version}"
+        )),
     }
 }
 

@@ -44,7 +44,10 @@ export default function MainLayout({ children }: MainLayoutProps) {
         <Header
           className="ob-app-header"
           style={{
-            background: 'transparent',
+            // 1.9.13：不透明背景 + 分隔线。此前 transparent 使滚动内容穿透顶栏
+            // 与标题文字重叠（cyber/neon 有 !important 背景不受影响）。
+            background: token.colorBgLayout,
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
             padding: '0 28px',
             display: 'flex',
             alignItems: 'center',

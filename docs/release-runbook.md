@@ -75,3 +75,23 @@ gh attestation verify <setup.exe> -R Xuancheng75/CrucibleBox
 3. 配置 Secret `OPENBOX_PLUGIN_SIGNING_KEY_BASE64` / `VERIFY_KEY_BASE64` + Variable `OPENBOX_PLUGIN_SIGNING_KEY_ID`。
 4. 用 `electron-builder.release.yml` + Release 工作流生成带 `app-update.yml` 的包；无需改业务代码。
 5. 首次在线闭环验收：基线发布 → 造数 → patch 升版 → 设置页检查 → 下载 → 重启安装 → 验证 → Compatibility 工作流验证回滚。
+
+## 10. Tauri 发布线（tauri-v* tag，当前唯一活跃线）
+
+> 本节为 **Tauri 线现行规范**（`.github/workflows/tauri-release.yml`）；上文 §2–§9
+> 描述的 Electron 链（`v*` tag / release.yml / electron-builder）已冻结，仅存档。
+
+流程：版本提升（`src-tauri/tauri.conf.json` + 两处 `Cargo.toml` + lockfile +
+`tauri-frontend/package.json` 成对提升）→ 短分支 PR（双 CI 绿）→ merge → 打
+annotated tag `tauri-vX.Y.Z` 推送 → CI 自动完成：
+
+- 门禁（fmt/clippy -D/test）→ 前端 build → frame runtime → 插件构建与 trusted
+  digest 校验 → 官方插件打包（`artifacts/plugins/*.zip`）→ sidecar 构建+stage →
+  图标缓存强制清理 → `cargo tauri build --bundles nsis`（minisign 签名 latest.json）
+- **Verify embedded app icon**：解包 setup.exe 字节级校验内嵌应用图标
+- SBOM（cargo-cyclonedx 双源）→ attestation → GitHub Release 发布 → 同步滚动清单
+  `tauri-latest/latest.json`（任何旧版客户端由此发现新版）
+
+产物：`CrucibleBox_X.Y.Z_x64-setup.exe(+.sig)`、`latest.json`、双 SBOM、
+**官方插件包 zip（unienv/diary 等）**。已装用户升级宿主后需导入对应插件包以启用
+插件新功能（NSIS 不更新 %APPDATA% 内的插件）。

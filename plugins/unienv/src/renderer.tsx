@@ -481,6 +481,41 @@ export default function UniEnvUI({
     [send, selectedVersions]
   )
 
+  /** 检查语言新版本（1.9.13）：强制刷新上游元数据并合并进版本列表 */
+  const [checkingOnline, setCheckingOnline] = useState(false)
+  const checkOnlineVersions = useCallback(
+    async (toolId: string) => {
+      setCheckingOnline(true)
+      try {
+        const resp = (await send({
+          type: 'checkOnlineVersions',
+          tool: toolId
+        })) as { results?: { tool: string; ok: boolean; versions?: string[]; error?: string }[] }
+        const entry = resp?.results?.find((r) => r.tool === toolId)
+        if (!mounted.current) return
+        if (!entry?.ok) {
+          toast('error', entry?.error || '在线检查失败')
+          return
+        }
+        const typedToolId = toolId as ToolId
+        const ordered = orderToolVersionsForDisplay(typedToolId, entry.versions ?? [])
+        setVersions((prev) => ({ ...prev, [toolId]: ordered }))
+        const onlineCount = (entry.versions ?? []).length
+        toast(
+          onlineCount > 0 ? 'success' : 'info',
+          onlineCount > 0
+            ? `发现 ${onlineCount} 个可用版本（含在线新版本）`
+            : '未发现额外在线版本'
+        )
+      } catch {
+        if (mounted.current) toast('error', '在线检查失败，请检查网络后重试')
+      } finally {
+        if (mounted.current) setCheckingOnline(false)
+      }
+    },
+    [send]
+  )
+
   const installTool = useCallback(
     async (toolId: string) => {
       const version = selectedVersions[toolId]
@@ -715,6 +750,10 @@ export default function UniEnvUI({
   const activeTaskSnapshot = taskSnapshots[activeKey]
   const isToolLoading = operationLoading[activeKey] || false
   const activeVersions = versions[activeKey] || []
+
+  /** 该工具是否有在线版本源（node/go/java，与宿主 provider_supports 对齐） */
+  const isProviderTool = (toolId: string) =>
+    ['node', 'go', 'java'].includes(toolId)
   const selectedVersion = selectedVersions[activeKey]
   const selectedLifecycle =
     activeTool && selectedVersion
@@ -1232,6 +1271,26 @@ export default function UniEnvUI({
                     </option>
                   ))}
                 </select>
+                {isProviderTool(activeKey) && (
+                  <button
+                    type="button"
+                    disabled={checkingOnline}
+                    onClick={() => void checkOnlineVersions(activeKey)}
+                    style={{
+                      marginTop: 8,
+                      width: '100%',
+                      padding: '6px 10px',
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 6,
+                      background: COLORS.bgWhite,
+                      color: COLORS.textSecondary,
+                      fontSize: FONT.sizeSm,
+                      cursor: checkingOnline ? 'wait' : 'pointer'
+                    }}
+                  >
+                    {checkingOnline ? '正在检查在线新版本…' : '🔍 检查语言新版本（联网）'}
+                  </button>
+                )}
                 {selectedLifecycle && (
                   <div
                     style={{
