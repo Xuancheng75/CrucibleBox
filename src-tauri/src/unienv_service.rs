@@ -50,6 +50,8 @@ pub struct UniEnvConfig {
     pub install_root: PathBuf,
     pub download_mirror: String,
     pub custom_combos: Vec<ComboPack>,
+    /// 联网检查语言新版本（默认开；不可达时静默回退内置目录）
+    pub online_versions: bool,
 }
 
 fn has_control_characters(value: &str) -> bool {
@@ -182,17 +184,19 @@ pub fn is_supported_version(tool: &str, version: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 版本目录安全拼接（对齐 safeJoinVersionDirectory）：工具/版本必须受支持，
-/// 结果必须落在安装根之下且长度受限。
-pub fn safe_join_version_dir(
+/// 版本目录安全拼接（对齐 safeJoinVersionDirectory）：工具必须受支持，
+/// 结果必须落在安装根之下且长度受限。`allow_dynamic` 用于在线安装的
+/// 非内置版本（仍执行段级安全检查，仅跳过目录白名单）。
+pub fn safe_join_version_dir_impl(
     install_root: &Path,
     tool: &str,
     version: &str,
+    allow_dynamic: bool,
 ) -> Result<PathBuf, String> {
     if !is_supported_tool(tool) {
         return Err(format!("unknown-tool: Unsupported tool: {tool}"));
     }
-    if !is_supported_version(tool, version) {
+    if !allow_dynamic && !is_supported_version(tool, version) {
         return Err(format!(
             "unknown-version: Unsupported {tool} version: {version}"
         ));
@@ -213,6 +217,23 @@ pub fn safe_join_version_dir(
         ));
     }
     Ok(target)
+}
+
+pub fn safe_join_version_dir(
+    install_root: &Path,
+    tool: &str,
+    version: &str,
+) -> Result<PathBuf, String> {
+    safe_join_version_dir_impl(install_root, tool, version, false)
+}
+
+/// 动态（在线）版本：跳过目录白名单，保留路径安全校验
+pub fn safe_join_version_dir_dynamic(
+    install_root: &Path,
+    tool: &str,
+    version: &str,
+) -> Result<PathBuf, String> {
+    safe_join_version_dir_impl(install_root, tool, version, true)
 }
 
 fn parse_custom_combos(value: Option<&Value>) -> Result<Vec<ComboPack>, String> {
@@ -323,10 +344,17 @@ fn load_config(db: &Db, plugin_id: &str) -> UniEnvConfig {
         .and_then(|v| canonicalize_install_root(v).ok())
         .unwrap_or_else(|| PathBuf::from("C:\\UniEnv"));
     let custom_combos = parse_custom_combos(parsed.get("customCombos")).unwrap_or_default();
+    // onlineVersions: "on"/"off"，默认 on
+    let online_versions = parsed
+        .get("onlineVersions")
+        .and_then(Value::as_str)
+        .map(|v| v != "off")
+        .unwrap_or(true);
     UniEnvConfig {
         install_root,
         download_mirror,
         custom_combos,
+        online_versions,
     }
 }
 
@@ -340,7 +368,9 @@ fn supported_versions_raw() -> Value {
         "node": ["16.20.2", "18.20.4", "20.15.1", "22.5.1", "24.18.1"],
         "git": ["2.43.0", "2.44.0", "2.45.2", "2.46.0", "2.54.0"],
         "go": ["1.21.6", "1.22.4", "1.23.0", "1.26.5"],
-        "java": ["17.0.11", "17.0.12", "17.0.20", "21.0.3", "21.0.5", "21.0.12", "22.0.1", "25.0.4"]
+        "java": ["17.0.11", "17.0.12", "17.0.20", "21.0.3", "21.0.5", "21.0.12", "22.0.1", "25.0.4"],
+        "rust": ["stable"],
+        "php": ["8.3.33"]
     })
 }
 
@@ -350,7 +380,9 @@ fn tool_meta() -> Value {
         { "id": "node", "displayName": "Node.js", "icon": "\u{1F4E6}", "description": "JavaScript 运行时" },
         { "id": "git", "displayName": "Git", "icon": "\u{1F527}", "description": "分布式版本控制" },
         { "id": "go", "displayName": "Go", "icon": "\u{1F4C0}", "description": "Go 编程语言工具链" },
-        { "id": "java", "displayName": "Java (JDK)", "icon": "\u{2615}\u{FE0F}", "description": "Java 开发工具包 (Temurin)" }
+        { "id": "java", "displayName": "Java (JDK)", "icon": "\u{2615}\u{FE0F}", "description": "Java 开发工具包 (Temurin)" },
+        { "id": "rust", "displayName": "Rust", "icon": "\u{1F980}", "description": "Rust 工具链（rustup，stable 通道）" },
+        { "id": "php", "displayName": "PHP", "icon": "\u{1F418}", "description": "PHP 运行时（NTS x64）" }
     ])
 }
 
@@ -386,8 +418,59 @@ fn display_name(tool: &str) -> String {
         "git" => "Git".into(),
         "go" => "Go".into(),
         "java" => "Java (JDK)".into(),
+        "rust" => "Rust".into(),
+        "php" => "PHP".into(),
         other => other.to_string(),
     }
+}
+
+/// 版本列表合并：内置目录 ∪ 在线发现（仅 provider 支持且配置开启），降序去重。
+/// 网络失败静默回退内置目录（unienv_versions 内部已 eprintln 诊断）。
+fn merged_versions(tool: &str, cfg: &UniEnvConfig) -> Value {
+    let mut list = supported_versions_raw()
+        .get(tool)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if cfg.online_versions && crate::unienv_versions::provider_supports(tool) {
+        for v in crate::unienv_versions::online_versions(tool) {
+            if !list.contains(&v) {
+                list.push(v);
+            }
+        }
+        list.sort_by(|a, b| crate::unienv_versions::compare_version_desc(b, a));
+    }
+    json!(list)
+}
+
+/// 安装/切换前的版本解析：内置目录命中，或（配置开启且上游可校验时）在线版本。
+fn resolve_version(cfg: &UniEnvConfig, tool: &str, version: &str) -> Result<String, Value> {
+    if is_supported_version(tool, version) {
+        return Ok(version.to_string());
+    }
+    let dynamic_allowed = cfg.online_versions && crate::unienv_versions::provider_supports(tool);
+    if dynamic_allowed {
+        let known = crate::unienv_versions::online_artifact(tool, version, &cfg.download_mirror);
+        if known.is_ok() {
+            return Ok(version.to_string());
+        }
+    }
+    Err(err(
+        "unknown-version",
+        format!(
+            "Unsupported {tool} version: {version}{}",
+            if dynamic_allowed {
+                String::new()
+            } else {
+                "（该工具暂不支持在线新版本，请等待插件更新）".to_string()
+            }
+        ),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +599,7 @@ fn run_install_executor(
     ctx: &TaskContext,
     install_root: String,
     mirror: String,
+    online_versions: bool,
     tool: String,
     version: String,
 ) -> Result<Value, String> {
@@ -524,11 +608,12 @@ fn run_install_executor(
         0,
         &format!("准备安装 {} {version}", display_name(&tool)),
     );
-    unienv_install::install_tool(
+    let plan = install_plan(&mirror, online_versions, &tool, &version)?;
+    unienv_install::install_with_plan(
         Path::new(&install_root),
         &tool,
         &version,
-        &mirror,
+        &plan,
         &progress_adapter(ctx, None),
         ctx.cancel_flag(),
     )?;
@@ -539,6 +624,43 @@ fn run_install_executor(
         "version": version,
         "message": format!("{} {version} 安装完成", display_name(&tool)),
     }))
+}
+
+/// 构建安装计划：内置版本走静态目录；在线版本走上游元数据（SHA-256 权威）
+fn install_plan(
+    mirror: &str,
+    online_versions: bool,
+    tool: &str,
+    version: &str,
+) -> Result<unienv_install::InstallPlan, String> {
+    if is_supported_version(tool, version) {
+        return Ok(unienv_install::InstallPlan {
+            urls: crate::unienv_catalog::download_urls(tool, version, mirror)?,
+            sha256: crate::unienv_catalog::artifact(tool, version)?
+                .sha256
+                .to_string(),
+            filename: crate::unienv_catalog::artifact(tool, version)?
+                .filename
+                .to_string(),
+        });
+    }
+    if online_versions && crate::unienv_versions::provider_supports(tool) {
+        let artifact = crate::unienv_versions::online_artifact(tool, version, mirror)?;
+        let filename = artifact
+            .urls
+            .first()
+            .and_then(|(url, _)| url.rsplit('/').next())
+            .unwrap_or("artifact.bin")
+            .to_string();
+        return Ok(unienv_install::InstallPlan {
+            urls: artifact.urls,
+            sha256: artifact.sha256,
+            filename,
+        });
+    }
+    Err(format!(
+        "unknown-version: Unsupported {tool} version: {version}"
+    ))
 }
 
 fn run_combo_executor(
@@ -629,18 +751,6 @@ fn tool_field(request: &Value) -> Result<String, Value> {
     Ok(tool.to_string())
 }
 
-fn version_field(request: &Value, tool: &str) -> Result<String, Value> {
-    let version = str_field(request, "version", 32)?
-        .ok_or_else(|| err("invalid-value", "missing field: version".into()))?;
-    if !is_supported_version(tool, version) {
-        return Err(err(
-            "unknown-version",
-            format!("Unsupported {tool} version: {version}"),
-        ));
-    }
-    Ok(version.to_string())
-}
-
 /// 处理 unienv 'message' 操作。返回值始终是可序列化响应对象
 /// （协议级错误以 { error, code } 内联返回，对齐冻结线 toErrorResponse 形状）。
 fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
@@ -661,10 +771,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(t) => t,
                 Err(e) => return e,
             };
-            json!(supported_versions_raw()
-                .get(&tool)
-                .cloned()
-                .unwrap_or_else(|| json!([])))
+            let cfg = load_config(db, plugin_id);
+            json!(merged_versions(&tool, &cfg))
         }
         "listCombos" => {
             let cfg = load_config(db, plugin_id);
@@ -701,12 +809,18 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(t) => t,
                 Err(e) => return e,
             };
-            let version = match version_field(request, &tool) {
-                Ok(v) => v,
+            let raw_version = match str_field(request, "version", 32) {
+                Ok(Some(v)) => v.to_string(),
+                Ok(None) => return err("invalid-value", "missing field: version".into()),
                 Err(e) => return e,
             };
             let cfg = load_config(db, plugin_id);
-            if let Err(message) = safe_join_version_dir(&cfg.install_root, &tool, &version) {
+            let version = match resolve_version(&cfg, &tool, &raw_version) {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            if let Err(message) = safe_join_version_dir_dynamic(&cfg.install_root, &tool, &version)
+            {
                 return err("invalid-path", message);
             }
             if let Err(e) = try_begin_inline(&format!("安装 {tool} {version}")) {
@@ -714,9 +828,12 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
             let install_root = cfg.install_root.to_string_lossy().into_owned();
             let mirror = cfg.download_mirror.clone();
+            let online = cfg.online_versions && crate::unienv_versions::provider_supports(&tool);
             let start = tasks().start(
                 INSTALLATION_RESOURCE,
-                Box::new(move |ctx| run_install_executor(ctx, install_root, mirror, tool, version)),
+                Box::new(move |ctx| {
+                    run_install_executor(ctx, install_root, mirror, online, tool, version)
+                }),
             );
             end_inline();
             match start {
@@ -818,12 +935,17 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(t) => t,
                 Err(e) => return e,
             };
-            let version = match version_field(request, &tool) {
-                Ok(v) => v,
+            let raw_version = match str_field(request, "version", 32) {
+                Ok(Some(v)) => v.to_string(),
+                Ok(None) => return err("invalid-value", "missing field: version".into()),
                 Err(e) => return e,
             };
+            // 切换仅对已安装版本有意义：目录存在性由 switch_version 校验，
+            // 此处允许动态版本（在线装的版本不在内置目录中）
+            let version = raw_version;
             let cfg = load_config(db, plugin_id);
-            if let Err(message) = safe_join_version_dir(&cfg.install_root, &tool, &version) {
+            if let Err(message) = safe_join_version_dir_dynamic(&cfg.install_root, &tool, &version)
+            {
                 return err("invalid-path", message);
             }
             let label = format!("切换 {}", display_name(&tool));
@@ -896,6 +1018,8 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
         "git" => Some(("git.exe", vec!["--version"], false)),
         "go" => Some(("go.exe", vec!["version"], false)),
         "java" => Some(("java.exe", vec!["-version"], true)),
+        "rust" => Some(("rustc.exe", vec!["--version"], false)),
+        "php" => Some(("php.exe", vec!["--version"], false)),
         _ => None,
     };
     if let Some((exe, args, from_stderr)) = global {
@@ -912,6 +1036,10 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
         "git" => Some(("bin\\git.exe", vec!["--version"], false)),
         "go" => Some(("bin\\go.exe", vec!["version"], false)),
         "java" => Some(("bin\\java.exe", vec!["-version"], true)),
+        // rustup：cargo home 内的 rustc/cargo 代理
+        "rust" => Some(("cargo\\bin\\rustc.exe", vec!["--version"], false)),
+        // php zip 解压根
+        "php" => Some(("runtime\\php.exe", vec!["--version"], false)),
         _ => None,
     };
     if let Some((rel_exe, args, from_stderr)) = rel {
@@ -1000,8 +1128,10 @@ mod tests {
         )
         .unwrap();
         let arr = out.as_array().unwrap();
-        assert_eq!(arr.len(), 5);
+        assert_eq!(arr.len(), 7);
         assert!(arr.iter().any(|tool| tool["id"] == "python"));
+        assert!(arr.iter().any(|tool| tool["id"] == "rust"));
+        assert!(arr.iter().any(|tool| tool["id"] == "php"));
     }
 
     #[test]

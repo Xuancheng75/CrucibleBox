@@ -240,6 +240,17 @@ export const tauriApi = {
       return typeof selected === 'string' ? selected : null
     },
 
+    /** 多选 .zip 插件包（1.9.12 批量导入） */
+    openFiles: async (): Promise<string[]> => {
+      const selected = await openDialog({
+        multiple: true,
+        directory: false,
+        filters: [{ name: 'ZIP 插件包', extensions: ['zip'] }]
+      })
+      if (!selected) return []
+      return Array.isArray(selected) ? selected : [selected]
+    },
+
     /** 选择插件目录（@tauri-apps/plugin-dialog，替代 Electron dialog:open-directory） */
     openDirectory: async (): Promise<string | null> => {
       const selected = await openDialog({ multiple: false, directory: true })

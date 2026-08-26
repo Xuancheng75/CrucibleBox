@@ -248,6 +248,41 @@ const JAVA: [(&str, ToolArtifact); 8] = [
     ),
 ];
 
+/// Rust：rustup-init.exe 安装器（对齐 python/git 直装模式）。
+/// 摘要取自官方 sidecar https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256
+const RUST: [(&str, ToolArtifact); 1] = [(
+    "stable",
+    ToolArtifact {
+        filename: "rustup-init.exe",
+        sha256: "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+        release_tag: None,
+    },
+)];
+
+/// PHP：windows.php.net NTS x64 zip（摘要为发布时官网制品实测值）
+const PHP: [(&str, ToolArtifact); 1] = [(
+    "8.3.33",
+    ToolArtifact {
+        filename: "php-8.3.33-nts-Win32-vs16-x64.zip",
+        sha256: "534399107056313246f424adbbb7937337e40fbbf6aa7bc26287ba9cfd2e4a2a",
+        release_tag: None,
+    },
+)];
+
+/// 工具显示名（catalog 内独立实现，避免依赖 service 层）
+fn display_name(tool: &str, _version: &str) -> String {
+    match tool {
+        "python" => "Python".into(),
+        "node" => "Node.js".into(),
+        "git" => "Git".into(),
+        "go" => "Go".into(),
+        "java" => "JDK".into(),
+        "rust" => "Rust".into(),
+        "php" => "PHP".into(),
+        other => other.into(),
+    }
+}
+
 pub fn artifact(tool: &str, version: &str) -> Result<ToolArtifact, String> {
     let table: &[(&str, ToolArtifact)] = match tool {
         "python" => &PYTHON,
@@ -255,6 +290,8 @@ pub fn artifact(tool: &str, version: &str) -> Result<ToolArtifact, String> {
         "git" => &GIT,
         "go" => &GO,
         "java" => &JAVA,
+        "rust" => &RUST,
+        "php" => &PHP,
         _ => return Err(format!("unsupported tool: {tool}")),
     };
     table
@@ -295,6 +332,9 @@ fn official_url(tool: &str, version: &str) -> Result<String, String> {
                 a.filename
             )
         }
+        "rust" => "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe"
+            .to_string(),
+        "php" => format!("https://windows.php.net/downloads/releases/{}", a.filename),
         _ => return Err(format!("unsupported tool: {tool}")),
     })
 }
@@ -403,6 +443,11 @@ pub fn download_urls(
             }
             urls.push((official_url(tool, version)?, "JDK (官方)".into()));
         }
+        // rust/php：仅官方源（rustup 静态分发与 windows.php.net 无镜像 SHA 保障）
+        "rust" | "php" => urls.push((
+            official_url(tool, version)?,
+            format!("{} (官方)", display_name(tool, "")),
+        )),
         _ => return Err(format!("unsupported tool: {tool}")),
     }
     Ok(urls)
@@ -435,6 +480,8 @@ mod tests {
                     "25.0.4",
                 ],
             ),
+            ("rust", vec!["stable"]),
+            ("php", vec!["8.3.33"]),
         ];
         for (tool, versions) in catalog {
             for v in versions {

@@ -3,15 +3,38 @@ import type { PluginMeta, PluginConfig } from '../../../shared/types/plugin.type
 import { PluginLifecycleStatus } from '../../../shared/types/plugin.types'
 import { tauriApi, type PluginInstallPreviewResponse } from '../api/tauriApi'
 
+export interface PendingInstall {
+  source: 'zip' | 'directory'
+  path: string
+}
+
+export interface InstallQueueState {
+  /** 待预览的安装队列（全局拖拽/批量导入写入，逐个消费） */
+  installQueue: PendingInstall[]
+  /** 队列驱动中（正在为队首执行 installPreview） */
+  queueProcessing: boolean
+  /** 批量会话汇总（enqueue 时清零；队列耗尽且无待确认预览时由 UI 呈现） */
+  batchTotal: number
+  batchSucceeded: number
+  batchSkipped: number
+  batchFailures: string[]
+
+  enqueueInstalls: (items: PendingInstall[]) => void
+  processNextInQueue: () => Promise<void>
+  clearInstallQueue: () => void
+}
+
 export interface PluginState {
   plugins: PluginMeta[]
   loading: boolean
-  error: string | null
+  error: null | string
 
   activePlugins: Record<string, PluginLifecycleStatus>
 
-  /** 待确认的安装预览（installPlugin 成功后由 PluginImport 弹窗确认 commit/discard） */
+  /** 待确认的安装预览（installPlugin 成功后由确认弹窗 commit/discard） */
   installPreview: PluginInstallPreviewResponse | null
+  /** 当前待确认预览对应的源路径（批量场景展示文件名/失败归因） */
+  activeInstallPath: null | string
 
   fetchPlugins: () => Promise<void>
   installPlugin: (source: 'zip' | 'directory', path: string) => Promise<boolean>
@@ -25,12 +48,21 @@ export interface PluginState {
   setPluginStatus: (id: string, status: PluginLifecycleStatus) => void
 }
 
-export const usePluginStore = create<PluginState>((set, get) => ({
+export type PluginStore = PluginState & InstallQueueState
+
+export const usePluginStore = create<PluginStore>((set, get) => ({
   plugins: [],
   loading: false,
   error: null,
   activePlugins: {},
   installPreview: null,
+  activeInstallPath: null,
+  installQueue: [],
+  queueProcessing: false,
+  batchTotal: 0,
+  batchSucceeded: 0,
+  batchSkipped: 0,
+  batchFailures: [],
 
   fetchPlugins: async () => {
     set({ loading: true, error: null })
@@ -60,7 +92,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       await tauriApi.plugin.registerImportPath(path)
       const result = await tauriApi.plugin.installPreview({ type: source, path })
       if (result.success && result.installToken) {
-        set({ installPreview: result, loading: false })
+        set({ installPreview: result, activeInstallPath: path, loading: false })
         return true
       }
       set({ error: result.error ?? '安装预览失败', loading: false })
@@ -79,20 +111,40 @@ export const usePluginStore = create<PluginState>((set, get) => ({
       const result = await tauriApi.plugin.installCommit(preview.installToken)
       if (result.success) {
         await get().fetchPlugins()
-        set({ installPreview: null, loading: false })
+        set((state) => ({
+          installPreview: null,
+          activeInstallPath: null,
+          loading: false,
+          batchSucceeded: state.batchSucceeded + 1
+        }))
+        void get().processNextInQueue()
         return true
       }
-      set({ error: result.error ?? '安装失败', loading: false })
+      set((state) => ({
+        error: result.error ?? '安装失败',
+        loading: false,
+        batchFailures: [...state.batchFailures, failureNameFrom(get().activeInstallPath)]
+      }))
+      void get().processNextInQueue()
       return false
     } catch (err) {
-      set({ error: toErrorMessage(err, '安装失败'), loading: false })
+      set((state) => ({
+        error: toErrorMessage(err, '安装失败'),
+        loading: false,
+        batchFailures: [...state.batchFailures, failureNameFrom(get().activeInstallPath)]
+      }))
+      void get().processNextInQueue()
       return false
     }
   },
 
   discardInstall: async () => {
     const preview = get().installPreview
-    set({ installPreview: null })
+    set((state) => ({
+      installPreview: null,
+      activeInstallPath: null,
+      batchSkipped: state.batchSkipped + 1
+    }))
     if (preview?.installToken) {
       try {
         await tauriApi.plugin.installDiscard(preview.installToken)
@@ -100,6 +152,7 @@ export const usePluginStore = create<PluginState>((set, get) => ({
         // 丢弃失败不阻断 UI
       }
     }
+    void get().processNextInQueue()
   },
 
   uninstallPlugin: async (id) => {
@@ -196,6 +249,50 @@ export const usePluginStore = create<PluginState>((set, get) => ({
     set((state) => ({
       activePlugins: { ...state.activePlugins, [id]: status }
     }))
+  },
+
+  // ---------------------------------------------------------------------------
+  // 批量安装队列（1.9.12：全局拖拽/批量导入共用；逐个 preview→用户确认→commit）
+  // ---------------------------------------------------------------------------
+
+  enqueueInstalls: (items) => {
+    if (items.length === 0) return
+    set((state) => ({
+      installQueue: [...state.installQueue, ...items],
+      batchTotal: state.batchTotal + items.length,
+      batchSucceeded: 0,
+      batchSkipped: 0,
+      batchFailures: []
+    }))
+    void get().processNextInQueue()
+  },
+
+  processNextInQueue: async () => {
+    const { installQueue, queueProcessing } = get()
+    if (queueProcessing || installQueue.length === 0) return
+    if (get().installPreview) return // 待确认的预览阻塞队列
+    const [head, ...rest] = installQueue
+    set({ queueProcessing: true })
+    const ok = await get().installPlugin(head.source, head.path)
+    set({ installQueue: rest, queueProcessing: false })
+    if (ok) {
+      // 预览已就绪，等用户在确认弹窗中 commit/discard 后再驱动下一项
+      return
+    }
+    const failureName = previewFailureName(head.path)
+    set((state) => ({ batchFailures: [...state.batchFailures, failureName] }))
+    await get().processNextInQueue()
+  },
+
+  clearInstallQueue: () => {
+    set({
+      installQueue: [],
+      queueProcessing: false,
+      batchTotal: 0,
+      batchSucceeded: 0,
+      batchSkipped: 0,
+      batchFailures: []
+    })
   }
 }))
 
@@ -204,3 +301,9 @@ function toErrorMessage(err: unknown, fallback: string): string {
   if (typeof err === 'string' && err.trim()) return err
   return fallback
 }
+
+function previewFailureName(path: string | null): string {
+  return path?.split(/[\\/]/).pop() || path || '未知包'
+}
+
+const failureNameFrom = previewFailureName

@@ -891,10 +891,20 @@ mod tests {
             let guard = db.conn().lock().unwrap();
             guard
                 .execute(
-                    "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
-                     VALUES ('unienv', 'unienv', '0.5.7', 'UniEnv', 'dist/main.js', ?1)
+                    "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path, config_data)
+                     VALUES ('unienv', 'unienv', '0.5.7', 'UniEnv', 'dist/main.js', ?1, ?2)
                      ON CONFLICT(id) DO NOTHING",
-                    rusqlite::params![plugin_dir.to_string_lossy().into_owned()],
+                    rusqlite::params![
+                        plugin_dir.to_string_lossy().into_owned(),
+                        // onlineVersions=off：单测确定性（不联网）
+                        serde_json::json!({
+                            "installRoot": "C:\\UniEnv",
+                            "downloadMirror": "direct",
+                            "customCombos": "[]",
+                            "onlineVersions": "off"
+                        })
+                        .to_string()
+                    ],
                 )
                 .unwrap();
         }
@@ -940,7 +950,7 @@ mod tests {
 
         let tools = send(&proc, "listTools", json!({ "type": "listTools" }));
         assert!(
-            tools.as_array().map(|a| a.len() == 5).unwrap_or(false),
+            tools.as_array().map(|a| a.len() == 7).unwrap_or(false),
             "listTools: {tools}"
         );
         send(&proc, "listCombos", json!({ "type": "listCombos" }));

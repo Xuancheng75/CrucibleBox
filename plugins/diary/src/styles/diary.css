@@ -309,6 +309,28 @@
 }
 
 /* ===== 周日历条 ===== */
+/* ===== 周条容器与跨周导航（1.9.12） ===== */
+.week-bar-wrap {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.week-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.week-nav .nav-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.week-range {
+  font-size: 13px;
+  color: var(--d-text-soft, #555);
+  font-weight: 600;
+}
+
 .week-bar {
   display: grid;
   grid-template-columns: repeat(7, 1fr);

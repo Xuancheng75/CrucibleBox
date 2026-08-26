@@ -407,15 +407,34 @@ fn run_process(
     timeout_ms: u64,
     cancel: &AtomicBool,
 ) -> Result<ProcOutput, String> {
+    run_process_env(program, args, timeout_ms, cancel, &[])
+}
+
+/// run_process 的带环境变量注入变体（rustup-init 需 RUSTUP_HOME/CARGO_HOME 指向版本目录）。
+#[allow(clippy::too_many_arguments)]
+fn run_process_env(
+    program: &Path,
+    args: &[String],
+    timeout_ms: u64,
+    cancel: &AtomicBool,
+    envs: &[(&str, String)],
+) -> Result<ProcOutput, String> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动进程失败 {}: {e}", program.display()))?;
 
@@ -520,10 +539,10 @@ pub fn current_link(install_root: &Path, tool: &str) -> PathBuf {
     tool_dir(install_root, tool).join("current")
 }
 
-/// 运行时子目录：node→runtime、go→go、java→jdk；python/git 直装于版本目录
+/// 运行时子目录：node→runtime、go→go、java→jdk、php→runtime；python/git 直装于版本目录
 fn runtime_subdir(tool: &str) -> Option<&'static str> {
     match tool {
-        "node" => Some("runtime"),
+        "node" | "php" => Some("runtime"),
         "go" => Some("go"),
         "java" => Some("jdk"),
         _ => None,
@@ -558,15 +577,41 @@ pub fn install_tool(
     progress: ProgressCb,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let urls = unienv_catalog::download_urls(tool, version, mirror)?;
-    let artifact = unienv_catalog::artifact(tool, version)?;
+    let plan = InstallPlan {
+        urls: unienv_catalog::download_urls(tool, version, mirror)?,
+        sha256: unienv_catalog::artifact(tool, version)?.sha256.to_string(),
+        filename: unienv_catalog::artifact(tool, version)?
+            .filename
+            .to_string(),
+    };
+    install_with_plan(install_root, tool, version, &plan, progress, cancel)
+}
+
+/// 安装计划：URL 候选 + 期望 SHA-256 + 制品文件名（静态目录或在线源构建）
+pub struct InstallPlan {
+    pub urls: Vec<(String, String)>,
+    pub sha256: String,
+    /// 制品文件名（staging 落盘名；动态版本取下载 URL 尾段）
+    pub filename: String,
+}
+
+/// 按 Plan 执行安装（静态目录与在线动态版本共用执行链）
+pub fn install_with_plan(
+    install_root: &Path,
+    tool: &str,
+    version: &str,
+    plan: &InstallPlan,
+    progress: ProgressCb,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
     match runtime_subdir(tool) {
         None => install_from_installer(
             install_root,
             tool,
             version,
-            &artifact,
-            urls,
+            &plan.sha256,
+            &plan.filename,
+            plan.urls.clone(),
             progress,
             cancel,
         ),
@@ -577,39 +622,31 @@ pub fn install_tool(
                 version,
                 final_subdir: sub,
             },
-            &artifact,
-            &urls,
+            &plan.sha256,
+            &plan.filename,
+            &plan.urls,
             progress,
             cancel,
         ),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install_from_installer(
     install_root: &Path,
     tool: &str,
     version: &str,
-    artifact: &unienv_catalog::ToolArtifact,
+    sha256: &str,
+    filename: &str,
     urls: Vec<(String, String)>,
     progress: ProgressCb,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let dir = version_dir(install_root, tool, version);
     prepare_direct_install_directory(&dir, &display_name(tool, version))?;
-    let installer_path = dir.join(artifact.filename);
+    let installer_path = dir.join(filename);
 
-    progress(
-        "downloading",
-        0,
-        &format!("正在下载 {} {version}...", display_name(tool, version)),
-    );
-    download_with_fallback(&urls, &installer_path, artifact.sha256, progress, cancel)?;
-
-    progress(
-        "installing",
-        95,
-        &format!("正在安装 {} {version}...", display_name(tool, version)),
-    );
+    // 安装器参数（rust 的固定 flag 在执行段注入）
     let args: Vec<String> = match tool {
         "python" => vec![
             "/quiet".into(),
@@ -626,9 +663,43 @@ fn install_from_installer(
             "/SP-".into(),
             "/NOICONS".into(),
         ],
+        "rust" => vec![],
         other => return Err(format!("unsupported installer tool: {other}")),
     };
-    let result = run_process(&installer_path, &args, 600_000, cancel);
+
+    progress(
+        "downloading",
+        0,
+        &format!("正在下载 {} {version}...", display_name(tool, version)),
+    );
+    download_with_fallback(&urls, &installer_path, sha256, progress, cancel)?;
+
+    progress(
+        "installing",
+        95,
+        &format!("正在安装 {} {version}...", display_name(tool, version)),
+    );
+    let result = match tool {
+        "rust" => {
+            // rustup-init：通过 RUSTUP_HOME/CARGO_HOME 将工具链与 cargo home
+            // 完全隔离进版本目录（自包含，不污染用户全局）
+            let rustup_home = dir.join("rustup");
+            let cargo_home = dir.join("cargo");
+            let envs: Vec<(&str, String)> = vec![
+                ("RUSTUP_HOME", rustup_home.to_string_lossy().into_owned()),
+                ("CARGO_HOME", cargo_home.to_string_lossy().into_owned()),
+            ];
+            let mut full_args: Vec<String> = vec![
+                "-y".into(),
+                "--default-toolchain".into(),
+                "stable-x86_64-pc-windows-msvc".into(),
+                "--no-modify-path".into(),
+            ];
+            full_args.extend(args.clone());
+            run_process_env(&installer_path, &full_args, 900_000, cancel, &envs)
+        }
+        _ => run_process(&installer_path, &args, 600_000, cancel),
+    };
     let _ = fs::remove_file(&installer_path);
     result?;
 
@@ -652,7 +723,8 @@ struct ZipTarget<'a> {
 fn install_from_zip(
     install_root: &Path,
     target: ZipTarget<'_>,
-    artifact: &unienv_catalog::ToolArtifact,
+    sha256: &str,
+    filename: &str,
     urls: &[(String, String)],
     progress: ProgressCb,
     cancel: &AtomicBool,
@@ -673,7 +745,7 @@ fn install_from_zip(
     }
     let staging = create_install_staging_dir(&dir)?;
     let result = (|| -> Result<(), String> {
-        let zip_path = staging.join(artifact.filename);
+        let zip_path = staging.join(filename);
         let extract_dir = staging.join("extracted");
 
         progress(
@@ -681,7 +753,7 @@ fn install_from_zip(
             0,
             &format!("正在下载 {} {version}...", display_name(tool, version)),
         );
-        download_with_fallback(urls, &zip_path, artifact.sha256, progress, cancel)?;
+        download_with_fallback(urls, &zip_path, sha256, progress, cancel)?;
 
         progress(
             "installing",
@@ -714,6 +786,8 @@ fn display_name(tool: &str, _version: &str) -> String {
         "git" => "Git".into(),
         "go" => "Go".into(),
         "java" => "JDK".into(),
+        "rust" => "Rust".into(),
+        "php" => "PHP".into(),
         other => other.into(),
     }
 }
