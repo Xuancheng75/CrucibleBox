@@ -74,6 +74,11 @@
 - 构建门禁 `verify-trusted-services.mjs` 与运行时同算法校验；digest 由 `npm run update:trusted-policy` 重钉（1.9.0 起插件独立化同样适用）。
 - 恢复：激活时只清理直属、非 symlink 的 `.unienv-staging-*` 中断目录，绝不触碰已安装 runtime；
   恢复/配置校验失败 → 安装/组合/卸载/版本切换全部 fail-closed。
+- **在线版本源（1.9.12+，ADR-0021）**：node/go/java 允许安装内置目录之外的新版本——
+  摘要来源从编译期固定改为运行期官方端点声明（dist SHASUMS256.txt / dl json sha256 /
+  Adoptium checksum，均为 HTTPS 官方域），下载后仍 fail-closed 校验；python/git 因无机器
+  可读校验源不开放在线新版本。交互非阻塞：`checkOnlineVersions` 显式触发 + 独立线程
+  8s 硬超时（覆盖 DNS 解析挂起），`onlineVersions` 配置可整体关闭。
 
 ## 6. 发布与供应链
 

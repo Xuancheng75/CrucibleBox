@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "cruciblebox-plugin-host"
-version = "1.9.12"
+version = "1.9.13"
 dependencies = [
  "rquickjs",
  "serde",

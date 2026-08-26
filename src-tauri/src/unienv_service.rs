@@ -424,9 +424,8 @@ fn display_name(tool: &str) -> String {
     }
 }
 
-/// 版本列表合并：内置目录 ∪ 在线发现（仅 provider 支持且配置开启），降序去重。
-/// 网络失败静默回退内置目录（unienv_versions 内部已 eprintln 诊断）。
-fn merged_versions(tool: &str, cfg: &UniEnvConfig) -> Value {
+/// 版本列表合并：内置目录 ∪ 在线发现（降序去重）。纯函数便于测试。
+fn merge_static_with_online(tool: &str, online: &[String]) -> Value {
     let mut list = supported_versions_raw()
         .get(tool)
         .and_then(Value::as_array)
@@ -437,25 +436,25 @@ fn merged_versions(tool: &str, cfg: &UniEnvConfig) -> Value {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if cfg.online_versions && crate::unienv_versions::provider_supports(tool) {
-        for v in crate::unienv_versions::online_versions(tool) {
-            if !list.contains(&v) {
-                list.push(v);
-            }
+    for v in online {
+        if !list.contains(v) {
+            list.push(v.clone());
         }
-        list.sort_by(|a, b| crate::unienv_versions::compare_version_desc(b, a));
     }
+    list.sort_by(|a, b| crate::unienv_versions::compare_version_desc(b, a));
     json!(list)
 }
 
 /// 安装/切换前的版本解析：内置目录命中，或（配置开启且上游可校验时）在线版本。
+/// 在线元数据解析带 8s 硬超时，绝不阻塞宿主 RPC。
 fn resolve_version(cfg: &UniEnvConfig, tool: &str, version: &str) -> Result<String, Value> {
     if is_supported_version(tool, version) {
         return Ok(version.to_string());
     }
     let dynamic_allowed = cfg.online_versions && crate::unienv_versions::provider_supports(tool);
     if dynamic_allowed {
-        let known = crate::unienv_versions::online_artifact(tool, version, &cfg.download_mirror);
+        let known =
+            crate::unienv_versions::online_artifact_bounded(tool, version, &cfg.download_mirror);
         if known.is_ok() {
             return Ok(version.to_string());
         }
@@ -767,12 +766,48 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
     match msg_type.as_str() {
         "listTools" => json!(tool_meta()),
         "listVersions" => {
+            // 1.9.13：永远只回内置目录（绝不阻塞请求路径）。在线发现改为
+            // checkOnlineVersions 显式触发，避免慢网 DNS 挂起拖垮版本下拉。
             let tool = match tool_field(request) {
                 Ok(t) => t,
                 Err(e) => return e,
             };
+            json!(supported_versions_raw()
+                .get(&tool)
+                .cloned()
+                .unwrap_or_else(|| json!([])))
+        }
+        "checkOnlineVersions" => {
+            // 「检查语言新版本」按钮路径：强制刷新上游元数据（8s 硬超时），
+            // 返回 内置∪在线 的合并降序列表；失败项内联报错。
             let cfg = load_config(db, plugin_id);
-            json!(merged_versions(&tool, &cfg))
+            if !cfg.online_versions {
+                return err(
+                    "online-check-disabled",
+                    "联网检查语言版本已在设置中关闭".into(),
+                );
+            }
+            let requested: Vec<String> = match request.get("tool") {
+                Some(Value::String(s)) => vec![s.clone()],
+                _ => ["node", "go", "java"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            };
+            let mut results = Vec::new();
+            for tool in requested {
+                if !crate::unienv_versions::provider_supports(&tool) {
+                    results.push(json!({
+                        "tool": tool, "ok": false,
+                        "error": format!("该工具不支持在线检查: {tool}"),
+                    }));
+                    continue;
+                }
+                let online = crate::unienv_versions::online_versions_force(&tool);
+                let merged = merge_static_with_online(&tool, &online);
+                results.push(json!({ "tool": tool, "ok": true, "versions": merged }));
+            }
+            json!({ "results": results })
         }
         "listCombos" => {
             let cfg = load_config(db, plugin_id);

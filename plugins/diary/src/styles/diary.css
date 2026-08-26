@@ -36,12 +36,17 @@
 
 /* ===== 导航按钮通用 ===== */
 .nav-btn {
+  /* 1.9.13：flex 居中，修复「← 返回」等箭头不在按钮中心的问题 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 6px 14px;
   border: 1px solid var(--d-border, #d9d9d9);
   border-radius: 6px;
   background: var(--d-bg, #fff);
   color: var(--d-text-soft, #555);
   font-size: 13px;
+  line-height: 1;
   cursor: pointer;
   transition: all 0.2s;
   user-select: none;
@@ -61,7 +66,8 @@
   border: none;
   color: var(--d-text-soft, #666);
   font-size: 14px;
-  padding-left: 0;
+  /* 1.9.13：对称内边距（此前 padding-left:0 导致箭头偏左不居中） */
+  padding: 6px 10px;
 }
 .back-btn:hover {
   color: var(--d-primary, #1890ff);

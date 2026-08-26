@@ -6,7 +6,7 @@
 
 ## 1. 项目简介
 
-- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 19 + Ant Design 6 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（1.9.1 当前基线；Electron 43 为已冻结的历史运行线）。
+- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 19 + Ant Design 6 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前发布基线 **1.9.13**；Electron 43 为已冻结的历史运行线）。
 - 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/{cruciblebox-plugin-api,openbox-rpc}`）。
 - 插件模型：Manifest v2 + 自包含 browser renderer（跨源 sandboxed iframe + MessagePort RPC）+ 可选 backend（Rust sidecar 内嵌 quickjs-ng，帧协议 RPC v2）。UniEnv 为宿主固定摘要可信服务。
 - 当前基线：Rust workspace `src-tauri`（主 app + `cruciblebox-plugin-host` sidecar）测试全绿；插件独立构建（自包含 `scripts/` 构建器）；数据库 schema v3（rusqlite bundled）；插件 SDK v2 已冻结；自动更新走 tauri-plugin-updater（minisign 强制签名）。
@@ -18,7 +18,8 @@ Tauri 主进程（Rust，`src-tauri/src/`）：
 
 - `main.rs`：装配点（tauri-plugin-updater 注册、renderer 自定义协议、DB 初始化、L3 数据路径迁移、命令注册）。
 - `commands.rs`：核心 IPC 命令组（settings/app/plugin 读路径/session/db_status；`is_main_window` 校验 + settings key 白名单）。
-- `db.rs`：rusqlite bundled 引擎（WAL + v1-v3 迁移 + legacy storage 迁移 + 日志清理）。
+- `unienv_catalog.rs` / `unienv_versions.rs` / `unienv_install.rs` / `unienv_task.rs`：UniEnv 可信服务四件套——制品完整性目录（静态 SHA-256）、在线版本源（node/go/java 官方端点发现，8s 硬超时，ADR-0021）、安装原语（下载/解压/junction/进程）、任务管理（单飞/进度/取消）。
+- `db.rs`：rusqlite bundled 引擎（WAL + v1-v4 迁移 + legacy storage 迁移 + 日志清理；v4 修复 L3 迁移后的 installed_path 残留）。
 - `data_dir.rs`：L3 数据路径迁移（`%APPDATA%\openbox` → `%APPDATA%\cruciblebox`，checkpoint + 原子 rename）。
 - `plugin_session.rs` / `plugin_protocol.rs`：renderer session registry + `cruciblebox-plugin` 协议 handler（path 型 `http://cruciblebox-plugin.localhost/<token>/index.html`）。
 - `capabilities/default.json`：ACL（core:default + updater:default）。
@@ -76,7 +77,7 @@ cd tauri-frontend && npm run build
 
 ## 6. 版本路线
 
-1.8.X Tauri 迁移（骨架/DB/sidecar/renderer/发布链）→ 1.9.X 插件独立化 + 宿主收敛 → **1.9.2 冻结 Tauri 为唯一运行线并发布首个 Tauri 正式版**（Electron 分支归档）。当前开发线：**1.9.1**。详见 `docs/tauri-migration-plan.md`。
+1.8.X Tauri 迁移（骨架/DB/sidecar/renderer/发布链）→ 1.9.X 插件独立化 + 宿主收敛 → **1.9.2 冻结 Tauri 为唯一运行线并发布首个 Tauri 正式版**（Electron 分支归档）。当前发布基线：**1.9.13**。逐版本变更见 `docs/changelog.md`；UniEnv 在线版本源决策见 `docs/adr-0021-unienv-online-version-feeds.md`。
 
 ## 7. 文档约定
 

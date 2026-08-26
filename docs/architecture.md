@@ -38,6 +38,12 @@ Rust sidecar 是故障隔离，不是恶意 JS 的强制沙箱（quickjs 无 fs/
 而由宿主按版本、文件集合和 SHA-256 策略固定（`shared/trusted-service-policies.json`，
 `verify-trusted-services.mjs` 构建期 + `TrustedServiceRuntime` 运行期双 fail-closed）。
 
+**UniEnv 在线版本源（1.9.12+，见 ADR-0021）**：node/go/java 支持从官方端点
+（dist/index.json / dl json / Adoptium API）发现新版本并安装，摘要取自上游权威声明并继续
+fail-closed 校验。交互为非阻塞：`listVersions` 只回内置目录；在线发现由 renderer 的
+「检查语言新版本」按钮经 `checkOnlineVersions` 消息显式触发，宿主侧独立线程 + 8s 硬超时
+（覆盖 DNS 解析挂起），失败静默回退内置目录；`onlineVersions` 配置可关闭。
+
 宿主 renderer 使用类型安全页面注册表与 `React.lazy`；默认首页启动闭包、宿主静态入口和全部
 renderer JavaScript 分别受独立字节预算约束（`scripts/performance-budgets.json`）。
 
