@@ -511,7 +511,7 @@ export default function UniEnvUI({
         if (mounted.current) setCheckingOnline(false)
       }
     },
-    [send]
+    [send, toast]
   )
 
   const installTool = useCallback(
