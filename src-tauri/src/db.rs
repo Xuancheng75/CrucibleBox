@@ -555,7 +555,7 @@ fn pragma_i64(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
 // 迁移（对等 database/index.ts MIGRATIONS 数组，v1..=v3）
 // ---------------------------------------------------------------------------
 
-const MIGRATIONS_COUNT: i64 = 3;
+const MIGRATIONS_COUNT: i64 = 4;
 
 fn run_migrations(db: &Db) -> rusqlite::Result<()> {
     let mut version = db.version().unwrap_or(0);
@@ -587,6 +587,7 @@ fn migrate_one(db: &Db, version: i64) -> rusqlite::Result<()> {
         0 => migrate_v1(&guard),
         1 => migrate_v2(&guard),
         2 => migrate_v3(&guard),
+        3 => migrate_v4(&guard),
         _ => Ok(()),
     }
 }
@@ -698,10 +699,29 @@ fn migrate_v3(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// v4：修复 L3 数据目录迁移（openbox→cruciblebox）后 plugins.installed_path 的残留。
+/// data_dir::migrate 只搬文件不改写 DB 内的绝对路径，迁移过的旧安装全部
+/// renderer 会话/后端启动都会 "failed to read plugin manifest"（Bug G）。
+/// 按路径段精确替换（两侧带分隔符），幂等；对未受影响的行零副作用。
+fn migrate_v4(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        r"UPDATE plugins
+         SET installed_path = REPLACE(installed_path, '\openbox\', '\cruciblebox\')
+         WHERE installed_path LIKE '%\openbox\%'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE plugins
+         SET installed_path = REPLACE(installed_path, '/openbox/', '/cruciblebox/')
+         WHERE installed_path LIKE '%/openbox/%'",
+        [],
+    )?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // legacy plugin storage 迁移（对等 database/pluginStorage.ts）
 // ---------------------------------------------------------------------------
-
 fn migrate_legacy_plugin_storage(conn: &Connection) -> rusqlite::Result<()> {
     if let Some(diary_id) = plugin_id_by_name(conn, "diary")? {
         migrate_legacy_for_plugin(conn, &diary_id, "diary")?;
@@ -856,13 +876,62 @@ mod tests {
     }
 
     #[test]
-    fn fresh_db_migrates_to_v3() {
+    fn fresh_db_migrates_to_v4() {
         let path = temp_db("fresh");
         let db = Db::open(&path).unwrap();
         let status = db.status().unwrap();
-        assert_eq!(status.version, 3);
+        assert_eq!(status.version, 4);
         assert_eq!(status.journal_mode.to_lowercase(), "wal");
         assert!(status.foreign_keys);
+    }
+
+    #[test]
+    fn v4_repairs_stale_installed_path_after_data_dir_migration() {
+        // Bug G：L3 迁移搬走 %APPDATA%\openbox → cruciblebox，但 DB 里的
+        // installed_path 未改写，renderer/后端全部 "failed to read"。
+        let path = temp_db("v4-path-repair");
+        {
+            // 先按当前代码建到 v4，再手动降级模拟"迁移前旧库"
+            let db = Db::open(&path).unwrap();
+            drop(db);
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.pragma_update(None, "user_version", 3).unwrap();
+            conn.execute_batch(
+                r#"
+                DELETE FROM plugins;
+                INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
+                  VALUES ('a', 'diary', '1.0.0', 'Diary', 'dist/main.js',
+                          'C:\Users\u1\AppData\Roaming\openbox\plugins\diary'),
+                         ('b', 'unienv', '1.0.0', 'UniEnv', 'dist/main.js',
+                          'C:/Users/u1/AppData/Roaming/openbox/plugins/unienv'),
+                         ('c', 'ok', '1.0.0', 'Ok', 'dist/main.js',
+                          'C:\fresh\cruciblebox\plugins\ok');
+                "#,
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.status().unwrap().version, 4);
+        let guard = db.conn.lock().unwrap();
+        let get = |id: &str| -> String {
+            guard
+                .query_row(
+                    "SELECT installed_path FROM plugins WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            get("a"),
+            r"C:\Users\u1\AppData\Roaming\cruciblebox\plugins\diary"
+        );
+        assert_eq!(
+            get("b"),
+            "C:/Users/u1/AppData/Roaming/cruciblebox/plugins/unienv"
+        );
+        // 未含 openbox 段的路径零改动；'openbox' 出现在文件名中（无分隔符边界）也不误伤
+        assert_eq!(get("c"), r"C:\fresh\cruciblebox\plugins\ok");
     }
 
     #[test]
@@ -882,11 +951,11 @@ mod tests {
     }
 
     #[test]
-    fn idempotent_reopen_keeps_v3() {
+    fn idempotent_reopen_keeps_v4() {
         let path = temp_db("reopen");
         drop(Db::open(&path).unwrap());
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.status().unwrap().version, 3);
+        assert_eq!(db.status().unwrap().version, 4);
     }
 
     #[test]

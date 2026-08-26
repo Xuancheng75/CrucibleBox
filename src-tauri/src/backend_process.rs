@@ -130,7 +130,22 @@ impl BackendProcess {
                     Err(_) => continue, // 坏帧忽略
                 },
                 Ok(None) | Err(_) => {
-                    // EOF：dispose 路径已设 expected_stop（正常退出）；否则视为崩溃
+                    // EOF：dispose 路径已设 expected_stop（正常退出）；否则视为崩溃。
+                    // 退出码诊断：0=主循环正常 break；其他=异常终止（Bug B 排障线）。
+                    let status = self
+                        .child
+                        .lock()
+                        .unwrap()
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .map(|s| format!("{s:?}"))
+                        .unwrap_or_else(|| "no-status".into());
+                    eprintln!(
+                        "[backend] {} pipe closed (expected={}): {status}",
+                        self.plugin_id,
+                        self.expected_stop.load(Ordering::SeqCst)
+                    );
                     self.finish_pending_eof();
                     let expected = self.expected_stop.load(Ordering::SeqCst);
                     if !expected {
@@ -203,6 +218,16 @@ impl BackendProcess {
 
     /// 处理 host 方法：权限校验 → 实现分发 → 响应写回 stdin
     fn handle_host_request(&self, request_id: String, method: String, params: Value) {
+        eprintln!(
+            "[host-method] enter {} rid={} op={}",
+            method,
+            request_id,
+            params
+                .get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("-")
+        );
         // 1) 实现面检查
         if !crate::permissions::is_host_method_implemented(&method) {
             let _ = self.send_host_response(&request_id, Err("NOT_ALLOWED".into()));
@@ -222,6 +247,10 @@ impl BackendProcess {
             &method,
             &params,
             &*self.emitter,
+        );
+        eprintln!(
+            "[host-method] done {method} rid={request_id} ok={}",
+            result.is_ok()
         );
         let _ = self.send_host_response(&request_id, result);
     }
@@ -382,29 +411,20 @@ pub struct BackendProcessManager {
 
 impl BackendProcessManager {
     pub fn new(db: Arc<Mutex<Db>>) -> Arc<Self> {
-        // sidecar exe：dev 态 target/debug/；打包态 tauri externalBin（1.9.2-e 落）
-        let sidecar_name = "cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe";
-        let sidecar_exe = std::env::current_dir()
-            .ok()
-            .map(|d| {
-                let exe_dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(PathBuf::from));
-                let cands = [
-                    d.join("target/debug/cruciblebox-plugin-host.exe"),
-                    d.join("cruciblebox-plugin-host/target/debug/cruciblebox-plugin-host.exe"),
-                    d.parent()
-                        .map(|p| p.join("target/debug/cruciblebox-plugin-host.exe"))
-                        .unwrap_or_default(),
-                    exe_dir.clone().unwrap_or_default().join(sidecar_name),
-                    exe_dir
-                        .unwrap_or_default()
-                        .join("resources")
-                        .join(sidecar_name),
-                ];
-                cands.into_iter().find(|p| p.is_file()).unwrap_or_default()
-            })
-            .unwrap_or_default();
+        let sidecar_exe = Self::resolve_sidecar_exe(
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(PathBuf::from)),
+            std::env::current_dir().ok(),
+        );
+        if !sidecar_exe.is_file() {
+            // Bug B/C 根因诊断线：打包态解析失败时此前静默落到空路径，
+            // 首条消息只会看到 "spawn sidecar failed: program path has no file name"。
+            eprintln!(
+                "[backend] sidecar exe not found; resolved={}",
+                sidecar_exe.display()
+            );
+        }
         let mgr = Arc::new(BackendProcessManager {
             processes: Mutex::new(HashMap::new()),
             crash_history: Mutex::new(HashMap::new()),
@@ -415,6 +435,40 @@ impl BackendProcessManager {
         });
         let _ = mgr.self_weak.set(Arc::downgrade(&mgr));
         mgr
+    }
+
+    /// 解析插件 backend sidecar 路径。dev 态在 cargo 工作目录下找 target/debug；
+    /// 打包态 tauri externalBin 会把 `cruciblebox-plugin-host-<triple>.exe`
+    /// 剥掉 triple 后放到安装根（NSIS 布局：exe 同级；resources 布局兜底）。
+    /// 找不到返回空 PathBuf（spawn 报错前先有 eprintln 诊断）。
+    fn resolve_sidecar_exe(exe_dir: Option<PathBuf>, cwd: Option<PathBuf>) -> PathBuf {
+        const SIDECAR_TRIPLE: &str = "cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe";
+        const SIDECAR_PLAIN: &str = "cruciblebox-plugin-host.exe";
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Some(d) = &cwd {
+            candidates.push(d.join("target/debug").join(SIDECAR_PLAIN));
+            candidates.push(
+                d.join("cruciblebox-plugin-host/target/debug")
+                    .join(SIDECAR_PLAIN),
+            );
+            if let Some(parent) = d.parent() {
+                candidates.push(parent.join("target/debug").join(SIDECAR_PLAIN));
+                // cargo tauri dev 从 src-tauri 启动：cwd=src-tauri，release 态本地验证用
+                candidates.push(parent.join("target/release").join(SIDECAR_PLAIN));
+            }
+        }
+        if let Some(d) = &exe_dir {
+            // 打包态主候选：externalBin 安装名（triple 已被 bundler 剥除）
+            candidates.push(d.join(SIDECAR_PLAIN));
+            candidates.push(d.join("resources").join(SIDECAR_PLAIN));
+            // 兼容：手工 stage 未剥 triple 的布局
+            candidates.push(d.join(SIDECAR_TRIPLE));
+            candidates.push(d.join("resources").join(SIDECAR_TRIPLE));
+        }
+        candidates
+            .into_iter()
+            .find(|p| p.is_file())
+            .unwrap_or_default()
     }
 
     /// 注入事件发射回调（main.rs setup 调用；app.emit 广播到所有窗口）。
@@ -745,5 +799,198 @@ mod tests {
 
         let _ = proc.request("lifecycle.dispose", json!({}));
         proc.kill_now("test cleanup");
+    }
+
+    fn touch(path: &std::path::Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"mz").unwrap();
+    }
+
+    #[test]
+    fn resolve_sidecar_prefers_packaged_external_bin_name() {
+        // Bug B/C 根因回归：NSIS 打包态 externalBin 安装名不带 target triple，
+        // 旧实现只找带 triple 的名字 → 打包态永远 spawn 失败。
+        let root = std::env::temp_dir().join(format!("cb-sidecar-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let exe_dir = root.join("app");
+        let plain = exe_dir.join("cruciblebox-plugin-host.exe");
+        let triple = exe_dir.join("cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe");
+        // 两种布局并存时优先剥 triple 的安装名
+        touch(&plain);
+        touch(&triple);
+        let got = BackendProcessManager::resolve_sidecar_exe(Some(exe_dir.clone()), None);
+        assert_eq!(got, plain);
+        // 仅 resources 布局也能找到
+        std::fs::remove_file(&plain).unwrap();
+        let res = exe_dir
+            .join("resources")
+            .join("cruciblebox-plugin-host.exe");
+        touch(&res);
+        let got = BackendProcessManager::resolve_sidecar_exe(Some(exe_dir.clone()), None);
+        assert_eq!(got, res);
+        // 仅手工 stage（未剥 triple）布局兜底
+        std::fs::remove_file(&res).unwrap();
+        let got = BackendProcessManager::resolve_sidecar_exe(Some(exe_dir.clone()), None);
+        assert_eq!(got, triple);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_sidecar_dev_layout_and_miss() {
+        let root = std::env::temp_dir().join(format!("cb-sidecar-dev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cwd = root.join("src-tauri");
+        let dev = cwd
+            .join("target")
+            .join("debug")
+            .join("cruciblebox-plugin-host.exe");
+        touch(&dev);
+        let got = BackendProcessManager::resolve_sidecar_exe(None, Some(cwd.clone()));
+        assert_eq!(got, dev);
+        // 全部落空 → 空 PathBuf（调用方 eprintln 诊断 + spawn 报错）
+        let miss = BackendProcessManager::resolve_sidecar_exe(
+            Some(root.join("nowhere")),
+            Some(root.join("empty-cwd")),
+        );
+        assert!(!miss.is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Bug B 复现：真实 sidecar + 真实 unienv 插件，重放 renderer 请求序列。
+    /// 真机观测：detect×5 通过后 listVersions 使 sidecar 崩溃并被隔离。
+    #[test]
+    fn e2e_unienv_renderer_sequence() {
+        let exe = sidecar_exe();
+        let repo_plugin = std::env::current_dir()
+            .ok()
+            .and_then(|d| d.parent().map(|p| p.join("plugins").join("unienv")))
+            .filter(|p| p.join("dist").join("main.js").exists());
+        let installed_plugin = std::env::var_os("APPDATA").map(|a| {
+            std::path::PathBuf::from(a)
+                .join("cruciblebox")
+                .join("plugins")
+                .join("unienv")
+        });
+        let Some(plugin_dir) =
+            repo_plugin.or(installed_plugin.filter(|p| p.join("dist").join("main.js").exists()))
+        else {
+            eprintln!("skipping unienv e2e: no plugin dist available");
+            return;
+        };
+        if !exe.exists() {
+            eprintln!("skipping unienv e2e: sidecar exe not built");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("cb-unienv-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("openbox.db");
+        let db = Db::open(&path).unwrap();
+        {
+            let guard = db.conn().lock().unwrap();
+            guard
+                .execute(
+                    "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
+                     VALUES ('unienv', 'unienv', '0.5.7', 'UniEnv', 'dist/main.js', ?1)
+                     ON CONFLICT(id) DO NOTHING",
+                    rusqlite::params![plugin_dir.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+        }
+
+        let proc = BackendProcess::spawn(
+            "unienv".into(),
+            crate::permissions::PermissionGuard::parse(&["trusted:unienv".to_string()]),
+            Arc::new(Mutex::new(db)),
+            exe,
+            plugin_dir.clone(),
+            "dist/main.js".into(),
+            Arc::new(|pid: &str| panic!("sidecar crashed during unienv sequence: {pid}")),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+        )
+        .expect("spawn unienv sidecar");
+
+        let init = proc.request(
+            "lifecycle.initialize",
+            json!({ "pluginId": "unienv", "config": {} }),
+        );
+        assert!(init.is_ok(), "unienv initialize failed: {:?}", init.err());
+
+        let send = |proc: &Arc<BackendProcess>, label: &str, msg: Value| {
+            eprintln!("[seq] sending {label}");
+            let r = proc.request("plugin.message", json!({ "message": msg }));
+            match &r {
+                Ok(v) => {
+                    let s = v.to_string();
+                    eprintln!(
+                        "[seq] {label} -> {}",
+                        if s.len() > 120 {
+                            format!("{}…", &s[..120])
+                        } else {
+                            s
+                        }
+                    );
+                }
+                Err(e) => eprintln!("[seq] {label} -> ERR {e}"),
+            }
+            assert!(r.is_ok(), "{label} failed: {:?}", r.err());
+            r.unwrap()
+        };
+
+        let tools = send(&proc, "listTools", json!({ "type": "listTools" }));
+        assert!(
+            tools.as_array().map(|a| a.len() == 5).unwrap_or(false),
+            "listTools: {tools}"
+        );
+        send(&proc, "listCombos", json!({ "type": "listCombos" }));
+        for tool in ["python", "node", "git", "go", "java"] {
+            send(&proc, "detect", json!({ "type": "detect", "tool": tool }));
+        }
+        send(
+            &proc,
+            "detect-node-2",
+            json!({ "type": "detect", "tool": "node" }),
+        );
+        let versions = send(
+            &proc,
+            "listVersions",
+            json!({ "type": "listVersions", "tool": "node" }),
+        );
+        assert!(
+            versions.as_array().map(|a| !a.is_empty()).unwrap_or(false),
+            "listVersions(node) returned non-array/empty: {versions}"
+        );
+
+        // 真机场景复现：空闲数秒后继续请求（真机在 detect 后空闲期自发 EOF）
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        for round in 0..2 {
+            send(
+                &proc,
+                "detect-again",
+                json!({ "type": "detect", "tool": "node" }),
+            );
+            let v = send(
+                &proc,
+                "listVersions-again",
+                json!({ "type": "listVersions", "tool": "node" }),
+            );
+            assert!(v.as_array().map(|a| !a.is_empty()).unwrap_or(false));
+            std::thread::sleep(std::time::Duration::from_secs(2 * (round + 1)));
+        }
+        // 进程必须仍然存活（未发生自发退出）
+        let alive = proc
+            .child
+            .lock()
+            .unwrap()
+            .try_wait()
+            .ok()
+            .flatten()
+            .is_none();
+        assert!(alive, "sidecar exited spontaneously during idle period");
+
+        let _ = proc.request("lifecycle.dispose", json!({}));
+        proc.kill_now("test cleanup");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

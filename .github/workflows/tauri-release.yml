@@ -135,14 +135,25 @@ jobs:
       # 1.9.9: 强制重建 exe 图标资源。Swatinem/rust-cache 会缓存 target，而 tauri-build
       # 未对 icons/*.ico 发 rerun-if-changed，cargo 复用缓存的 .res 资源 → 打包旧图标。
       # 删除本 crate 的 build 输出目录强制 tauri-build 重跑并重新嵌入 window icon。
+      # 1.9.11: 清理必须可证明——一个目录都没删到说明缓存布局变了（crate 改名等），
+      # 守卫静默失效，直接失败；同时清 .fingerprint 防止输出缺失被误判为最新。
       - name: Force rebuild of app icon resources
         working-directory: src-tauri
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf target/release/build/cruciblebox-*
-          rm -rf target/debug/build/cruciblebox-*
-          echo "cleared cruciblebox build output for icon resource regeneration"
+          REMOVED=0
+          for d in target/release/build/cruciblebox-* target/debug/build/cruciblebox-*; do
+            if [ -d "$d" ]; then rm -rf "$d"; REMOVED=$((REMOVED+1)); fi
+          done
+          for d in target/release/.fingerprint/cruciblebox-* target/debug/.fingerprint/cruciblebox-*; do
+            if [ -d "$d" ]; then rm -rf "$d"; fi
+          done
+          if [ "$REMOVED" -eq 0 ]; then
+            echo "::error::icon cache guard matched zero cruciblebox build dirs - cache layout changed, guard must be updated"
+            exit 1
+          fi
+          echo "cleared ${REMOVED} cruciblebox build output dir(s) for icon resource regeneration"
 
       - name: Build Tauri app + updater artifacts
         working-directory: src-tauri
@@ -153,6 +164,31 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+
+      # 1.9.11 (Bug A 守卫)：解包 setup.exe，断言内嵌应用 exe 已包含新图标像素数据。
+      # 此前只验证安装器外壳图标，用户看到的是安装后的应用 exe / 快捷方式图标（机制不同），
+      # cargo 缓存回归曾全绿通过。字节级存在性判据见 scripts/verify-tauri-icon.mjs。
+      - name: Verify embedded app icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          NSIS_DIR=src-tauri/target/release/bundle/nsis
+          SETUP="$(find "$NSIS_DIR" -name '*-setup.exe' | head -1)"
+          EXTRACT_DIR="$(mktemp -d)"
+          SEVENZIP="/c/Program Files/7-Zip/7z.exe"
+          if [ ! -f "$SEVENZIP" ]; then
+            echo "::error::7-Zip not found at $SEVENZIP"
+            exit 1
+          fi
+          "$SEVENZIP" x -y -o"$EXTRACT_DIR" "$SETUP" > /dev/null
+          # 应用 exe = 解包产物中体积最大的 .exe（NSIS 外壳本身不在其中）
+          APP_EXE="$(find "$EXTRACT_DIR" -name '*.exe' -printf '%s %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
+          if [ -z "$APP_EXE" ]; then
+            echo "::error::no exe found inside installer"
+            exit 1
+          fi
+          echo "verifying embedded icon of: $APP_EXE"
+          node scripts/verify-tauri-icon.mjs --icon src-tauri/icons/icon.ico --exe "$APP_EXE"
 
       # H3: 产物 smoke 门禁（installer 唯一 + .sig 存在 + 零证书断言）
       # 注（lib-1）：tauri-cli/bundler 从不生成 latest.json（只产 setup.exe + .sig）；

@@ -28,7 +28,11 @@ export function antdThemeConfig(toolboxTheme: ToolboxTheme): ThemeConfig {
     },
     components: {
       Modal: {
-        headerBg: tokens.colorBgElevated
+        // Modal 面板（header/content）与 .ob-modal-surface 内容面统一用
+        // colorBgContainer：默认 headerBg/contentBg 是 colorBgElevated，与主题 CSS
+        // 强制的 container 背景形成色差长条（Bug D）。footer 保持透明叠在 content 上。
+        headerBg: tokens.colorBgContainer,
+        contentBg: tokens.colorBgContainer
       }
     }
   }
