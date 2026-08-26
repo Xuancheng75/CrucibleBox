@@ -462,16 +462,23 @@ pub fn plugin_register_import_path(
 // ---------------------------------------------------------------------------
 
 /// 创建 renderer 会话。校验插件启用 + manifest 一致性后签发 session。
+/// color_scheme：宿主当前主题模式（"dark"/"light"），用于 index.html 首帧内联背景
+/// （Bug E：消除深色主题下 runtime.js 加载前的白屏闪烁）。
 #[tauri::command(async)]
 pub fn create_renderer_session(
     window: WebviewWindow,
     db: State<'_, Arc<Mutex<Db>>>,
     protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
     id: String,
+    color_scheme: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
+    let (initial_background, scheme) = match color_scheme.as_deref() {
+        Some("light") => ("#ffffff", "light"),
+        _ => ("#0a0c10", "dark"),
+    };
     // 读插件记录（enabled 校验 + 字段透传）
     let db = lock(&db);
     let guard = db.conn().lock().unwrap();
@@ -537,6 +544,8 @@ pub fn create_renderer_session(
     let session = {
         let mut reg = protocol.registry.lock().unwrap();
         reg.create(crate::plugin_session::CreateSessionInput {
+            initial_background: initial_background.into(),
+            color_scheme: scheme.into(),
             plugin_id: id,
             plugin_name: name,
             plugin_directory: installed_path,
@@ -566,8 +575,12 @@ pub fn dispose_renderer_session(
 
 /// 插件宿主 → backend 消息转发（对等 plugin:send-message）。
 /// 1.9.2-a：惰性 spawn sidecar（首次调用时），消息路由到 backend 的 onMessage。
-/// 前端 bridge 已改传 session token（非 plugin id），宿主从 renderer session registry
-/// 解析 plugin_id（防伪造 id）；无 renderer session 时回退到 id 直传（dev 便捷路径）。
+/// 路由约定（1.9.11 起）：
+/// - 前端 bridge 直传 pluginId（宿主 webview 是可信调用方；renderer 无法直接
+///   invoke 命令，伪造面不存在）。旧版传 session token 的路径保留兼容：
+///   64-hex id 先经 registry 反查 plugin_id。
+/// - token 反查失败时返回明确的 SESSION_EXPIRED 错误（此前会落到 DB 查询报
+///   "plugin not found: <hex>"，前端只能看到笼统 INTERNAL_ERROR —— Bug C 排障主因）。
 #[tauri::command(async)]
 pub fn plugin_send_message(
     window: WebviewWindow,
@@ -580,19 +593,29 @@ pub fn plugin_send_message(
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
-    // 解析 plugin_id：session token（前端 bridge 传 id=handshakeToken 时无法直接反查；
-    // 约定：bridge 传 session token 由前端改传 pluginId 或 token —— 当前桥改传 token，
-    // 经 registry get 校验 owner 后取 plugin_id）
+    // 解析 plugin_id：64-hex 视为 session token 反查；否则按 plugin id 直传
     let mut plugin_id = id.clone();
-    // 尝试把 id 当作 session token 反查 plugin_id（若为 64 hex token）
     if id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()) {
         let access = protocol.registry.lock().unwrap().get(&id, "main");
-        if access.ok {
-            if let Some(session) = &access.session {
-                plugin_id = session.plugin_id.clone();
+        match (&access.ok, &access.session) {
+            (true, Some(session)) => plugin_id = session.plugin_id.clone(),
+            _ => {
+                let reason = access
+                    .reason
+                    .map(|r| format!("{r:?}"))
+                    .unwrap_or_else(|| "unknown".into());
+                eprintln!(
+                    "[plugin_send_message] session lookup failed for token prefix {}…: {reason}",
+                    &id[..8.min(id.len())]
+                );
+                return Err(format!("SESSION_EXPIRED: renderer session no longer valid ({reason}); reopen the plugin"));
             }
         }
     }
+    eprintln!(
+        "[plugin_send_message] route plugin_id={plugin_id} type={}",
+        message.get("type").and_then(|v| v.as_str()).unwrap_or("?")
+    );
     // 惰性 spawn + 路由
     let record = {
         let db = lock(&db);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Spin } from 'antd'
+import { Alert, Modal, Spin } from 'antd'
 import type { PluginConfig } from '../../../shared/types/plugin.types'
 import type { PluginRendererSessionDescriptor } from '../../../shared/types/ipc.types'
 import type { PluginRendererRpcJsonValue } from '../../../shared/types/plugin-renderer-rpc.types'
@@ -33,12 +33,15 @@ export function PluginHost({
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const bridgeRef = useRef<PluginFrameBridge | null>(null)
   const connectedTokenRef = useRef<string | null>(null)
-  const sessionTokenRef = useRef<string | null>(null)
   const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const configRef = useRef(config)
   const onConfigChangeRef = useRef(onConfigChange)
   const theme = useThemeStore((state) => state.theme)
   const permissionKey = useMemo(() => [...permissions].sort().join('\n'), [permissions])
+  // 插件 confirm 的宿主侧实现：沙箱 iframe 无 allow-modals，window.confirm 被浏览器
+  // 静默拒绝（恒 false → UniEnv 非 current 版本安装无声取消，Bug B 真机发现）。
+  // 用 antd Modal 承载，不放宽 sandbox。
+  const [confirmApi, confirmContext] = Modal.useModal()
 
   configRef.current = config
   onConfigChangeRef.current = onConfigChange
@@ -49,7 +52,6 @@ export function PluginHost({
     bridgeRef.current?.dispose()
     bridgeRef.current = null
     connectedTokenRef.current = null
-    sessionTokenRef.current = null
     if (readyTimeoutRef.current) clearTimeout(readyTimeoutRef.current)
     readyTimeoutRef.current = null
     setSession(null)
@@ -58,11 +60,10 @@ export function PluginHost({
     setReady(false)
 
     tauriApi.plugin
-      .createRendererSession(pluginId)
+      .createRendererSession(pluginId, useThemeStore.getState().theme.mode === 'light' ? 'light' : 'dark')
       .then((nextSession) => {
         issuedToken = nextSession.token
         if (active) {
-          sessionTokenRef.current = nextSession.token
           setSession(nextSession)
           return
         }
@@ -79,7 +80,6 @@ export function PluginHost({
       bridgeRef.current?.dispose()
       bridgeRef.current = null
       connectedTokenRef.current = null
-      sessionTokenRef.current = null
       if (readyTimeoutRef.current) clearTimeout(readyTimeoutRef.current)
       readyTimeoutRef.current = null
       if (issuedToken) void tauriApi.plugin.disposeRendererSession(issuedToken)
@@ -121,9 +121,10 @@ export function PluginHost({
       permissions,
       initialConfig: configRef.current,
       initialTheme: useThemeStore.getState().theme,
-      // 后端 plugin_send_message 从 renderer session registry 反查 plugin_id，
-      // 因此传 session token（对等 tauri-frontend 骨架 PluginHost 约定）。
-      sendToBackend: (message) => tauriApi.plugin.sendMessage(sessionTokenRef.current ?? session.token, message),
+      // 直传 pluginId：宿主 webview 是可信调用方（sandboxed renderer 无法直接
+      // invoke 命令）。旧版传 session token，session 过期/重建后反查失败会变成
+      // 笼统的 INTERNAL_ERROR（Bug C）；token 路径在宿主侧仍保留兼容。
+      sendToBackend: (message) => tauriApi.plugin.sendMessage(pluginId, message),
       updateConfig: (nextConfig) => onConfigChangeRef.current(nextConfig),
       showNotification: (title, body) => {
         try {
@@ -140,7 +141,16 @@ export function PluginHost({
         return useThemeStore.getState().setTheme(nextTheme)
       },
       async confirm(options) {
-        return window.confirm(`${options.title}\n\n${options.message}`)
+        return await new Promise<boolean>((resolve) => {
+          confirmApi.confirm({
+            title: options.title,
+            content: options.message,
+            okText: options.confirmLabel ?? '确定',
+            cancelText: options.cancelLabel ?? '取消',
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false)
+          })
+        })
       },
       resize: (nextHeight) => {
         if (readyTimeoutRef.current) clearTimeout(readyTimeoutRef.current)
@@ -169,7 +179,7 @@ export function PluginHost({
       connectedTokenRef.current = null
       setError(`连接插件界面失败：${reason instanceof Error ? reason.message : String(reason)}`)
     }
-  }, [permissions, session])
+  }, [permissions, session, pluginId, confirmApi])
 
   if (error) return <Alert className="ob-alert-error" type="error" message={error} showIcon />
 
@@ -182,27 +192,30 @@ export function PluginHost({
   }
 
   return (
-    <iframe
-      ref={iframeRef}
-      src={session.indexUrl}
-      title={`${pluginName} 插件`}
-      sandbox={
-        session.rendererApiVersion === 1
-          ? 'allow-scripts allow-same-origin allow-downloads allow-modals'
-          : 'allow-scripts allow-same-origin allow-downloads'
-      }
-      allow="camera 'none'; microphone 'none'; geolocation 'none'; payment 'none'; usb 'none'; serial 'none'; clipboard-read 'none'; clipboard-write 'none'"
-      referrerPolicy="no-referrer"
-      data-plugin-ready={ready ? 'true' : 'false'}
-      data-renderer-api-version={session.rendererApiVersion}
-      onLoad={connectFrame}
-      style={{
-        display: 'block',
-        width: '100%',
-        height,
-        border: 0,
-        background: 'transparent'
-      }}
-    />
+    <>
+      {confirmContext}
+      <iframe
+        ref={iframeRef}
+        src={session.indexUrl}
+        title={`${pluginName} 插件`}
+        sandbox={
+          session.rendererApiVersion === 1
+            ? 'allow-scripts allow-same-origin allow-downloads allow-modals'
+            : 'allow-scripts allow-same-origin allow-downloads'
+        }
+        allow="camera 'none'; microphone 'none'; geolocation 'none'; payment 'none'; usb 'none'; serial 'none'; clipboard-read 'none'; clipboard-write 'none'"
+        referrerPolicy="no-referrer"
+        data-plugin-ready={ready ? 'true' : 'false'}
+        data-renderer-api-version={session.rendererApiVersion}
+        onLoad={connectFrame}
+        style={{
+          display: 'block',
+          width: '100%',
+          height,
+          border: 0,
+          background: 'transparent'
+        }}
+      />
+    </>
   )
 }

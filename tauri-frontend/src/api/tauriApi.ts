@@ -203,8 +203,11 @@ export const tauriApi = {
     uninstall: (id: string): Promise<IpcResult> =>
       invoke<IpcResult>('plugin_uninstall', { id }),
 
-    createRendererSession: (id: string): Promise<PluginRendererSessionDescriptor> =>
-      invoke<PluginRendererSessionDescriptor>('create_renderer_session', { id }),
+    createRendererSession: (
+      id: string,
+      colorScheme?: 'dark' | 'light'
+    ): Promise<PluginRendererSessionDescriptor> =>
+      invoke<PluginRendererSessionDescriptor>('create_renderer_session', { id, colorScheme }),
 
     disposeRendererSession: (token: string): Promise<boolean> =>
       invoke<boolean>('dispose_renderer_session', { token }),

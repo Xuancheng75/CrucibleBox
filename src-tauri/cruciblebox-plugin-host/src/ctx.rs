@@ -62,57 +62,95 @@ impl FrameQueue {
         })
     }
 
-    /// 取下一帧（worker 请求路径：优先 pending，其次 channel 阻塞等待）。
+    /// 取下一帧（worker 请求路径：优先 pending 中的 worker 帧，其次 channel 阻塞等待）。
+    /// 孤儿响应帧（请求方已超时放弃）在此丢弃，不进入主循环。
     pub fn take_worker_frame(&self) -> Option<Vec<u8>> {
-        if let Some(bytes) = self.pending.lock().unwrap().pop_front() {
-            return Some(bytes);
+        loop {
+            {
+                let mut pend = self.pending.lock().unwrap();
+                if let Some(pos) = pend.iter().position(|b| frame_kind(b) == "request") {
+                    return pend.remove(pos);
+                }
+            }
+            let bytes = self.rx.lock().unwrap().recv().ok().flatten()?;
+            if frame_kind(&bytes) == "request" {
+                return Some(bytes);
+            }
+            // 迟到响应：丢弃
         }
-        self.rx.lock().unwrap().recv().ok().flatten()
     }
 
-    /// ctx.call 等待宿主响应：带超时；不匹配 requestId 的帧入 pending。
+    /// ctx.call 等待宿主响应：带超时；并发到达的 worker 帧入 pending 暂存。
+    ///
+    /// Bug B/C 根因修复（1.9.11）：旧实现在 pending/channel 中弹到 worker 帧时按
+    /// 「requestId 不匹配」push 回 pending 后 continue——同一帧被无限弹出比对，
+    /// 主线程自旋死循环（永不到达 recv_timeout），宿主 30s 超时后强杀 sidecar。
+    /// 现按 kind 区分：只有响应帧才参与匹配；worker 帧入 pending 一次即止。
     fn take_matching_response(&self, request_id: &str) -> Result<Option<Value>, String> {
         let deadline = std::time::Instant::now() + RPC_TIMEOUT;
         loop {
-            let bytes = {
-                // 先查 pending（可能有宿主此前推送的帧）
+            // pending 中只找「响应」帧（此前误入的）；worker 帧留在原地给主循环
+            {
                 let mut pend = self.pending.lock().unwrap();
-                if let Some(bytes) = pend.pop_front() {
-                    bytes
-                } else {
-                    drop(pend);
-                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                    if remaining.is_zero() {
-                        return Err("TIMEOUT: waiting for host response".into());
+                if let Some(pos) = pend.iter().position(|b| frame_kind(b) == "response") {
+                    let bytes = pend.remove(pos).unwrap();
+                    return validate_response_bytes(&bytes, request_id);
+                }
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("TIMEOUT: waiting for host response".into());
+            }
+            let bytes = {
+                let rx = self.rx.lock().unwrap();
+                match rx.recv_timeout(remaining) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => return Err("host closed pipe".into()),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        return Err("TIMEOUT: waiting for host response".into())
                     }
-                    let rx = self.rx.lock().unwrap();
-                    match rx.recv_timeout(remaining) {
-                        Ok(Some(bytes)) => bytes,
-                        Ok(None) => return Err("host closed pipe".into()),
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            return Err("TIMEOUT: waiting for host response".into())
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            return Err("frame reader thread died".into())
-                        }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err("frame reader thread died".into())
                     }
                 }
             };
-            let value: Value = serde_json::from_slice(&bytes)
-                .map_err(|e| format!("bad response json: {e}"))?;
+            if frame_kind(&bytes) != "response" {
+                // 宿主并发推送的 worker 帧：入 pending 一次，继续等响应（不再重弹）
+                self.pending.lock().unwrap().push_back(bytes);
+                continue;
+            }
+            // 响应帧但 requestId 不匹配 = 请求方已超时放弃的迟到响应：丢弃，保证前进
+            let value: Value =
+                serde_json::from_slice(&bytes).map_err(|e| format!("bad response json: {e}"))?;
             match envelope::validate_host_response(&value, request_id) {
                 Ok((true, result, _)) => return Ok(Some(result)),
                 Ok((false, _, err)) => {
-                    return Err(err.unwrap_or_else(|| "host request failed".into()));
+                    return Err(err.unwrap_or_else(|| "host request failed".into()))
                 }
-                Err(e) if e.contains("requestId mismatch") => {
-                    // 不是本请求的响应（宿主并发推送的 worker 帧）→ 入 pending
-                    self.pending.lock().unwrap().push_back(bytes);
+                Err(_) => {
+                    eprintln!("[host] dropped stale host-response (late arrival)");
                     continue;
                 }
-                Err(e) => return Err(format!("response validation: {e}")),
             }
         }
+    }
+}
+
+/// 帧类型判定（坏帧返回空串，由各路径丢弃处理）。
+fn frame_kind(bytes: &[u8]) -> String {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn validate_response_bytes(bytes: &[u8], request_id: &str) -> Result<Option<Value>, String> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("bad response json: {e}"))?;
+    match envelope::validate_host_response(&value, request_id) {
+        Ok((true, result, _)) => Ok(Some(result)),
+        Ok((false, _, err)) => Err(err.unwrap_or_else(|| "host request failed".into())),
+        Err(e) => Err(format!("response validation: {e}")),
     }
 }
 
@@ -156,11 +194,11 @@ pub fn register_host_request(ctx: &rquickjs::Ctx) -> rquickjs::Result<()> {
             let params: Value = serde_json::from_str(&params_json).map_err(|e| {
                 rquickjs::Error::new_from_js_message("String", "String", e.to_string())
             })?;
-            let result = host_call(&method, params).map_err(|e| {
-                rquickjs::Error::new_from_js_message("call", "call", e.to_string())
-            })?;
-            serde_json::to_string(&result)
-                .map_err(|e| rquickjs::Error::new_from_js_message("String", "String", e.to_string()))
+            let result = host_call(&method, params)
+                .map_err(|e| rquickjs::Error::new_from_js_message("call", "call", e.to_string()))?;
+            serde_json::to_string(&result).map_err(|e| {
+                rquickjs::Error::new_from_js_message("String", "String", e.to_string())
+            })
         },
     )?;
     ctx.globals().set("__hostRequest", f)?;
@@ -238,6 +276,7 @@ globalThis.__cbCtx = null;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn ctx_js_is_valid_syntax() {
@@ -245,13 +284,89 @@ mod tests {
         let ctx = rquickjs::Context::full(&rt).unwrap();
         ctx.with(|ctx| {
             ctx.eval::<(), _>(CTX_JS).unwrap();
-            let built: rquickjs::Value = ctx
-                .eval("__buildCtx('p1', {a:1})")
-                .unwrap();
+            let built: rquickjs::Value = ctx.eval("__buildCtx('p1', {a:1})").unwrap();
             let obj = built.as_object().unwrap();
             assert_eq!(obj.get::<_, String>("id").unwrap(), "p1");
-            let has_storage = !obj.get::<_, rquickjs::Value>("storage").unwrap().is_undefined();
+            let has_storage = !obj
+                .get::<_, rquickjs::Value>("storage")
+                .unwrap()
+                .is_undefined();
             assert!(has_storage);
         });
+    }
+
+    fn frame(v: Value) -> Vec<u8> {
+        serde_json::to_vec(&v).unwrap()
+    }
+    fn worker_frame() -> Vec<u8> {
+        frame(json!({
+            "v": 2, "kind": "request", "requestId": "host-1", "token": "t",
+            "method": "plugin.message", "params": {}
+        }))
+    }
+    fn response_frame(rid: &str) -> Vec<u8> {
+        frame(json!({
+            "v": 2, "kind": "response", "requestId": rid, "ok": true, "result": 42,
+            "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }))
+    }
+
+    /// Bug B/C 根因回归：__hostRequest 等待响应期间并发到达的 worker 帧
+    /// 曾被反复弹出比对导致自旋死循环。修复后必须立即返回响应，
+    /// worker 帧保留给主循环。
+    #[test]
+    fn concurrent_worker_frame_does_not_starve_response_wait() {
+        let (tx, rx) = mpsc::channel();
+        let q = FrameQueue {
+            rx: Mutex::new(rx),
+            pending: Mutex::new(VecDeque::new()),
+        };
+        tx.send(Some(worker_frame())).unwrap();
+        tx.send(Some(response_frame("r1"))).unwrap();
+
+        let start = std::time::Instant::now();
+        let got = q.take_matching_response("r1").unwrap().unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "take_matching_response must not spin on pending worker frames"
+        );
+        assert_eq!(got, json!(42));
+
+        // worker 帧必须保留给主循环（不丢失）
+        let w = q.take_worker_frame().unwrap();
+        assert_eq!(frame_kind(&w), "request");
+    }
+
+    /// pending 中已有迟到响应时，只消费响应帧；worker 帧不被误吞。
+    #[test]
+    fn pending_mixed_frames_are_dispatched_by_kind() {
+        let (tx, rx) = mpsc::channel();
+        let q = FrameQueue {
+            rx: Mutex::new(rx),
+            pending: Mutex::new(VecDeque::from(vec![worker_frame(), response_frame("r9")])),
+        };
+        let got = q.take_matching_response("r9").unwrap().unwrap();
+        assert_eq!(got, json!(42));
+        let w = q.take_worker_frame().unwrap();
+        assert_eq!(frame_kind(&w), "request");
+        // 队列清空后 take_worker_frame 无帧可取（channel 断开 → None）
+        drop(tx);
+        assert!(q.take_worker_frame().is_none());
+    }
+
+    /// 迟到（requestId 不匹配）的响应帧被丢弃而非回存 pending 自旋。
+    #[test]
+    fn late_mismatched_response_is_dropped() {
+        let (tx, rx) = mpsc::channel();
+        let q = FrameQueue {
+            rx: Mutex::new(rx),
+            pending: Mutex::new(VecDeque::new()),
+        };
+        tx.send(Some(response_frame("r-old"))).unwrap();
+        tx.send(Some(response_frame("r1"))).unwrap();
+        let start = std::time::Instant::now();
+        let got = q.take_matching_response("r1").unwrap().unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(got, json!(42));
     }
 }

@@ -24,6 +24,10 @@ pub struct RendererSession {
     pub handshake_token: String,
     pub origin: String,
     pub index_url: String,
+    /// index.html 内联关键背景色（Bug E：runtime.js 加载前避免 WebView 默认白底闪屏）
+    pub initial_background: String,
+    /// 与 initial_background 配套的 color-scheme（"dark" | "light"）
+    pub color_scheme: String,
     pub plugin_id: String,
     pub plugin_name: String,
     pub plugin_directory: String,
@@ -56,6 +60,10 @@ pub struct SessionAccess {
 }
 
 pub struct CreateSessionInput {
+    /// index.html 首帧内联背景（如 "#0a0c10" / "#ffffff"）
+    pub initial_background: String,
+    /// "dark" | "light"
+    pub color_scheme: String,
     pub plugin_id: String,
     pub plugin_name: String,
     pub plugin_directory: String,
@@ -75,6 +83,8 @@ struct SessionInternal {
     handshake_token: String,
     origin: String,
     index_url: String,
+    initial_background: String,
+    color_scheme: String,
     plugin_id: String,
     plugin_name: String,
     plugin_directory: String,
@@ -158,6 +168,8 @@ impl RendererSessionRegistry {
             handshake_token,
             origin,
             index_url,
+            initial_background: input.initial_background,
+            color_scheme: input.color_scheme,
             plugin_id: input.plugin_id.clone(),
             plugin_name: input.plugin_name,
             plugin_directory: input.plugin_directory,
@@ -277,6 +289,8 @@ impl RendererSessionRegistry {
                     handshake_token: s.handshake_token.clone(),
                     origin: s.origin.clone(),
                     index_url: s.index_url.clone(),
+                    initial_background: s.initial_background.clone(),
+                    color_scheme: s.color_scheme.clone(),
                     plugin_id: s.plugin_id.clone(),
                     plugin_name: s.plugin_name.clone(),
                     plugin_directory: s.plugin_directory.clone(),
@@ -315,6 +329,8 @@ mod tests {
 
     fn make_input(plugin_id: &str) -> CreateSessionInput {
         CreateSessionInput {
+            initial_background: "#0a0c10".into(),
+            color_scheme: "dark".into(),
             plugin_id: plugin_id.to_string(),
             plugin_name: plugin_id.to_string(),
             plugin_directory: "C:/plugins/x".into(),

@@ -114,7 +114,8 @@ pub fn host_dispatch(
                 .unwrap_or("")
                 .to_string();
             let payload = params.get("payload");
-            crate::unienv_service::dispatch(&service, &operation, payload)
+            // 传入 plugin_id + db：UniEnv 需按插件现读 config_data（installRoot/镜像/组合包）
+            crate::unienv_service::dispatch(&db, plugin_id, &service, &operation, payload)
         }
         _ => Err("host method not implemented".into()),
     }

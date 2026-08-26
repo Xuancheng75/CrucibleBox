@@ -48,8 +48,17 @@ fn generated_index(session: &RendererSession) -> String {
     } else {
         ""
     };
+    // Bug E：首帧关键 CSS 直接内联进 index.html。runtime.js 的深色兜底要等脚本
+    // 下载+执行后才生效，WebView2 在此之前按默认白底渲染 → 深色主题闪白屏。
+    let critical_style = format!(
+        "html{{background:{};color-scheme:{}}}body{{margin:0;background:{};min-height:100%}}",
+        escape_html_attr(&session.initial_background),
+        escape_html_attr(&session.color_scheme),
+        escape_html_attr(&session.initial_background)
+    );
     format!(
-        "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <title></title>\n  </head>\n  <body>\n    <div id=\"root\" data-session-token=\"{}\" data-api-version=\"{}\" data-renderer-url=\"renderer.js\"></div>\n    <script src=\"runtime.js\"></script>{}\n  </body>\n</html>",
+        "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <style>{}</style>\n    <title></title>\n  </head>\n  <body>\n    <div id=\"root\" data-session-token=\"{}\" data-api-version=\"{}\" data-renderer-url=\"renderer.js\"></div>\n    <script src=\"runtime.js\"></script>{}\n  </body>\n</html>",
+        critical_style,
         escape_html_attr(&session.handshake_token),
         session.renderer_api_version,
         renderer_script
@@ -244,6 +253,8 @@ mod tests {
         let mut reg = RendererSessionRegistry::new(crate::plugin_session::DEFAULT_TTL);
         let session = reg
             .create(crate::plugin_session::CreateSessionInput {
+                initial_background: "#0a0c10".into(),
+                color_scheme: "dark".into(),
                 plugin_id: "diary".into(),
                 plugin_name: "diary".into(),
                 plugin_directory: "C:/plugins/diary".into(),
@@ -272,11 +283,18 @@ mod tests {
         assert_eq!(resp.0, 200);
         let body = String::from_utf8(resp.2).unwrap();
         assert!(body.contains("data-session-token="));
-        // 1.9.6：脚本必须用相对路径（token 在 path 而非 host，根路径会丢 token）
+        // 1.9.6：脚本用相对路径（token 在 path 而非 host，路径会丢 token）
         assert!(body.contains("<script src=\"runtime.js\">"));
         assert!(!body.contains("<script src=\"/runtime.js\">"));
         assert!(body.contains("data-renderer-url=\"renderer.js\""));
         assert!(body.contains("<script src=\"renderer.js\">"));
+        // Bug E：首帧关键 CSS 必须内联在 <head>（runtime.js 执行前的深色背景），
+        // 且 color-scheme 与会话一致
+        assert!(
+            body.contains("<style>html{background:#0a0c10;color-scheme:dark}"),
+            "inline first-frame dark style missing: {body}"
+        );
+        assert!(body.contains("body{margin:0;background:#0a0c10;min-height:100%}"));
         // 二次访问 index → 403 already-consumed
         let again = handle_inner(&ctx, &uri);
         assert!(again.is_err());
@@ -311,6 +329,8 @@ mod tests {
         let mut reg = RendererSessionRegistry::new(crate::plugin_session::DEFAULT_TTL);
         let session = reg
             .create(crate::plugin_session::CreateSessionInput {
+                initial_background: "#0a0c10".into(),
+                color_scheme: "dark".into(),
                 plugin_id: "demo".into(),
                 plugin_name: "demo".into(),
                 plugin_directory: dir.to_string_lossy().into_owned(),
@@ -366,6 +386,8 @@ mod tests {
             handshake_token: "b".repeat(64),
             origin: "http://cruciblebox-plugin.localhost".into(),
             index_url: "http://cruciblebox-plugin.localhost/index.html".into(),
+            initial_background: "#0a0c10".into(),
+            color_scheme: "dark".into(),
             plugin_id: "x".into(),
             plugin_name: "x".into(),
             plugin_directory: "C:/plugins/x".into(),
