@@ -127,20 +127,26 @@ fn main() {
             let db = Arc::new(Mutex::new(db));
             let backend = backend_process::BackendProcessManager::new(db.clone());
             app.manage(db.clone());
-            app.manage(data_dir);
+            app.manage(data_dir.clone());
             app.manage(backend.clone());
 
-            // 4.1) 插件安装链：plugins_dir（app_data_dir/plugins）+ InstallManager + 启动恢复
-            let plugins_dir = match app.path().app_data_dir() {
-                Ok(dir) => dir.join("plugins"),
-                Err(err) => show_fatal_error(&format!("无法解析应用数据目录：{}", err)),
-            };
+            // 4.1) 插件安装链：plugins_dir 统一为迁移根（%APPDATA%\cruciblebox\plugins，
+            //      与 L3 迁移及存量 installed_path 一致；1.9.12 及之前误用 identifier 根
+            //      导致双根错乱）+ InstallManager + 启动恢复（含双根整理）
+            let plugins_dir = data_dir.join("plugins");
             if let Err(err) = std::fs::create_dir_all(&plugins_dir) {
                 show_fatal_error(&format!("无法创建插件目录：{}", err));
             }
             let install_mgr =
                 install::InstallManager::new(plugins_dir, db.clone(), backend.clone());
-            install_mgr.run_startup_recovery();
+            // 1.9.14：把 Tauri identifier 根（com.cruciblebox.app\plugins，1.9.12 及之前误用）
+            // 下的插件目录迁移到统一根。
+            let legacy_roots: Vec<PathBuf> = std::env::var("APPDATA")
+                .ok()
+                .map(|a| PathBuf::from(a).join("com.cruciblebox.app").join("plugins"))
+                .into_iter()
+                .collect();
+            install_mgr.run_startup_recovery(&legacy_roots);
             app.manage(install_mgr.clone());
 
             // 4.2) 事件桥：backend 事件 → Tauri 全局事件（plugin:log/message/status-change）

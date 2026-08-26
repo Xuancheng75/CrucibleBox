@@ -20,6 +20,7 @@ pub const ALL_PERMISSIONS: &[&str] = &[
     "file:write",
     "theme:write",
     "trusted:unienv",
+    "trusted:document-engine",
 ];
 
 pub const DATABASE_READ: &str = "database:read";
@@ -37,6 +38,7 @@ pub const FILE_WRITE: &str = "file:write";
 #[allow(dead_code)]
 pub const THEME_WRITE: &str = "theme:write";
 pub const TRUSTED_UNIENV: &str = "trusted:unienv";
+pub const TRUSTED_DOCUMENT_ENGINE: &str = "trusted:document-engine";
 
 pub struct PermissionGuard {
     granted: HashSet<&'static str>,
@@ -59,6 +61,19 @@ impl PermissionGuard {
 
     pub fn has(&self, permission: &str) -> bool {
         self.granted.contains(permission)
+    }
+
+    /// trusted.invoke 门控：宿主固定可信服务（UniEnv / Document Engine 等）共用
+    /// 同一 host 方法，故接受任一 trusted:* 权限即可。
+    pub fn assert_trusted_service(&self) -> Result<(), String> {
+        if self.has(TRUSTED_UNIENV) || self.has(TRUSTED_DOCUMENT_ENGINE) {
+            Ok(())
+        } else {
+            Err(
+                "Permission denied: trusted service (trusted:unienv or trusted:document-engine)"
+                    .into(),
+            )
+        }
     }
 
     /// 断言权限；拒绝返回 NOT_ALLOWED 错误文本（对等 assert 抛错语义）

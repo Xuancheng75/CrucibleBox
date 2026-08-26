@@ -1,7 +1,15 @@
 import { readFile, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
-const PLUGINS = ['diary', 'dice-roller', 'gif-editor', 'theme-manager', 'turntable', 'unienv']
+const PLUGINS = [
+  'diary',
+  'dice-roller',
+  'gif-editor',
+  'theme-manager',
+  'turntable',
+  'unienv',
+  'document-engine'
+]
 const FORBIDDEN = [
   ['CommonJS require', /\brequire\s*\(/],
   ['ES module import', /(^|[;\n])\s*import(?:\s|\()/m],

@@ -391,7 +391,34 @@ impl Db {
         rows.next().transpose().map_err(|e| e.to_string())
     }
 
+    /// 全部插件的基础三元组（id, name, installed_path）——插件根整理（1.9.14）用。
+    pub fn plugin_all_roots(&self) -> Result<Vec<(String, String, String)>, String> {
+        let guard = self.conn.lock().unwrap();
+        let mut stmt = guard
+            .prepare("SELECT id, name, installed_path FROM plugins")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    /// 改写 installed_path（插件根整理 1.9.14 专用；同时刷新 updated_at）。
+    pub fn plugin_update_installed_path(
+        &self,
+        id: &str,
+        installed_path: &str,
+    ) -> rusqlite::Result<usize> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE plugins SET installed_path = ?1, updated_at = datetime('now', 'localtime') WHERE id = ?2",
+            rusqlite::params![installed_path, id],
+        )
+    }
+
     /// 新建插件记录（enabled 恒 0；installed_at/updated_at 由 DB 生成）
+    #[allow(dead_code)]
     pub fn plugin_create(&self, row: &PluginRow) -> Result<(), String> {
         let guard = self.conn.lock().unwrap();
         guard

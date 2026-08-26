@@ -114,8 +114,14 @@ pub fn host_dispatch(
                 .unwrap_or("")
                 .to_string();
             let payload = params.get("payload");
-            // 传入 plugin_id + db：UniEnv 需按插件现读 config_data（installRoot/镜像/组合包）
-            crate::unienv_service::dispatch(&db, plugin_id, &service, &operation, payload)
+            // 统一分发器：按 service 参数路由到对应的宿主固定可信服务。
+            // UniEnv 保留旧签名（service 透传）；Document Engine 自身即目标服务。
+            match service.as_str() {
+                "unienv" => {
+                    crate::unienv_service::dispatch(&db, plugin_id, &service, &operation, payload)
+                }
+                _ => Err(format!("unknown trusted service: {service}")),
+            }
         }
         _ => Err("host method not implemented".into()),
     }

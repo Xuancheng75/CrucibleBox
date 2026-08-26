@@ -383,6 +383,27 @@ pub fn plugin_uninstall(
     if removed == 0 {
         return Err(format!("plugin not found: {id}"));
     }
+    // 1.9.14：删除插件目录（此前仅删 DB 行，目录残留导致重装撞
+    // "expected to be absent"）。尽力而为：删除失败则改名隔离，不影响卸载结果。
+    let dir = std::path::PathBuf::from(&record.installed_path);
+    if dir.is_dir() {
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let quarantined = dir.with_file_name(format!(".uninstalled-{stamp}-{}", record.name));
+            match std::fs::rename(&dir, &quarantined) {
+                Ok(_) => eprintln!(
+                    "[uninstall] directory remove failed ({err}); quarantined to {}",
+                    quarantined.display()
+                ),
+                Err(e2) => eprintln!(
+                    "[uninstall] directory cleanup failed entirely: {err}; rename also failed: {e2}"
+                ),
+            }
+        }
+    }
     Ok(serde_json::json!({ "success": true }))
 }
 

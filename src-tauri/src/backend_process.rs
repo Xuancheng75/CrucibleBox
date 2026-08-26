@@ -234,7 +234,14 @@ impl BackendProcess {
             return;
         }
         // 2) 权限校验（宿主权威边界）
-        if let Some(perm) = crate::permissions::permission_for_host_method(&method) {
+        if method == "trusted.invoke" {
+            // 宿主固定可信服务（unienv / document-engine 等）共用 trusted.invoke，
+            // 接受任一 trusted:* 权限（见 PermissionGuard::assert_trusted_service）。
+            if let Err(e) = self.permissions.assert_trusted_service() {
+                let _ = self.send_host_response(&request_id, Err(e));
+                return;
+            }
+        } else if let Some(perm) = crate::permissions::permission_for_host_method(&method) {
             if let Err(e) = self.permissions.assert(perm) {
                 let _ = self.send_host_response(&request_id, Err(e));
                 return;

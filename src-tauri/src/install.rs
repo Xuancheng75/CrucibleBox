@@ -75,7 +75,12 @@ impl InstallManager {
     }
 
     /// 启动恢复：调 journal::recover_interrupted，把 blocked 插件加入 blocked 集合。
-    pub fn run_startup_recovery(&self) {
+    /// 启动恢复：先把遗留根（identifier 根 com.cruciblebox.app\plugins）下的插件目录
+    /// 迁移到统一根（%APPDATA%\cruciblebox\plugins）并修正 DB installed_path，再做 journal 恢复。
+    pub fn run_startup_recovery(&self, legacy_roots: &[PathBuf]) {
+        for legacy_root in legacy_roots {
+            migrate_legacy_plugin_root(&self.plugins_dir, legacy_root, &self.db);
+        }
         let find_metadata = |name: &str| -> Option<serde_json::Value> {
             let db = lock(&self.db);
             match db.plugin_find_by_name(name) {
@@ -231,6 +236,25 @@ impl InstallManager {
             assert_upgrade_allowed(&manifest.name, &manifest.version, &row.version)?;
         }
 
+        // 1.9.14：若 DB 无记录但目标目录已存在（旧版本卸载残留 / 双根错乱的孤儿目录），
+        // 必须在 stage 之前隔离，否则 DirectoryTransaction 会因 "expected to be absent" 失败。
+        // 隔离到 plugins_dir/.orphans/<name>-<ts>，允许本次重装。
+        if !is_upgrade {
+            let target_dir = self.plugins_dir.join(&manifest.name);
+            if target_dir.is_dir() {
+                let orphans = self.plugins_dir.join(".orphans");
+                let _ = std::fs::create_dir_all(&orphans);
+                let stamped = orphans.join(format!("{}-{}", manifest.name, now_ms()));
+                if let Err(e) = std::fs::rename(&target_dir, &stamped) {
+                    eprintln!(
+                        "[preview] isolate orphan {} failed ({e}); attempting delete",
+                        manifest.name
+                    );
+                    let _ = std::fs::remove_dir_all(&target_dir);
+                }
+            }
+        }
+
         let transaction_id = random_token_hex()?;
         let mut txn = DirectoryTransaction::new(TransactionOptions {
             plugins_dir: self.plugins_dir.clone(),
@@ -312,15 +336,15 @@ impl InstallManager {
         name: &str,
         target_dir: &Path,
     ) -> Result<serde_json::Value, String> {
-        // 若 plugins_dir/<name> 已存在但 DB 无记录 → 拒绝覆盖
         let db_has_record = lock(&self.db)
             .plugin_find_by_name(name)
             .map_err(|e| e.to_string())?
             .is_some();
         if !db_has_record && target_dir.exists() {
+            // 理论上 preview 阶段已隔离孤儿目录；此处仅作兜底，不应触发。
             let _ = install.transaction.rollback();
             return Err(format!(
-                "{name}: plugin directory already exists but has no database record; refusing to overwrite"
+                "{name}: plugin directory already exists but has no database record"
             ));
         }
 
@@ -523,6 +547,76 @@ impl InstallManager {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 把遗留根（如 %APPDATA%\com.cruciblebox.app\plugins）下的插件目录迁移到统一根
+/// （%APPDATA%\cruciblebox\plugins），并修正 DB 中的 installed_path。
+///
+/// 策略：
+///
+/// - 遗留目录存在、统一根不存在 → rename（跨盘失败则 copy+delete 回退）
+/// - 两边都存在 → 保留统一根，删除遗留副本
+/// - 更新 DB 路径指向统一根
+///
+/// 最后尝试删除已清空的遗留根目录。
+fn migrate_legacy_plugin_root(
+    canonical_plugins_dir: &Path,
+    legacy_root: &Path,
+    db: &Arc<Mutex<Db>>,
+) {
+    if !legacy_root.is_dir() {
+        return;
+    }
+    let rows = match lock(db).plugin_all_roots() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[reconcile] failed to read plugin roots: {e}");
+            return;
+        }
+    };
+    for (id, name, installed_path) in rows {
+        let installed = PathBuf::from(&installed_path);
+        if !installed.starts_with(legacy_root) {
+            continue;
+        }
+        let canonical_target = canonical_plugins_dir.join(&name);
+        if installed.is_dir() {
+            if canonical_target.exists() {
+                let _ = std::fs::remove_dir_all(&installed);
+            } else if let Err(e) = std::fs::rename(&installed, &canonical_target) {
+                eprintln!("[reconcile] rename {name} failed ({e}); trying copy fallback");
+                if copy_dir_recursive(&installed, &canonical_target).is_ok() {
+                    let _ = std::fs::remove_dir_all(&installed);
+                } else {
+                    eprintln!("[reconcile] failed to migrate plugin {name} from legacy root");
+                    continue;
+                }
+            }
+        }
+        let new_path = canonical_target.to_string_lossy().into_owned();
+        if installed != canonical_target {
+            if let Err(e) = lock(db).plugin_update_installed_path(&id, &new_path) {
+                eprintln!("[reconcile] failed to update path for {name}: {e}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(legacy_root);
+}
+
+/// 递归复制目录（rename 跨盘失败时的回退方案）。
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn now_ms() -> u64 {
@@ -911,5 +1005,96 @@ mod tests {
         mgr.discard(token).unwrap();
         assert!(!has_prefix(&plugins, ".demo.stage-"));
         assert!(!plugins.join("demo").exists());
+    }
+
+    #[test]
+    fn commit_fresh_tolerates_orphan_directory() {
+        let (mgr, plugins, root) = setup("orphan-tolerate");
+        let source_dir = root.join("source");
+        write_fixture(&source_dir, "1.0.0");
+        mgr.remember_trusted_path(source_dir.clone());
+
+        // 首次安装
+        let preview = mgr.preview(directory_source(&source_dir)).unwrap();
+        let token = preview["installToken"].as_str().unwrap().to_string();
+        mgr.commit(token).unwrap();
+
+        // 模拟旧版本卸载：删 DB 行但保留目录（孤儿目录）
+        {
+            let db = lock(&mgr.db);
+            db.plugin_delete("demo").unwrap();
+        }
+        assert!(plugins.join("demo").join("plugin.json").exists());
+
+        // 重新安装：应隔离孤儿目录并成功（修复 "expected to be absent"）
+        let preview2 = mgr.preview(directory_source(&source_dir)).unwrap();
+        let token2 = preview2["installToken"].as_str().unwrap().to_string();
+        mgr.commit(token2).unwrap();
+
+        // 安装成功，孤儿被隔离到 .orphans
+        assert!(plugins.join("demo").join("plugin.json").exists());
+        assert!(plugins.join(".orphans").is_dir());
+        let db = lock(&mgr.db);
+        assert!(db.plugin_find_by_name("demo").unwrap().is_some());
+    }
+
+    #[test]
+    fn migrate_legacy_plugin_root_moves_directory_and_updates_db() {
+        let (mgr, plugins, root) = setup("migrate-legacy");
+        let legacy_root = root.join("com.cruciblebox.app").join("plugins");
+        std::fs::create_dir_all(&legacy_root).unwrap();
+        let legacy_plugin = legacy_root.join("demo");
+        write_fixture(&legacy_plugin, "1.0.0");
+
+        // DB 记录指向遗留根
+        {
+            let db = lock(&mgr.db);
+            db.plugin_create(&crate::db::PluginRow {
+                id: "demo".into(),
+                name: "demo".into(),
+                version: "1.0.0".into(),
+                display_name: "Demo".into(),
+                description: "".into(),
+                author: "".into(),
+                icon: "".into(),
+                entry_main: "dist/main.js".into(),
+                entry_renderer: "".into(),
+                permissions: "[]".into(),
+                config_schema: "{}".into(),
+                config_data: "{}".into(),
+                enabled: false,
+                installed_path: legacy_plugin.to_string_lossy().into_owned(),
+                installed_at: String::new(),
+                updated_at: String::new(),
+                sort_order: 0,
+            })
+            .unwrap();
+        }
+
+        super::migrate_legacy_plugin_root(&plugins, &legacy_root, &mgr.db);
+
+        // 目录已迁移到统一根
+        assert!(plugins.join("demo").join("plugin.json").exists());
+        assert!(!legacy_root.join("demo").exists());
+        // DB 路径已更新
+        let db = lock(&mgr.db);
+        let row = db.plugin_find_by_name("demo").unwrap().unwrap();
+        assert_eq!(
+            row.installed_path,
+            plugins.join("demo").to_string_lossy().into_owned()
+        );
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_tree() {
+        let root = temp_root("copy-recursive");
+        let src = root.join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), "a").unwrap();
+        std::fs::write(src.join("sub").join("b.txt"), "b").unwrap();
+        let dst = root.join("dst");
+        super::copy_dir_recursive(&src, &dst).unwrap();
+        assert!(dst.join("a.txt").exists());
+        assert!(dst.join("sub").join("b.txt").exists());
     }
 }

@@ -169,7 +169,9 @@ export default function Home() {
     if (success) {
       message.success('插件已删除')
     } else {
-      message.error('删除失败')
+      // 1.9.13：透传具体原因（如 blocked 提示需重启应用完成事务恢复）
+      const detail = usePluginStore.getState().error
+      message.error(detail ? `删除失败：${detail}` : '删除失败')
     }
   }
 
