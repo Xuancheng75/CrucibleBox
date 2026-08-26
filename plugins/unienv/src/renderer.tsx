@@ -503,9 +503,7 @@ export default function UniEnvUI({
         const onlineCount = (entry.versions ?? []).length
         toast(
           onlineCount > 0 ? 'success' : 'info',
-          onlineCount > 0
-            ? `发现 ${onlineCount} 个可用版本（含在线新版本）`
-            : '未发现额外在线版本'
+          onlineCount > 0 ? `发现 ${onlineCount} 个可用版本（含在线新版本）` : '未发现额外在线版本'
         )
       } catch {
         if (mounted.current) toast('error', '在线检查失败，请检查网络后重试')
@@ -752,8 +750,7 @@ export default function UniEnvUI({
   const activeVersions = versions[activeKey] || []
 
   /** 该工具是否有在线版本源（node/go/java，与宿主 provider_supports 对齐） */
-  const isProviderTool = (toolId: string) =>
-    ['node', 'go', 'java'].includes(toolId)
+  const isProviderTool = (toolId: string) => ['node', 'go', 'java'].includes(toolId)
   const selectedVersion = selectedVersions[activeKey]
   const selectedLifecycle =
     activeTool && selectedVersion
