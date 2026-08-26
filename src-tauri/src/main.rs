@@ -25,6 +25,7 @@ mod unienv_catalog;
 mod unienv_install;
 mod unienv_service;
 mod unienv_task;
+mod unienv_versions;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

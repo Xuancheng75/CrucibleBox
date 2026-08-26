@@ -5,6 +5,9 @@ import { useAppStore } from './store/app.store'
 import { usePluginStore } from './store/plugin.store'
 import { ThemeProvider } from './components/ThemeProvider'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
+import PluginDropOverlay from './components/PluginDropOverlay'
+import PluginInstallPreviewModal from './components/PluginInstallPreviewModal'
+import { useGlobalPluginDrop } from './hooks/useGlobalPluginDrop'
 import { PluginLifecycleStatus } from '../../shared/types/plugin.types'
 import { APP_PAGE_LOADERS, type AppPage } from './app-pages'
 
@@ -45,6 +48,8 @@ export default function App() {
   const currentPage = useAppStore((s) => s.currentPage)
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const setPluginImportOpen = useAppStore((s) => s.setPluginImportOpen)
+  // 1.9.12：全窗口拖拽导入（zip/目录）+ 全局安装确认弹窗
+  const { dragActive } = useGlobalPluginDrop()
 
   // 菜单「导入插件」事件（Tauri 2 菜单点击经 tauri://menu 事件下发，payload 为菜单项 id）。
   // 后端菜单尚未定义（1.9.3 后端 lane 并行处理），此处按契约订阅，payload 匹配
@@ -85,6 +90,8 @@ export default function App() {
           </PageErrorBoundary>
         </Suspense>
       </MainLayout>
+      <PluginDropOverlay active={dragActive} />
+      <PluginInstallPreviewModal />
     </ThemeProvider>
   )
 }

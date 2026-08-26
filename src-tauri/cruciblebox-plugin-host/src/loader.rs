@@ -41,12 +41,7 @@ pub fn resolve_specifier(
             normalized.join("index.js"),
         ]
     };
-    for path in with_js {
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
+    with_js.into_iter().find(|path| path.is_file())
 }
 
 /// 规范化路径（消除 ./ 与 .. 组件），用于安全前缀比对。公开给 __cjsLoad 复用。

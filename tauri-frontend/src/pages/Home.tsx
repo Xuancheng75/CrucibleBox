@@ -1,6 +1,13 @@
 import { useCallback, useMemo, useState } from 'react'
-import { App, Button, Empty, Spin, Alert, theme } from 'antd'
-import { ImportOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
+import { App, Button, Empty, Modal, Spin, Alert, theme } from 'antd'
+import {
+  AppstoreOutlined,
+  CheckSquareOutlined,
+  DeleteOutlined,
+  ImportOutlined,
+  ReloadOutlined,
+  SearchOutlined
+} from '@ant-design/icons'
 import {
   DndContext,
   PointerSensor,
@@ -27,6 +34,9 @@ interface SortableLauncherCardProps {
   total: number
   status?: import('../../../shared/types/plugin.types').PluginLifecycleStatus
   isSorting: boolean
+  batchMode: boolean
+  selected: boolean
+  onToggleSelect: (id: string) => void
   onToggle: (id: string, enabled: boolean) => void
   onDelete: (id: string) => void
   onConfigure: (plugin: PluginMeta) => void
@@ -40,6 +50,9 @@ function SortableLauncherCard({
   total,
   status,
   isSorting,
+  batchMode,
+  selected,
+  onToggleSelect,
   onToggle,
   onDelete,
   onConfigure,
@@ -62,8 +75,8 @@ function SortableLauncherCard({
       ref={setNodeRef}
       className="ob-sortable-item"
       style={style}
-      {...attributes}
-      {...listeners}
+      {...(batchMode ? {} : attributes)}
+      {...(batchMode ? {} : listeners)}
       role="listitem"
       tabIndex={-1}
     >
@@ -82,6 +95,9 @@ function SortableLauncherCard({
           onMoveUp: () => onMove(plugin.id, -1),
           onMoveDown: () => onMove(plugin.id, 1)
         }}
+        selectable={batchMode}
+        selected={selected}
+        onSelectToggle={onToggleSelect}
       />
     </li>
   )
@@ -109,6 +125,11 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
+  // 批量管理（1.9.12）
+  const [batchMode, setBatchMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false)
+  const [batchDeleting, setBatchDeleting] = useState(false)
 
   const isSorting = activeId !== null
   const pluginIds = useMemo(() => plugins.map((p) => p.id), [plugins])
@@ -149,6 +170,59 @@ export default function Home() {
       message.success('插件已删除')
     } else {
       message.error('删除失败')
+    }
+  }
+
+  // ---- 批量管理（1.9.12）----
+  const toggleBatchMode = () => {
+    setBatchMode((v) => !v)
+    setSelectedIds([])
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    )
+  }
+
+  const selectAll = () => {
+    setSelectedIds((prev) => (prev.length === plugins.length ? [] : plugins.map((p) => p.id)))
+  }
+
+  const selectedNames = useMemo(
+    () =>
+      selectedIds
+        .map((id) => plugins.find((p) => p.id === id)?.displayName ?? id)
+        .slice(0, 20),
+    [selectedIds, plugins]
+  )
+
+  const confirmBatchDelete = async () => {
+    setBatchDeleting(true)
+    let succeeded = 0
+    const failures: string[] = []
+    for (const id of selectedIds) {
+      const name = plugins.find((p) => p.id === id)?.displayName ?? id
+      // 顺序卸载：避免 staging/journal 竞争
+      const ok = await uninstallPlugin(id)
+      if (ok) succeeded += 1
+      else failures.push(name)
+    }
+    setBatchDeleting(false)
+    setBatchDeleteConfirmOpen(false)
+    if (failures.length === 0) {
+      message.success(`已删除 ${succeeded} 个插件`)
+      setBatchMode(false)
+      setSelectedIds([])
+    } else if (succeeded > 0) {
+      message.warning(`已删除 ${succeeded} 个，失败 ${failures.length} 个：${failures.join('、')}`)
+      // 保留失败的勾选，便于重试
+      const failedIds = new Set(
+        plugins.filter((p) => failures.includes(p.displayName)).map((p) => p.id)
+      )
+      setSelectedIds(selectedIds.filter((id) => failedIds.has(id)))
+    } else {
+      message.error(`删除失败：${failures.join('、')}`)
     }
   }
 
@@ -242,6 +316,15 @@ export default function Home() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <Button
+            icon={<CheckSquareOutlined />}
+            type={batchMode ? 'primary' : 'default'}
+            danger={batchMode}
+            aria-label="批量管理插件"
+            onClick={toggleBatchMode}
+          >
+            {batchMode ? '完成管理' : '批量管理'}
+          </Button>
+          <Button
             icon={<ReloadOutlined />}
             loading={refreshing}
             aria-label="刷新插件列表"
@@ -259,6 +342,41 @@ export default function Home() {
           </Button>
         </div>
       </div>
+
+      {/* 批量操作条 */}
+      {batchMode && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 16px',
+            marginBottom: 16,
+            border: `1px solid ${token.colorBorder}`,
+            borderRadius: token.borderRadius,
+            background: token.colorBgContainer
+          }}
+        >
+          <AppstoreOutlined style={{ color: token.colorTextTertiary }} />
+          <span style={{ fontSize: 13, color: token.colorTextSecondary }}>
+            已选择 <strong>{selectedIds.length}</strong> / {plugins.length} 个插件
+          </span>
+          <Button size="small" onClick={selectAll}>
+            {selectedIds.length === plugins.length ? '取消全选' : '全选'}
+          </Button>
+          <div style={{ flex: 1 }} />
+          <Button
+            danger
+            type="primary"
+            size="small"
+            icon={<DeleteOutlined />}
+            disabled={selectedIds.length === 0}
+            onClick={() => setBatchDeleteConfirmOpen(true)}
+          >
+            删除所选（{selectedIds.length}）
+          </Button>
+        </div>
+      )}
 
       <button
         className="ob-search-btn"
@@ -344,7 +462,8 @@ export default function Home() {
             className="ob-sortable-list"
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+              // 1.9.12：固定一排四个（最小窗宽 800px 下每卡约 165px）
+              gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
               gap: 16
             }}
           >
@@ -357,6 +476,9 @@ export default function Home() {
                   total={plugins.length}
                   status={activePlugins[plugin.id]}
                   isSorting={isSorting}
+                  batchMode={batchMode}
+                  selected={selectedIds.includes(plugin.id)}
+                  onToggleSelect={toggleSelect}
                   onToggle={handleToggle}
                   onDelete={handleDelete}
                   onConfigure={setConfigPlugin}
@@ -406,6 +528,39 @@ export default function Home() {
         onClose={() => setConfigPlugin(null)}
       />
       <PluginImport open={importOpen} onClose={() => setImportOpen(false)} />
+
+      {/* 批量删除确认（1.9.12） */}
+      <Modal
+        title="确认删除插件"
+        open={batchDeleteConfirmOpen}
+        onOk={() => void confirmBatchDelete()}
+        onCancel={() => setBatchDeleteConfirmOpen(false)}
+        okText={`删除 ${selectedIds.length} 个`}
+        okButtonProps={{ danger: true, loading: batchDeleting }}
+        cancelText="取消"
+        cancelButtonProps={{ disabled: batchDeleting }}
+        width={440}
+        centered
+      >
+        <div style={{ fontSize: 13 }}>
+          <div style={{ marginBottom: 8 }}>
+            将永久删除以下 {selectedIds.length} 个插件及其数据，此操作不可撤销：
+          </div>
+          <ul style={{ margin: '0 0 8px', paddingLeft: 18, maxHeight: 180, overflowY: 'auto' }}>
+            {selectedNames.map((name) => (
+              <li key={name}>{name}</li>
+            ))}
+          </ul>
+          {selectedIds.length > 0 && selectedIds.length === plugins.length && (
+            <Alert
+              type="warning"
+              showIcon
+              message="你选择了全部插件"
+              style={{ padding: '6px 12px' }}
+            />
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }

@@ -73,11 +73,7 @@ fn main() {
     };
 
     let queue = ctx::FrameQueue::global();
-    loop {
-        let frame_bytes = match queue.take_worker_frame() {
-            Some(b) => b,
-            None => break,
-        };
+    while let Some(frame_bytes) = queue.take_worker_frame() {
         let envelope: Json = match serde_json::from_slice(&frame_bytes) {
             Ok(v) => v,
             Err(e) => {
@@ -364,7 +360,7 @@ fn finish_promise<'js>(
     let promise: rquickjs::Promise = rquickjs::Promise::from_value(promise)?;
     match promise.finish::<Value>() {
         Ok(v) => Ok(v),
-        Err(rquickjs::Error::Exception { .. }) => Ok(ctx.catch()),
+        Err(rquickjs::Error::Exception) => Ok(ctx.catch()),
         Err(e) => Err(e),
     }
 }
