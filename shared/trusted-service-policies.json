@@ -3,10 +3,6 @@
     "name": "unienv",
     "version": "0.6.0",
     "digest": "75943c67ae910e8fdbc683a7ceb4350498f66126cd75c4b13443db47e42e3c97",
-    "files": [
-      "dist/main.js",
-      "dist/renderer.js",
-      "plugin.json"
-    ]
+    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   }
 }
