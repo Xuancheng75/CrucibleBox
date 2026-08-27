@@ -79,6 +79,20 @@ export default function App() {
     return () => unlisten?.()
   }, [])
 
+  // 1.9.17：剪贴板监控事件转发（宿主侧 clipboard_monitor 广播 → 插件 onMessage）
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    listen<{ pluginId: string; text: string }>('plugin:clipboard', (event) => {
+      tauriApi.plugin.sendMessage(event.payload.pluginId, {
+        type: 'clipboard:changed',
+        text: event.payload.text
+      }).catch(() => {})
+    }).then((fn) => {
+      unlisten = fn
+    })
+    return () => unlisten?.()
+  }, [])
+
   useEffect(() => {
     let unlisten: (() => void) | undefined
     listen<{ pluginId: string; title: string; body: string }>(

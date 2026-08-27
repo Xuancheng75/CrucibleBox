@@ -320,6 +320,8 @@ impl BackendProcess {
     /// 设置 expected_stop（读线程 EOF 不再触发崩溃恢复）。
     pub fn dispose(&self) {
         self.expected_stop.store(true, Ordering::SeqCst);
+        // 1.9.17：停止剪贴板监控线程（如有）
+        crate::clipboard_monitor::stop(&self.plugin_id);
         let _ = self.request("lifecycle.dispose", json!({}));
         // 等待退出（grace 3s）
         let mut child = self.child.lock().unwrap();
@@ -532,6 +534,10 @@ impl BackendProcessManager {
             .lock()
             .unwrap()
             .insert(plugin_id.to_string(), proc.clone());
+        // 1.9.17：clipboard 权限插件自动启动宿主侧剪贴板监控
+        if proc.permissions.has(crate::permissions::CLIPBOARD) {
+            let _ = crate::clipboard_monitor::start(plugin_id, self.emitter());
+        }
         Ok(proc)
     }
 

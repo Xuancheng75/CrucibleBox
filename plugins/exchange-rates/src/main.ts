@@ -58,21 +58,18 @@ const plugin: PluginMain = {
 
 async function getCachedRates(): Promise<RatesCache | null> {
   if (!ctx) return null
-  const raw = await ctx.storage.get<string>(CACHE_KEY)
+  const raw = await ctx.storage.get<RatesCache>(CACHE_KEY)
   if (!raw) return null
-  try {
-    return JSON.parse(raw) as RatesCache
-  } catch {
-    return null
-  }
+  return raw
 }
 
 async function fetchAndCacheRates(): Promise<unknown> {
   if (!ctx) return { error: 'not activated' }
   try {
-    const resp = await ctx.api.fetch('https://open.er-api.com/v6/latest/USD')
-    const text = await resp.text()
-    const data = JSON.parse(text)
+    const resp = (await ctx.api.fetch('https://open.er-api.com/v6/latest/USD')) as {
+      status: number; body: string
+    }
+    const data = JSON.parse(resp.body)
     if (data.result !== 'success' || !data.rates) {
       return { error: 'API returned error' }
     }
@@ -81,7 +78,7 @@ async function fetchAndCacheRates(): Promise<unknown> {
       rates: data.rates,
       updatedAt: Date.now()
     }
-    await ctx.storage.set(CACHE_KEY, JSON.stringify(cache))
+    await ctx.storage.set(CACHE_KEY, cache)
     return { rates: data.rates, updatedAt: cache.updatedAt, base: 'USD', cached: false }
   } catch (e) {
     const cached = await getCachedRates()

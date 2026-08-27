@@ -3,6 +3,13 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 1.9.17（2026-08）
+
+修复：
+
+- **剪贴板管理器无法工作**：sidecar quickjs-ng 无 `setInterval`，插件激活失败。改为宿主侧 Rust 线程轮询剪贴板，经 Tauri 事件转发至插件。
+- **实时汇率 "not a function"**：`api.fetch()` 返回纯 JSON 对象而非浏览器 Response，`resp.text()` 报错。改用 `resp.body`。
+
 ## 1.9.16（2026-08）
 
 新增四个插件（插件总数 6 → 10）：

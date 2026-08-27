@@ -1,6 +1,6 @@
 {
   "name": "clipboard-manager",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "displayName": "剪贴板管理器",
   "description": "监听系统剪贴板变化，持久化历史记录，支持搜索、置顶、回填。",
   "author": "cruciblebox",

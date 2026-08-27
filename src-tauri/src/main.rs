@@ -9,6 +9,7 @@
 mod app;
 mod archive;
 mod backend_process;
+mod clipboard_monitor;
 mod commands;
 mod data_dir;
 mod db;
@@ -197,8 +198,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building CrucibleBox")
         .run(|app_handle, event| {
-            // RunEvent::Exit：清理全部存活 backend 进程
+            // RunEvent::Exit：清理全部存活 backend 进程 + 剪贴板监控线程
             if let tauri::RunEvent::Exit = event {
+                clipboard_monitor::stop_all();
                 if let Some(backend) =
                     app_handle.try_state::<Arc<backend_process::BackendProcessManager>>()
                 {

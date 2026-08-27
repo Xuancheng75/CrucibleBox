@@ -8,21 +8,26 @@ interface ClipItem {
 }
 
 let ctx: PluginContext | null = null
-let pollTimer: ReturnType<typeof setInterval> | null = null
 let lastText = ''
 
 const plugin: PluginMain = {
   async activate(pluginCtx: PluginContext) {
     ctx = pluginCtx
-    const stored = await ctx.storage.get<string[]>('history')
-    if (stored) {
-      lastText = stored.length > 0 ? JSON.parse(stored[0] as string).text : ''
+    // 读取当前剪贴板作为初始 lastText（避免首次事件重复记录）
+    try {
+      const result = await ctx.api.clipboard.read()
+      lastText = result.text || ''
+    } catch {
+      // clipboard may be unavailable
     }
-    startPolling()
+    // 加载已有历史，更新 lastText
+    const stored = await ctx.storage.get<ClipItem[]>('history')
+    if (stored && stored.length > 0) {
+      lastText = stored[0].text || lastText
+    }
   },
 
   deactivate() {
-    stopPolling()
     ctx = null
   },
 
@@ -31,6 +36,15 @@ const plugin: PluginMain = {
     const msg = message as { type: string; id?: string; text?: string }
 
     switch (msg.type) {
+      case 'clipboard:changed': {
+        // 宿主侧 clipboard_monitor 广播的事件
+        const text = msg.text || ''
+        if (text && text !== lastText) {
+          lastText = text
+          await addToHistory(text)
+        }
+        return { ok: true }
+      }
       case 'getHistory': {
         const items = await loadHistory()
         return { items }
@@ -46,7 +60,7 @@ const plugin: PluginMain = {
         return { ok: true }
       }
       case 'clearAll': {
-        await ctx.storage.set('history', JSON.stringify([]))
+        await ctx.storage.set('history', [])
         return { ok: true }
       }
       case 'copyToClipboard': {
@@ -60,42 +74,11 @@ const plugin: PluginMain = {
   }
 }
 
-function startPolling() {
-  stopPolling()
-  const interval = ctx?.config.pollInterval as number || 1000
-  pollTimer = setInterval(pollClipboard, interval)
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-async function pollClipboard() {
-  if (!ctx) return
-  try {
-    const result = await ctx.api.clipboard.read()
-    const text = result.text
-    if (text && text !== lastText) {
-      lastText = text
-      await addToHistory(text)
-    }
-  } catch {
-    // clipboard may be unavailable
-  }
-}
-
 async function loadHistory(): Promise<ClipItem[]> {
   if (!ctx) return []
-  const raw = await ctx.storage.get<string>('history')
+  const raw = await ctx.storage.get<ClipItem[]>('history')
   if (!raw) return []
-  try {
-    return JSON.parse(raw) as ClipItem[]
-  } catch {
-    return []
-  }
+  return raw
 }
 
 async function addToHistory(text: string) {
@@ -111,13 +94,13 @@ async function addToHistory(text: string) {
   const filtered = items.filter((item) => item.text !== text)
   filtered.unshift(newItem)
   const trimmed = filtered.slice(0, maxItems)
-  await ctx.storage.set('history', JSON.stringify(trimmed))
+  await ctx.storage.set('history', trimmed)
 }
 
 async function deleteItem(id: string) {
   if (!ctx) return
   const items = await loadHistory()
-  await ctx.storage.set('history', JSON.stringify(items.filter((item) => item.id !== id)))
+  await ctx.storage.set('history', items.filter((item) => item.id !== id))
 }
 
 async function togglePin(id: string) {
@@ -126,7 +109,7 @@ async function togglePin(id: string) {
   const updated = items.map((item) =>
     item.id === id ? { ...item, pinned: !item.pinned } : item
   )
-  await ctx.storage.set('history', JSON.stringify(updated))
+  await ctx.storage.set('history', updated)
 }
 
 export default plugin
