@@ -118,7 +118,18 @@ function createContext(): PluginContext {
       openDialog: async () => null,
       readFile: async () => Buffer.alloc(0),
       registerShortcut: () => () => undefined,
-      writeFile: async () => undefined
+      writeFile: async () => undefined,
+      clipboard: {
+        read: async () => ({ text: '' }),
+        write: async () => ({ ok: true })
+      },
+      getSystemInfo: async () => ({
+        os: { name: '', version: '', hostname: '' },
+        cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
+        memory: { total: 0, available: 0, usage: 0 },
+        disks: [],
+        network: []
+      })
     }
   }
 }
