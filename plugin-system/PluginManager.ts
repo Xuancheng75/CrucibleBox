@@ -473,7 +473,24 @@ export class PluginManager {
       emitEvent: (event, data) => this.eventBus.emit(`plugin:${plugin.id}:${event}`, data),
       onEvent: (event, handler) => this.eventBus.on(`plugin:${plugin.id}:${event}`, handler),
       invokeTrustedService: (service, operation, payload) =>
-        trustedServiceRuntime.invoke(service, operation, payload)
+        trustedServiceRuntime.invoke(service, operation, payload),
+      clipboard: {
+        read: async () => {
+          new PermissionGuard(permissions).assert(Permission.Clipboard)
+          return { text: '' }
+        },
+        write: async (_text: string) => {
+          new PermissionGuard(permissions).assert(Permission.Clipboard)
+          return { ok: true }
+        }
+      },
+      getSystemInfo: async () => ({
+        os: { name: '', version: '', hostname: '' },
+        cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
+        memory: { total: 0, available: 0, usage: 0 },
+        disks: [],
+        network: []
+      })
     }
 
     const context: PluginContext = {
