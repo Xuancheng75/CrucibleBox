@@ -1,0 +1,22 @@
+{
+  "name": "system-info",
+  "version": "0.1.0",
+  "displayName": "系统信息面板",
+  "description": "展示 CPU、内存、磁盘、操作系统和网络等系统信息，支持自动刷新。",
+  "author": "cruciblebox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": [],
+  "config": {
+    "refreshInterval": {
+      "type": "number",
+      "label": "刷新间隔（秒）",
+      "description": "系统信息自动刷新间隔",
+      "default": 3,
+      "required": false
+    }
+  }
+}

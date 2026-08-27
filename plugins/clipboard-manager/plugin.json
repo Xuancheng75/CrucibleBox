@@ -1,0 +1,29 @@
+{
+  "name": "clipboard-manager",
+  "version": "0.1.0",
+  "displayName": "剪贴板管理器",
+  "description": "监听系统剪贴板变化，持久化历史记录，支持搜索、置顶、回填。",
+  "author": "cruciblebox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["clipboard", "storage:read", "storage:write", "notification"],
+  "config": {
+    "maxItems": {
+      "type": "number",
+      "label": "最大历史记录数",
+      "description": "剪贴板历史最多保留条数",
+      "default": 200,
+      "required": false
+    },
+    "pollInterval": {
+      "type": "number",
+      "label": "轮询间隔（毫秒）",
+      "description": "检测剪贴板变化的间隔",
+      "default": 1000,
+      "required": false
+    }
+  }
+}

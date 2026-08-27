@@ -1,0 +1,29 @@
+{
+  "name": "exchange-rates",
+  "version": "0.1.0",
+  "displayName": "实时汇率",
+  "description": "查询实时汇率，支持多币种转换，自动缓存减少网络请求。",
+  "author": "cruciblebox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["network:fetch", "storage:read", "storage:write"],
+  "config": {
+    "baseCurrency": {
+      "type": "select",
+      "label": "基准货币",
+      "description": "默认基准货币",
+      "default": "USD",
+      "options": [
+        { "label": "美元 USD", "value": "USD" },
+        { "label": "人民币 CNY", "value": "CNY" },
+        { "label": "欧元 EUR", "value": "EUR" },
+        { "label": "日元 JPY", "value": "JPY" },
+        { "label": "英镑 GBP", "value": "GBP" }
+      ],
+      "required": false
+    }
+  }
+}

@@ -22,5 +22,21 @@
   {
     "id": "unienv",
     "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "json-toolkit",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "clipboard-manager",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "system-info",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "exchange-rates",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
   }
 ]
