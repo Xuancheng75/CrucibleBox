@@ -52,6 +52,7 @@ plugins/<your-plugin-id>/
 ```
 
 - 权限全集见 `plugin-sdk.md §5`：`storage:read/write`、`notification`、`network:fetch`、`clipboard`、`dialog`、`shortcut`、`file:read/write`、`theme:write`、`trusted:unienv`。
+- **v1.9.15 激活的能力**：`network:fetch`（HTTP 请求）、`clipboard`（剪贴板读写）、`file:read/write`（文件系统）、`system.info`（系统信息，无需权限）。详见 `docs/v1.9.15-plugin-dev-guide.md`。
 - **高权限能力（下载/解压/环境修改）不开放给通用插件**：应设计为宿主固定服务（UniEnv 模式），插件经 `api.invokeTrustedService` 调用。
 
 ### 2.2 Renderer（browser IIFE）

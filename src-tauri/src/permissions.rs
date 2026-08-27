@@ -29,6 +29,7 @@ pub const STORAGE_READ: &str = "storage:read";
 pub const STORAGE_WRITE: &str = "storage:write";
 pub const NETWORK_FETCH: &str = "network:fetch";
 pub const NOTIFICATION: &str = "notification";
+pub const CLIPBOARD: &str = "clipboard";
 pub const DIALOG: &str = "dialog";
 pub const SHORTCUT: &str = "shortcut";
 pub const FILE_READ: &str = "file:read";
@@ -99,13 +100,16 @@ pub fn permission_for_host_method(method: &str) -> Option<&'static str> {
         "file.read" => Some(FILE_READ),
         "file.write" => Some(FILE_WRITE),
         "shortcut.register" | "shortcut.unregister" => Some(SHORTCUT),
+        "clipboard.read" | "clipboard.write" => Some(CLIPBOARD),
         "trusted.invoke" => Some(TRUSTED_UNIENV),
-        // 无权限门禁：log.write、event.*（日志与事件天然按插件隔离）
+        // 无权限门禁：log.write、event.*、system.info（日志与事件天然按插件隔离；系统信息为公开只读）
         _ => None,
     }
 }
 
-/// 判断 host 方法是否为 1.9.2-a 已实现面（未实现 → NOT_ALLOWED）
+/// 判断 host 方法是否为已实现面（未实现 → NOT_ALLOWED）
+/// v1.9.15：扩展实现面，新增 network.fetch / notification.show / file.read / file.write /
+/// clipboard.read / clipboard.write / system.info
 pub fn is_host_method_implemented(method: &str) -> bool {
     matches!(
         method,
@@ -121,6 +125,13 @@ pub fn is_host_method_implemented(method: &str) -> bool {
             | "event.subscribe"
             | "event.unsubscribe"
             | "trusted.invoke"
+            | "network.fetch"
+            | "notification.show"
+            | "file.read"
+            | "file.write"
+            | "clipboard.read"
+            | "clipboard.write"
+            | "system.info"
     )
 }
 
@@ -171,7 +182,13 @@ mod tests {
         assert!(is_host_method_implemented("storage.get"));
         assert!(is_host_method_implemented("log.write"));
         assert!(!is_host_method_implemented("dialog.open"));
-        assert!(!is_host_method_implemented("network.fetch"));
+        assert!(is_host_method_implemented("network.fetch"));
+        assert!(is_host_method_implemented("notification.show"));
+        assert!(is_host_method_implemented("clipboard.read"));
+        assert!(is_host_method_implemented("clipboard.write"));
+        assert!(is_host_method_implemented("system.info"));
+        assert!(is_host_method_implemented("file.read"));
+        assert!(is_host_method_implemented("file.write"));
         assert!(is_host_method_implemented("trusted.invoke"));
     }
 

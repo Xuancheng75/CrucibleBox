@@ -1,8 +1,11 @@
 // host 方法分发器（1.9.2-a，对等 PluginManager.ts 的 db.query/execute + storage/log 转发）
 // 由 BackendProcess 读线程收到 sidecar host 请求后，在工作线程调用本分发器。
+// v1.9.15：扩展实现面——network.fetch / notification.show / file.read / file.write /
+// clipboard.read / clipboard.write / system.info
 
 use crate::db::Db;
 use serde_json::{json, Value};
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 /// 执行 host 方法。返回 Ok(result) 或 Err(message)。
@@ -122,6 +125,166 @@ pub fn host_dispatch(
                 }
                 _ => Err(format!("unknown trusted service: {service}")),
             }
+        }
+        "notification.show" => {
+            let title = str_param(params, "title")?;
+            let body = params
+                .get("body")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            emitter(
+                "plugin:notification",
+                json!({ "pluginId": plugin_id, "title": title, "body": body }),
+            );
+            Ok(json!({ "shown": true }))
+        }
+        "network.fetch" => {
+            let url = str_param(params, "url")?;
+            let opts = params.get("opts").cloned().unwrap_or(Value::Null);
+            let method = opts
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("GET")
+                .to_uppercase();
+            let timeout = std::time::Duration::from_secs(30);
+            let agent = ureq::AgentBuilder::new()
+                .timeout_connect(timeout)
+                .timeout_read(timeout)
+                .build();
+            let mut req = match method.as_str() {
+                "GET" => agent.get(&url),
+                "POST" => agent.post(&url),
+                "PUT" => agent.put(&url),
+                "DELETE" => agent.delete(&url),
+                "HEAD" => agent.head(&url),
+                "PATCH" => agent.request("PATCH", &url),
+                _ => return Err(format!("unsupported HTTP method: {method}")),
+            };
+            if let Some(headers) = opts.get("headers").and_then(Value::as_object) {
+                for (k, v) in headers {
+                    if let Some(vs) = v.as_str() {
+                        req = req.set(k, vs);
+                    }
+                }
+            }
+            let resp = if matches!(method.as_str(), "GET" | "HEAD" | "DELETE") {
+                req.call().map_err(|e| e.to_string())?
+            } else {
+                let body = opts
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                req.send_string(&body).map_err(|e| e.to_string())?
+            };
+            let status = resp.status();
+            let status_text = resp.status_text().to_string();
+            let mut resp_headers = serde_json::Map::new();
+            for name in resp.headers_names() {
+                if let Some(val) = resp.header(&name) {
+                    resp_headers.insert(name, Value::String(val.to_string()));
+                }
+            }
+            let mut body_bytes = Vec::new();
+            resp.into_reader()
+                .take(50 * 1024 * 1024)
+                .read_to_end(&mut body_bytes)
+                .map_err(|e| e.to_string())?;
+            let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+            Ok(json!({
+                "status": status,
+                "statusText": status_text,
+                "headers": resp_headers,
+                "body": body_str
+            }))
+        }
+        "file.read" => {
+            let path = str_param(params, "path")?;
+            let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &data);
+            Ok(json!({ "content": encoded, "encoding": "base64" }))
+        }
+        "file.write" => {
+            let path = str_param(params, "path")?;
+            let data = params.get("data").and_then(Value::as_str).unwrap_or("");
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&path, data.as_bytes()).map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "clipboard.read" => {
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|e| format!("clipboard init failed: {e}"))?;
+            let text = clipboard
+                .get_text()
+                .map_err(|e| format!("clipboard read failed: {e}"))?;
+            Ok(json!({ "text": text }))
+        }
+        "clipboard.write" => {
+            let text = str_param(params, "text")?;
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|e| format!("clipboard init failed: {e}"))?;
+            clipboard
+                .set_text(&text)
+                .map_err(|e| format!("clipboard write failed: {e}"))?;
+            Ok(json!({ "ok": true }))
+        }
+        "system.info" => {
+            use sysinfo::System;
+            let mut sys = System::new_all();
+            sys.refresh_all();
+            let cpu_brand = sys
+                .cpus()
+                .first()
+                .map(|c| c.brand().to_string())
+                .unwrap_or_default();
+            let cpu_usage = sys.global_cpu_usage();
+            let total_mem = sys.total_memory();
+            let available_mem = sys.available_memory();
+            let mut disks = Vec::new();
+            for d in sysinfo::Disks::new_with_refreshed_list().iter() {
+                disks.push(json!({
+                    "name": d.mount_point().to_string_lossy(),
+                    "total": d.total_space(),
+                    "available": d.available_space()
+                }));
+            }
+            let mut networks = Vec::new();
+            for (name, data) in sysinfo::Networks::new_with_refreshed_list().iter() {
+                let ip = data
+                    .ip_networks()
+                    .first()
+                    .map(|n| n.addr.to_string())
+                    .unwrap_or_default();
+                let mac = data.mac_address().to_string();
+                networks.push(json!({ "name": name, "ip": ip, "mac": mac }));
+            }
+            Ok(json!({
+                "os": {
+                    "name": System::name().unwrap_or_default(),
+                    "version": System::os_version().unwrap_or_default(),
+                    "hostname": System::host_name().unwrap_or_default()
+                },
+                "cpu": {
+                    "brand": cpu_brand,
+                    "cores": sys.cpus().len(),
+                    "physicalCores": sys.physical_core_count().unwrap_or(0),
+                    "usage": cpu_usage
+                },
+                "memory": {
+                    "total": total_mem,
+                    "available": available_mem,
+                    "usage": if total_mem > 0 {
+                        ((total_mem - available_mem) as f64 / total_mem as f64) * 100.0
+                    } else {
+                        0.0
+                    }
+                },
+                "disks": disks,
+                "network": networks
+            }))
         }
         _ => Err("host method not implemented".into()),
     }

@@ -42,8 +42,9 @@ pub const WORKER_METHODS: [&str; 4] = [
     "host.event",
 ];
 
-/// sidecar→宿主的 19 个 host 方法（契约清单；宿主侧消费，sidecar 出站白名单）
-pub const HOST_METHODS: [&str; 19] = [
+/// sidecar→宿主的 host 方法（契约清单；宿主侧消费，sidecar 出站白名单）
+/// v1.9.15：新增 clipboard.read / clipboard.write / system.info
+pub const HOST_METHODS: [&str; 22] = [
     "db.query",
     "db.execute",
     "storage.get",
@@ -63,6 +64,9 @@ pub const HOST_METHODS: [&str; 19] = [
     "event.subscribe",
     "event.unsubscribe",
     "trusted.invoke",
+    "clipboard.read",
+    "clipboard.write",
+    "system.info",
 ];
 
 /// 请求信封：{v:2, kind:'request', token, requestId, method, params}

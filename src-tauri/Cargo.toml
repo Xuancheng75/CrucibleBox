@@ -1,6 +1,6 @@
 [package]
 name = "cruciblebox"
-version = "1.9.14"
+version = "1.9.15"
 edition = "2021"
 description = "CrucibleBox - extensible Windows toolbox (Tauri 2)"
 authors = ["CrucibleBox"]
@@ -20,6 +20,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 sha2 = "0.10"
 junction = "1.2"
+arboard = "3"
+sysinfo = "0.33"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

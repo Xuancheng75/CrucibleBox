@@ -79,6 +79,23 @@ export default function App() {
     return () => unlisten?.()
   }, [])
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    listen<{ pluginId: string; title: string; body: string }>(
+      'plugin:notification',
+      (event) => {
+        try {
+          new Notification(event.payload.title, { body: event.payload.body })
+        } catch {
+          // WebView2 Notification 不可用时静默降级
+        }
+      }
+    ).then((fn) => {
+      unlisten = fn
+    })
+    return () => unlisten?.()
+  }, [])
+
   const Page = PAGE_COMPONENTS[currentPage]
 
   return (

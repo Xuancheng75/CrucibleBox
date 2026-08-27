@@ -3,6 +3,23 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 1.9.15（2026-08）
+
+宿主能力扩展（插件 SDK v2 契约不变，仅扩展实现面）：
+
+- **`network.fetch`**：插件 backend 可发起 HTTP 请求（ureq，30s 超时，响应 ≤50MB）
+- **`clipboard.read/write`**：插件 backend 可读写系统剪贴板文本（arboard）
+- **`file.read/write`**：插件 backend 可读写文件系统
+- **`notification.show`**：插件 backend 可发送系统通知（经宿主事件总线转发）
+- **`system.info`**：插件 backend 可获取系统信息（CPU/内存/磁盘/OS/网络，无需权限）
+- 新增四个插件：JSON/文本工具箱、剪贴板管理器、系统信息面板、实时汇率
+
+## 1.9.14（2026-08）
+
+- 插件安装根路径统一（`%APPDATA%\cruciblebox\plugins\<id>`），兼容旧双根布局自动迁移
+- 隔离孤儿目录（无 `plugin.json`）至 `_quarantine/`
+- 修复 `plugin_install_commit/discard` 参数键名不匹配
+
 ## 1.9.13（2026-08）
 
 修复版本：
