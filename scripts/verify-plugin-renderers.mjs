@@ -7,8 +7,7 @@ const PLUGINS = [
   'gif-editor',
   'theme-manager',
   'turntable',
-  'unienv',
-  'document-engine'
+  'unienv'
 ]
 const FORBIDDEN = [
   ['CommonJS require', /\brequire\s*\(/],
