@@ -3,6 +3,15 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 1.9.16（2026-08）
+
+新增四个插件（插件总数 6 → 10）：
+
+- **JSON/文本工具箱**（`json-toolkit`）：JSON 格式化/压缩/校验、Base64 编解码、URL 编解码、时间戳转换、UUID 生成、正则测试、文本哈希（SHA-1/256/384/512）
+- **剪贴板管理器**（`clipboard-manager`）：1s 轮询剪贴板变化、持久化历史、搜索/置顶/回填/删除
+- **系统信息面板**（`system-info`）：CPU/内存/磁盘/OS/网络信息仪表盘，3s 自动刷新
+- **实时汇率**（`exchange-rates`）：调用 open.er-api.com 获取汇率，30 分钟缓存，多币种转换
+
 ## 1.9.15（2026-08）
 
 宿主能力扩展（插件 SDK v2 契约不变，仅扩展实现面）：
