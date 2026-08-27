@@ -41,8 +41,23 @@ export interface PluginHostAPI {
   registerShortcut(keys: string, handler: () => void): () => void
   emitEvent(event: string, data?: unknown): void
   onEvent(event: string, handler: (data: unknown) => void): () => void
+  /** 剪贴板读写（需 clipboard 权限） */
+  clipboard: {
+    read(): Promise<{ text: string }>
+    write(text: string): Promise<{ ok: boolean }>
+  }
+  /** 获取系统信息（无需权限，公开只读） */
+  getSystemInfo(): Promise<SystemInfo>
   /** 仅宿主固定摘要可信服务（trusted:unienv 权限）可用；普通插件调用会失败 */
   invokeTrustedService?(service: string, operation: string, payload?: unknown): Promise<unknown>
+}
+
+export interface SystemInfo {
+  os: { name: string; version: string; hostname: string }
+  cpu: { brand: string; cores: number; physicalCores: number; usage: number }
+  memory: { total: number; available: number; usage: number }
+  disks: Array<{ name: string; total: number; available: number }>
+  network: Array<{ name: string; ip: string; mac: string }>
 }
 
 export interface PluginStorageEntry<T = unknown> {

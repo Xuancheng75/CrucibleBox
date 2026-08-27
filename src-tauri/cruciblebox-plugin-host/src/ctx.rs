@@ -208,6 +208,7 @@ pub fn register_host_request(ctx: &rquickjs::Ctx) -> rquickjs::Result<()> {
 /// buildContext 的 JS 引导（对等 PluginProcessEntry.buildContext 全量方法面）。
 /// 所有宿主能力经 __hostRequest 同步转发；fire-and-forget 方法（logger/notify/
 /// shortcut.register/event.emit）忽略响应。
+/// v1.9.15：新增 clipboard / getSystemInfo
 pub const CTX_JS: &str = r#"
 function __ff(method, params) {
   try { __hostRequest(method, JSON.stringify(params || {})); } catch (e) { /* fire-and-forget */ }
@@ -239,6 +240,11 @@ function __buildCtx(id, config) {
   api.fetch = function (url, opts) { return __rpc('network.fetch', { url: url, opts: opts || {} }); };
   api.readFile = function (path) { return __rpc('file.read', { path: path }); };
   api.writeFile = function (path, data) { __rpc('file.write', { path: path, data: data }); };
+  api.clipboard = {
+    read: function () { return __rpc('clipboard.read', {}); },
+    write: function (text) { return __rpc('clipboard.write', { text: text }); }
+  };
+  api.getSystemInfo = function () { return __rpc('system.info', {}); };
   api.registerShortcut = function (keys, handler) {
     __ff('shortcut.register', { keys: keys });
     return function () { __ff('shortcut.unregister', { keys: keys }); };

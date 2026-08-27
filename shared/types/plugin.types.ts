@@ -108,6 +108,14 @@ export interface PluginStorageAPI {
   batch(mutations: PluginStorageMutation[]): Promise<void>
 }
 
+export interface SystemInfo {
+  os: { name: string; version: string; hostname: string }
+  cpu: { brand: string; cores: number; physicalCores: number; usage: number }
+  memory: { total: number; available: number; usage: number }
+  disks: Array<{ name: string; total: number; available: number }>
+  network: Array<{ name: string; ip: string; mac: string }>
+}
+
 export interface PluginHostAPI {
   notify(title: string, body?: string): void
   openDialog(type: 'file' | 'folder'): Promise<string | null>
@@ -117,6 +125,11 @@ export interface PluginHostAPI {
   registerShortcut(keys: string, handler: () => void): () => void
   emitEvent(event: string, data?: unknown): void
   onEvent(event: string, handler: (data: unknown) => void): () => void
+  clipboard: {
+    read(): Promise<{ text: string }>
+    write(text: string): Promise<{ ok: boolean }>
+  }
+  getSystemInfo(): Promise<SystemInfo>
 }
 
 export interface PluginContext {

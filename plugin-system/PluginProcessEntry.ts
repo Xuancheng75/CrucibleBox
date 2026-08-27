@@ -255,7 +255,19 @@ function buildContext(init: {
         service,
         operation,
         ...(payload === undefined ? {} : { payload: payload as PluginBackendRpcJsonValue })
-      })
+      }),
+    clipboard: {
+      read: async () => (await rpc('clipboard.read', {})) as { text: string },
+      write: async (text: string) => (await rpc('clipboard.write', { text })) as { ok: boolean }
+    },
+    getSystemInfo: async () =>
+      (await rpc('system.info', {})) as {
+        os: { name: string; version: string; hostname: string }
+        cpu: { brand: string; cores: number; physicalCores: number; usage: number }
+        memory: { total: number; available: number; usage: number }
+        disks: Array<{ name: string; total: number; available: number }>
+        network: Array<{ name: string; ip: string; mac: string }>
+      }
   }
 
   return { id: init.pluginId, config: init.config, logger, database, storage, api }

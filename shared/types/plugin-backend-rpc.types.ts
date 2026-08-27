@@ -109,6 +109,24 @@ export interface PluginBackendHostMethodMap {
     }
     result: PluginBackendRpcJsonValue
   }
+  'clipboard.read': {
+    params: Record<string, never>
+    result: { text: string }
+  }
+  'clipboard.write': {
+    params: { text: string }
+    result: { ok: boolean }
+  }
+  'system.info': {
+    params: Record<string, never>
+    result: {
+      os: { name: string; version: string; hostname: string }
+      cpu: { brand: string; cores: number; physicalCores: number; usage: number }
+      memory: { total: number; available: number; usage: number }
+      disks: Array<{ name: string; total: number; available: number }>
+      network: Array<{ name: string; ip: string; mac: string }>
+    }
+  }
 }
 
 export interface PluginBackendWorkerMethodMap {
