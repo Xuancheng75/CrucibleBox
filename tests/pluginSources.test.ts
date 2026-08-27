@@ -43,14 +43,18 @@ const rootPackageLock = JSON.parse(
 ) as { packages: Record<string, { resolved?: string; version?: string }> }
 
 describe('production plugin source projects', () => {
-  it('contains the six expected plugins', () => {
+  it('contains the ten expected plugins', () => {
     expect(catalog.map((plugin) => plugin.id)).toEqual([
       'diary',
       'dice-roller',
       'gif-editor',
       'theme-manager',
       'turntable',
-      'unienv'
+      'unienv',
+      'json-toolkit',
+      'clipboard-manager',
+      'system-info',
+      'exchange-rates'
     ])
   })
 
@@ -99,7 +103,7 @@ describe('production plugin source projects', () => {
         typecheck: expect.any(String)
       })
       expect(manifest.name).toBe(plugin.id)
-      expect(manifest.backend === false).toBe(plugin.id === 'dice-roller')
+      expect(manifest.backend === false).toBe(['dice-roller', 'json-toolkit'].includes(plugin.id))
       expect(existsSync(resolve(pluginDirectory, 'src', 'main.ts'))).toBe(true)
       expect(existsSync(resolve(pluginDirectory, 'src', 'renderer.tsx'))).toBe(true)
 
@@ -177,7 +181,7 @@ describe('production plugin source projects', () => {
     }
   })
 
-  it('keeps the six plugin build scripts free of repository-escape references', () => {
+  it('keeps the ten plugin build scripts free of repository-escape references', () => {
     for (const plugin of catalog) {
       const pluginDirectory = resolve(repositoryRoot, 'plugins', plugin.id)
       const packageJson = JSON.parse(

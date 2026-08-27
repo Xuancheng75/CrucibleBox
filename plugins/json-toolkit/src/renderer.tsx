@@ -413,7 +413,7 @@ function HashTab() {
       const buf = await crypto.subtle.digest(algo, data)
       results[algo] = Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('')
     }
-    let md5 = ''
+    let md5: string
     try {
       const buf = await crypto.subtle.digest('MD5' as AlgorithmIdentifier, data)
       md5 = Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('')
