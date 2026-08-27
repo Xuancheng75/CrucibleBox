@@ -8,15 +8,5 @@
       "dist/renderer.js",
       "plugin.json"
     ]
-  },
-  "document-engine": {
-    "name": "document-engine",
-    "version": "0.1.0",
-    "digest": "a2387d430498e1e5d744daedbdc880b6bef3f7de9a9cd7742d4e8e101042b890",
-    "files": [
-      "dist/main.js",
-      "dist/renderer.js",
-      "plugin.json"
-    ]
   }
 }
