@@ -258,8 +258,7 @@ function buildContext(init: {
       }),
     clipboard: {
       read: async () => (await rpc('clipboard.read', {})) as { text: string },
-      write: async (text: string) =>
-        (await rpc('clipboard.write', { text })) as { ok: boolean }
+      write: async (text: string) => (await rpc('clipboard.write', { text })) as { ok: boolean }
     },
     getSystemInfo: async () =>
       (await rpc('system.info', {})) as {
