@@ -30,8 +30,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Quality gates
-        run: npm run check
+      # Keep the precheck plugin build explicit so a failure identifies the
+      # exact gate instead of being collapsed into npm's lifecycle wrapper.
+      - name: Quality gate - build and verify plugins
+        run: npm run build:plugins
+
+      - name: Quality gate - format
+        run: npm run format:check
+
+      - name: Quality gate - lint
+        run: npm run lint
+
+      - name: Quality gate - typecheck
+        run: npm run typecheck
+
+      - name: Quality gate - tests
+        run: npm test
 
       - name: Build host and plugins
         run: npm run build
