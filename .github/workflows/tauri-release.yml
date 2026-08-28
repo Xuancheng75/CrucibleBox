@@ -205,8 +205,15 @@ jobs:
             exit 1
           fi
           "$SEVENZIP" x -y -o"$EXTRACT_DIR" "$SETUP" > /dev/null
-          # 应用 exe = 解包产物中体积最大的 .exe（NSIS 外壳本身不在其中）
-          APP_EXE="$(find "$EXTRACT_DIR" -name '*.exe' -printf '%s %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
+          # Tauri 应用 exe 的产品名为 CrucibleBox；安装器同时会携带
+          # ocr-worker 等 sidecar，不能用“体积最大”作为应用 exe 判据。
+          APP_EXE="$(find "$EXTRACT_DIR" -type f -iname 'CrucibleBox.exe' | head -1)"
+          if [ -z "$APP_EXE" ]; then
+            APP_EXE="$(find "$EXTRACT_DIR" -type f -iname '*.exe' \
+              ! -iname 'ocr-worker*.exe' \
+              ! -iname 'cruciblebox-plugin-host*.exe' \
+              -printf '%s %p\n' | sort -rn | head -1 | cut -d' ' -f2-)"
+          fi
           if [ -z "$APP_EXE" ]; then
             echo "::error::no exe found inside installer"
             exit 1
