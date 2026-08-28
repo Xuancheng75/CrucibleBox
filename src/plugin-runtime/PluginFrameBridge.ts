@@ -45,6 +45,11 @@ export interface PluginFrameBridgeOptions {
     confirmLabel?: string
     cancelLabel?: string
   }): Promise<boolean>
+  openDialog?(options: {
+    type: 'file' | 'folder'
+    multiple?: boolean
+    extensions?: string[]
+  }): Promise<string[]>
   resize(height: number): void
   onReady?(): void
   onProtocolError?(error: Error): void
@@ -228,7 +233,14 @@ export class PluginFrameBridge {
           })
         }
       case 'dialog.confirm':
+        this.assertPermission(Permission.Dialog)
         return { confirmed: await this.options.confirm(request.params) }
+      case 'dialog.open':
+        this.assertPermission(Permission.Dialog)
+        if (!this.options.openDialog) {
+          throw new NotAllowedError('Plugin host does not provide a file dialog')
+        }
+        return { paths: await this.options.openDialog(request.params) }
       case 'layout.resize':
         this.options.resize(request.params.height)
         return { applied: true }

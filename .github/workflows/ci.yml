@@ -117,6 +117,21 @@ jobs:
           cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
             src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
 
+      - name: Build OCR worker
+        working-directory: ocr-worker
+        run: cargo build --release
+
+      - name: Stage OCR worker sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp ocr-worker/target/release/ocr-worker.exe \
+            src-tauri/binaries/ocr-worker-x86_64-pc-windows-msvc.exe
+
+      - name: Verify Tauri runtime assets
+        run: node scripts/verify-tauri-runtime-assets.mjs --staged .
+
       - name: Cargo fmt check
         working-directory: src-tauri
         run: cargo fmt --check

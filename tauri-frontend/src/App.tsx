@@ -10,6 +10,7 @@ import PluginInstallPreviewModal from './components/PluginInstallPreviewModal'
 import { useGlobalPluginDrop } from './hooks/useGlobalPluginDrop'
 import { PluginLifecycleStatus } from '../../shared/types/plugin.types'
 import { APP_PAGE_LOADERS, type AppPage } from './app-pages'
+import { tauriApi } from './api/tauriApi'
 
 const PAGE_COMPONENTS: Record<AppPage, React.LazyExoticComponent<React.ComponentType>> = {
   home: lazy(APP_PAGE_LOADERS.home),
@@ -83,10 +84,24 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined
     listen<{ pluginId: string; text: string }>('plugin:clipboard', (event) => {
-      tauriApi.plugin.sendMessage(event.payload.pluginId, {
-        type: 'clipboard:changed',
-        text: event.payload.text
-      }).catch(() => {})
+      const deliver = async () => {
+        const delays = [0, 250, 1000, 2000]
+        let lastError: unknown
+        for (const delay of delays) {
+          if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay))
+          try {
+            await tauriApi.plugin.sendMessage(event.payload.pluginId, {
+              type: 'clipboard:changed',
+              text: event.payload.text
+            })
+            return
+          } catch (error) {
+            lastError = error
+          }
+        }
+        console.warn('[clipboard] failed to deliver clipboard event', lastError)
+      }
+      void deliver()
     }).then((fn) => {
       unlisten = fn
     })

@@ -17,7 +17,9 @@ use crate::manifest::{
     Manifest,
 };
 use crate::rand_token::random_token_hex;
-use crate::transaction::{trusted_allowlist, DirectoryTransaction, TransactionOptions};
+use crate::transaction::{
+    trusted_allowlist, DirectoryTransaction, RemovalTransaction, TransactionOptions,
+};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -190,6 +192,96 @@ impl InstallManager {
         let _ = install.transaction.rollback();
         let _ = std::fs::remove_dir_all(&install.stage_dir);
         Ok(())
+    }
+
+    /// 卸载：维护锁 → journal prepared → quarantine → 删除 DB → committed → 删除 quarantine。
+    /// 所有路径操作都限制在 canonical plugins_dir 的直接子目录内，失败时保留 journal
+    /// 供启动恢复器决定回滚或完成清理。
+    pub fn uninstall(&self, id: &str) -> Result<serde_json::Value, String> {
+        let row = lock(&self.db)
+            .plugin_find_by_id(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("plugin not found: {id}"))?;
+        if self.is_blocked(&row.name) {
+            return Err("plugin is blocked after interrupted transaction".into());
+        }
+        self.backend.begin_maintenance(id)?;
+        if let Err(error) = self.backend.deactivate(id) {
+            self.backend.end_maintenance(id);
+            return Err(format!("failed to deactivate plugin: {error}"));
+        }
+        let result = self.perform_uninstall(&row);
+        self.backend.end_maintenance(id);
+        result
+    }
+
+    fn perform_uninstall(&self, row: &PluginRow) -> Result<serde_json::Value, String> {
+        let target = self.plugins_dir.join(&row.name);
+        if !target.exists() {
+            lock(&self.db).plugin_delete(&row.id)?;
+            return Ok(json!({
+                "success": true,
+                "data": { "id": row.id, "name": row.name, "directoryMissing": true }
+            }));
+        }
+        let transaction_id = random_token_hex()?;
+        let mut txn = RemovalTransaction::new(
+            self.plugins_dir.clone(),
+            row.name.clone(),
+            transaction_id.clone(),
+        )?;
+        let journal = Journal {
+            version: JOURNAL_VERSION,
+            operation: "uninstall".into(),
+            phase: "prepared".into(),
+            plugin_name: row.name.clone(),
+            transaction_id,
+            previous_metadata: Some(plugin_row_to_metadata(row)),
+            created_at: now_iso(),
+        };
+        write_journal(txn.target_dir(), &journal)?;
+        if let Err(error) = txn.quarantine() {
+            let _ = clear_journal(txn.target_dir(), &journal);
+            return Err(error);
+        }
+        let applied = Journal {
+            phase: "applied".into(),
+            ..journal.clone()
+        };
+        if let Err(error) = write_journal(txn.quarantine_dir(), &applied) {
+            let rollback = txn.rollback();
+            let _ = clear_journal(txn.target_dir(), &journal);
+            if let Err(rollback_error) = rollback {
+                self.block(&row.name);
+                return Err(format!("{error}; rollback failed: {rollback_error}"));
+            }
+            return Err(error);
+        }
+        if let Err(error) = lock(&self.db).plugin_delete(&row.id) {
+            let rollback = txn.rollback();
+            let _ = clear_journal(txn.target_dir(), &journal);
+            if let Err(rollback_error) = rollback {
+                self.block(&row.name);
+                return Err(format!("{error}; rollback failed: {rollback_error}"));
+            }
+            return Err(error);
+        }
+        let committed = Journal {
+            phase: "committed".into(),
+            ..journal
+        };
+        if let Err(error) = write_journal(txn.quarantine_dir(), &committed) {
+            self.block(&row.name);
+            return Err(error);
+        }
+        if let Err(error) = txn.commit() {
+            self.block(&row.name);
+            return Err(error);
+        }
+        Ok(json!({
+            "success": true,
+            "data": { "id": row.id, "name": row.name, "directoryMissing": false }
+        }))
     }
 
     // -----------------------------------------------------------------------
@@ -448,7 +540,7 @@ impl InstallManager {
             return Err(e);
         }
         if was_enabled {
-            self.backend.deactivate(&id);
+            let _ = self.backend.deactivate(&id);
         }
         if let Err(e) = install.transaction.swap() {
             self.rollback_upgrade(install, &previous_metadata);
@@ -468,7 +560,8 @@ impl InstallManager {
             return Err(e);
         }
         if was_enabled {
-            if let Ok(Some(record)) = lock(&self.db).plugin_backend_record(&id) {
+            let record = lock(&self.db).plugin_backend_record(&id).ok().flatten();
+            if let Some(record) = record {
                 let _ = self.backend.ensure_activated(&id, record);
             }
         }

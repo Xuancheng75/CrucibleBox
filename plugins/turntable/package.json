@@ -1,6 +1,6 @@
 {
   "name": "turntable",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "description": "turntable plugin for OpenBox",
   "main": "dist/main.js",

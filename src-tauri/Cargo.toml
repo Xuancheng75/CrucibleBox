@@ -1,6 +1,6 @@
 [package]
 name = "cruciblebox"
-version = "1.9.17"
+version = "1.9.18"
 edition = "2021"
 description = "CrucibleBox - extensible Windows toolbox (Tauri 2)"
 authors = ["CrucibleBox"]
@@ -23,6 +23,9 @@ junction = "1.2"
 arboard = "3"
 sysinfo = "0.33"
 base64 = "0.22"
+flate2 = "1.1"
+pdfium-bundled = "0.1.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

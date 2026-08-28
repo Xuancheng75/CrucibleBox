@@ -38,5 +38,9 @@
   {
     "id": "exchange-rates",
     "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "document-engine",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
   }
 ]

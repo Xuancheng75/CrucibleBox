@@ -17,6 +17,7 @@ export default [
       'out/**',
       'plugins/*/dist/**',
       'release/**',
+      '**/target/**',
       '**/*.config.ts'
     ]
   },

@@ -99,7 +99,10 @@ pub fn validate_worker_request(
     if obj.get("kind").and_then(Value::as_str) != Some("request") {
         return Err("expected kind=request".into());
     }
-    let tok = obj.get("token").and_then(Value::as_str).ok_or("missing token")?;
+    let tok = obj
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or("missing token")?;
     if !valid_token(tok) {
         return Err("invalid token format".into());
     }
@@ -113,7 +116,10 @@ pub fn validate_worker_request(
     if !valid_request_id(request_id) {
         return Err("invalid requestId format".into());
     }
-    let method = obj.get("method").and_then(Value::as_str).ok_or("missing method")?;
+    let method = obj
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or("missing method")?;
     if !WORKER_METHODS.contains(&method) {
         return Err(format!("unknown worker method: {method}"));
     }
@@ -134,26 +140,36 @@ pub fn validate_host_response(
     if obj.get("v").and_then(Value::as_i64) != Some(RPC_VERSION) {
         return Err(format!("unsupported version, expected {RPC_VERSION}"));
     }
-    let tok = obj.get("token").and_then(Value::as_str).ok_or("missing token")?;
+    let tok = obj
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or("missing token")?;
     if !valid_token(tok) {
         return Err("invalid token format".into());
     }
     if obj.get("kind").and_then(Value::as_str) != Some("response") {
         return Err("expected kind=response".into());
     }
-    let rid = obj.get("requestId").and_then(Value::as_str).ok_or("missing requestId")?;
+    let rid = obj
+        .get("requestId")
+        .and_then(Value::as_str)
+        .ok_or("missing requestId")?;
     if rid != request_id {
         return Err("response requestId mismatch".into());
     }
     let ok = obj.get("ok").and_then(Value::as_bool).ok_or("missing ok")?;
     if ok {
-        Ok((true, obj.get("result").cloned().unwrap_or(Value::Null), None))
+        Ok((
+            true,
+            obj.get("result").cloned().unwrap_or(Value::Null),
+            None,
+        ))
     } else {
-        let err = obj
-            .get("error")
-            .ok_or("missing error object")?
-            .clone();
-        let code = err.get("code").and_then(Value::as_str).unwrap_or("INTERNAL_ERROR");
+        let err = obj.get("error").ok_or("missing error object")?.clone();
+        let code = err
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("INTERNAL_ERROR");
         if !is_known_error_code(code) {
             return Err("unknown error code".into());
         }
@@ -221,7 +237,7 @@ mod tests {
     fn token_rules() {
         assert!(valid_token(&"a".repeat(32)));
         assert!(valid_token(&"A-Z_0-9-".repeat(10)));
-        assert!(!valid_token(&"short"));
+        assert!(!valid_token("short"));
         assert!(!valid_token(&"x".repeat(129)));
         assert!(!valid_token("has space 123456789012345678901234567890"));
     }
@@ -263,7 +279,8 @@ mod tests {
         // requestId 不匹配
         assert!(validate_host_response(&ok_env, "r-wrong").is_err());
         // 缺 token → 拒绝
-        let no_token = json!({"v": 2, "kind": "response", "requestId": "r1", "ok": true, "result": null});
+        let no_token =
+            json!({"v": 2, "kind": "response", "requestId": "r1", "ok": true, "result": null});
         assert!(validate_host_response(&no_token, "r1").is_err());
     }
 

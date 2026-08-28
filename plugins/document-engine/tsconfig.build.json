@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/main.ts"],
+  "exclude": ["src/renderer.tsx", "src/renderer-entry.tsx", "tests", "scripts", "node_modules", "dist"]
+}

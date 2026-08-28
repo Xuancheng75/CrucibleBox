@@ -6,6 +6,7 @@ artifacts/
 src-tauri/binaries/
 src-tauri/target/
 src-tauri/cruciblebox-plugin-host/target/
+ocr-worker/target/
 *.zip
 *.tsbuildinfo
 .DS_Store

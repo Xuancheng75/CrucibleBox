@@ -8,7 +8,7 @@
 
 use crate::db::Db;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const DISPOSE_TIMEOUT: Duration = Duration::from_secs(3);
 #[allow(dead_code)] // 崩溃恢复（1.9.2-a 步骤 6 接入后消除）
 const BACKOFFS: [Duration; 3] = [
     Duration::from_secs(1),
@@ -289,6 +290,15 @@ impl BackendProcess {
 
     /// 发送 worker 请求（initialize/dispose/plugin.message）并等待匹配响应（30s 超时）
     pub fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.request_with_timeout(method, params, REQUEST_TIMEOUT)
+    }
+
+    fn request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let request_id = format!(
             "{}-{}",
             self.next_request_id.fetch_add(1, Ordering::SeqCst),
@@ -305,7 +315,7 @@ impl BackendProcess {
             let mut stdin = self.stdin.lock().unwrap();
             write_frame(&mut *stdin, &bytes).map_err(|e| e.to_string())?;
         }
-        match rx.recv_timeout(REQUEST_TIMEOUT) {
+        match rx.recv_timeout(timeout) {
             Ok(result) => result,
             Err(_) => {
                 // 超时：清理 pending + 强杀（对等 requestWorker timeout → terminateChild）
@@ -316,29 +326,51 @@ impl BackendProcess {
         }
     }
 
-    /// 优雅 dispose：lifecycle.dispose → 3s grace → kill
+    /// 优雅 dispose：lifecycle.dispose → 3s grace → kill + wait。
     /// 设置 expected_stop（读线程 EOF 不再触发崩溃恢复）。
-    pub fn dispose(&self) {
+    pub fn dispose(&self) -> Result<(), String> {
         self.expected_stop.store(true, Ordering::SeqCst);
         // 1.9.17：停止剪贴板监控线程（如有）
         crate::clipboard_monitor::stop(&self.plugin_id);
-        let _ = self.request("lifecycle.dispose", json!({}));
+        let graceful = self.request_with_timeout("lifecycle.dispose", json!({}), DISPOSE_TIMEOUT);
+        if let Err(err) = &graceful {
+            eprintln!(
+                "[backend] graceful dispose {} failed: {err}; forcing exit",
+                self.plugin_id
+            );
+        }
         // 等待退出（grace 3s）
         let mut child = self.child.lock().unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
+        let mut wait_error = None;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
                     if Instant::now() >= deadline {
-                        let _ = child.kill();
+                        if let Err(e) = child.kill() {
+                            wait_error = Some(format!("failed to kill sidecar: {e}"));
+                        }
+                        if wait_error.is_none() {
+                            if let Err(e) = child.wait() {
+                                wait_error = Some(format!("failed to wait sidecar: {e}"));
+                            }
+                        }
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(_) => break,
+                Err(e) => {
+                    wait_error = Some(format!("failed to poll sidecar: {e}"));
+                    break;
+                }
             }
         }
+        drop(child);
+        if let Some(error) = wait_error {
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn kill_now(&self, reason: &str) {
@@ -410,6 +442,8 @@ pub struct BackendProcessManager {
     processes: Mutex<HashMap<String, Arc<BackendProcess>>>,
     /// 崩溃历史（plugin_id → 最近崩溃时间戳，跨进程/跨重启计数）
     crash_history: Mutex<HashMap<String, Vec<Instant>>>,
+    /// 插件维护期间禁止激活及崩溃自动重启，避免卸载/升级与恢复线程竞态。
+    maintenance: Mutex<HashSet<String>>,
     db: Arc<Mutex<Db>>,
     sidecar_exe: PathBuf,
     /// 事件发射回调（main.rs setup 注入 app.emit；未注入时 no-op）
@@ -437,6 +471,7 @@ impl BackendProcessManager {
         let mgr = Arc::new(BackendProcessManager {
             processes: Mutex::new(HashMap::new()),
             crash_history: Mutex::new(HashMap::new()),
+            maintenance: Mutex::new(HashSet::new()),
             db,
             sidecar_exe,
             emitter: Mutex::new(None),
@@ -485,6 +520,27 @@ impl BackendProcessManager {
         *lock(&self.emitter) = Some(emitter);
     }
 
+    /// 启动时恢复需要宿主侧监控的已启用插件（目前为 clipboard 权限插件）。
+    /// 先复制 DB 记录再逐个激活，绝不把 DB 锁带入 sidecar 生命周期调用。
+    pub fn activate_enabled_with_permission(&self, permission: &str) {
+        let records = match self.db.lock().unwrap().enabled_plugin_backend_records() {
+            Ok(records) => records,
+            Err(error) => {
+                eprintln!("[backend] failed to read enabled plugins at startup: {error}");
+                return;
+            }
+        };
+        for (plugin_id, record) in records {
+            let guard = crate::permissions::PermissionGuard::from_json(&record.permissions);
+            if !guard.has(permission) {
+                continue;
+            }
+            if let Err(error) = self.ensure_activated(&plugin_id, record) {
+                eprintln!("[backend] startup activation failed for {plugin_id}: {error}");
+            }
+        }
+    }
+
     /// 事件发射（未注入时 no-op）。
     pub fn emit(&self, event: &str, payload: serde_json::Value) {
         let guard = lock(&self.emitter);
@@ -508,6 +564,10 @@ impl BackendProcessManager {
         plugin_id: &str,
         record: crate::db::PluginBackendRecord,
     ) -> Result<Arc<BackendProcess>, String> {
+        let maintenance_guard = self.maintenance.lock().unwrap();
+        if maintenance_guard.contains(plugin_id) {
+            return Err("plugin is in maintenance".into());
+        }
         if let Some(p) = self.processes.lock().unwrap().get(plugin_id) {
             return Ok(p.clone());
         }
@@ -526,10 +586,13 @@ impl BackendProcessManager {
             self.emitter(),
         )?;
         // initialize
-        proc.request(
+        if let Err(error) = proc.request(
             "lifecycle.initialize",
             json!({ "pluginId": plugin_id, "config": {} }),
-        )?;
+        ) {
+            let _ = proc.dispose();
+            return Err(error);
+        }
         self.processes
             .lock()
             .unwrap()
@@ -538,7 +601,25 @@ impl BackendProcessManager {
         if proc.permissions.has(crate::permissions::CLIPBOARD) {
             let _ = crate::clipboard_monitor::start(plugin_id, self.emitter());
         }
+        drop(maintenance_guard);
         Ok(proc)
+    }
+
+    /// 标记插件进入维护窗口。调用方必须在完成操作后调用 end_maintenance。
+    pub fn begin_maintenance(&self, plugin_id: &str) -> Result<(), String> {
+        let mut maintenance = self.maintenance.lock().unwrap();
+        if !maintenance.insert(plugin_id.to_string()) {
+            return Err("plugin maintenance already in progress".into());
+        }
+        Ok(())
+    }
+
+    pub fn end_maintenance(&self, plugin_id: &str) {
+        self.maintenance.lock().unwrap().remove(plugin_id);
+    }
+
+    fn is_in_maintenance(&self, plugin_id: &str) -> bool {
+        self.maintenance.lock().unwrap().contains(plugin_id)
     }
 
     /// 崩溃恢复策略：记录崩溃 → backoff 重启或隔离。
@@ -560,6 +641,10 @@ impl BackendProcessManager {
     fn handle_crash(&self, plugin_id: &str) {
         // 从进程表移除（读线程已死，进程对象应清理）
         let exited = self.processes.lock().unwrap().remove(plugin_id);
+        if self.is_in_maintenance(plugin_id) {
+            let _ = exited;
+            return;
+        }
         // 记录崩溃时间
         let now = Instant::now();
         let mut history = self.crash_history.lock().unwrap();
@@ -591,6 +676,9 @@ impl BackendProcessManager {
             // 重启：重新读 DB 记录并 ensure_activated
             if let Ok(Some(record)) = db.lock().unwrap().plugin_backend_record(&pid) {
                 if let Some(mgr) = weak.upgrade() {
+                    if mgr.is_in_maintenance(&pid) {
+                        return;
+                    }
                     if let Err(e) = mgr.ensure_activated(&pid, record) {
                         eprintln!("[backend] restart {pid} failed: {e}");
                     }
@@ -601,10 +689,11 @@ impl BackendProcessManager {
     }
 
     #[allow(dead_code)] // 1.9.2-b 插件写路径（deactivate 命令）接入
-    pub fn deactivate(&self, plugin_id: &str) {
+    pub fn deactivate(&self, plugin_id: &str) -> Result<(), String> {
         if let Some(p) = self.processes.lock().unwrap().remove(plugin_id) {
-            p.dispose();
+            p.dispose()?;
         }
+        Ok(())
     }
 
     pub fn kill_all(&self) {
@@ -616,7 +705,7 @@ impl BackendProcessManager {
             .map(|(_, p)| p)
             .collect();
         for p in procs {
-            p.dispose();
+            let _ = p.dispose();
         }
     }
 
@@ -1011,6 +1100,90 @@ mod tests {
             .flatten()
             .is_none();
         assert!(alive, "sidecar exited spontaneously during idle period");
+
+        let _ = proc.request("lifecycle.dispose", json!({}));
+        proc.kill_now("test cleanup");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Document Engine renderer smoke: the real plugin backend must traverse
+    /// trusted.invoke and return valid status, jobs and model envelopes.
+    /// This catches an installed-path/permission/sidecar mismatch before the
+    /// UI can turn it into several unrelated "读取失败" messages.
+    #[test]
+    fn e2e_document_engine_renderer_sequence() {
+        let exe = sidecar_exe();
+        let plugin_dir = std::env::current_dir()
+            .ok()
+            .and_then(|d| {
+                d.parent()
+                    .map(|p| p.join("plugins").join("document-engine"))
+            })
+            .filter(|p| p.join("dist").join("main.js").exists());
+        let Some(plugin_dir) = plugin_dir else {
+            eprintln!("skipping document-engine e2e: no plugin dist available");
+            return;
+        };
+        if !exe.exists() {
+            eprintln!("skipping document-engine e2e: sidecar exe not built");
+            return;
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("cb-document-engine-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("openbox.db");
+        let db = Db::open(&path).unwrap();
+        {
+            let guard = db.conn().lock().unwrap();
+            guard
+                .execute(
+                    "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path, permissions)
+                     VALUES ('document-engine', 'document-engine', '0.1.0', 'Document Engine', 'dist/main.js', ?1, ?2)
+                     ON CONFLICT(id) DO NOTHING",
+                    rusqlite::params![
+                        plugin_dir.to_string_lossy().into_owned(),
+                        serde_json::json!(["trusted:document-engine"]).to_string()
+                    ],
+                )
+                .unwrap();
+        }
+
+        let proc = BackendProcess::spawn(
+            "document-engine".into(),
+            crate::permissions::PermissionGuard::parse(&["trusted:document-engine".to_string()]),
+            Arc::new(Mutex::new(db)),
+            exe,
+            plugin_dir.clone(),
+            "dist/main.js".into(),
+            Arc::new(|pid: &str| panic!("sidecar crashed during document-engine sequence: {pid}")),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+        )
+        .expect("spawn document-engine sidecar");
+
+        proc.request(
+            "lifecycle.initialize",
+            json!({ "pluginId": "document-engine", "config": {} }),
+        )
+        .expect("document-engine initialize");
+
+        let send = |message: Value| {
+            proc.request("plugin.message", json!({ "message": message }))
+                .expect("document-engine message")
+        };
+        let status = send(json!({ "type": "getStatus" }));
+        assert!(
+            status["status"].is_object(),
+            "invalid status envelope: {status}"
+        );
+        let jobs = send(json!({ "type": "document.jobs.list" }));
+        assert!(jobs["tasks"].is_array(), "invalid jobs envelope: {jobs}");
+        let models = send(json!({ "type": "document.models.list" }));
+        assert!(
+            models["models"].is_array(),
+            "invalid models envelope: {models}"
+        );
 
         let _ = proc.request("lifecycle.dispose", json!({}));
         proc.kill_now("test cleanup");

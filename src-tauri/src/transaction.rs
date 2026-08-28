@@ -284,6 +284,115 @@ impl DirectoryTransaction {
     }
 }
 
+/// 插件卸载事务：先将目标目录原子隔离到 remove artifact，再删除隔离目录。
+/// DB 删除发生在 quarantine 成功之后，因此崩溃恢复可依据 journal 判断回滚或提交。
+pub struct RemovalTransaction {
+    plugins_dir: PathBuf,
+    plugin_name: String,
+    transaction_id: String,
+    target_dir: PathBuf,
+    quarantine_dir: PathBuf,
+    quarantined: bool,
+}
+
+impl RemovalTransaction {
+    pub fn new(
+        plugins_dir: PathBuf,
+        plugin_name: String,
+        transaction_id: String,
+    ) -> Result<Self, String> {
+        if !is_plugin_name(&plugin_name) {
+            return Err("pluginName contains unsupported characters".into());
+        }
+        if !is_transaction_id(&transaction_id) {
+            return Err("transactionId contains unsupported characters".into());
+        }
+        let plugins_dir = canonicalize_plugins_dir(&plugins_dir)?;
+        let target_dir = plugins_dir.join(&plugin_name);
+        let quarantine_name = format!(".{}.remove-{}", plugin_name, transaction_id);
+        let quarantine_dir = plugins_dir.join(&quarantine_name);
+        assert_direct_child(&plugins_dir, &target_dir, &plugin_name)?;
+        assert_direct_child(&plugins_dir, &quarantine_dir, &quarantine_name)?;
+        if path_entry_exists(&target_dir)? {
+            assert_plain_directory(&target_dir, "Installed plugin")?;
+        }
+        if path_entry_exists(&quarantine_dir)? {
+            return Err("Plugin removal quarantine path already exists".into());
+        }
+        Ok(Self {
+            plugins_dir,
+            plugin_name,
+            transaction_id,
+            target_dir,
+            quarantine_dir,
+            quarantined: false,
+        })
+    }
+
+    pub fn quarantine(&mut self) -> Result<(), String> {
+        if self.quarantined {
+            return Err("Plugin removal is already quarantined".into());
+        }
+        if !path_entry_exists(&self.target_dir)? {
+            return Err("Installed plugin directory is missing".into());
+        }
+        assert_plain_directory(&self.target_dir, "Installed plugin")?;
+        fs::rename(&self.target_dir, &self.quarantine_dir).map_err(|e| {
+            format!(
+                "failed to quarantine plugin {}: {e}",
+                self.target_dir.display()
+            )
+        })?;
+        self.quarantined = true;
+        Ok(())
+    }
+
+    pub fn rollback(&mut self) -> Result<(), String> {
+        if !self.quarantined {
+            return Ok(());
+        }
+        if path_entry_exists(&self.target_dir)? {
+            return Err("Cannot restore removed plugin because target already exists".into());
+        }
+        if path_entry_exists(&self.quarantine_dir)? {
+            rename_internal_directory(
+                &self.plugins_dir,
+                &self.quarantine_dir,
+                &self.quarantine_basename(),
+                &self.target_dir,
+                &self.plugin_name,
+            )?;
+        }
+        self.quarantined = false;
+        Ok(())
+    }
+
+    pub fn commit(&mut self) -> Result<(), String> {
+        if !self.quarantined {
+            return Err("Cannot commit a removal before quarantine".into());
+        }
+        remove_internal_directory(
+            &self.plugins_dir,
+            &self.quarantine_dir,
+            &self.quarantine_basename(),
+        )?;
+        self.quarantined = false;
+        Ok(())
+    }
+
+    pub fn target_dir(&self) -> &Path {
+        &self.target_dir
+    }
+
+    pub fn quarantine_dir(&self) -> &Path {
+        &self.quarantine_dir
+    }
+
+    fn quarantine_basename(&self) -> String {
+        format!(".{}.remove-{}", self.plugin_name, self.transaction_id)
+    }
+}
+
 /// 校验 child 是 pluginsDir 的直接子目录且 basename 精确匹配 expected；
 /// 若 child 已存在则 lstat 拒绝 symlink。删除/rename 前必须过此断言。
 pub fn assert_direct_child(plugins_dir: &Path, child: &Path, expected: &str) -> Result<(), String> {
@@ -334,9 +443,12 @@ pub fn canonicalize_plugins_dir(p: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("failed to canonicalize pluginsDir {}: {e}", p.display()))
 }
 
-/// permissions 含 "trusted:unienv" → 返回 pinned runtime 白名单，否则 None。
+/// permissions 含宿主固定可信服务权限 → 返回 pinned runtime 白名单，否则 None。
 pub fn trusted_allowlist(permissions: &[String]) -> Option<Vec<String>> {
-    if permissions.iter().any(|p| p == "trusted:unienv") {
+    if permissions
+        .iter()
+        .any(|p| matches!(p.as_str(), "trusted:unienv" | "trusted:document-engine"))
+    {
         Some(vec![
             "dist/main.js".to_string(),
             "dist/renderer.js".to_string(),
@@ -726,6 +838,29 @@ mod tests {
     }
 
     #[test]
+    fn removal_quarantine_rolls_back_and_commits() {
+        let root = temp_root("removal-flow");
+        let plugins = root.join("plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        write_tree(&plugins.join("demo"), &[("plugin.json", "old")]);
+
+        let mut rollback =
+            RemovalTransaction::new(plugins.clone(), "demo".into(), "tx-remove-1".into()).unwrap();
+        rollback.quarantine().unwrap();
+        assert!(!plugins.join("demo").exists());
+        assert!(rollback.quarantine_dir().exists());
+        rollback.rollback().unwrap();
+        assert!(plugins.join("demo").exists());
+
+        let mut commit =
+            RemovalTransaction::new(plugins.clone(), "demo".into(), "tx-remove-2".into()).unwrap();
+        commit.quarantine().unwrap();
+        commit.commit().unwrap();
+        assert!(!plugins.join("demo").exists());
+        assert!(!plugins.join(".demo.remove-tx-remove-2").exists());
+    }
+
+    #[test]
     fn upgrade_full_flow_cleans_backup() {
         let root = temp_root("upgrade-flow");
         let plugins = root.join("plugins");
@@ -926,6 +1061,14 @@ mod tests {
     fn trusted_allowlist_matches_permissions() {
         assert_eq!(
             trusted_allowlist(&["storage:read".into(), "trusted:unienv".into()]),
+            Some(vec![
+                "dist/main.js".into(),
+                "dist/renderer.js".into(),
+                "plugin.json".into()
+            ])
+        );
+        assert_eq!(
+            trusted_allowlist(&["trusted:document-engine".into()]),
             Some(vec![
                 "dist/main.js".into(),
                 "dist/renderer.js".into(),

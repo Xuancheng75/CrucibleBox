@@ -59,6 +59,14 @@ export interface PluginRendererRpcMethodMap {
     }
     result: { confirmed: boolean }
   }
+  'dialog.open': {
+    params: {
+      type: 'file' | 'folder'
+      multiple?: boolean
+      extensions?: string[]
+    }
+    result: { paths: string[] }
+  }
   'layout.resize': {
     params: { height: number }
     result: { applied: boolean }

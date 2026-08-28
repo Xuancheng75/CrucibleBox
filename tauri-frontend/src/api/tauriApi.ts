@@ -232,6 +232,21 @@ export const tauriApi = {
   },
 
   dialog: {
+    openSelection: async (options: {
+      directory: boolean
+      multiple?: boolean
+      extensions?: string[]
+    }): Promise<string[]> => {
+      const selected = await openDialog({
+        multiple: options.multiple ?? false,
+        directory: options.directory,
+        ...(options.extensions && options.extensions.length > 0
+          ? { filters: [{ name: '支持的文件', extensions: options.extensions }] }
+          : {})
+      })
+      if (!selected) return []
+      return Array.isArray(selected) ? selected : [selected]
+    },
     /** 选择 .zip 插件包（@tauri-apps/plugin-dialog，替代 Electron dialog:open-file） */
     openFile: async (): Promise<string | null> => {
       const selected = await openDialog({

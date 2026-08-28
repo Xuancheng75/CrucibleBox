@@ -160,6 +160,13 @@ export interface PluginRenderProps {
       confirmLabel?: string
       cancelLabel?: string
     }): Promise<boolean>
+    dialog: {
+      open(options: {
+        type: 'file' | 'folder'
+        multiple?: boolean
+        extensions?: string[]
+      }): Promise<string[]>
+    }
     onBackendMessage(handler: (msg: unknown) => void): () => void
     theme: {
       get(): Promise<ToolboxTheme>

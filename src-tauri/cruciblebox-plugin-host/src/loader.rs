@@ -12,11 +12,7 @@ use std::path::{Component, Path, PathBuf};
 /// - 绝对路径（盘符或 / 开头）允许，但必须落在 plugin_root 内
 /// - 解析后的真实路径必须在 plugin_root 内（对 .. 逃逸返回 None）
 /// - 尝试 specifier 原样、+ .js、+ /index.js
-pub fn resolve_specifier(
-    plugin_root: &Path,
-    from_dir: &Path,
-    specifier: &str,
-) -> Option<PathBuf> {
+pub fn resolve_specifier(plugin_root: &Path, from_dir: &Path, specifier: &str) -> Option<PathBuf> {
     let candidate = if specifier.starts_with("./") || specifier.starts_with("../") {
         from_dir.join(specifier)
     } else if specifier.contains('/') || specifier.contains('\\') {
@@ -114,7 +110,11 @@ mod tests {
         fs::create_dir_all(dir.join("dist").join("sub")).unwrap();
         fs::write(dir.join("dist").join("main.js"), "exports.default = {}").unwrap();
         fs::write(dir.join("dist").join("domain.js"), "exports.x = 1").unwrap();
-        fs::write(dir.join("dist").join("sub").join("index.js"), "exports.y = 2").unwrap();
+        fs::write(
+            dir.join("dist").join("sub").join("index.js"),
+            "exports.y = 2",
+        )
+        .unwrap();
         dir
     }
 

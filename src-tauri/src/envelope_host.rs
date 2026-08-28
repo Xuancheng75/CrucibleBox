@@ -123,6 +123,9 @@ pub fn host_dispatch(
                 "unienv" => {
                     crate::unienv_service::dispatch(&db, plugin_id, &service, &operation, payload)
                 }
+                "document-engine" => {
+                    crate::document_engine_service::dispatch(&db, plugin_id, &operation, payload)
+                }
                 _ => Err(format!("unknown trusted service: {service}")),
             }
         }

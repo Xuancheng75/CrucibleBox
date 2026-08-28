@@ -152,6 +152,14 @@ export function PluginHost({
           })
         })
       },
+      async openDialog(options) {
+        const selected = await tauriApi.dialog.openSelection({
+          directory: options.type === 'folder',
+          multiple: options.multiple ?? false,
+          extensions: options.extensions
+        })
+        return selected
+      },
       resize: (nextHeight) => {
         if (readyTimeoutRef.current) clearTimeout(readyTimeoutRef.current)
         readyTimeoutRef.current = null

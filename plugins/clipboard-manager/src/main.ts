@@ -9,10 +9,12 @@ interface ClipItem {
 
 let ctx: PluginContext | null = null
 let lastText = ''
+let historyMutation: Promise<void> = Promise.resolve()
 
 const plugin: PluginMain = {
   async activate(pluginCtx: PluginContext) {
     ctx = pluginCtx
+    historyMutation = Promise.resolve()
     // 读取当前剪贴板作为初始 lastText（避免首次事件重复记录）
     try {
       const result = await ctx.api.clipboard.read()
@@ -29,6 +31,7 @@ const plugin: PluginMain = {
 
   deactivate() {
     ctx = null
+    historyMutation = Promise.resolve()
   },
 
   async onMessage(message: unknown) {
@@ -41,7 +44,7 @@ const plugin: PluginMain = {
         const text = msg.text || ''
         if (text && text !== lastText) {
           lastText = text
-          await addToHistory(text)
+          await enqueueHistoryMutation(() => addToHistory(text))
         }
         return { ok: true }
       }
@@ -51,16 +54,18 @@ const plugin: PluginMain = {
       }
       case 'deleteItem': {
         if (!msg.id) return { error: 'missing id' }
-        await deleteItem(msg.id)
+        await enqueueHistoryMutation(() => deleteItem(msg.id!))
         return { ok: true }
       }
       case 'togglePin': {
         if (!msg.id) return { error: 'missing id' }
-        await togglePin(msg.id)
+        await enqueueHistoryMutation(() => togglePin(msg.id!))
         return { ok: true }
       }
       case 'clearAll': {
-        await ctx.storage.set('history', [])
+        await enqueueHistoryMutation(async () => {
+          if (ctx) await ctx.storage.set('history', [])
+        })
         return { ok: true }
       }
       case 'copyToClipboard': {
@@ -95,6 +100,12 @@ async function addToHistory(text: string) {
   filtered.unshift(newItem)
   const trimmed = filtered.slice(0, maxItems)
   await ctx.storage.set('history', trimmed)
+}
+
+function enqueueHistoryMutation(operation: () => Promise<void>): Promise<void> {
+  const next = historyMutation.then(operation, operation)
+  historyMutation = next.catch(() => undefined)
+  return next
 }
 
 async function deleteItem(id: string) {

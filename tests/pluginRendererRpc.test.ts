@@ -68,6 +68,11 @@ describe('plugin renderer RPC v1', () => {
       ['theme.rollback', {}, { restored: true }],
       ['theme.set', { theme }, { applied: true }],
       ['dialog.confirm', { title: 'Delete', message: 'Continue?' }, { confirmed: false }],
+      [
+        'dialog.open',
+        { type: 'file', multiple: true, extensions: ['pdf'] as string[] },
+        { paths: ['C:/doc.pdf'] as string[] }
+      ],
       ['layout.resize', { height: 640 }, { applied: true }]
     ] as const
 

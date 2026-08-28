@@ -4,5 +4,11 @@
     "version": "0.6.0",
     "digest": "81c73dc3e19772a02f41c05540d5c8e36f17999d3517e45853175a093f6f169a",
     "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
+  },
+  "document-engine": {
+    "name": "document-engine",
+    "version": "0.1.0",
+    "digest": "0bb2c3e8ba04ba9b3358ce4a935877f7c1ba061d57861b26f4d761848bac7b1f",
+    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   }
 }

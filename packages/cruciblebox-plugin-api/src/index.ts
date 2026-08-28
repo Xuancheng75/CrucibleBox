@@ -5,7 +5,7 @@ import type { ComponentType } from 'react'
  *
  * 此文件由各插件本地复制的 openbox-api.d.ts 收敛而来：
  * - 6 插件 + 模板的 `declare module 'cruciblebox-plugin-api' { ... }` 环境声明合并为真实模块；
- * - unienv 特有的 `PluginHostAPI.invokeTrustedService`（trusted:unienv 权限）并入通用接口；
+ * - 宿主固定可信服务的 `PluginHostAPI.invokeTrustedService`（例如 trusted:unienv、trusted:document-engine）并入通用接口；
  * - 宿主侧类型契约见 `shared/types/plugin.types.ts`（本包为插件视角的权威声明）。
  *
  * 修改此文件后，重建所有插件 dist（npm run build:plugins）；若 unienv dist 摘要变化，
@@ -48,7 +48,7 @@ export interface PluginHostAPI {
   }
   /** 获取系统信息（无需权限，公开只读） */
   getSystemInfo(): Promise<SystemInfo>
-  /** 仅宿主固定摘要可信服务（trusted:unienv 权限）可用；普通插件调用会失败 */
+  /** 仅宿主固定摘要可信服务权限（例如 trusted:unienv / trusted:document-engine）可用；普通插件调用会失败 */
   invokeTrustedService?(service: string, operation: string, payload?: unknown): Promise<unknown>
 }
 
@@ -114,6 +114,13 @@ export interface PluginRenderProps {
       confirmLabel?: string
       cancelLabel?: string
     }): Promise<boolean>
+    dialog: {
+      open(options: {
+        type: 'file' | 'folder'
+        multiple?: boolean
+        extensions?: string[]
+      }): Promise<string[]>
+    }
     onBackendMessage(handler: (msg: unknown) => void): () => void
     theme: {
       get(): Promise<Theme>

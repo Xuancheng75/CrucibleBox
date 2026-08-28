@@ -72,6 +72,7 @@ function createHarness(permissions: Permission[] = []) {
     listThemes: async () => [DEFAULT_THEME],
     setTheme,
     confirm: async () => true,
+    openDialog: async () => [],
     resize: () => undefined,
     messageTarget
   })
