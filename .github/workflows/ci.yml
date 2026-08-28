@@ -32,8 +32,14 @@ jobs:
 
       # Keep the precheck plugin build explicit so a failure identifies the
       # exact gate instead of being collapsed into npm's lifecycle wrapper.
-      - name: Quality gate - build and verify plugins
-        run: npm run build:plugins
+      - name: Quality gate - build plugins
+        run: npm run build:plugins:only
+
+      - name: Quality gate - verify plugin renderers
+        run: npm run verify:plugin-renderers
+
+      - name: Quality gate - verify trusted services
+        run: npm run verify:trusted-services
 
       - name: Quality gate - format
         run: npm run format:check
