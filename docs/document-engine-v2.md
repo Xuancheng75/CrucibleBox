@@ -566,7 +566,7 @@ models/
 复用现有 `invokeTrustedService` 机制（与 UniEnv 对齐）：
 
 ```
-plugin.json: "permissions": ["trusted:document-engine"]
+plugin.json: "permissions": ["trusted:document-engine", "dialog"]
 main.ts: ctx.api.invokeTrustedService('document-engine', 'message', payload)
 Rust: document_engine_service::dispatch()
 ```

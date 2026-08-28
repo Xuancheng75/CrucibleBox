@@ -7,8 +7,9 @@
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.1.0",
-    "digest": "0bb2c3e8ba04ba9b3358ce4a935877f7c1ba061d57861b26f4d761848bac7b1f",
+    "version": "0.1.1",
+    "permissions": ["trusted:document-engine", "dialog"],
+    "digest": "22f2b73cf0e93dbb6353920d419245fdbe7a53dac32a23e30fa5046a91d7e791",
     "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   }
 }

@@ -21,12 +21,13 @@ for (const [serviceName, policy] of Object.entries(policies)) {
 
   const pluginDirectory = resolve(repositoryRoot, 'plugins', policy.name)
   const manifest = JSON.parse(readFileSync(resolve(pluginDirectory, 'plugin.json'), 'utf8'))
+  const expectedPermissions = policy.permissions ?? [`trusted:${serviceName}`]
   if (
     manifest.name !== policy.name ||
     manifest.version !== policy.version ||
     manifest.manifestVersion !== 2 ||
     manifest.backendApiVersion !== 2 ||
-    JSON.stringify(manifest.permissions) !== JSON.stringify([`trusted:${serviceName}`])
+    JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)
   ) {
     throw new Error(`${serviceName}: manifest does not match the trusted-service policy`)
   }

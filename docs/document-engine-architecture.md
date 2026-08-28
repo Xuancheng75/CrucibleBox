@@ -79,7 +79,7 @@ renderer.tsx                         main.ts (sidecar quickjs-ng)
 CrucibleBox 已有的 **UniEnv** 正是此模式：宿主固定摘要可信服务，Rust 侧实现，
 经 `invokeTrustedService('unienv', ...)` 调用。Document Engine 复用同一机制：
 
-- `plugin.json` 声明 `"permissions": ["trusted:document-engine"]`
+- `plugin.json` 声明 `"permissions": ["trusted:document-engine", "dialog"]`；其中 `dialog` 仅用于渲染层的工具箱文件/文件夹选择，后端能力仍由 `trusted:document-engine` 门控。
 - `main.ts` 的 `activate` 调用 `ctx.api.invokeTrustedService!('document-engine', 'activate')`
 - Rust 侧 `document_engine_service::dispatch` 处理 `message` 操作
 
