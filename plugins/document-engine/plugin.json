@@ -1,0 +1,50 @@
+{
+  "name": "document-engine",
+  "version": "0.1.1",
+  "displayName": "Document Engine",
+  "description": "统一本地文档处理基础设施：OCR、PDF/Office 解析、文档切分、格式转换、批量处理、任务队列、缓存和模型管理（Rust + PaddleOCR ONNX）",
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["trusted:document-engine", "dialog"],
+  "config": {
+    "modelDirectory": {
+      "type": "string",
+      "label": "OCR 模型目录",
+      "description": "PaddleOCR ONNX 模型与字典目录；留空使用 Worker 默认目录",
+      "default": ""
+    },
+    "dictionaryPath": {
+      "type": "string",
+      "label": "OCR 字典路径",
+      "description": "ppocr_keys_v1.txt 路径；留空使用模型目录中的同名文件",
+      "default": ""
+    },
+    "cacheDirectory": {
+      "type": "string",
+      "label": "缓存目录",
+      "description": "处理结果缓存目录（基于 source hash + engine + options）",
+      "default": ""
+    },
+    "outputDirectory": {
+      "type": "string",
+      "label": "输出目录",
+      "description": "默认导出 / 转换输出目录",
+      "default": ""
+    },
+    "device": {
+      "type": "select",
+      "label": "计算设备",
+      "description": "自动模式优先使用 Windows DirectML（NVIDIA GPU），不可用时回退 CPU",
+      "default": "auto",
+      "options": [
+        { "label": "自动 (Auto)", "value": "auto" },
+        { "label": "CPU", "value": "cpu" },
+        { "label": "GPU (DirectML)", "value": "gpu" }
+      ]
+    }
+  }
+}

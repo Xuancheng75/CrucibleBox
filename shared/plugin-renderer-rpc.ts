@@ -51,6 +51,7 @@ const METHODS = new Set<PluginRendererRpcMethod>([
   'theme.rollback',
   'theme.set',
   'dialog.confirm',
+  'dialog.open',
   'layout.resize'
 ])
 
@@ -291,6 +292,27 @@ export function validatePluginRendererRpcParams<Method extends PluginRendererRpc
       }
       return
     }
+    case 'dialog.open': {
+      const params = exactObject(value, ['type'], ['multiple', 'extensions'], code, path)
+      if (params.type !== 'file' && params.type !== 'folder') {
+        fail(code, 'type must be file or folder', `${path}.type`)
+      }
+      if (params.multiple !== undefined && typeof params.multiple !== 'boolean') {
+        fail(code, 'multiple must be boolean', `${path}.multiple`)
+      }
+      if (params.extensions !== undefined) {
+        if (!Array.isArray(params.extensions) || params.extensions.length > 32) {
+          fail(code, 'extensions must be an array with at most 32 entries', `${path}.extensions`)
+        }
+        params.extensions.forEach((extension, index) => {
+          boundedString(extension, 1, 16, code, `${path}.extensions[${index}]`)
+          if (!/^[a-zA-Z0-9]+$/.test(extension)) {
+            fail(code, 'extension contains unsupported characters', `${path}.extensions[${index}]`)
+          }
+        })
+      }
+      return
+    }
     case 'layout.resize': {
       const params = exactObject(value, ['height'], [], code, path)
       if (
@@ -363,6 +385,16 @@ export function validatePluginRendererRpcResult<Method extends PluginRendererRpc
       const result = exactObject(value, ['confirmed'], [], code, path)
       if (typeof result.confirmed !== 'boolean')
         fail(code, 'confirmed must be boolean', `${path}.confirmed`)
+      return
+    }
+    case 'dialog.open': {
+      const result = exactObject(value, ['paths'], [], code, path)
+      if (!Array.isArray(result.paths) || result.paths.length > 512) {
+        fail(code, 'paths must be an array with at most 512 entries', `${path}.paths`)
+      }
+      result.paths.forEach((entry, index) =>
+        boundedString(entry, 1, 4096, code, `${path}.paths[${index}]`)
+      )
       return
     }
   }

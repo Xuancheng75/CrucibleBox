@@ -123,6 +123,9 @@ pub fn host_dispatch(
                 "unienv" => {
                     crate::unienv_service::dispatch(&db, plugin_id, &service, &operation, payload)
                 }
+                "document-engine" => {
+                    crate::document_engine_service::dispatch(&db, plugin_id, &operation, payload)
+                }
                 _ => Err(format!("unknown trusted service: {service}")),
             }
         }
@@ -141,7 +144,11 @@ pub fn host_dispatch(
         }
         "network.fetch" => {
             let url = str_param(params, "url")?;
-            let opts = params.get("opts").cloned().unwrap_or(Value::Null);
+            let opts = params
+                .get("options")
+                .or_else(|| params.get("opts"))
+                .cloned()
+                .unwrap_or(Value::Null);
             let method = opts
                 .get("method")
                 .and_then(Value::as_str)
@@ -193,6 +200,7 @@ pub fn host_dispatch(
                 .map_err(|e| e.to_string())?;
             let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
             Ok(json!({
+                "ok": (200..300).contains(&status),
                 "status": status,
                 "statusText": status_text,
                 "headers": resp_headers,

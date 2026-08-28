@@ -1,4 +1,8 @@
-import type { PluginContext, PluginMain } from 'cruciblebox-plugin-api'
+import type {
+  PluginContext,
+  PluginFetchResponse,
+  PluginMain
+} from 'cruciblebox-plugin-api'
 
 interface RatesCache {
   base: string
@@ -66,10 +70,9 @@ async function getCachedRates(): Promise<RatesCache | null> {
 async function fetchAndCacheRates(): Promise<unknown> {
   if (!ctx) return { error: 'not activated' }
   try {
-    const resp = (await ctx.api.fetch('https://open.er-api.com/v6/latest/USD')) as {
-      status: number; body: string
-    }
-    const data = JSON.parse(resp.body)
+    const resp = await ctx.api.fetch('https://open.er-api.com/v6/latest/USD')
+    if (!resp.ok) return { error: `API returned HTTP ${resp.status}` }
+    const data = JSON.parse(await readFetchBody(resp))
     if (data.result !== 'success' || !data.rates) {
       return { error: 'API returned error' }
     }
@@ -87,6 +90,17 @@ async function fetchAndCacheRates(): Promise<unknown> {
     }
     return { error: (e as Error).message }
   }
+}
+
+async function readFetchBody(response: Response | PluginFetchResponse): Promise<string> {
+  if (isPluginFetchResponse(response)) return response.body
+  return response.text()
+}
+
+function isPluginFetchResponse(
+  response: Response | PluginFetchResponse
+): response is PluginFetchResponse {
+  return typeof response.body === 'string'
 }
 
 export default plugin

@@ -202,6 +202,14 @@ pub fn recover_interrupted(
                     target_exists,
                     &artifacts,
                 ),
+                "uninstall" => recover_uninstall(
+                    &mut ctx,
+                    &plugin_name,
+                    &journal,
+                    &journal_root,
+                    target_exists,
+                    &artifacts,
+                ),
                 _ => block_plugin(&mut ctx, &plugin_name, "Unsupported journal operation"),
             }
         } else {
@@ -601,6 +609,80 @@ fn recover_orphan(
     }
 }
 
+/// 恢复卸载：DB 仍有记录时把 quarantine 目录还原；DB 已删除时完成清理。
+fn recover_uninstall(
+    ctx: &mut RecoveryCtx,
+    plugin_name: &str,
+    journal: &Journal,
+    journal_root: &Path,
+    target_exists: bool,
+    artifacts: &[Artifact],
+) {
+    let target = ctx.plugins_dir.join(plugin_name);
+    let remove = artifacts.iter().find(|a| a.kind == ArtifactKind::Remove);
+    let metadata = (ctx.find_metadata)(plugin_name);
+    if metadata.is_some() {
+        if target_exists && remove.is_some() {
+            block_plugin(
+                ctx,
+                plugin_name,
+                "Uninstall target and quarantine both exist",
+            );
+            return;
+        }
+        if let Some(r) = remove {
+            let basename = remove_basename(plugin_name, &r.transaction_id);
+            if let Err(e) = rename_internal_directory(
+                &ctx.plugins_dir,
+                &r.path,
+                &basename,
+                &target,
+                plugin_name,
+            ) {
+                block_plugin(ctx, plugin_name, &e);
+                return;
+            }
+        }
+        match clear_journal(
+            if remove.is_some() {
+                &target
+            } else {
+                journal_root
+            },
+            journal,
+        ) {
+            Ok(()) => ctx
+                .report
+                .actions
+                .push(format!("rollback-uninstall {plugin_name}")),
+            Err(e) => block_plugin(ctx, plugin_name, &e),
+        }
+        return;
+    }
+
+    // DB 已不存在：无论崩溃发生在 quarantine 前后，都只删除受保护的直接子目录。
+    if target_exists {
+        if let Err(e) = remove_internal_directory(&ctx.plugins_dir, &target, plugin_name) {
+            block_plugin(ctx, plugin_name, &e);
+            return;
+        }
+    }
+    if let Some(r) = remove {
+        let basename = remove_basename(plugin_name, &r.transaction_id);
+        if let Err(e) = remove_internal_directory(&ctx.plugins_dir, &r.path, &basename) {
+            block_plugin(ctx, plugin_name, &e);
+            return;
+        }
+    }
+    match clear_journal(journal_root, journal) {
+        Ok(()) => ctx
+            .report
+            .actions
+            .push(format!("commit-uninstall {plugin_name}")),
+        Err(e) => block_plugin(ctx, plugin_name, &e),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // journal 校验与读写内部实现
 // ---------------------------------------------------------------------------
@@ -612,7 +694,7 @@ fn validate_journal(j: &Journal) -> Result<(), String> {
             j.version
         ));
     }
-    if j.operation != "install" && j.operation != "upgrade" {
+    if j.operation != "install" && j.operation != "upgrade" && j.operation != "uninstall" {
         return Err("Unsupported plugin transaction operation".into());
     }
     if j.phase != "prepared" && j.phase != "applied" && j.phase != "committed" {

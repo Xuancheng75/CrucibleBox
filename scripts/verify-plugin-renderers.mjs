@@ -11,7 +11,8 @@ const PLUGINS = [
   'json-toolkit',
   'clipboard-manager',
   'system-info',
-  'exchange-rates'
+  'exchange-rates',
+  'document-engine'
 ]
 const FORBIDDEN = [
   ['CommonJS require', /\brequire\s*\(/],

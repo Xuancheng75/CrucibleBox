@@ -116,10 +116,25 @@ export interface SystemInfo {
   network: Array<{ name: string; ip: string; mac: string }>
 }
 
+/**
+ * JSON-safe response returned by a backend plugin host.
+ *
+ * Tauri's QuickJS backend cannot expose the browser `Response` object across
+ * the RPC boundary. Electron's legacy backend still returns a native
+ * `Response`, so the public plugin contract accepts both representations.
+ */
+export interface PluginFetchResponse {
+  ok: boolean
+  status: number
+  statusText: string
+  headers: Record<string, string>
+  body: string
+}
+
 export interface PluginHostAPI {
   notify(title: string, body?: string): void
   openDialog(type: 'file' | 'folder'): Promise<string | null>
-  fetch(url: string, opts?: RequestInit): Promise<Response>
+  fetch(url: string, opts?: RequestInit): Promise<Response | PluginFetchResponse>
   readFile(path: string): Promise<Uint8Array>
   writeFile(path: string, data: string | Uint8Array): Promise<void>
   registerShortcut(keys: string, handler: () => void): () => void
@@ -160,6 +175,13 @@ export interface PluginRenderProps {
       confirmLabel?: string
       cancelLabel?: string
     }): Promise<boolean>
+    dialog: {
+      open(options: {
+        type: 'file' | 'folder'
+        multiple?: boolean
+        extensions?: string[]
+      }): Promise<string[]>
+    }
     onBackendMessage(handler: (msg: unknown) => void): () => void
     theme: {
       get(): Promise<ToolboxTheme>

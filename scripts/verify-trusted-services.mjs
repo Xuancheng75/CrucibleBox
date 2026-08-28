@@ -21,12 +21,13 @@ for (const [serviceName, policy] of Object.entries(policies)) {
 
   const pluginDirectory = resolve(repositoryRoot, 'plugins', policy.name)
   const manifest = JSON.parse(readFileSync(resolve(pluginDirectory, 'plugin.json'), 'utf8'))
+  const expectedPermissions = policy.permissions ?? [`trusted:${serviceName}`]
   if (
     manifest.name !== policy.name ||
     manifest.version !== policy.version ||
     manifest.manifestVersion !== 2 ||
     manifest.backendApiVersion !== 2 ||
-    JSON.stringify(manifest.permissions) !== JSON.stringify([`trusted:${serviceName}`])
+    JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)
   ) {
     throw new Error(`${serviceName}: manifest does not match the trusted-service policy`)
   }
@@ -40,9 +41,11 @@ for (const [serviceName, policy] of Object.entries(policies)) {
   }
   const digest = hash.digest('hex')
   if (digest !== policy.digest) {
-    throw new Error(
-      `${serviceName}: digest mismatch; expected ${policy.digest}, received ${digest}`
-    )
+    const message = `${serviceName}: digest mismatch; expected ${policy.digest}, received ${digest}`
+    // Surface the exact value in the Actions annotation as well as stderr;
+    // unauthenticated check views otherwise collapse failures to exit code 1.
+    console.error(`::error file=shared/trusted-service-policies.json::${message}`)
+    throw new Error(message)
   }
   console.log(`[trusted-services] verified ${serviceName} ${policy.version} sha256=${digest}`)
 }

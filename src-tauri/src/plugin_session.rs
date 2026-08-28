@@ -232,6 +232,21 @@ impl RendererSessionRegistry {
         self.sessions.remove(token).is_some()
     }
 
+    /// 释放指定插件的全部 renderer 会话，用于卸载/升级前清理 iframe 资源。
+    pub fn dispose_plugin(&mut self, plugin_id: &str) -> usize {
+        let keys: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.plugin_id == plugin_id)
+            .map(|(token, _)| token.clone())
+            .collect();
+        let removed = keys.len();
+        for token in keys {
+            self.sessions.remove(&token);
+        }
+        removed
+    }
+
     #[allow(dead_code)]
     pub fn dispose_owner(&mut self, owner_webview_label: &str) -> usize {
         let keys: Vec<String> = self

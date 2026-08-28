@@ -227,6 +227,32 @@ impl Db {
             .optional()
     }
 
+    /// 返回所有已启用插件的 backend 记录；启动时用于恢复需要宿主监控的插件。
+    pub fn enabled_plugin_backend_records(
+        &self,
+    ) -> rusqlite::Result<Vec<(String, PluginBackendRecord)>> {
+        let guard = self.conn.lock().unwrap();
+        let mut stmt = guard.prepare(
+            "SELECT id, enabled, permissions, installed_path, entry_main, name
+             FROM plugins WHERE enabled = 1 ORDER BY sort_order ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    PluginBackendRecord {
+                        enabled: row.get::<_, i64>(1)? == 1,
+                        permissions: row.get::<_, String>(2)?,
+                        installed_path: row.get::<_, String>(3)?,
+                        entry_main: row.get::<_, String>(4)?,
+                        name: row.get::<_, String>(5)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// 持久化插件启用状态（崩溃隔离时置 disabled；对等 Electron 的持久化隔离结果）
     pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool) -> rusqlite::Result<()> {
         let guard = self.conn.lock().unwrap();

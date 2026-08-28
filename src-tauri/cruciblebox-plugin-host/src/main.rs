@@ -18,6 +18,8 @@ mod loader;
 use rquickjs::{Context as JsContext, Function, Object, Runtime as JsRuntime, Value};
 use serde_json::Value as Json;
 use std::cell::RefCell;
+#[cfg(unix)]
+use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -37,6 +39,46 @@ struct Worker {
 }
 
 type Err2 = (String, Option<String>);
+
+fn secure_random_u32() -> Result<u32, String> {
+    let mut bytes = [0u8; 4];
+    #[cfg(windows)]
+    {
+        #[link(name = "bcrypt")]
+        extern "system" {
+            fn BCryptGenRandom(
+                h_algorithm: *mut std::ffi::c_void,
+                buffer: *mut u8,
+                buffer_len: u32,
+                flags: u32,
+            ) -> i32;
+        }
+        // BCRYPT_USE_SYSTEM_PREFERRED_RNG
+        let status = unsafe {
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                0x00000002,
+            )
+        };
+        if status != 0 {
+            return Err(format!("BCryptGenRandom failed with status {status:#x}"));
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::fs::File::open("/dev/urandom")
+            .map_err(|error| format!("open /dev/urandom failed: {error}"))?
+            .read_exact(&mut bytes)
+            .map_err(|error| format!("read /dev/urandom failed: {error}"))?;
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        return Err("secure random source is not supported on this platform".into());
+    }
+    Ok(u32::from_le_bytes(bytes))
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -163,7 +205,10 @@ fn initialize(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {
             let plugin_val: Value = ctx
                 .eval(boot.as_str())
                 .map_err(|e| ("INTERNAL_ERROR".into(), Some(format!("boot: {e}"))))?;
-            assert!(!plugin_val.is_undefined() && !plugin_val.is_null(), "plugin not resolved");
+            assert!(
+                !plugin_val.is_undefined() && !plugin_val.is_null(),
+                "plugin not resolved"
+            );
 
             // 构建 ctx 存 JS 全局
             let id_json = serde_json::to_string(&id)
@@ -176,9 +221,12 @@ fn initialize(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {
                 .map_err(|e| ("INTERNAL_ERROR".into(), Some(format!("ctx build: {e}"))))?;
 
             // activate(__cbCtx)
-            let activate: Function = ctx
-                .eval("__cbPlugin.activate")
-                .map_err(|e| ("INTERNAL_ERROR".into(), Some(format!("activate lookup: {e}"))))?;
+            let activate: Function = ctx.eval("__cbPlugin.activate").map_err(|e| {
+                (
+                    "INTERNAL_ERROR".into(),
+                    Some(format!("activate lookup: {e}")),
+                )
+            })?;
             let cb_ctx: Value = ctx
                 .eval("__cbCtx")
                 .map_err(|e| ("INTERNAL_ERROR".into(), Some(format!("ctx ref: {e}"))))?;
@@ -186,8 +234,12 @@ fn initialize(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {
                 .call((cb_ctx,))
                 .map_err(|e| ("INTERNAL_ERROR".into(), Some(format!("activate call: {e}"))))?;
             if act_result.is_promise() {
-                finish_promise(&ctx, act_result)
-                    .map_err(|e| ("INTERNAL_ERROR".into(), Some(format!("activate await: {e}"))))?;
+                finish_promise(&ctx, act_result).map_err(|e| {
+                    (
+                        "INTERNAL_ERROR".into(),
+                        Some(format!("activate await: {e}")),
+                    )
+                })?;
             }
             Ok(())
         });
@@ -206,7 +258,10 @@ fn initialize(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {
                     String::new()
                 }
             });
-            return Err(("INTERNAL_ERROR".into(), Some(format!("{detail} | exception: {extra}"))));
+            return Err((
+                "INTERNAL_ERROR".into(),
+                Some(format!("{detail} | exception: {extra}")),
+            ));
         }
     }
 
@@ -239,14 +294,16 @@ fn host_event(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {
     if worker.engine.is_none() {
         return Err(("INVALID_MESSAGE".into(), Some("not initialized".into())));
     }
-    let event = params.get("event").and_then(Json::as_str).unwrap_or("").to_string();
+    let event = params
+        .get("event")
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .to_string();
     let data = params.get("data").cloned().unwrap_or(Json::Null);
     let engine = worker.engine.clone().expect("checked above");
     let eng = engine.borrow();
     eng.ctx.with(|ctx| {
-        let dispatch: Function = ctx
-            .eval("__cbCtx.api.dispatchHostEvent")
-            .map_err(js_err)?;
+        let dispatch: Function = ctx.eval("__cbCtx.api.dispatchHostEvent").map_err(js_err)?;
         let event_json = serde_json::to_string(&event)
             .map_err(|e| ("INTERNAL_ERROR".into(), Some(e.to_string())))?;
         let data_json = serde_json::to_string(&data)
@@ -283,8 +340,12 @@ fn plugin_message(worker: &mut Worker, params: &Json) -> Result<Json, Err2> {
                 .map_err(|e| ("INTERNAL_ERROR".into(), Some(e.to_string())))?,
             None => "null".into(),
         };
-        serde_json::from_str(&text)
-            .map_err(|e| ("INTERNAL_ERROR".into(), Some(format!("bad result json: {e}"))))
+        serde_json::from_str(&text).map_err(|e| {
+            (
+                "INTERNAL_ERROR".into(),
+                Some(format!("bad result json: {e}")),
+            )
+        })
     })
 }
 
@@ -303,12 +364,20 @@ fn install_polyfills(ctx: &rquickjs::Ctx) -> rquickjs::Result<()> {
         console.set(name, f)?;
     }
     globals.set("console", console)?;
+    let random_u32 = Function::new(ctx.clone(), || -> Result<u32, rquickjs::Error> {
+        secure_random_u32()
+            .map_err(|error| rquickjs::Error::new_from_js_message("crypto", "Uint32", error))
+    })?;
+    globals.set("__cbRandomUint32", random_u32)?;
     ctx.eval::<(), _>(
         r#"
         globalThis.crypto = {
           getRandomValues: function (arr) {
+            if (!arr || typeof arr.length !== 'number') {
+              throw new TypeError('getRandomValues expects a typed array');
+            }
             for (var i = 0; i < arr.length; i++) {
-              arr[i] = Math.floor(Math.random() * 256);
+              arr[i] = __cbRandomUint32();
             }
             return arr;
           }
@@ -336,19 +405,16 @@ fn install_cjs_host_functions(
     )?;
     ctx.globals().set("__cjsResolve", resolve_fn)?;
 
-    let load_fn = Function::new(
-        ctx.clone(),
-        move |abs_path: String| -> Option<String> {
-            let p = PathBuf::from(abs_path.replace('/', "\\"));
-            // C1: 根校验——仅允许 plugin_root 内的文件
-            let p_norm = loader::normalize_for_root(&p);
-            if !p_norm.starts_with(&root_norm) {
-                eprintln!("[host] __cjsLoad blocked path outside plugin dir: {abs_path}");
-                return None;
-            }
-            std::fs::read_to_string(&p).ok()
-        },
-    )?;
+    let load_fn = Function::new(ctx.clone(), move |abs_path: String| -> Option<String> {
+        let p = PathBuf::from(abs_path.replace('/', "\\"));
+        // C1: 根校验——仅允许 plugin_root 内的文件
+        let p_norm = loader::normalize_for_root(&p);
+        if !p_norm.starts_with(&root_norm) {
+            eprintln!("[host] __cjsLoad blocked path outside plugin dir: {abs_path}");
+            return None;
+        }
+        std::fs::read_to_string(&p).ok()
+    })?;
     ctx.globals().set("__cjsLoad", load_fn)?;
     Ok(())
 }
@@ -367,4 +433,17 @@ fn finish_promise<'js>(
 
 fn js_err(e: rquickjs::Error) -> Err2 {
     ("INTERNAL_ERROR".into(), Some(format!("js: {e}")))
+}
+
+#[cfg(test)]
+mod random_tests {
+    use super::secure_random_u32;
+
+    #[test]
+    fn secure_random_source_produces_full_width_words() {
+        let samples = (0..16)
+            .map(|_| secure_random_u32().expect("OS random source must be available"))
+            .collect::<Vec<_>>();
+        assert!(samples.iter().any(|sample| *sample > 255));
+    }
 }

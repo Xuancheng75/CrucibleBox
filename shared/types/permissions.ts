@@ -12,7 +12,8 @@ export enum Permission {
   FileRead = 'file:read',
   FileWrite = 'file:write',
   ThemeWrite = 'theme:write',
-  TrustedUniEnv = 'trusted:unienv'
+  TrustedUniEnv = 'trusted:unienv',
+  TrustedDocumentEngine = 'trusted:document-engine'
 }
 
 export const ALL_PERMISSIONS: Permission[] = Object.values(Permission)
@@ -31,5 +32,6 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   [Permission.FileRead]: '读取本地文件',
   [Permission.FileWrite]: '写入本地文件',
   [Permission.ThemeWrite]: '修改工具箱主题',
-  [Permission.TrustedUniEnv]: '调用宿主持有的 UniEnv 安装服务'
+  [Permission.TrustedUniEnv]: '调用宿主持有的 UniEnv 安装服务',
+  [Permission.TrustedDocumentEngine]: '调用宿主持有的 Document Engine 文档处理服务'
 }

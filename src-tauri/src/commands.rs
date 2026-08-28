@@ -238,19 +238,25 @@ pub fn plugin_enable(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let db_guard = lock(&db);
-    let record = db_guard
+    let record = lock(&db)
         .plugin_backend_record(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("plugin not found: {id}"))?;
     if install.is_blocked(&record.name) {
         return Err("plugin is blocked after interrupted transaction".into());
     }
-    db_guard
+    lock(&db)
         .set_plugin_enabled(&id, true)
         .map_err(|e| e.to_string())?;
     // 惰性激活 backend（若插件有 backend）
-    let _ = backend.ensure_activated(&id, record);
+    let activation_record = lock(&db)
+        .plugin_backend_record(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("plugin not found: {id}"))?;
+    if let Err(error) = backend.ensure_activated(&id, activation_record) {
+        let _ = lock(&db).set_plugin_enabled(&id, false);
+        return Err(format!("failed to activate plugin: {error}"));
+    }
     backend.emit(
         "plugin:status-change",
         serde_json::json!({ "pluginId": id, "status": "active" }),
@@ -270,16 +276,18 @@ pub fn plugin_disable(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let db_guard = lock(&db);
-    let record = db_guard
+    let record = lock(&db)
         .plugin_backend_record(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("plugin not found: {id}"))?;
     if install.is_blocked(&record.name) {
         return Err("plugin is blocked after interrupted transaction".into());
     }
-    backend.deactivate(&id);
-    db_guard
+    backend.begin_maintenance(&id)?;
+    let deactivate_result = backend.deactivate(&id);
+    backend.end_maintenance(&id);
+    deactivate_result?;
+    lock(&db)
         .set_plugin_enabled(&id, false)
         .map_err(|e| e.to_string())?;
     backend.emit(
@@ -354,57 +362,29 @@ pub fn plugin_clear_logs(
     Ok(serde_json::json!({ "success": true }))
 }
 
-/// 卸载插件：停用 backend + 删除 DB 记录（对等 uninstall）。
-/// 1.9.2-b 最小面：不执行文件系统删除（安装事务链 1.9.2 后续/发布前补齐）。
+/// 卸载插件：释放 renderer/backend，再以 journal + quarantine 事务删除 DB 与目录。
 #[tauri::command(async)]
 pub fn plugin_uninstall(
     window: WebviewWindow,
-    backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
     install: State<'_, Arc<crate::install::InstallManager>>,
-    db: State<'_, Arc<Mutex<Db>>>,
+    protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let db_guard = lock(&db);
-    let record = db_guard
-        .plugin_backend_record(&id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("plugin not found: {id}"))?;
-    if install.is_blocked(&record.name) {
-        return Err("plugin is blocked after interrupted transaction".into());
+    let removed_sessions = protocol.registry.lock().unwrap().dispose_plugin(&id);
+    let mut result = install.uninstall(&id)?;
+    if let Some(object) = result
+        .get_mut("data")
+        .and_then(|value| value.as_object_mut())
+    {
+        object.insert(
+            "removedSessions".into(),
+            serde_json::json!(removed_sessions),
+        );
     }
-    backend.deactivate(&id);
-    let conn = db_guard.conn().lock().unwrap_or_else(|p| p.into_inner());
-    let removed = conn
-        .execute("DELETE FROM plugins WHERE id = ?1", [&id])
-        .map_err(|e| e.to_string())?;
-    if removed == 0 {
-        return Err(format!("plugin not found: {id}"));
-    }
-    // 1.9.14：删除插件目录（此前仅删 DB 行，目录残留导致重装撞
-    // "expected to be absent"）。尽力而为：删除失败则改名隔离，不影响卸载结果。
-    let dir = std::path::PathBuf::from(&record.installed_path);
-    if dir.is_dir() {
-        if let Err(err) = std::fs::remove_dir_all(&dir) {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            let quarantined = dir.with_file_name(format!(".uninstalled-{stamp}-{}", record.name));
-            match std::fs::rename(&dir, &quarantined) {
-                Ok(_) => eprintln!(
-                    "[uninstall] directory remove failed ({err}); quarantined to {}",
-                    quarantined.display()
-                ),
-                Err(e2) => eprintln!(
-                    "[uninstall] directory cleanup failed entirely: {err}; rename also failed: {e2}"
-                ),
-            }
-        }
-    }
-    Ok(serde_json::json!({ "success": true }))
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------

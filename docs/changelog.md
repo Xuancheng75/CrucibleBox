@@ -3,6 +3,15 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 1.9.18（2026-08）
+
+修复：
+
+- 插件卸载改为可恢复的 journal/quarantine 事务，释放 renderer 会话并阻止维护期间的重复激活/崩溃重启。
+- Document Engine 诊断、任务/模型读取链路补齐，支持从工具箱选择文件、多个文件或文件夹导入（文件夹递归枚举最多 1000 个文档）。
+- 修复转盘 sidecar `crypto.getRandomValues` 只生成低字节导致几乎永远命中首项的问题，改用 Windows BCrypt 系统随机源。
+- 剪贴板管理器启动时自动启用宿主监控，事件投递增加重试，历史写入串行化，复制文本可稳定进入列表。
+
 ## 1.9.17（2026-08）
 
 修复：

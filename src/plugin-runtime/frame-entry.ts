@@ -176,6 +176,12 @@ const pluginApi: PluginRenderProps['api'] = {
     const result = await request('dialog.confirm', options)
     return result.confirmed
   },
+  dialog: {
+    async open(options) {
+      const result = await request('dialog.open', options)
+      return result.paths
+    }
+  },
   onBackendMessage(handler) {
     backendListeners.add(handler)
     return () => backendListeners.delete(handler)

@@ -43,7 +43,7 @@ const rootPackageLock = JSON.parse(
 ) as { packages: Record<string, { resolved?: string; version?: string }> }
 
 describe('production plugin source projects', () => {
-  it('contains the ten expected plugins', () => {
+  it('contains the expected production plugins', () => {
     expect(catalog.map((plugin) => plugin.id)).toEqual([
       'diary',
       'dice-roller',
@@ -54,7 +54,8 @@ describe('production plugin source projects', () => {
       'json-toolkit',
       'clipboard-manager',
       'system-info',
-      'exchange-rates'
+      'exchange-rates',
+      'document-engine'
     ])
   })
 

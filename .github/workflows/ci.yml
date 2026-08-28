@@ -30,8 +30,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Quality gates
-        run: npm run check
+      # Keep the precheck plugin build explicit so a failure identifies the
+      # exact gate instead of being collapsed into npm's lifecycle wrapper.
+      - name: Quality gate - build plugins
+        run: npm run build:plugins:only
+
+      - name: Quality gate - verify plugin renderers
+        run: npm run verify:plugin-renderers
+
+      - name: Quality gate - verify trusted services
+        run: npm run verify:trusted-services
+
+      - name: Quality gate - format
+        run: npm run format:check
+
+      - name: Quality gate - lint
+        run: npm run lint
+
+      - name: Quality gate - typecheck
+        run: npm run typecheck
+
+      - name: Quality gate - tests
+        run: npm test
 
       - name: Build host and plugins
         run: npm run build
@@ -82,8 +102,9 @@ jobs:
           cache-dependency-path: tauri-frontend/package-lock.json
 
       - name: Setup Rust (stable-msvc)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master snapshot
         with:
+          toolchain: 1.92.0
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
@@ -107,7 +128,7 @@ jobs:
       # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
       - name: Build plugin host sidecar
         working-directory: src-tauri/cruciblebox-plugin-host
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Stage plugin host sidecar
         shell: bash
@@ -117,18 +138,33 @@ jobs:
           cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
             src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
 
+      - name: Build OCR worker
+        working-directory: ocr-worker
+        run: cargo build --release --locked
+
+      - name: Stage OCR worker sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp ocr-worker/target/release/ocr-worker.exe \
+            src-tauri/binaries/ocr-worker-x86_64-pc-windows-msvc.exe
+
+      - name: Verify Tauri runtime assets
+        run: node scripts/verify-tauri-runtime-assets.mjs --staged .
+
       - name: Cargo fmt check
         working-directory: src-tauri
         run: cargo fmt --check
 
       - name: Cargo clippy (deny warnings)
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Cargo test
         working-directory: src-tauri
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Cargo build (main app)
         working-directory: src-tauri
-        run: cargo build
+        run: cargo build --locked

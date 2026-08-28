@@ -13,10 +13,19 @@ mod clipboard_monitor;
 mod commands;
 mod data_dir;
 mod db;
+mod document_analyzer;
+mod document_chunker;
+mod document_converter;
+mod document_engine_cache;
+mod document_engine_service;
+mod document_engine_task;
+mod document_parser;
 mod envelope_host;
 mod install;
 mod journal;
 mod manifest;
+mod ocr_worker;
+mod pdf_parser;
 mod permissions;
 mod plugin_protocol;
 mod plugin_session;
@@ -31,6 +40,8 @@ mod unienv_versions;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
+
+type AppEmitter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
 fn db_path_in(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join("data").join("openbox.db")
@@ -127,9 +138,14 @@ fn main() {
             // 4) manage 状态（commands 以 State<Arc<Mutex<Db>>> 访问）+ 数据目录 + backend 管理器
             let db = Arc::new(Mutex::new(db));
             let backend = backend_process::BackendProcessManager::new(db.clone());
+            let ocr_worker = Arc::new(ocr_worker::OcrWorkerManager::discover(
+                std::time::Duration::from_secs(15 * 60),
+            ));
+            document_engine_service::configure_worker_manager(ocr_worker.clone());
             app.manage(db.clone());
             app.manage(data_dir.clone());
             app.manage(backend.clone());
+            app.manage(ocr_worker);
 
             // 4.1) 插件安装链：plugins_dir 统一为迁移根（%APPDATA%\cruciblebox\plugins，
             //      与 L3 迁移及存量 installed_path 一致；1.9.12 及之前误用 identifier 根
@@ -152,9 +168,13 @@ fn main() {
 
             // 4.2) 事件桥：backend 事件 → Tauri 全局事件（plugin:log/message/status-change）
             let app_handle = app.handle().clone();
-            backend.set_emitter(Arc::new(move |event, payload| {
+            let emitter: AppEmitter = Arc::new(move |event, payload| {
                 let _ = app_handle.emit(event, payload);
-            }));
+            });
+            backend.set_emitter(emitter.clone());
+            document_engine_service::configure_emitter(emitter);
+            // 1.9.18：剪贴板插件的监控必须在应用启动时就运行，不能依赖用户先打开插件页面。
+            backend.activate_enabled_with_permission(crate::permissions::CLIPBOARD);
 
             // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）
             let registry = Arc::new(Mutex::new(plugin_session::RendererSessionRegistry::new(
@@ -205,6 +225,11 @@ fn main() {
                     app_handle.try_state::<Arc<backend_process::BackendProcessManager>>()
                 {
                     backend.kill_all();
+                }
+                if let Some(ocr_worker) =
+                    app_handle.try_state::<Arc<ocr_worker::OcrWorkerManager>>()
+                {
+                    ocr_worker.shutdown();
                 }
             }
         });
