@@ -9,7 +9,7 @@
     "name": "document-engine",
     "version": "0.1.1",
     "permissions": ["trusted:document-engine", "dialog"],
-    "digest": "22f2b73cf0e93dbb6353920d419245fdbe7a53dac32a23e30fa5046a91d7e791",
+    "digest": "e2657c62edc89ac1ae1435559ae4dffebc3c7fe556344552d0d6fd051a7c5648",
     "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   }
 }
