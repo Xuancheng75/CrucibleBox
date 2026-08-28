@@ -64,7 +64,9 @@ export interface PluginManagerOptions {
   manifestReader?: (pluginDirectory: string) => PluginManifest
 }
 
-interface PluginRuntimeHostAPI extends PluginHostAPI {
+interface PluginRuntimeHostAPI extends Omit<PluginHostAPI, 'fetch'> {
+  /** The Electron runtime keeps the native Response until RPC serialization. */
+  fetch(url: string, opts?: RequestInit): Promise<Response>
   invokeTrustedService(service: string, operation: string, payload?: unknown): Promise<unknown>
 }
 

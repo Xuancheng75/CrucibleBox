@@ -51,7 +51,7 @@ jobs:
       - name: Setup Rust (stable-msvc)
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master snapshot
         with:
-          toolchain: stable
+          toolchain: 1.92.0
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
@@ -72,7 +72,7 @@ jobs:
       # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
       - name: Build plugin host sidecar
         working-directory: src-tauri/cruciblebox-plugin-host
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Stage plugin host sidecar
         shell: bash
@@ -84,7 +84,7 @@ jobs:
 
       - name: Build OCR worker
         working-directory: ocr-worker
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Stage OCR worker sidecar
         shell: bash
@@ -104,11 +104,11 @@ jobs:
 
       - name: Cargo clippy (deny warnings)
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Cargo test (workspace)
         working-directory: src-tauri
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Build frontend
         working-directory: tauri-frontend

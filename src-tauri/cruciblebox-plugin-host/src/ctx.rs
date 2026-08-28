@@ -237,7 +237,7 @@ function __buildCtx(id, config) {
   var api = ctxObj.api;
   api.notify = function (title, body) { __ff('notification.show', { title: title, body: body || '' }); };
   api.openDialog = function (type) { return __rpc('dialog.open', { type: type }); };
-  api.fetch = function (url, opts) { return __rpc('network.fetch', { url: url, opts: opts || {} }); };
+  api.fetch = function (url, opts) { return __rpc('network.fetch', { url: url, options: opts || {} }); };
   api.readFile = function (path) { return __rpc('file.read', { path: path }); };
   api.writeFile = function (path, data) { __rpc('file.write', { path: path, data: data }); };
   api.clipboard = {

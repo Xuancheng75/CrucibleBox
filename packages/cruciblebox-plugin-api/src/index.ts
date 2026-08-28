@@ -35,7 +35,7 @@ export interface PluginLogger {
 export interface PluginHostAPI {
   notify(title: string, body?: string): void
   openDialog(type: 'file' | 'folder'): Promise<string | null>
-  fetch(url: string, opts?: RequestInit): Promise<Response>
+  fetch(url: string, opts?: RequestInit): Promise<Response | PluginFetchResponse>
   readFile(path: string): Promise<Uint8Array>
   writeFile(path: string, data: string | Uint8Array): Promise<void>
   registerShortcut(keys: string, handler: () => void): () => void
@@ -50,6 +50,15 @@ export interface PluginHostAPI {
   getSystemInfo(): Promise<SystemInfo>
   /** 仅宿主固定摘要可信服务权限（例如 trusted:unienv / trusted:document-engine）可用；普通插件调用会失败 */
   invokeTrustedService?(service: string, operation: string, payload?: unknown): Promise<unknown>
+}
+
+/** JSON-safe fetch response used by the Tauri QuickJS backend. */
+export interface PluginFetchResponse {
+  ok: boolean
+  status: number
+  statusText: string
+  headers: Record<string, string>
+  body: string
 }
 
 export interface SystemInfo {
