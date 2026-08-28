@@ -41,9 +41,11 @@ for (const [serviceName, policy] of Object.entries(policies)) {
   }
   const digest = hash.digest('hex')
   if (digest !== policy.digest) {
-    throw new Error(
-      `${serviceName}: digest mismatch; expected ${policy.digest}, received ${digest}`
-    )
+    const message = `${serviceName}: digest mismatch; expected ${policy.digest}, received ${digest}`
+    // Surface the exact value in the Actions annotation as well as stderr;
+    // unauthenticated check views otherwise collapse failures to exit code 1.
+    console.error(`::error file=shared/trusted-service-policies.json::${message}`)
+    throw new Error(message)
   }
   console.log(`[trusted-services] verified ${serviceName} ${policy.version} sha256=${digest}`)
 }
