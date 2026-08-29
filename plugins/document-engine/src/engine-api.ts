@@ -11,7 +11,26 @@ export interface OcrWorkerStatus {
 
 export interface EngineStatus {
   ocrWorker?: OcrWorkerStatus
-  pdfium?: { available: boolean; path?: string; version?: string; runtimeDownload?: boolean }
+  pdfium?: {
+    available: boolean
+    initialized?: boolean
+    path?: string
+    version?: string
+    runtimeDownload?: boolean
+    error?: string | null
+  }
+  models?: {
+    directory?: string
+    default?: {
+      id?: string
+      version?: string
+      ready?: boolean
+      offline?: boolean
+      missing?: string[]
+      invalid?: string[]
+      error?: string
+    }
+  }
   gpu?: { available: boolean; provider?: string; device?: string }
   workers?: { ocr: number; parser: number; converter: number }
   config?: {
@@ -26,6 +45,7 @@ export interface EngineStatus {
 export interface ModelCatalogArtifact {
   name: string
   url: string
+  sources?: string[]
   sha256: string
   bytes?: number
   purpose?: string
@@ -37,9 +57,29 @@ export interface ModelCatalogEntry {
   version: string
   description: string
   recommended?: boolean
+  default?: boolean
+  offline?: boolean
   license?: string
   totalBytes?: number
   artifacts: ModelCatalogArtifact[]
+}
+
+export interface ModelBundleStatus {
+  id: string
+  version?: string
+  ready: boolean
+  offline?: boolean
+  default?: boolean
+  missing?: string[]
+  invalid?: string[]
+  error?: string
+}
+
+export interface ModelListResponse {
+  directory?: string
+  models: Array<Record<string, unknown>>
+  count?: number
+  bundles?: ModelBundleStatus[]
 }
 
 export interface OcrProgress {
@@ -193,12 +233,20 @@ function isModelCatalogEntry(value: unknown): value is ModelCatalogEntry {
   return entry.artifacts.every((artifact) => {
     if (!artifact || typeof artifact !== 'object') return false
     const candidate = artifact as Record<string, unknown>
+    const validSources =
+      candidate.sources === undefined ||
+      (Array.isArray(candidate.sources) &&
+        candidate.sources.length > 0 &&
+        candidate.sources.every(
+          (source) => typeof source === 'string' && source.startsWith('https://')
+        ))
     return (
       typeof candidate.name === 'string' &&
       typeof candidate.url === 'string' &&
       candidate.url.startsWith('https://') &&
       typeof candidate.sha256 === 'string' &&
-      /^[0-9a-f]{64}$/i.test(candidate.sha256)
+      /^[0-9a-f]{64}$/i.test(candidate.sha256) &&
+      validSources
     )
   })
 }
@@ -430,7 +478,9 @@ export async function retryTask(
   return { taskId: response.taskId, status: response.status ?? 'queued' }
 }
 
-export async function listModels(send: (message: unknown) => Promise<unknown>): Promise<unknown> {
+export async function listModels(
+  send: (message: unknown) => Promise<unknown>
+): Promise<ModelListResponse> {
   const response = await send({ type: 'document.models.list' })
   if (!response || typeof response !== 'object') {
     throw new Error(backendErrorMessage(response, '模型列表读取失败：后端未返回有效响应'))
@@ -438,7 +488,7 @@ export async function listModels(send: (message: unknown) => Promise<unknown>): 
   const candidate = response as { models?: unknown[] }
   if (!Array.isArray(candidate.models))
     throw new Error(backendErrorMessage(response, '模型列表读取失败'))
-  return response
+  return response as ModelListResponse
 }
 
 export async function listModelCatalog(

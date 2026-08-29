@@ -206,7 +206,12 @@ fn validate_model_url(url: &str) -> Result<(), String> {
         .to_ascii_lowercase();
     let allowed = [
         "github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+        "github-releases.githubusercontent.com",
         "raw.githubusercontent.com",
+        "cdn.jsdelivr.net",
+        "fastly.jsdelivr.net",
         "huggingface.co",
         "cdn-lfs.huggingface.co",
         "paddle-model-ecology.bj.bcebos.com",
@@ -297,6 +302,29 @@ pub fn install_remote(
         return Err(format!("提交模型失败: {error}"));
     }
     Ok(target)
+}
+
+/// Try a curated list of HTTPS sources in order. Each source is independently
+/// downloaded and verified against the same pinned SHA-256, so a transient
+/// network failure or an unavailable mirror never weakens artifact integrity.
+pub fn install_remote_from_sources(
+    root: &Path,
+    sources: &[String],
+    name: &str,
+    expected_sha256: &str,
+    overwrite: bool,
+) -> Result<(PathBuf, String), String> {
+    if sources.is_empty() {
+        return Err("模型没有可用的下载源".into());
+    }
+    let mut errors = Vec::with_capacity(sources.len());
+    for source in sources {
+        match install_remote(root, source, name, expected_sha256, overwrite) {
+            Ok(target) => return Ok((target, source.clone())),
+            Err(error) => errors.push(format!("{source}: {error}")),
+        }
+    }
+    Err(format!("所有模型下载源均失败：{}", errors.join("；")))
 }
 
 fn copy_directory(source: &Path, target: &Path) -> Result<(), String> {
@@ -425,8 +453,18 @@ mod tests {
     fn remote_model_url_is_allowlisted() {
         assert!(validate_model_url("https://github.com/example/model.onnx").is_ok());
         assert!(validate_model_url("https://huggingface.co/example/model.onnx").is_ok());
+        assert!(validate_model_url("https://cdn.jsdelivr.net/gh/example/model.onnx").is_ok());
         assert!(validate_model_url("http://github.com/example/model.onnx").is_err());
         assert!(validate_model_url("https://example.invalid/model.onnx").is_err());
         assert!(validate_model_name("../model.onnx").is_err());
+    }
+
+    #[test]
+    fn remote_sources_require_at_least_one_source() {
+        let dir = temp_dir("sources");
+        let error = install_remote_from_sources(&dir, &[], "model.onnx", &"a".repeat(64), false)
+            .unwrap_err();
+        assert!(error.contains("没有可用的下载源"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

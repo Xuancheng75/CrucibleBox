@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
@@ -82,7 +83,14 @@ pub fn render_page_to_png(
     Ok(dimensions)
 }
 
-fn bind_pdfium() -> Result<pdfium_bundled::pdfium_render::prelude::Pdfium, String> {
+struct PdfiumRuntime {
+    pdfium: pdfium_bundled::pdfium_render::prelude::Pdfium,
+    path: Option<PathBuf>,
+}
+
+static PDFIUM_RUNTIME: OnceLock<Result<PdfiumRuntime, String>> = OnceLock::new();
+
+fn pdfium_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::<PathBuf>::new();
     if let Some(path) = std::env::var_os("PDFIUM_LIB_PATH") {
         candidates.push(PathBuf::from(path));
@@ -98,41 +106,85 @@ fn bind_pdfium() -> Result<pdfium_bundled::pdfium_render::prelude::Pdfium, Strin
         candidates.push(cwd.join("resources/pdfium.dll"));
         candidates.push(cwd.join("pdfium.dll"));
     }
-    for candidate in candidates {
+    candidates
+}
+
+fn bind_pdfium() -> Result<&'static pdfium_bundled::pdfium_render::prelude::Pdfium, String> {
+    let runtime = PDFIUM_RUNTIME.get_or_init(initialize_pdfium);
+    match runtime {
+        Ok(runtime) => Ok(&runtime.pdfium),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn initialize_pdfium() -> Result<PdfiumRuntime, String> {
+    let mut failures = Vec::new();
+    for candidate in pdfium_candidates() {
         if candidate.is_file() {
-            return pdfium_bundled::bind_pdfium_from_path(&candidate)
-                .map_err(|error| format!("绑定 PDFium 失败 ({}): {error}", candidate.display()));
+            match pdfium_bundled::bind_pdfium_from_path(&candidate) {
+                Ok(pdfium) => {
+                    return Ok(PdfiumRuntime {
+                        pdfium,
+                        path: candidate.canonicalize().ok().or(Some(candidate)),
+                    });
+                }
+                Err(error) => failures.push(format!("{}: {error}", candidate.display())),
+            }
         }
     }
-    pdfium_bundled::bind_pdfium_silent()
-        .map_err(|error| format!("PDFium 不可用（请随包提供 pdfium.dll）: {error}"))
+    match pdfium_bundled::bind_pdfium_silent() {
+        Ok(pdfium) => Ok(PdfiumRuntime {
+            pdfium,
+            path: pdfium_bundled::cached_pdfium_path(),
+        }),
+        Err(error) => {
+            let detail = if failures.is_empty() {
+                error.to_string()
+            } else {
+                format!("{}；缓存绑定失败: {error}", failures.join("；"))
+            };
+            if detail.contains("PdfiumLibraryBindingsAlreadyInitialized") {
+                Err("PDFium 已在进程中初始化，但当前服务未能复用该实例".into())
+            } else {
+                Err(format!(
+                    "PDFium 初始化失败（请随包提供 pdfium.dll）: {detail}"
+                ))
+            }
+        }
+    }
 }
 
 /// Report whether the packaged/system PDFium runtime can be located without
 /// downloading anything. Binding is deferred until a scan page is requested.
 pub fn renderer_status() -> Value {
-    let mut candidates = Vec::<PathBuf>::new();
-    if let Some(path) = std::env::var_os("PDFIUM_LIB_PATH") {
-        candidates.push(PathBuf::from(path));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("pdfium.dll"));
-            candidates.push(parent.join("resources").join("pdfium.dll"));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("src-tauri/resources/pdfium.dll"));
-        candidates.push(cwd.join("resources/pdfium.dll"));
-        candidates.push(cwd.join("pdfium.dll"));
-    }
-    let path = candidates.into_iter().find(|candidate| candidate.is_file());
+    let runtime = PDFIUM_RUNTIME.get();
+    let initialized = matches!(runtime, Some(Ok(_)));
+    let binding_error = runtime.and_then(|result| result.as_ref().err()).cloned();
+    let bound_path = runtime.and_then(|result| {
+        result
+            .as_ref()
+            .ok()
+            .and_then(|runtime| runtime.path.clone())
+    });
+    let path = bound_path
+        .map(|value| value.to_string_lossy().into_owned())
+        .or_else(|| {
+            pdfium_candidates()
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+                .map(|value| value.to_string_lossy().into_owned())
+                .or_else(|| {
+                    pdfium_bundled::cached_pdfium_path()
+                        .map(|value| value.to_string_lossy().into_owned())
+                })
+        });
     json!({
-        "available": path.is_some() || pdfium_bundled::is_pdfium_cached(),
-        "path": path.map(|value| value.to_string_lossy().into_owned())
-            .or_else(|| pdfium_bundled::cached_pdfium_path().map(|value| value.to_string_lossy().into_owned())),
+        "available": binding_error.is_none() && (initialized || path.is_some()),
+        "initialized": initialized,
+        "path": path,
         "version": pdfium_bundled::PDFIUM_VERSION,
-        "runtimeDownload": true
+        "runtimeDownload": true,
+        "error": binding_error
     })
 }
 
@@ -886,6 +938,10 @@ mod tests {
         let (width, height) = render_page_to_png(&path, 1, &output).unwrap();
         assert!(width > 0 && height > 0);
         assert!(std::fs::metadata(&output).unwrap().len() > 100);
+        let (second_width, second_height) = render_page_to_png(&path, 1, &output).unwrap();
+        assert_eq!((second_width, second_height), (width, height));
+        let status = renderer_status();
+        assert_eq!(status["initialized"], true);
         let _ = std::fs::remove_file(output);
     }
 

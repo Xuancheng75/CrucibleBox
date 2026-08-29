@@ -76,13 +76,39 @@ impl InstallManager {
         })
     }
 
-    /// 启动恢复：调 journal::recover_interrupted，把 blocked 插件加入 blocked 集合。
+    /// 启动恢复：调 journal::recover_interrupted，以当前恢复报告重建 blocked 集合。
     /// 启动恢复：先把遗留根（identifier 根 com.cruciblebox.app\plugins）下的插件目录
     /// 迁移到统一根（%APPDATA%\cruciblebox\plugins）并修正 DB installed_path，再做 journal 恢复。
     pub fn run_startup_recovery(&self, legacy_roots: &[PathBuf]) {
         for legacy_root in legacy_roots {
             migrate_legacy_plugin_root(&self.plugins_dir, legacy_root, &self.db);
         }
+        self.run_recovery_pass();
+    }
+
+    /// 在没有待确认/执行中安装时重新运行确定性恢复，并以本次报告替换内存阻断集。
+    /// 用于进程内升级失败后的重新导入或卸载，无需用户重启应用。
+    fn recover_blocked_plugin(&self, name: &str) -> Result<(), String> {
+        if !self.is_blocked(name) {
+            return Ok(());
+        }
+        if !lock(&self.prepared).is_empty() || !lock(&self.in_flight).is_empty() {
+            return Err(format!(
+                "{name}: recovery is unavailable while another install is in progress"
+            ));
+        }
+        let _lifecycle = self.backend.begin_lifecycle_operation(name)?;
+        self.run_recovery_pass();
+        if self.is_blocked(name) {
+            Err(format!(
+                "{name}: plugin is blocked after an interrupted transaction"
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn run_recovery_pass(&self) {
         let find_metadata = |name: &str| -> Option<serde_json::Value> {
             let db = lock(&self.db);
             match db.plugin_find_by_name(name) {
@@ -95,8 +121,10 @@ impl InstallManager {
         };
         let report = recover_interrupted(&self.plugins_dir, &find_metadata, &restore_metadata);
         let mut blocked = lock(&self.blocked);
-        for name in report.blocked_plugins {
-            blocked.insert(name);
+        blocked.clear();
+        blocked.extend(report.blocked_plugins);
+        for action in report.actions {
+            eprintln!("[install recovery] {action}");
         }
     }
 
@@ -206,12 +234,16 @@ impl InstallManager {
     /// 所有路径操作都限制在 canonical plugins_dir 的直接子目录内，失败时保留 journal
     /// 供启动恢复器决定回滚或完成清理。
     pub fn uninstall(&self, id: &str) -> Result<serde_json::Value, String> {
-        let row = lock(&self.db)
+        let mut row = lock(&self.db)
             .plugin_find_by_id(id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("plugin not found: {id}"))?;
         if self.is_blocked(&row.name) {
-            return Err("plugin is blocked after interrupted transaction".into());
+            self.recover_blocked_plugin(&row.name)?;
+            row = lock(&self.db)
+                .plugin_find_by_id(id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("plugin not found after recovery: {id}"))?;
         }
         if lock(&self.prepared)
             .values()
@@ -329,10 +361,7 @@ impl InstallManager {
         validate_entrypoints(&root, &manifest)?;
         assert_manifest_installable(&manifest, self.allow_legacy_full_trust)?;
         if self.is_blocked(&manifest.name) {
-            return Err(format!(
-                "{}: plugin is blocked after an interrupted transaction",
-                manifest.name
-            ));
+            self.recover_blocked_plugin(&manifest.name)?;
         }
         if lock(&self.prepared)
             .values()
@@ -549,7 +578,7 @@ impl InstallManager {
         let id = existing.id.clone();
         let was_enabled = existing.enabled;
         let previous_metadata = plugin_row_to_metadata(&existing);
-        let _maintenance = match self.backend.enter_maintenance(&id) {
+        let maintenance = match self.backend.enter_maintenance(&id) {
             Ok(guard) => guard,
             Err(error) => {
                 let _ = install.transaction.rollback();
@@ -579,29 +608,62 @@ impl InstallManager {
             }
         }
         if let Err(e) = install.transaction.swap() {
-            self.rollback_upgrade(install, &previous_metadata);
-            return Err(e);
+            return match self.rollback_upgrade(install, &previous_metadata) {
+                Ok(()) => Err(e),
+                Err(rollback_error) => {
+                    self.block(name);
+                    Err(format!("{e}; rollback failed: {rollback_error}"))
+                }
+            };
         }
         let applied = Journal {
             phase: "applied".into(),
             ..journal.clone()
         };
         if let Err(e) = write_journal(target_dir, &applied) {
-            self.rollback_upgrade(install, &previous_metadata);
-            return Err(e);
+            return match self.rollback_upgrade(install, &previous_metadata) {
+                Ok(()) => Err(e),
+                Err(rollback_error) => {
+                    self.block(name);
+                    Err(format!("{e}; rollback failed: {rollback_error}"))
+                }
+            };
         }
         let fields = manifest_to_version_fields(&install.manifest, target_dir);
         if let Err(e) = lock(&self.db).plugin_update_version(&id, &fields) {
-            self.rollback_upgrade(install, &previous_metadata);
-            return Err(e);
+            return match self.rollback_upgrade(install, &previous_metadata) {
+                Ok(()) => Err(e),
+                Err(rollback_error) => {
+                    self.block(name);
+                    Err(format!("{e}; rollback failed: {rollback_error}"))
+                }
+            };
         }
         if was_enabled {
+            // commit() 仍持有插件生命周期单飞锁；先释放维护窗口，重新激活才不会
+            // 被 ensure_activated() 以 "plugin is in maintenance" 必然拒绝。
+            drop(maintenance);
             let record = lock(&self.db).plugin_backend_record(&id).ok().flatten();
             if let Some(record) = record {
                 if let Err(error) = self.backend.ensure_activated(&id, record) {
-                    self.block(name);
+                    if let Err(rollback_error) = self.rollback_upgrade(install, &previous_metadata)
+                    {
+                        self.block(name);
+                        return Err(format!(
+                            "failed to reactivate plugin after upgrade: {error}; rollback failed: {rollback_error}"
+                        ));
+                    }
+                    let restored = lock(&self.db).plugin_backend_record(&id).ok().flatten();
+                    if let Some(restored) = restored {
+                        if let Err(restored_error) = self.backend.ensure_activated(&id, restored) {
+                            let _ = lock(&self.db).set_plugin_enabled(&id, false);
+                            return Err(format!(
+                                "failed to reactivate plugin after upgrade: {error}; upgrade rolled back, but the previous plugin could not be reactivated: {restored_error}"
+                            ));
+                        }
+                    }
                     return Err(format!(
-                        "failed to reactivate plugin after upgrade: {error}"
+                        "failed to reactivate plugin after upgrade: {error}; upgrade rolled back"
                     ));
                 }
             }
@@ -651,23 +713,20 @@ impl InstallManager {
         }
     }
 
-    /// 升级回滚（硬性顺序）：先恢复 previous_metadata → 成功后才 rollback 目录；
-    /// 任一步失败 → blocked。
+    /// 升级回滚（硬性顺序）：先恢复 previous_metadata → 成功后才 rollback 目录。
+    /// 调用方仅在回滚本身失败时设置 blocked；普通激活失败不再留下永久阻断。
     fn rollback_upgrade(
         &self,
         install: &mut PreparedInstall,
         previous_metadata: &serde_json::Value,
-    ) {
-        let name = install.manifest.name.clone();
-        if let Err(e) = restore_plugin_metadata(&self.db, &name, previous_metadata) {
-            eprintln!("[install] upgrade rollback: metadata restore failed: {e}");
-            self.block(&name);
-            return;
-        }
-        if let Err(e) = install.transaction.rollback() {
-            eprintln!("[install] upgrade rollback: directory rollback failed: {e}");
-            self.block(&name);
-        }
+    ) -> Result<(), String> {
+        let name = &install.manifest.name;
+        restore_plugin_metadata(&self.db, name, previous_metadata)
+            .map_err(|error| format!("metadata restore failed: {error}"))?;
+        install
+            .transaction
+            .rollback()
+            .map_err(|error| format!("directory rollback failed: {error}"))
     }
 
     fn block(&self, name: &str) {
@@ -1137,6 +1196,56 @@ mod tests {
         drop(db);
         // backup 已清理
         assert!(!has_prefix(&plugins, ".demo.backup-"));
+    }
+
+    #[test]
+    fn enabled_upgrade_never_leaves_plugin_permanently_blocked() {
+        let (mgr, plugins, root) = setup("enabled-upgrade");
+        let source_dir = root.join("source");
+        write_fixture(&source_dir, "1.0.0");
+        mgr.remember_trusted_path(source_dir.clone());
+        let preview = mgr.preview(directory_source(&source_dir)).unwrap();
+        mgr.commit(preview["installToken"].as_str().unwrap().to_string())
+            .unwrap();
+        lock(&mgr.db).set_plugin_enabled("demo", true).unwrap();
+
+        let upgrade_dir = root.join("upgrade");
+        write_fixture(&upgrade_dir, "1.1.0");
+        mgr.remember_trusted_path(upgrade_dir.clone());
+        let preview = mgr.preview(directory_source(&upgrade_dir)).unwrap();
+        let result = mgr.commit(preview["installToken"].as_str().unwrap().to_string());
+
+        assert!(
+            !mgr.is_blocked("demo"),
+            "an activation failure must roll back instead of blocking the plugin"
+        );
+        let row = lock(&mgr.db).plugin_find_by_name("demo").unwrap().unwrap();
+        if result.is_ok() {
+            assert_eq!(row.version, "1.1.0");
+        } else {
+            assert_eq!(row.version, "1.0.0");
+        }
+        assert!(!has_prefix(&plugins, ".demo.backup-"));
+        assert!(!has_prefix(&plugins, ".demo.stage-"));
+        let _ = mgr.backend.deactivate("demo");
+    }
+
+    #[test]
+    fn blocked_plugin_can_recover_and_uninstall_without_restart() {
+        let (mgr, plugins, root) = setup("blocked-uninstall");
+        let source_dir = root.join("source");
+        write_fixture(&source_dir, "1.0.0");
+        mgr.remember_trusted_path(source_dir.clone());
+        let preview = mgr.preview(directory_source(&source_dir)).unwrap();
+        mgr.commit(preview["installToken"].as_str().unwrap().to_string())
+            .unwrap();
+        mgr.block("demo");
+
+        let result = mgr.uninstall("demo").unwrap();
+        assert_eq!(result["success"], true);
+        assert!(!mgr.is_blocked("demo"));
+        assert!(!plugins.join("demo").exists());
+        assert!(lock(&mgr.db).plugin_find_by_name("demo").unwrap().is_none());
     }
 
     #[test]

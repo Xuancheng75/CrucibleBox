@@ -1,6 +1,6 @@
 [package]
 name = "cruciblebox-plugin-host"
-version = "1.9.19"
+version = "1.9.21"
 edition = "2021"
 description = "CrucibleBox plugin backend sidecar (quickjs-ng) - runs plugin backend CJS in an isolated process"
 
