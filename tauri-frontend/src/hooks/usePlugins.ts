@@ -13,6 +13,7 @@ export interface UsePluginsReturn {
   activePlugins: Record<string, PluginLifecycleStatus>
   pluginOperationBusy: Record<string, boolean>
   batchOperationBusy: boolean
+  reorderBusy: boolean
   fetchPlugins: () => Promise<void>
   installPlugin: (source: 'zip' | 'directory', path: string) => Promise<boolean>
   uninstallPlugin: (id: string) => Promise<boolean>
@@ -35,6 +36,7 @@ export function usePlugins(): UsePluginsReturn {
   const activePlugins = usePluginStore((s) => s.activePlugins)
   const pluginOperationBusy = usePluginStore((s) => s.pluginOperationBusy)
   const batchOperationBusy = usePluginStore((s) => s.batchOperationBusy)
+  const reorderBusy = usePluginStore((s) => s.reorderBusy)
   const fetchPlugins = usePluginStore((s) => s.fetchPlugins)
   const installPlugin = usePluginStore((s) => s.installPlugin)
   const uninstallPlugin = usePluginStore((s) => s.uninstallPlugin)
@@ -56,6 +58,7 @@ export function usePlugins(): UsePluginsReturn {
     activePlugins,
     pluginOperationBusy,
     batchOperationBusy,
+    reorderBusy,
     fetchPlugins,
     installPlugin,
     uninstallPlugin,

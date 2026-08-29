@@ -121,9 +121,8 @@ export default function LauncherCard({
   }
 
   // 批量模式下的选中描边
-  const selectionStyle: CSSProperties = selectable && selected
-    ? { outline: `2px solid ${token.colorPrimary}`, outlineOffset: -1 }
-    : {}
+  const selectionStyle: CSSProperties =
+    selectable && selected ? { outline: `2px solid ${token.colorPrimary}`, outlineOffset: -1 } : {}
 
   return (
     <article
@@ -132,9 +131,11 @@ export default function LauncherCard({
       data-module={plugin.name.toUpperCase().slice(0, 12)}
       data-dragging={sortable?.isDragging}
       data-sorting={sortable?.isSorting}
-      {...(selectable ? {} : sortable?.dragAttributes ?? {})}
-      {...(selectable ? {} : sortable?.dragListeners ?? {})}
+      data-selected={selectable && selected}
+      {...(selectable ? {} : (sortable?.dragAttributes ?? {}))}
+      {...(selectable ? {} : (sortable?.dragListeners ?? {}))}
       role="listitem"
+      aria-selected={selectable ? selected : undefined}
       aria-posinset={sortable ? sortable.index + 1 : undefined}
       aria-setsize={sortable ? sortable.total : undefined}
       onMouseEnter={() => setHovered(true)}
@@ -155,13 +156,19 @@ export default function LauncherCard({
             lineHeight: 1
           }}
         >
-          {selected ? <CheckCircleFilled /> : <span style={{
-            display: 'inline-block',
-            width: 16,
-            height: 16,
-            border: `2px solid ${token.colorBorder}`,
-            borderRadius: '50%'
-          }} />}
+          {selected ? (
+            <CheckCircleFilled />
+          ) : (
+            <span
+              style={{
+                display: 'inline-block',
+                width: 16,
+                height: 16,
+                border: `2px solid ${token.colorBorder}`,
+                borderRadius: '50%'
+              }}
+            />
+          )}
         </div>
       )}
       <button
@@ -172,6 +179,7 @@ export default function LauncherCard({
             ? `${selected ? '取消选择' : '选择'} ${plugin.displayName}`
             : `打开 ${plugin.displayName}，${statusMeta.text}`
         }
+        aria-pressed={selectable ? selected : undefined}
         onClick={handleOpen}
         style={{
           position: 'absolute',
