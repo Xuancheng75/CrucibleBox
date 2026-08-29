@@ -14,19 +14,14 @@ import {
 import { SettingOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { check as checkUpdate, Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { tauriApi } from '../api/tauriApi'
+import { formatUpdateError, retryUpdateCheck } from '../utils/update-check'
 
 const { Title, Text } = Typography
 
 type AppUpdateChannel = 'stable' | 'beta'
 
 type UpdatePhase =
-  | 'idle'
-  | 'checking'
-  | 'available'
-  | 'downloading'
-  | 'downloaded'
-  | 'not-available'
-  | 'error'
+  'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
 
 interface UpdateState {
   phase: UpdatePhase
@@ -36,6 +31,10 @@ interface UpdateState {
 }
 
 const UPDATE_CHANNEL_KEY = 'ob-update-channel'
+const UPDATE_CHECK_TIMEOUT_MS = 12_000
+const UPDATE_CHECK_ATTEMPTS = 2
+const UPDATE_CHECK_RETRY_DELAY_MS = 800
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 60_000
 
 function loadChannel(): AppUpdateChannel {
   try {
@@ -60,6 +59,7 @@ export default function Settings() {
   const [checking, setChecking] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const updateRef = useRef<Update | null>(null)
+  const checkInFlightRef = useRef(false)
 
   const descriptionStyles = {
     label: {
@@ -97,12 +97,32 @@ export default function Settings() {
   }, [])
 
   const handleCheck = useCallback(async () => {
+    if (checkInFlightRef.current || downloading) return
+    checkInFlightRef.current = true
     setChecking(true)
-    setUpdateState({ phase: 'checking', availableVersion: null, progressPercent: null, message: null })
+    updateRef.current = null
+    setUpdateState({
+      phase: 'checking',
+      availableVersion: null,
+      progressPercent: null,
+      message: null
+    })
     try {
-      const update = await checkUpdate()
+      const update = await retryUpdateCheck(
+        () => checkUpdate({ timeout: UPDATE_CHECK_TIMEOUT_MS }),
+        {
+          timeoutMs: UPDATE_CHECK_TIMEOUT_MS,
+          maxAttempts: UPDATE_CHECK_ATTEMPTS,
+          retryDelayMs: UPDATE_CHECK_RETRY_DELAY_MS
+        }
+      )
       if (update === null) {
-        setUpdateState({ phase: 'not-available', availableVersion: null, progressPercent: null, message: null })
+        setUpdateState({
+          phase: 'not-available',
+          availableVersion: null,
+          progressPercent: null,
+          message: null
+        })
       } else {
         updateRef.current = update
         setUpdateState({
@@ -117,12 +137,13 @@ export default function Settings() {
         phase: 'error',
         availableVersion: null,
         progressPercent: null,
-        message: e instanceof Error ? e.message : String(e)
+        message: formatUpdateError(e)
       })
     } finally {
+      checkInFlightRef.current = false
       setChecking(false)
     }
-  }, [])
+  }, [downloading])
 
   const handleDownload = useCallback(async () => {
     const update = updateRef.current
@@ -137,22 +158,32 @@ export default function Settings() {
     try {
       let contentLength = 0
       let downloaded = 0
-      await update.download((event: DownloadEvent) => {
-        if (event.event === 'Started') {
-          contentLength = event.data.contentLength ?? 0
-        } else if (event.event === 'Progress') {
-          downloaded += event.data.chunkLength
-          const percent =
-            contentLength > 0 ? Math.min(100, Math.round((downloaded / contentLength) * 100)) : null
-          setUpdateState((current) => ({ ...current, progressPercent: percent }))
-        }
-      })
-      setUpdateState((current) => ({ ...current, phase: 'downloaded', progressPercent: 100, message: null }))
+      await update.download(
+        (event: DownloadEvent) => {
+          if (event.event === 'Started') {
+            contentLength = event.data.contentLength ?? 0
+          } else if (event.event === 'Progress') {
+            downloaded += event.data.chunkLength
+            const percent =
+              contentLength > 0
+                ? Math.min(100, Math.round((downloaded / contentLength) * 100))
+                : null
+            setUpdateState((current) => ({ ...current, progressPercent: percent }))
+          }
+        },
+        { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS }
+      )
+      setUpdateState((current) => ({
+        ...current,
+        phase: 'downloaded',
+        progressPercent: 100,
+        message: null
+      }))
     } catch (e) {
       setUpdateState((current) => ({
         ...current,
         phase: 'error',
-        message: e instanceof Error ? e.message : String(e)
+        message: formatUpdateError(e)
       }))
     } finally {
       setDownloading(false)
@@ -175,15 +206,17 @@ export default function Settings() {
 
   const updateBusy = checking || downloading
   const updateStatus =
-    ({
-      idle: '尚未检查',
-      checking: '正在检查更新',
-      available: `发现新版本 v${updateState.availableVersion ?? ''}`,
-      downloading: '正在下载',
-      downloaded: `${updateState.availableVersion ?? '新版本'} 已就绪`,
-      'not-available': '当前已是最新版本',
-      error: '更新检查失败'
-    } satisfies Record<UpdatePhase, string>)[updateState.phase] ?? '读取中'
+    (
+      {
+        idle: '尚未检查',
+        checking: '正在检查更新',
+        available: `发现新版本 v${updateState.availableVersion ?? ''}`,
+        downloading: '正在下载',
+        downloaded: `${updateState.availableVersion ?? '新版本'} 已就绪`,
+        'not-available': '当前已是最新版本',
+        error: '更新检查失败'
+      } satisfies Record<UpdatePhase, string>
+    )[updateState.phase] ?? '读取中'
 
   return (
     <div>
@@ -268,9 +301,7 @@ export default function Settings() {
                 }
               }}
             />
-            <Tag color={updateState.phase === 'error' ? 'error' : 'blue'}>
-              {updateStatus}
-            </Tag>
+            <Tag color={updateState.phase === 'error' ? 'error' : 'blue'}>{updateStatus}</Tag>
           </Space>
 
           {updateState.phase === 'available' && (
@@ -290,19 +321,11 @@ export default function Settings() {
           )}
 
           <Space wrap>
-            <Button
-              loading={checking}
-              disabled={updateBusy}
-              onClick={() => void handleCheck()}
-            >
+            <Button loading={checking} disabled={updateBusy} onClick={() => void handleCheck()}>
               检查更新
             </Button>
             {updateState.phase === 'available' && (
-              <Button
-                type="primary"
-                loading={downloading}
-                onClick={() => void handleDownload()}
-              >
+              <Button type="primary" loading={downloading} onClick={() => void handleDownload()}>
                 下载更新
               </Button>
             )}
