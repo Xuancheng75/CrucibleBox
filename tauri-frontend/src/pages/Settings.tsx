@@ -96,11 +96,21 @@ export default function Settings() {
       .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    return () => {
+      const update = updateRef.current
+      updateRef.current = null
+      void update?.close().catch(() => {})
+    }
+  }, [])
+
   const handleCheck = useCallback(async () => {
     if (checkInFlightRef.current || downloading) return
     checkInFlightRef.current = true
     setChecking(true)
+    const previousUpdate = updateRef.current
     updateRef.current = null
+    void previousUpdate?.close().catch(() => {})
     setUpdateState({
       phase: 'checking',
       availableVersion: null,
