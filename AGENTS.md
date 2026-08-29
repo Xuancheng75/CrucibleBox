@@ -6,7 +6,7 @@
 
 ## 1. 项目简介
 
-- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 19 + Ant Design 6 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前发布基线 **1.9.13**；Electron 43 为已冻结的历史运行线）。
+- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 18 + Ant Design 5 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前发布基线 **1.9.21**；Electron 43/React 19/Ant Design 6 为已冻结的历史运行线）。
 - 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/{cruciblebox-plugin-api,openbox-rpc}`）。
 - 插件模型：Manifest v2 + 自包含 browser renderer（跨源 sandboxed iframe + MessagePort RPC）+ 可选 backend（Rust sidecar 内嵌 quickjs-ng，帧协议 RPC v2）。UniEnv 为宿主固定摘要可信服务。
 - 当前基线：Rust workspace `src-tauri`（主 app + `cruciblebox-plugin-host` sidecar）测试全绿；插件独立构建（自包含 `scripts/` 构建器）；数据库 schema v3（rusqlite bundled）；插件 SDK v2 已冻结；自动更新走 tauri-plugin-updater（minisign 强制签名）。
@@ -77,7 +77,7 @@ cd tauri-frontend && npm run build
 
 ## 6. 版本路线
 
-1.8.X Tauri 迁移（骨架/DB/sidecar/renderer/发布链）→ 1.9.X 插件独立化 + 宿主收敛 → **1.9.2 冻结 Tauri 为唯一运行线并发布首个 Tauri 正式版**（Electron 分支归档）。当前发布基线：**1.9.13**。逐版本变更见 `docs/changelog.md`；UniEnv 在线版本源决策见 `docs/adr-0021-unienv-online-version-feeds.md`。
+1.8.X Tauri 迁移（骨架/DB/sidecar/renderer/发布链）→ 1.9.X 插件独立化 + 宿主收敛 → **1.9.2 冻结 Tauri 为唯一运行线并发布首个 Tauri 正式版**（Electron 分支归档）。当前发布基线：**1.9.21**。逐版本变更见 `docs/changelog.md`；UniEnv 在线版本源决策见 `docs/adr-0021-unienv-online-version-feeds.md`。
 
 ## 7. 文档约定
 

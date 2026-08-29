@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { resolveDocumentDropPaths, resolveDropPaths } from '../utils/drop-target'
+import { shouldHandleGlobalFileDrop } from '../utils/plugin-drop'
 import { usePluginStore } from '../store/plugin.store'
 import { useAppStore } from '../store/app.store'
 
@@ -33,8 +34,24 @@ export function useGlobalPluginDrop(): GlobalDropState {
       hideTimer = setTimeout(() => setDragActive(false), 1200)
     }
 
+    // dnd-kit 的插件排序是窗口内指针手势，不应被全局 OS 文件拖放层消费。
+    // 订阅 store 让内部拖拽一开始就撤掉可能已经显示的外部拖放遮罩。
+    const unsubscribeInternalDrag = usePluginStore.subscribe((state) => {
+      if (!state.internalPluginDragActive) return
+      if (hideTimer) clearTimeout(hideTimer)
+      setDragActive(false)
+    })
+
     getCurrentWebviewWindow()
       .onDragDropEvent((event) => {
+        const store = usePluginStore.getState()
+        const paths = event.payload.paths ?? []
+        if (!shouldHandleGlobalFileDrop(store.internalPluginDragActive, paths)) {
+          if (event.payload.type === 'drop') {
+            setDragActive(false)
+          }
+          return
+        }
         if (event.payload.type === 'enter' || event.payload.type === 'over') {
           const app = useAppStore.getState()
           const documentActive =
@@ -62,13 +79,13 @@ export function useGlobalPluginDrop(): GlobalDropState {
         if (hideTimer) clearTimeout(hideTimer)
         setDragActive(false)
 
-        const store = usePluginStore.getState()
         // 守卫：正在安装/预览未决/队列消费中 → 忽略新 drop
         if (
           store.loading ||
           store.installPreview ||
           store.queueProcessing ||
-          store.batchOperationBusy
+          store.batchOperationBusy ||
+          store.reorderBusy
         )
           return
         if (store.installQueue.length > 0) return
@@ -107,6 +124,7 @@ export function useGlobalPluginDrop(): GlobalDropState {
     return () => {
       disposed = true
       unlisten?.()
+      unsubscribeInternalDrag()
       if (hideTimer) clearTimeout(hideTimer)
     }
   }, [])
