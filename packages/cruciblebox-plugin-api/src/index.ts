@@ -131,6 +131,8 @@ export interface PluginRenderProps {
       }): Promise<string[]>
     }
     onBackendMessage(handler: (msg: unknown) => void): () => void
+    /** Receive real OS file/folder paths when the host supports OS drop forwarding. */
+    onFilesDropped?(handler: (paths: string[]) => void): () => void
     theme: {
       get(): Promise<Theme>
       list(): Promise<Theme[]>

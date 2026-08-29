@@ -5,6 +5,8 @@ import {
   CheckSquareOutlined,
   DeleteOutlined,
   ImportOutlined,
+  PlayCircleOutlined,
+  StopOutlined,
   ReloadOutlined,
   SearchOutlined
 } from '@ant-design/icons'
@@ -37,11 +39,12 @@ interface SortableLauncherCardProps {
   batchMode: boolean
   selected: boolean
   onToggleSelect: (id: string) => void
-  onToggle: (id: string, enabled: boolean) => void
-  onDelete: (id: string) => void
-  onConfigure: (plugin: PluginMeta) => void
+  onToggle?: (id: string, enabled: boolean) => void
+  onDelete?: (id: string) => void
+  onConfigure?: (plugin: PluginMeta) => void
   onOpen: (plugin: PluginMeta) => void
   onMove: (id: string, direction: -1 | 1) => void
+  operationsDisabled?: boolean
 }
 
 function SortableLauncherCard({
@@ -57,7 +60,8 @@ function SortableLauncherCard({
   onDelete,
   onConfigure,
   onOpen,
-  onMove
+  onMove,
+  operationsDisabled = false
 }: SortableLauncherCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: plugin.id,
@@ -83,18 +87,22 @@ function SortableLauncherCard({
       <LauncherCard
         plugin={plugin}
         status={status}
-        onToggle={onToggle}
-        onDelete={onDelete}
-        onConfigure={onConfigure}
+        onToggle={operationsDisabled ? undefined : onToggle}
+        onDelete={operationsDisabled ? undefined : onDelete}
+        onConfigure={operationsDisabled ? undefined : onConfigure}
         onOpen={onOpen}
-        sortable={{
-          index,
-          total,
-          isDragging,
-          isSorting,
-          onMoveUp: () => onMove(plugin.id, -1),
-          onMoveDown: () => onMove(plugin.id, 1)
-        }}
+        sortable={
+          operationsDisabled
+            ? undefined
+            : {
+                index,
+                total,
+                isDragging,
+                isSorting,
+                onMoveUp: () => onMove(plugin.id, -1),
+                onMoveDown: () => onMove(plugin.id, 1)
+              }
+        }
         selectable={batchMode}
         selected={selected}
         onSelectToggle={onToggleSelect}
@@ -114,6 +122,10 @@ export default function Home() {
     fetchPlugins,
     enablePlugin,
     disablePlugin,
+    batchEnablePlugins,
+    batchDisablePlugins,
+    pluginOperationBusy,
+    batchOperationBusy,
     uninstallPlugin,
     reorderPlugins
   } = usePlugins()
@@ -130,12 +142,24 @@ export default function Home() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [batchDeleteConfirmOpen, setBatchDeleteConfirmOpen] = useState(false)
   const [batchDeleting, setBatchDeleting] = useState(false)
+  const [batchLifecycleAction, setBatchLifecycleAction] = useState<'enable' | 'disable' | null>(
+    null
+  )
 
   const isSorting = activeId !== null
   const pluginIds = useMemo(() => plugins.map((p) => p.id), [plugins])
   const activePlugin = useMemo(() => plugins.find((p) => p.id === activeId), [plugins, activeId])
 
   const runningCount = Object.values(activePlugins).filter((s) => s === 'active').length
+  const lifecycleBusy =
+    batchOperationBusy ||
+    batchLifecycleAction !== null ||
+    batchDeleting ||
+    Object.values(pluginOperationBusy).some(Boolean)
+  const selectedEnabledCount = selectedIds.filter(
+    (id) => plugins.find((p) => p.id === id)?.enabled
+  ).length
+  const selectedDisabledCount = selectedIds.length - selectedEnabledCount
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -156,6 +180,7 @@ export default function Home() {
   }
 
   const handleToggle = async (id: string, enabled: boolean) => {
+    if (lifecycleBusy || pluginOperationBusy[id]) return
     const success = enabled ? await enablePlugin(id) : await disablePlugin(id)
     if (success) {
       message.success(enabled ? '插件已启用' : '插件已禁用')
@@ -165,6 +190,7 @@ export default function Home() {
   }
 
   const handleDelete = async (id: string) => {
+    if (lifecycleBusy || pluginOperationBusy[id]) return
     const success = await uninstallPlugin(id)
     if (success) {
       message.success('插件已删除')
@@ -182,9 +208,7 @@ export default function Home() {
   }
 
   const toggleSelect = (id: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    )
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   }
 
   const selectAll = () => {
@@ -192,23 +216,22 @@ export default function Home() {
   }
 
   const selectedNames = useMemo(
-    () =>
-      selectedIds
-        .map((id) => plugins.find((p) => p.id === id)?.displayName ?? id)
-        .slice(0, 20),
+    () => selectedIds.map((id) => plugins.find((p) => p.id === id)?.displayName ?? id).slice(0, 20),
     [selectedIds, plugins]
   )
 
   const confirmBatchDelete = async () => {
+    if (lifecycleBusy) return
+    const ids = [...selectedIds]
     setBatchDeleting(true)
     let succeeded = 0
-    const failures: string[] = []
-    for (const id of selectedIds) {
+    const failures: Array<{ id: string; name: string }> = []
+    for (const id of ids) {
       const name = plugins.find((p) => p.id === id)?.displayName ?? id
       // 顺序卸载：避免 staging/journal 竞争
       const ok = await uninstallPlugin(id)
       if (ok) succeeded += 1
-      else failures.push(name)
+      else failures.push({ id, name })
     }
     setBatchDeleting(false)
     setBatchDeleteConfirmOpen(false)
@@ -217,14 +240,43 @@ export default function Home() {
       setBatchMode(false)
       setSelectedIds([])
     } else if (succeeded > 0) {
-      message.warning(`已删除 ${succeeded} 个，失败 ${failures.length} 个：${failures.join('、')}`)
-      // 保留失败的勾选，便于重试
-      const failedIds = new Set(
-        plugins.filter((p) => failures.includes(p.displayName)).map((p) => p.id)
+      message.warning(
+        `已删除 ${succeeded} 个，失败 ${failures.length} 个：${failures.map((failure) => failure.name).join('、')}`
       )
-      setSelectedIds(selectedIds.filter((id) => failedIds.has(id)))
+      // 保留失败的勾选，便于重试
+      setSelectedIds(failures.map((failure) => failure.id))
     } else {
-      message.error(`删除失败：${failures.join('、')}`)
+      message.error(`删除失败：${failures.map((failure) => failure.name).join('、')}`)
+    }
+  }
+
+  const runBatchToggle = async (enabled: boolean) => {
+    if (lifecycleBusy || selectedIds.length === 0) return
+    const ids = selectedIds.filter((id) => {
+      const plugin = plugins.find((item) => item.id === id)
+      return plugin ? plugin.enabled !== enabled : false
+    })
+    if (ids.length === 0) {
+      message.info(enabled ? '所选插件已经全部启用' : '所选插件已经全部禁用')
+      return
+    }
+    setBatchLifecycleAction(enabled ? 'enable' : 'disable')
+    try {
+      const result = enabled ? await batchEnablePlugins(ids) : await batchDisablePlugins(ids)
+      if (result.failures.length === 0) {
+        message.success(`${enabled ? '已启用' : '已禁用'} ${result.succeeded.length} 个插件`)
+        setSelectedIds([])
+      } else {
+        const names = result.failures.map(
+          (failure) => plugins.find((plugin) => plugin.id === failure.id)?.displayName ?? failure.id
+        )
+        message.warning(
+          `${enabled ? '启用' : '禁用'}成功 ${result.succeeded.length} 个，失败 ${result.failures.length} 个：${names.join('、')}`
+        )
+        setSelectedIds(result.failures.map((failure) => failure.id))
+      }
+    } finally {
+      setBatchLifecycleAction(null)
     }
   }
 
@@ -329,6 +381,7 @@ export default function Home() {
           <Button
             icon={<ReloadOutlined />}
             loading={refreshing}
+            disabled={lifecycleBusy}
             aria-label="刷新插件列表"
             onClick={handleRefresh}
           >
@@ -338,6 +391,7 @@ export default function Home() {
             data-ob-kind="primary"
             type="primary"
             icon={<ImportOutlined />}
+            disabled={lifecycleBusy}
             onClick={() => setImportOpen(true)}
           >
             导入插件
@@ -372,10 +426,29 @@ export default function Home() {
             type="primary"
             size="small"
             icon={<DeleteOutlined />}
-            disabled={selectedIds.length === 0}
+            disabled={selectedIds.length === 0 || lifecycleBusy || batchDeleting}
             onClick={() => setBatchDeleteConfirmOpen(true)}
           >
             删除所选（{selectedIds.length}）
+          </Button>
+          <Button
+            type="primary"
+            size="small"
+            icon={<PlayCircleOutlined />}
+            disabled={selectedDisabledCount === 0 || lifecycleBusy}
+            loading={batchLifecycleAction === 'enable'}
+            onClick={() => void runBatchToggle(true)}
+          >
+            启用所选（{selectedDisabledCount}）
+          </Button>
+          <Button
+            size="small"
+            icon={<StopOutlined />}
+            disabled={selectedEnabledCount === 0 || lifecycleBusy}
+            loading={batchLifecycleAction === 'disable'}
+            onClick={() => void runBatchToggle(false)}
+          >
+            禁用所选（{selectedEnabledCount}）
           </Button>
         </div>
       )}
@@ -486,6 +559,7 @@ export default function Home() {
                   onConfigure={setConfigPlugin}
                   onOpen={handleOpen}
                   onMove={handleMove}
+                  operationsDisabled={lifecycleBusy}
                 />
               ))}
             </SortableContext>

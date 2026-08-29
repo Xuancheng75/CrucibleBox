@@ -245,6 +245,7 @@ pub fn plugin_enable(
     if install.is_blocked(&record.name) {
         return Err("plugin is blocked after interrupted transaction".into());
     }
+    let _lifecycle = backend.begin_lifecycle_operation(&id)?;
     lock(&db)
         .set_plugin_enabled(&id, true)
         .map_err(|e| e.to_string())?;
@@ -283,9 +284,9 @@ pub fn plugin_disable(
     if install.is_blocked(&record.name) {
         return Err("plugin is blocked after interrupted transaction".into());
     }
-    backend.begin_maintenance(&id)?;
+    let _lifecycle = backend.begin_lifecycle_operation(&id)?;
+    let _maintenance = backend.enter_maintenance(&id)?;
     let deactivate_result = backend.deactivate(&id);
-    backend.end_maintenance(&id);
     deactivate_result?;
     lock(&db)
         .set_plugin_enabled(&id, false)

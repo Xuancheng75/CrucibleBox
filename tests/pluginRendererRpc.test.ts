@@ -95,6 +95,7 @@ describe('plugin renderer RPC v1', () => {
       createPluginRendererRpcEvent(token, 'state.configChanged', { config: { count: 2 } }),
       createPluginRendererRpcEvent(token, 'theme.changed', { theme }),
       createPluginRendererRpcEvent(token, 'backend.message', { message: ['ready'] }),
+      createPluginRendererRpcEvent(token, 'host.filesDropped', { paths: ['C:/Docs/report.pdf'] }),
       createPluginRendererRpcEvent(token, 'host.dispose', {})
     ]
     for (const event of events) expect(validatePluginRendererRpcEnvelope(event)).toEqual(event)

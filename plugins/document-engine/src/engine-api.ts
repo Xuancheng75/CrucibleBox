@@ -11,7 +11,26 @@ export interface OcrWorkerStatus {
 
 export interface EngineStatus {
   ocrWorker?: OcrWorkerStatus
-  pdfium?: { available: boolean; path?: string; version?: string; runtimeDownload?: boolean }
+  pdfium?: {
+    available: boolean
+    initialized?: boolean
+    path?: string
+    version?: string
+    runtimeDownload?: boolean
+    error?: string | null
+  }
+  models?: {
+    directory?: string
+    default?: {
+      id?: string
+      version?: string
+      ready?: boolean
+      offline?: boolean
+      missing?: string[]
+      invalid?: string[]
+      error?: string
+    }
+  }
   gpu?: { available: boolean; provider?: string; device?: string }
   workers?: { ocr: number; parser: number; converter: number }
   config?: {
@@ -21,6 +40,46 @@ export interface EngineStatus {
     cacheDirectory?: string
     outputDirectory?: string
   }
+}
+
+export interface ModelCatalogArtifact {
+  name: string
+  url: string
+  sources?: string[]
+  sha256: string
+  bytes?: number
+  purpose?: string
+}
+
+export interface ModelCatalogEntry {
+  id: string
+  name: string
+  version: string
+  description: string
+  recommended?: boolean
+  default?: boolean
+  offline?: boolean
+  license?: string
+  totalBytes?: number
+  artifacts: ModelCatalogArtifact[]
+}
+
+export interface ModelBundleStatus {
+  id: string
+  version?: string
+  ready: boolean
+  offline?: boolean
+  default?: boolean
+  missing?: string[]
+  invalid?: string[]
+  error?: string
+}
+
+export interface ModelListResponse {
+  directory?: string
+  models: Array<Record<string, unknown>>
+  count?: number
+  bundles?: ModelBundleStatus[]
 }
 
 export interface OcrProgress {
@@ -144,6 +203,54 @@ export function backendErrorMessage(response: unknown, fallback: string): string
   return fallback
 }
 
+/** MessagePort/RPC payloads cannot contain JavaScript `undefined`. */
+function omitUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.filter((item) => item !== undefined).map((item) => omitUndefined(item)) as T
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, omitUndefined(item)])
+    ) as T
+  }
+  return value
+}
+
+function isModelCatalogEntry(value: unknown): value is ModelCatalogEntry {
+  if (!value || typeof value !== 'object') return false
+  const entry = value as Record<string, unknown>
+  if (
+    typeof entry.id !== 'string' ||
+    typeof entry.name !== 'string' ||
+    typeof entry.version !== 'string' ||
+    typeof entry.description !== 'string' ||
+    !Array.isArray(entry.artifacts)
+  ) {
+    return false
+  }
+  return entry.artifacts.every((artifact) => {
+    if (!artifact || typeof artifact !== 'object') return false
+    const candidate = artifact as Record<string, unknown>
+    const validSources =
+      candidate.sources === undefined ||
+      (Array.isArray(candidate.sources) &&
+        candidate.sources.length > 0 &&
+        candidate.sources.every(
+          (source) => typeof source === 'string' && source.startsWith('https://')
+        ))
+    return (
+      typeof candidate.name === 'string' &&
+      typeof candidate.url === 'string' &&
+      candidate.url.startsWith('https://') &&
+      typeof candidate.sha256 === 'string' &&
+      /^[0-9a-f]{64}$/i.test(candidate.sha256) &&
+      validSources
+    )
+  })
+}
+
 export interface DocumentTaskSnapshot {
   taskId: string
   resourceKey: string
@@ -206,11 +313,13 @@ export async function startOcr(
   path: string,
   options?: { language?: string; device?: string }
 ): Promise<TaskAccepted> {
-  const response = (await send({
-    type: 'document.ocr',
-    path,
-    options
-  })) as Partial<TaskAccepted> & {
+  const response = (await send(
+    omitUndefined({
+      type: 'document.ocr',
+      path,
+      options
+    })
+  )) as Partial<TaskAccepted> & {
     error?: string
     code?: string
   }
@@ -239,11 +348,13 @@ export async function startChunk(
   path: string,
   options?: Record<string, unknown>
 ): Promise<TaskAccepted> {
-  const response = (await send({
-    type: 'document.chunk',
-    path,
-    options
-  })) as Partial<TaskAccepted> & {
+  const response = (await send(
+    omitUndefined({
+      type: 'document.chunk',
+      path,
+      options
+    })
+  )) as Partial<TaskAccepted> & {
     error?: string
     code?: string
   }
@@ -259,12 +370,14 @@ export async function startConvert(
   target: string,
   outputPath?: string
 ): Promise<TaskAccepted> {
-  const response = (await send({
-    type: 'document.convert',
-    path,
-    target,
-    outputPath
-  })) as Partial<TaskAccepted> & {
+  const response = (await send(
+    omitUndefined({
+      type: 'document.convert',
+      path,
+      target,
+      outputPath
+    })
+  )) as Partial<TaskAccepted> & {
     error?: string
     code?: string
   }
@@ -280,12 +393,14 @@ export async function startBatch(
   operation: 'ocr' | 'parse' | 'convert',
   target?: string
 ): Promise<TaskAccepted> {
-  const response = (await send({
-    type: 'document.batch',
-    paths,
-    operation,
-    target
-  })) as Partial<TaskAccepted> & {
+  const response = (await send(
+    omitUndefined({
+      type: 'document.batch',
+      paths,
+      operation,
+      target
+    })
+  )) as Partial<TaskAccepted> & {
     error?: string
     code?: string
   }
@@ -363,7 +478,9 @@ export async function retryTask(
   return { taskId: response.taskId, status: response.status ?? 'queued' }
 }
 
-export async function listModels(send: (message: unknown) => Promise<unknown>): Promise<unknown> {
+export async function listModels(
+  send: (message: unknown) => Promise<unknown>
+): Promise<ModelListResponse> {
   const response = await send({ type: 'document.models.list' })
   if (!response || typeof response !== 'object') {
     throw new Error(backendErrorMessage(response, '模型列表读取失败：后端未返回有效响应'))
@@ -371,6 +488,32 @@ export async function listModels(send: (message: unknown) => Promise<unknown>): 
   const candidate = response as { models?: unknown[] }
   if (!Array.isArray(candidate.models))
     throw new Error(backendErrorMessage(response, '模型列表读取失败'))
+  return response as ModelListResponse
+}
+
+export async function listModelCatalog(
+  send: (message: unknown) => Promise<unknown>
+): Promise<ModelCatalogEntry[]> {
+  const response = await send({ type: 'document.models.catalog' })
+  if (!response || typeof response !== 'object') {
+    throw new Error(backendErrorMessage(response, '模型目录读取失败：后端未返回有效响应'))
+  }
+  const candidate = response as { catalog?: unknown }
+  if (!Array.isArray(candidate.catalog) || !candidate.catalog.every(isModelCatalogEntry)) {
+    throw new Error(backendErrorMessage(response, '模型目录读取失败'))
+  }
+  return candidate.catalog as ModelCatalogEntry[]
+}
+
+export async function installModelBundle(
+  send: (message: unknown) => Promise<unknown>,
+  modelId: string
+): Promise<unknown> {
+  const response = (await send({ type: 'document.models.installBundle', modelId })) as {
+    success?: boolean
+    error?: string
+  }
+  if (!response.success) throw new Error(response.error ?? '模型包安装失败')
   return response
 }
 
@@ -379,7 +522,9 @@ export async function installModel(
   sourcePath: string,
   name?: string
 ): Promise<unknown> {
-  const response = (await send({ type: 'document.models.install', sourcePath, name })) as {
+  const response = (await send(
+    omitUndefined({ type: 'document.models.install', sourcePath, name })
+  )) as {
     success?: boolean
     error?: string
   }
@@ -393,7 +538,9 @@ export async function installRemoteModel(
   sha256: string,
   name?: string
 ): Promise<unknown> {
-  const response = (await send({ type: 'document.models.install', url, sha256, name })) as {
+  const response = (await send(
+    omitUndefined({ type: 'document.models.install', url, sha256, name })
+  )) as {
     success?: boolean
     error?: string
   }
@@ -407,7 +554,9 @@ export async function updateRemoteModel(
   sha256: string,
   name: string
 ): Promise<unknown> {
-  const response = (await send({ type: 'document.models.update', url, sha256, name })) as {
+  const response = (await send(
+    omitUndefined({ type: 'document.models.update', url, sha256, name })
+  )) as {
     success?: boolean
     error?: string
   }

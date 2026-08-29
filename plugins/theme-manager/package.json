@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox-plugin-theme-manager",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "description": "Theme manager plugin for OpenBox",
   "main": "dist/main.js",

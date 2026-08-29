@@ -125,6 +125,9 @@ jobs:
       - name: Build plugin frame runtime
         run: npm run build:frame
 
+      - name: Verify plugin frame runtime
+        run: npm run verify:plugin-frame-runtime
+
       # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
       - name: Build plugin host sidecar
         working-directory: src-tauri/cruciblebox-plugin-host

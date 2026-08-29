@@ -183,6 +183,8 @@ export interface PluginRenderProps {
       }): Promise<string[]>
     }
     onBackendMessage(handler: (msg: unknown) => void): () => void
+    /** Available in frame runtimes that support host-level OS drop forwarding. */
+    onFilesDropped?(handler: (paths: string[]) => void): () => void
     theme: {
       get(): Promise<ToolboxTheme>
       list(): Promise<ToolboxTheme[]>

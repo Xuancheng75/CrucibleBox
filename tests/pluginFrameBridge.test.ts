@@ -172,6 +172,18 @@ describe('PluginFrameBridge', () => {
     harness.bridge.dispose()
   })
 
+  it('forwards real OS drop paths after the frame is ready', async () => {
+    const harness = createHarness()
+    await ready(harness)
+    harness.bridge.sendFilesDropped(['C:/Docs/report.pdf', 'D:/Docs'])
+    expect(await harness.nextMessage()).toMatchObject({
+      kind: 'event',
+      event: 'host.filesDropped',
+      data: { paths: ['C:/Docs/report.pdf', 'D:/Docs'] }
+    })
+    harness.bridge.dispose()
+  })
+
   it('restores an uncommitted theme preview when the frame bridge is disposed', async () => {
     const harness = createHarness([Permission.ThemeWrite])
     await ready(harness)

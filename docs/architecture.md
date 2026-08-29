@@ -135,12 +135,12 @@ renderer-safe 语义 CSS 变量原语（`plugins/theme-manager/src/theme-vars.ts
 - Rust core 启动里程碑记录到 stderr/日志；进程内存探针（`get_process_memory`，P4 A/B 基准）已于 1.9.3 移除。
 - 日志与指标：Electron 时代的 JSONL/指标实现冻结中；Rust 侧等价随 1.9.2 落地。
 - 插件日志按插件限制 2,000 行并清理 30 天前记录（DB `plugin_logs`）。
-- 构建对宿主（tauri-frontend dist）、frame runtime（`out/plugin-frame/runtime.js`）和六插件
+- 构建对宿主（tauri-frontend dist）、frame runtime（`out/plugin-frame/runtime.js`）和当前正式插件
   renderer 分别执行体积预算。
 
 ## 发布边界
 
-六插件构建为自包含 browser renderer（1.9.0 独立化：插件自包含 `scripts/` 构建器 + 统一 esbuild
+当前正式插件构建为自包含 browser renderer（1.9.0 独立化：插件自包含 `scripts/` 构建器 + 统一 esbuild
 0.28.2，宿主只消费 `plugin.json + dist/main.js + dist/renderer.js`）。确定性 ZIP 清单记录版本、
 执行模式、API、ZIP 与逐文件 SHA-256；Ed25519 插件签名（canonical JSON，`plugin-artifact-provenance.mjs`）。
 

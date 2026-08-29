@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons'
 import type { PluginMeta } from '../../../shared/types/plugin.types'
 import { PluginLifecycleStatus } from '../../../shared/types/plugin.types'
+import { useThemeStore } from '../store/theme.store'
 import PluginGlyph from './PluginGlyph'
 
 interface SortableState {
@@ -63,6 +64,7 @@ export default function LauncherCard({
   onSelectToggle
 }: LauncherCardProps) {
   const { token } = theme.useToken()
+  const toolboxThemeId = useThemeStore((state) => state.theme.id)
   const [hovered, setHovered] = useState(false)
 
   const statusMeta = status
@@ -84,6 +86,7 @@ export default function LauncherCard({
   const transition = sortable?.isDragging
     ? 'none'
     : (sortable?.dragStyle?.transition ?? 'all 0.2s ease')
+  const flatCardTheme = toolboxThemeId === 'light' || toolboxThemeId === 'leaf'
 
   const cardStyle: CSSProperties = {
     cursor: sortable?.isDragging ? 'grabbing' : 'pointer',
@@ -92,7 +95,11 @@ export default function LauncherCard({
     borderRadius: token.borderRadius,
     background: token.colorBgContainer,
     border: `1px solid ${effectiveHovered ? token.colorPrimary : token.colorBorder}`,
-    boxShadow: effectiveHovered ? token.boxShadowSecondary : token.boxShadow,
+    boxShadow: flatCardTheme
+      ? 'none'
+      : effectiveHovered
+        ? token.boxShadowSecondary
+        : token.boxShadow,
     transform: effectiveHovered ? 'translateY(-3px)' : 'translateY(0)',
     transition,
     height: '100%',

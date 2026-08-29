@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Button, Typography, Alert, Tag, theme } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { PluginHost } from './PluginHost'
@@ -25,6 +26,15 @@ export default function PluginView() {
   const updatePluginConfig = usePluginStore((s) => s.updatePluginConfig)
 
   const plugin = plugins.find((p) => p.id === activePluginId)
+
+  // 卸载当前插件后列表刷新是异步的；立即离开详情页，避免短暂显示空白或
+  // 让旧 renderer session 继续接收消息。
+  useEffect(() => {
+    if (activePluginId && !plugin) {
+      setActivePluginId(null)
+      setCurrentPage('home')
+    }
+  }, [activePluginId, plugin, setActivePluginId, setCurrentPage])
 
   const handleBack = () => {
     setActivePluginId(null)

@@ -444,6 +444,8 @@ pub struct BackendProcessManager {
     crash_history: Mutex<HashMap<String, Vec<Instant>>>,
     /// 插件维护期间禁止激活及崩溃自动重启，避免卸载/升级与恢复线程竞态。
     maintenance: Mutex<HashSet<String>>,
+    /// 每个插件的生命周期操作单飞锁。导入、升级、启停、卸载和恢复不得并行。
+    lifecycle: Mutex<HashSet<String>>,
     db: Arc<Mutex<Db>>,
     sidecar_exe: PathBuf,
     /// 事件发射回调（main.rs setup 注入 app.emit；未注入时 no-op）
@@ -472,6 +474,7 @@ impl BackendProcessManager {
             processes: Mutex::new(HashMap::new()),
             crash_history: Mutex::new(HashMap::new()),
             maintenance: Mutex::new(HashSet::new()),
+            lifecycle: Mutex::new(HashSet::new()),
             db,
             sidecar_exe,
             emitter: Mutex::new(None),
@@ -618,6 +621,69 @@ impl BackendProcessManager {
         self.maintenance.lock().unwrap().remove(plugin_id);
     }
 
+    /// 进入维护窗口并返回自动释放的 guard。
+    pub fn enter_maintenance(&self, plugin_id: &str) -> Result<PluginMaintenanceGuard<'_>, String> {
+        self.begin_maintenance(plugin_id)?;
+        Ok(PluginMaintenanceGuard {
+            manager: self,
+            plugin_id: plugin_id.to_string(),
+        })
+    }
+
+    /// 开始一个插件生命周期操作。返回的 guard 在所有返回路径上自动释放，
+    /// 避免快速导入/卸载失败后留下永久 busy 状态。
+    pub fn begin_lifecycle_operation(
+        &self,
+        plugin_ref: &str,
+    ) -> Result<PluginLifecycleGuard<'_>, String> {
+        // 旧版数据库允许 id 与 manifest name 不一致。生命周期调用方有时拿
+        // id、有时只能拿 name；同时登记两个别名，避免升级/卸载与启停互相穿透。
+        let keys = self.lifecycle_identity_keys(plugin_ref);
+        let mut lifecycle = self.lifecycle.lock().unwrap();
+        if keys.iter().any(|key| lifecycle.contains(key)) {
+            return Err(format!(
+                "{plugin_ref}: plugin lifecycle operation already in progress"
+            ));
+        }
+        lifecycle.extend(keys.iter().cloned());
+        Ok(PluginLifecycleGuard {
+            manager: self,
+            keys,
+        })
+    }
+
+    fn lifecycle_identity_keys(&self, plugin_ref: &str) -> Vec<String> {
+        let mut keys = vec![plugin_ref.to_string()];
+        // Keep one Db guard for both lookups. Chaining two `lock(&self.db)` calls
+        // in `or_else` can extend the first temporary guard until the whole
+        // expression ends and deadlock on a name-based lookup.
+        let db = lock(&self.db);
+        let row = db
+            .plugin_find_by_id(plugin_ref)
+            .ok()
+            .flatten()
+            .or_else(|| db.plugin_find_by_name(plugin_ref).ok().flatten());
+        drop(db);
+        if let Some(row) = row {
+            if !keys.iter().any(|key| key == &row.id) {
+                keys.push(row.id);
+            }
+            if !keys.iter().any(|key| key == &row.name) {
+                keys.push(row.name);
+            }
+        }
+        keys
+    }
+
+    fn is_lifecycle_busy(&self, plugin_ref: &str) -> bool {
+        let keys = self.lifecycle_identity_keys(plugin_ref);
+        self.lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|key| keys.iter().any(|candidate| candidate == key))
+    }
+
     fn is_in_maintenance(&self, plugin_id: &str) -> bool {
         self.maintenance.lock().unwrap().contains(plugin_id)
     }
@@ -641,7 +707,7 @@ impl BackendProcessManager {
     fn handle_crash(&self, plugin_id: &str) {
         // 从进程表移除（读线程已死，进程对象应清理）
         let exited = self.processes.lock().unwrap().remove(plugin_id);
-        if self.is_in_maintenance(plugin_id) {
+        if self.is_in_maintenance(plugin_id) || self.is_lifecycle_busy(plugin_id) {
             let _ = exited;
             return;
         }
@@ -674,9 +740,16 @@ impl BackendProcessManager {
         std::thread::spawn(move || {
             std::thread::sleep(backoff);
             // 重启：重新读 DB 记录并 ensure_activated
-            if let Ok(Some(record)) = db.lock().unwrap().plugin_backend_record(&pid) {
+            // 先把记录拷贝出来，确保调用 lifecycle busy 检查时没有持有 DB 锁。
+            let record = db
+                .lock()
+                .unwrap()
+                .plugin_backend_record(&pid)
+                .ok()
+                .flatten();
+            if let Some(record) = record {
                 if let Some(mgr) = weak.upgrade() {
-                    if mgr.is_in_maintenance(&pid) {
+                    if mgr.is_in_maintenance(&pid) || mgr.is_lifecycle_busy(&pid) {
                         return;
                     }
                     if let Err(e) = mgr.ensure_activated(&pid, record) {
@@ -715,6 +788,34 @@ impl BackendProcessManager {
     }
 }
 
+/// RAII 生命周期锁。必须在 `begin_lifecycle_operation` 返回后一直持有到
+/// DB、目录、backend 和 renderer session 全部完成变更。
+pub struct PluginLifecycleGuard<'a> {
+    manager: &'a BackendProcessManager,
+    keys: Vec<String>,
+}
+
+impl Drop for PluginLifecycleGuard<'_> {
+    fn drop(&mut self) {
+        let mut lifecycle = self.manager.lifecycle.lock().unwrap();
+        for key in &self.keys {
+            lifecycle.remove(key);
+        }
+    }
+}
+
+/// RAII 维护窗口 guard。升级、卸载和停用遇到错误时也会释放维护标记。
+pub struct PluginMaintenanceGuard<'a> {
+    manager: &'a BackendProcessManager,
+    plugin_id: String,
+}
+
+impl Drop for PluginMaintenanceGuard<'_> {
+    fn drop(&mut self) {
+        self.manager.end_maintenance(&self.plugin_id);
+    }
+}
+
 /// 锁辅助（零 unwrap 约束：poisoned 时取内部值继续）
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -723,6 +824,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_DB_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     /// 真实 e2e：spawn 宿主侧 sidecar → 真实 gif-editor dist → initialize/message/dispose
     /// 需要 sidecar exe 已构建（cargo build --manifest-path cruciblebox-plugin-host/Cargo.toml）
@@ -741,7 +845,9 @@ mod tests {
     }
 
     fn temp_db() -> Arc<Mutex<Db>> {
-        let dir = std::env::temp_dir().join(format!("cb-backend-test-{}", std::process::id()));
+        let sequence = TEMP_DB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("cb-backend-test-{}-{sequence}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("openbox.db");
         let _ = std::fs::remove_file(&path);
@@ -956,6 +1062,60 @@ mod tests {
         );
         assert!(!miss.is_file());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lifecycle_operations_are_single_flight_and_release_on_drop() {
+        let db = temp_db();
+        let manager = BackendProcessManager::new(db);
+        let first = manager
+            .begin_lifecycle_operation("demo")
+            .expect("first lifecycle operation should start");
+        let error = match manager.begin_lifecycle_operation("demo") {
+            Ok(_) => panic!("same plugin must be single-flight"),
+            Err(error) => error,
+        };
+        assert!(error.contains("already in progress"));
+        drop(first);
+        manager
+            .begin_lifecycle_operation("demo")
+            .expect("guard drop must release lifecycle operation");
+    }
+
+    #[test]
+    fn lifecycle_operation_covers_legacy_id_and_name_aliases() {
+        let db = temp_db();
+        lock(&db)
+            .plugin_create(&crate::db::PluginRow {
+                id: "legacy-id".into(),
+                name: "demo".into(),
+                version: "1.0.0".into(),
+                display_name: "Demo".into(),
+                description: String::new(),
+                author: String::new(),
+                icon: String::new(),
+                entry_main: "dist/main.js".into(),
+                entry_renderer: "dist/renderer.js".into(),
+                permissions: "[]".into(),
+                config_schema: "{}".into(),
+                config_data: "{}".into(),
+                enabled: false,
+                installed_path: "C:/plugins/demo".into(),
+                installed_at: String::new(),
+                updated_at: String::new(),
+                sort_order: 0,
+            })
+            .unwrap();
+        let manager = BackendProcessManager::new(db);
+        let guard = manager
+            .begin_lifecycle_operation("demo")
+            .expect("name should acquire lifecycle operation");
+        let error = match manager.begin_lifecycle_operation("legacy-id") {
+            Ok(_) => panic!("legacy id must share the same lifecycle operation"),
+            Err(error) => error,
+        };
+        assert!(error.contains("already in progress"));
+        drop(guard);
     }
 
     /// Bug B 复现：真实 sidecar + 真实 unienv 插件，重放 renderer 请求序列。

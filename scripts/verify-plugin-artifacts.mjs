@@ -8,11 +8,16 @@ import {
   sha256,
   verifyPluginArtifactManifest
 } from './plugin-artifact-provenance.mjs'
+import { readTauriVersion } from './tauri-version.mjs'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
 const catalog = JSON.parse(readFileSync(resolve(scriptDirectory, 'plugin-catalog.json'), 'utf8'))
 const hostPackage = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'))
+// 与 package-plugins.mjs 对齐：只有 Tauri 工作流显式传入 --tauri 才读取 Tauri 版本。
+const applicationVersion = process.argv.includes('--tauri')
+  ? readTauriVersion(repositoryRoot)
+  : hostPackage.version
 const expectedPlugins = []
 
 for (const plugin of catalog) {
@@ -89,7 +94,7 @@ const manifestPath = resolve(artifactDirectory, 'manifest.json')
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 const expectedManifest = {
   schemaVersion: 1,
-  application: { name: hostPackage.name, version: hostPackage.version },
+  application: { name: hostPackage.name, version: applicationVersion },
   plugins: expectedPlugins
 }
 if (canonicalJson(manifest) !== canonicalJson(expectedManifest)) {

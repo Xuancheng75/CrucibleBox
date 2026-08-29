@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
@@ -82,7 +83,14 @@ pub fn render_page_to_png(
     Ok(dimensions)
 }
 
-fn bind_pdfium() -> Result<pdfium_bundled::pdfium_render::prelude::Pdfium, String> {
+struct PdfiumRuntime {
+    pdfium: pdfium_bundled::pdfium_render::prelude::Pdfium,
+    path: Option<PathBuf>,
+}
+
+static PDFIUM_RUNTIME: OnceLock<Result<PdfiumRuntime, String>> = OnceLock::new();
+
+fn pdfium_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::<PathBuf>::new();
     if let Some(path) = std::env::var_os("PDFIUM_LIB_PATH") {
         candidates.push(PathBuf::from(path));
@@ -98,41 +106,85 @@ fn bind_pdfium() -> Result<pdfium_bundled::pdfium_render::prelude::Pdfium, Strin
         candidates.push(cwd.join("resources/pdfium.dll"));
         candidates.push(cwd.join("pdfium.dll"));
     }
-    for candidate in candidates {
+    candidates
+}
+
+fn bind_pdfium() -> Result<&'static pdfium_bundled::pdfium_render::prelude::Pdfium, String> {
+    let runtime = PDFIUM_RUNTIME.get_or_init(initialize_pdfium);
+    match runtime {
+        Ok(runtime) => Ok(&runtime.pdfium),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn initialize_pdfium() -> Result<PdfiumRuntime, String> {
+    let mut failures = Vec::new();
+    for candidate in pdfium_candidates() {
         if candidate.is_file() {
-            return pdfium_bundled::bind_pdfium_from_path(&candidate)
-                .map_err(|error| format!("绑定 PDFium 失败 ({}): {error}", candidate.display()));
+            match pdfium_bundled::bind_pdfium_from_path(&candidate) {
+                Ok(pdfium) => {
+                    return Ok(PdfiumRuntime {
+                        pdfium,
+                        path: candidate.canonicalize().ok().or(Some(candidate)),
+                    });
+                }
+                Err(error) => failures.push(format!("{}: {error}", candidate.display())),
+            }
         }
     }
-    pdfium_bundled::bind_pdfium_silent()
-        .map_err(|error| format!("PDFium 不可用（请随包提供 pdfium.dll）: {error}"))
+    match pdfium_bundled::bind_pdfium_silent() {
+        Ok(pdfium) => Ok(PdfiumRuntime {
+            pdfium,
+            path: pdfium_bundled::cached_pdfium_path(),
+        }),
+        Err(error) => {
+            let detail = if failures.is_empty() {
+                error.to_string()
+            } else {
+                format!("{}；缓存绑定失败: {error}", failures.join("；"))
+            };
+            if detail.contains("PdfiumLibraryBindingsAlreadyInitialized") {
+                Err("PDFium 已在进程中初始化，但当前服务未能复用该实例".into())
+            } else {
+                Err(format!(
+                    "PDFium 初始化失败（请随包提供 pdfium.dll）: {detail}"
+                ))
+            }
+        }
+    }
 }
 
 /// Report whether the packaged/system PDFium runtime can be located without
 /// downloading anything. Binding is deferred until a scan page is requested.
 pub fn renderer_status() -> Value {
-    let mut candidates = Vec::<PathBuf>::new();
-    if let Some(path) = std::env::var_os("PDFIUM_LIB_PATH") {
-        candidates.push(PathBuf::from(path));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("pdfium.dll"));
-            candidates.push(parent.join("resources").join("pdfium.dll"));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("src-tauri/resources/pdfium.dll"));
-        candidates.push(cwd.join("resources/pdfium.dll"));
-        candidates.push(cwd.join("pdfium.dll"));
-    }
-    let path = candidates.into_iter().find(|candidate| candidate.is_file());
+    let runtime = PDFIUM_RUNTIME.get();
+    let initialized = matches!(runtime, Some(Ok(_)));
+    let binding_error = runtime.and_then(|result| result.as_ref().err()).cloned();
+    let bound_path = runtime.and_then(|result| {
+        result
+            .as_ref()
+            .ok()
+            .and_then(|runtime| runtime.path.clone())
+    });
+    let path = bound_path
+        .map(|value| value.to_string_lossy().into_owned())
+        .or_else(|| {
+            pdfium_candidates()
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+                .map(|value| value.to_string_lossy().into_owned())
+                .or_else(|| {
+                    pdfium_bundled::cached_pdfium_path()
+                        .map(|value| value.to_string_lossy().into_owned())
+                })
+        });
     json!({
-        "available": path.is_some() || pdfium_bundled::is_pdfium_cached(),
-        "path": path.map(|value| value.to_string_lossy().into_owned())
-            .or_else(|| pdfium_bundled::cached_pdfium_path().map(|value| value.to_string_lossy().into_owned())),
+        "available": binding_error.is_none() && (initialized || path.is_some()),
+        "initialized": initialized,
+        "path": path,
         "version": pdfium_bundled::PDFIUM_VERSION,
-        "runtimeDownload": true
+        "runtimeDownload": true,
+        "error": binding_error
     })
 }
 
@@ -154,10 +206,19 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
     page_objects.sort_by_key(|object| object.id);
 
     // Some generated PDFs omit a conventional page dictionary while still
-    // containing `/Type /Page` in raw bytes. Keep the result useful and
-    // deterministic instead of silently returning zero pages.
+    // containing `/Type /Page` in raw bytes. Prefer PDFium's page tree for
+    // object streams/xref streams, which the lightweight text parser does not
+    // expand, and keep a clear error only when both parsers reject the file.
     if page_objects.is_empty() {
         let fallback_count = count_page_markers(bytes).max(1);
+        if let Some(page_count) = pdfium_page_count(path) {
+            return Ok(fallback_document(
+                path,
+                bytes,
+                page_count,
+                "pdfium-page-tree",
+            ));
+        }
         return Err(format!(
             "PDF page tree is unsupported (detected {fallback_count} page marker(s))"
         ));
@@ -254,6 +315,66 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         "warnings": warnings,
         "document": document
     }))
+}
+
+fn pdfium_page_count(path: &str) -> Option<usize> {
+    let pdfium = bind_pdfium().ok()?;
+    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    usize::try_from(document.pages().len())
+        .ok()
+        .filter(|count| *count > 0)
+}
+
+/// Fallback envelope for PDFs whose page tree is represented by compressed
+/// object/xref streams. PDFium provides the authoritative page count; pages
+/// are explicitly routed to OCR so no fabricated text is returned.
+fn fallback_document(path: &str, bytes: &[u8], page_count: usize, engine: &str) -> Value {
+    let source_hash = {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    };
+    let pages = (1..=page_count)
+        .map(|number| {
+            json!({
+                "number": number,
+                "width": 612.0,
+                "height": 792.0,
+                "blocks": []
+            })
+        })
+        .collect::<Vec<_>>();
+    let ocr_page_numbers = (1..=page_count).collect::<Vec<_>>();
+    json!({
+        "route": "ocr",
+        "requiresOcr": true,
+        "ocrPageNumbers": ocr_page_numbers,
+        "warnings": [{
+            "code": "pdf-page-tree-fallback",
+            "message": "PDF 页面树由 PDFium 解析；页面将渲染后交给 OCR Worker。"
+        }],
+        "document": {
+            "id": format!("pdf-{source_hash}"),
+            "source": {
+                "path": path,
+                "mime": "application/pdf",
+                "size": bytes.len(),
+                "hash": source_hash,
+                "engine": engine,
+                "engineVersion": pdfium_bundled::PDFIUM_VERSION
+            },
+            "metadata": {
+                "pageCount": page_count,
+                "hasTextLayer": false,
+                "isScanned": true,
+                "hasTables": false,
+                "hasFormulas": false,
+                "hasImages": false
+            },
+            "pages": pages,
+            "structure": { "outline": [], "readingOrder": [] }
+        }
+    })
 }
 
 fn parse_objects(bytes: &[u8]) -> HashMap<u32, PdfObject> {
@@ -786,6 +907,18 @@ mod tests {
         assert_eq!(output["ocrPageNumbers"][0], 1);
     }
 
+    #[test]
+    fn pdfium_fallback_preserves_page_count_without_fabricating_text() {
+        let output = fallback_document("input.pdf", b"%PDF-1.7", 3, "pdfium-page-tree");
+        assert_eq!(output["route"], "ocr");
+        assert_eq!(output["document"]["metadata"]["pageCount"], 3);
+        assert_eq!(output["ocrPageNumbers"], json!([1, 2, 3]));
+        assert!(output["document"]["pages"][0]["blocks"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
     #[cfg(windows)]
     #[test]
     fn pdfium_renders_embedded_scan_page() {
@@ -805,6 +938,10 @@ mod tests {
         let (width, height) = render_page_to_png(&path, 1, &output).unwrap();
         assert!(width > 0 && height > 0);
         assert!(std::fs::metadata(&output).unwrap().len() > 100);
+        let (second_width, second_height) = render_page_to_png(&path, 1, &output).unwrap();
+        assert_eq!((second_width, second_height), (width, height));
+        let status = renderer_status();
+        assert_eq!(status["initialized"], true);
         let _ = std::fs::remove_file(output);
     }
 

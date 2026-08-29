@@ -30,6 +30,9 @@ export interface PluginState {
   error: null | string
 
   activePlugins: Record<string, PluginLifecycleStatus>
+  /** 插件级生命周期操作状态，防止快速重复点击造成竞态。 */
+  pluginOperationBusy: Record<string, boolean>
+  batchOperationBusy: boolean
 
   /** 待确认的安装预览（installPlugin 成功后由确认弹窗 commit/discard） */
   installPreview: PluginInstallPreviewResponse | null
@@ -43,18 +46,92 @@ export interface PluginState {
   uninstallPlugin: (id: string) => Promise<boolean>
   enablePlugin: (id: string) => Promise<boolean>
   disablePlugin: (id: string) => Promise<boolean>
+  batchEnablePlugins: (ids: string[]) => Promise<BatchLifecycleResult>
+  batchDisablePlugins: (ids: string[]) => Promise<BatchLifecycleResult>
   updatePluginConfig: (id: string, config: PluginConfig) => Promise<boolean>
   reorderPlugins: (orderedIds: string[]) => Promise<boolean>
   setPluginStatus: (id: string, status: PluginLifecycleStatus) => void
 }
 
+export interface BatchLifecycleFailure {
+  id: string
+  error: string
+}
+
+export interface BatchLifecycleResult {
+  succeeded: string[]
+  failures: BatchLifecycleFailure[]
+}
+
 export type PluginStore = PluginState & InstallQueueState
+
+type PluginStoreSet = (
+  partial: Partial<PluginStore> | ((state: PluginStore) => Partial<PluginStore>)
+) => void
+
+let pluginsFetchSequence = 0
+
+async function runBatchLifecycle(
+  get: () => PluginStore,
+  set: PluginStoreSet,
+  ids: string[],
+  enabled: boolean
+): Promise<BatchLifecycleResult> {
+  if (get().batchOperationBusy) return { succeeded: [], failures: [] }
+  const uniqueIds = [...new Set(ids)].filter((id) => get().plugins.some((p) => p.id === id))
+  const succeeded: string[] = []
+  const failures: BatchLifecycleFailure[] = []
+  set({ batchOperationBusy: true, error: null })
+  try {
+    for (const id of uniqueIds) {
+      set((state) => ({
+        pluginOperationBusy: { ...state.pluginOperationBusy, [id]: true }
+      }))
+      try {
+        const result = enabled
+          ? await tauriApi.plugin.enable(id)
+          : await tauriApi.plugin.disable(id)
+        if (!result.success) {
+          failures.push({ id, error: result.error ?? (enabled ? '启用失败' : '停用失败') })
+          continue
+        }
+        succeeded.push(id)
+        set((state) => ({
+          plugins: state.plugins.map((plugin) =>
+            plugin.id === id ? { ...plugin, enabled } : plugin
+          ),
+          activePlugins: {
+            ...state.activePlugins,
+            [id]: enabled ? PluginLifecycleStatus.Active : PluginLifecycleStatus.Inactive
+          }
+        }))
+      } catch (error) {
+        failures.push({ id, error: toErrorMessage(error, enabled ? '启用失败' : '停用失败') })
+      } finally {
+        set((state) => {
+          const pluginOperationBusy = { ...state.pluginOperationBusy }
+          delete pluginOperationBusy[id]
+          return { pluginOperationBusy }
+        })
+      }
+    }
+    await get().fetchPlugins()
+    if (failures.length > 0) {
+      set({ error: `${enabled ? '批量启用' : '批量停用'}失败 ${failures.length} 项` })
+    }
+    return { succeeded, failures }
+  } finally {
+    set({ batchOperationBusy: false })
+  }
+}
 
 export const usePluginStore = create<PluginStore>((set, get) => ({
   plugins: [],
   loading: false,
   error: null,
   activePlugins: {},
+  pluginOperationBusy: {},
+  batchOperationBusy: false,
   installPreview: null,
   activeInstallPath: null,
   installQueue: [],
@@ -65,6 +142,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   batchFailures: [],
 
   fetchPlugins: async () => {
+    const requestSequence = ++pluginsFetchSequence
     set({ loading: true, error: null })
     try {
       const plugins = await Promise.race([
@@ -73,6 +151,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
           setTimeout(() => reject(new Error('请求超时，请检查主进程连接')), 5000)
         )
       ])
+      if (requestSequence !== pluginsFetchSequence) return
       set({
         plugins,
         activePlugins: Object.fromEntries(
@@ -81,11 +160,13 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         loading: false
       })
     } catch (err) {
+      if (requestSequence !== pluginsFetchSequence) return
       set({ error: toErrorMessage(err, '请求超时，请检查主进程连接'), loading: false })
     }
   },
 
   installPlugin: async (source, path) => {
+    if (get().batchOperationBusy || Object.keys(get().pluginOperationBusy).length > 0) return false
     set({ loading: true, error: null })
     try {
       // 后端 preview 要求路径必须来自用户对话框/拖拽登记（trusted_paths 防线）
@@ -106,6 +187,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   commitInstall: async () => {
     const preview = get().installPreview
     if (!preview?.installToken) return false
+    if (get().batchOperationBusy || Object.keys(get().pluginOperationBusy).length > 0) return false
     set({ loading: true, error: null })
     try {
       const result = await tauriApi.plugin.installCommit(preview.installToken)
@@ -156,7 +238,12 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   },
 
   uninstallPlugin: async (id) => {
-    set({ loading: true, error: null })
+    if (get().pluginOperationBusy[id] || get().batchOperationBusy) return false
+    set((state) => ({
+      loading: true,
+      error: null,
+      pluginOperationBusy: { ...state.pluginOperationBusy, [id]: true }
+    }))
     try {
       const result = await tauriApi.plugin.uninstall(id)
       if (result.success) {
@@ -168,10 +255,21 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     } catch (err) {
       set({ error: toErrorMessage(err, '卸载失败'), loading: false })
       return false
+    } finally {
+      set((state) => {
+        const pluginOperationBusy = { ...state.pluginOperationBusy }
+        delete pluginOperationBusy[id]
+        return { pluginOperationBusy }
+      })
     }
   },
 
   enablePlugin: async (id) => {
+    if (get().pluginOperationBusy[id] || get().batchOperationBusy) return false
+    set((state) => ({
+      error: null,
+      pluginOperationBusy: { ...state.pluginOperationBusy, [id]: true }
+    }))
     try {
       const result = await tauriApi.plugin.enable(id)
       if (result.success) {
@@ -186,10 +284,21 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     } catch (err) {
       set({ error: toErrorMessage(err, '启用失败') })
       return false
+    } finally {
+      set((state) => {
+        const pluginOperationBusy = { ...state.pluginOperationBusy }
+        delete pluginOperationBusy[id]
+        return { pluginOperationBusy }
+      })
     }
   },
 
   disablePlugin: async (id) => {
+    if (get().pluginOperationBusy[id] || get().batchOperationBusy) return false
+    set((state) => ({
+      error: null,
+      pluginOperationBusy: { ...state.pluginOperationBusy, [id]: true }
+    }))
     try {
       const result = await tauriApi.plugin.disable(id)
       if (result.success) {
@@ -204,7 +313,21 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     } catch (err) {
       set({ error: toErrorMessage(err, '停用失败') })
       return false
+    } finally {
+      set((state) => {
+        const pluginOperationBusy = { ...state.pluginOperationBusy }
+        delete pluginOperationBusy[id]
+        return { pluginOperationBusy }
+      })
     }
+  },
+
+  batchEnablePlugins: async (ids) => {
+    return runBatchLifecycle(get, set, ids, true)
+  },
+
+  batchDisablePlugins: async (ids) => {
+    return runBatchLifecycle(get, set, ids, false)
   },
 
   updatePluginConfig: async (id, config) => {

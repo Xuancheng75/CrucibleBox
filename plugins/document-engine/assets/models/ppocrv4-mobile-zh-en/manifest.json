@@ -1,0 +1,21 @@
+{
+  "id": "ppocrv4-mobile-zh-en",
+  "version": "4.0",
+  "engine": "ocr-worker-v1",
+  "license": "Apache-2.0",
+  "offline": true,
+  "artifacts": [
+    {
+      "name": "ch_PP-OCRv4_det.onnx",
+      "sha256": "69ce850fec741a2a4568c7c924bb025c9d4f1129e5f96ab428c799ccc5ef2275"
+    },
+    {
+      "name": "ch_PP-OCRv4_rec.onnx",
+      "sha256": "ad7dd55f6759fa02333bff6eb179a4f51be5b89cbe6f710249c95f47d0211350"
+    },
+    {
+      "name": "ppocr_keys_v1.txt",
+      "sha256": "a1c84d9bdb9ab29043c58896224d32941783eb821629618416dcb08f12886492"
+    }
+  ]
+}

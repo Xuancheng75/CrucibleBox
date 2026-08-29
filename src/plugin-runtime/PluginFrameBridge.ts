@@ -68,6 +68,7 @@ export class PluginFrameBridge {
   private theme: ToolboxTheme
   private themePreviewOriginal: ToolboxTheme | null = null
   private themeOperation: Promise<void> = Promise.resolve()
+  private pendingFileDrops: string[][] = []
   private ready = false
   private disposed = false
 
@@ -105,6 +106,15 @@ export class PluginFrameBridge {
     if (this.ready) this.sendEvent('backend.message', { message })
   }
 
+  sendFilesDropped(paths: string[]): void {
+    if (this.disposed || paths.length === 0) return
+    if (!this.ready) {
+      if (this.pendingFileDrops.length < 8) this.pendingFileDrops.push(paths.slice(0, 512))
+      return
+    }
+    this.sendEvent('host.filesDropped', { paths: paths.slice(0, 512) })
+  }
+
   dispose(): void {
     if (this.disposed) return
     void this.enqueueThemeOperation(() => this.rollbackThemePreview()).catch((error: unknown) => {
@@ -120,6 +130,7 @@ export class PluginFrameBridge {
     this.disposed = true
     this.ready = false
     this.inflight.clear()
+    this.pendingFileDrops = []
     this.messageTarget.removeEventListener('message', this.handlePortTransfer)
     this.targetWindow = null
     this.port?.close()
@@ -158,6 +169,9 @@ export class PluginFrameBridge {
         config: this.config as PluginRendererRpcJsonObject,
         theme: this.theme
       })
+      const pendingFileDrops = this.pendingFileDrops
+      this.pendingFileDrops = []
+      for (const paths of pendingFileDrops) this.sendFilesDropped(paths)
       this.options.onReady?.()
       return
     }

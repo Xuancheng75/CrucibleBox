@@ -14,6 +14,8 @@
 - **全局快捷键**：插件可注册系统级快捷键（如 `Cmd/Ctrl+I` 唤起插件导入）
 - **主题系统**：内置亮色（默认）/深色/清新绿/海洋蓝/科幻面板/零号城区六套预设，运行时切换并下发 CSS 变量，插件可实时感知主题变化
 - **插件排序**：长按卡片约半秒拖动排序，或使用卡片操作区的上移/下移按钮（键盘可操作）调整顺序；顺序持久化于数据库 schema v3 `plugins.sort_order`，插件激活顺序跟随列表
+- **批量插件管理**：主页批量管理支持批量启用、批量禁用和批量删除，操作按插件串行执行并汇总失败项
+- **生命周期恢复**：导入、升级、启停、卸载和崩溃恢复按插件单飞，目录替换使用可恢复事务，避免频繁操作导致进程或会话残留
 - **插件日志**：日志入库（`plugin_logs` 表）并支持按插件、级别筛选与实时刷新
 - **自定义协议**：`cruciblebox-plugin://`（Windows path 型 `http://cruciblebox-plugin.localhost/<token>/`）安全地服务插件 renderer 静态资源（内置路径穿越防护 + MIME 白名单）
 - **配置中心**：`settings` 表持久化应用配置（rusqlite bundled WAL）
@@ -29,7 +31,7 @@
 ## 快速开始
 
 ```bash
-# Tauri 线（当前开发线 1.9.2）
+# Tauri 线（当前发布线 1.9.20）
 cd src-tauri && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 cd tauri-frontend && npm install && npm run build
 npm run build:frame              # 插件 frame runtime（out/plugin-frame/runtime.js）
@@ -86,9 +88,9 @@ src-tauri/                 # Tauri 主进程（Rust）
   src/plugin_protocol.rs   # cruciblebox-plugin 协议 handler
   cruciblebox-plugin-host/ # 插件 backend sidecar crate（quickjs-ng）
 tauri-frontend/            # React 渲染层（App / PluginHost / themeCache）
-plugins/                   # 六生产插件（自包含工程）
+plugins/                   # 11 个正式插件（自包含工程）
 shared/                    # 跨进程共享契约（types / themes / RPC）
-electron/ database/ plugin-system/   # Electron 冻结线（1.9.2 冻结，只读参照）
+electron/ database/ plugin-system/   # Electron 冻结线（1.7.3，只读参照）
 ```
 
 ## 插件 backend（Rust sidecar）
@@ -113,9 +115,10 @@ browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题�
 
 - **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2
   downloadBootstrapper 兜底）+ tauri-plugin-updater（minisign 强制签名 JSON）+ cargo-cyclonedx
-  Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版 = **v1.9.2**。
+  Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版为 **v1.9.2**；当前发布版本与
+  验证基线为 **v1.9.20**（详见下方“当前验证基线”）。
 - 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
-  宿主和六插件可生成 CycloneDX SBOM。
+  宿主和 11 个正式插件可生成 CycloneDX SBOM。
 - 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息（进程内存探针已于 1.9.3 移除）。
 - 完整发布环境变量和验收步骤见 `docs/release-runbook.md`。
 
@@ -141,13 +144,17 @@ updater JSON + plugin signatures + CycloneDX SBOMs + SHA-256 checksums + GitHub 
 attestation. Windows installers are currently unsigned and can display Unknown publisher or
 SmartScreen warnings.
 
-## 当前验证基线（1.9.2）
+## 当前验证基线（1.9.20）
 
-- Tauri 线：`cargo test --workspace`（宿主 29 项 + sidecar 15 项）、`cargo clippy -D warnings`、
-  `cargo fmt --check`、`tauri-frontend` vite build；插件独立 `clean && build`（6/6）。
+- Tauri 线：`cargo test --workspace --locked`、`cargo clippy --workspace --all-targets --locked -D warnings`、
+  `cargo fmt --check`、`tauri-frontend` vite build；插件独立 `clean && build`（11/11）。
+- 版本一致性：Tauri 版本以 `src-tauri/tauri.conf.json` 为唯一来源，运行
+  `npm run verify:tauri-version` 校验 Cargo、前端 package/lockfile 与发布制品；根目录
+  `package.json` 的 `1.7.3` 仅属于冻结 Electron 遗留线。
 - 数据库 schema v3（rusqlite bundled WAL）；`%APPDATA%\cruciblebox` 数据路径（L3 已迁移）。
-- 六插件版本：diary 0.4.12、dice-roller 0.1.7、gif-editor 0.3.9、theme-manager 0.1.13、
-  turntable 0.1.11、unienv 0.5.8（1.9.0 独立化后统一 esbuild 0.28.2，unienv digest 已重钉）。
+- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.1.2，内置 CPU OCR 默认模型并支持镜像回退）、
+  Diary、Dice Roller、GIF Editor、Theme Manager、Turntable、UniEnv、JSON/文本工具箱、
+  剪贴板管理器、系统信息面板和实时汇率，共 11 个。
 - 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 崩溃 backoff+隔离 / PermissionGuard /
   storage/log/db host 方法（e2e：真实 sidecar + gif-editor dist 全链路）。
 - Electron 冻结线测试（宿主 36 文件 263 项 + 六插件 199 项 + 供应链 16 项）作为参照保留。

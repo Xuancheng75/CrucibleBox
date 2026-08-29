@@ -6,6 +6,8 @@ import {
   isParsedDocumentResult,
   isTerminalTask,
   getStatus,
+  installModelBundle,
+  listModelCatalog,
   listModels,
   pauseTask,
   retryTask,
@@ -80,6 +82,24 @@ describe('document-engine plugin contract', () => {
     await expect(startBatch(send, ['a.txt'], 'parse')).resolves.toMatchObject({ taskId: 'task-1' })
   })
 
+  it('omits undefined optional fields from RPC payloads', async () => {
+    const messages: unknown[] = []
+    const send = async (message: unknown) => {
+      messages.push(message)
+      return { taskId: 'task-1', status: 'queued' }
+    }
+    await startOcr(send, 'a.png')
+    await startChunk(send, 'a.txt')
+    await startConvert(send, 'a.txt', 'md')
+    await startBatch(send, ['a.txt'], 'parse')
+    for (const message of messages) {
+      expect(JSON.stringify(message)).not.toContain('undefined')
+      expect(message).not.toHaveProperty('options', undefined)
+      expect(message).not.toHaveProperty('outputPath', undefined)
+      expect(message).not.toHaveProperty('target', undefined)
+    }
+  })
+
   it('exposes task controls and model status without accepting malformed responses', async () => {
     const send = async (message: unknown) => {
       const type = (message as { type?: string }).type
@@ -95,6 +115,45 @@ describe('document-engine plugin contract', () => {
     await expect(
       listModels(async () => ({ code: 'plugin-not-found', error: 'plugin not found' }))
     ).rejects.toThrow('plugin not found [plugin-not-found]')
+  })
+
+  it('exposes the curated model catalog and validates its response shape', async () => {
+    const send = async (message: unknown) => {
+      expect(message).toEqual({ type: 'document.models.catalog' })
+      return {
+        catalog: [
+          {
+            id: 'ppocrv4-mobile-zh-en',
+            name: 'PP-OCRv4 中文/英文标准模型',
+            version: '4.0',
+            description: '本地 OCR',
+            artifacts: [
+              { name: 'ch_PP-OCRv4_det.onnx', url: 'https://example', sha256: 'a'.repeat(64) }
+            ]
+          }
+        ]
+      }
+    }
+    await expect(listModelCatalog(send)).resolves.toHaveLength(1)
+    await expect(
+      listModelCatalog(async () => ({ code: 'model-list-failed', error: '目录不可用' }))
+    ).rejects.toThrow('目录不可用 [model-list-failed]')
+    await expect(listModelCatalog(async () => ({ catalog: [{ id: 'broken' }] }))).rejects.toThrow(
+      '模型目录读取失败'
+    )
+  })
+
+  it('sends a stable model bundle id for one-click installation', async () => {
+    const send = async (message: unknown) => {
+      expect(message).toEqual({
+        type: 'document.models.installBundle',
+        modelId: 'ppocrv4-mobile-zh-en'
+      })
+      return { success: true, modelId: 'ppocrv4-mobile-zh-en' }
+    }
+    await expect(installModelBundle(send, 'ppocrv4-mobile-zh-en')).resolves.toMatchObject({
+      success: true
+    })
   })
 
   it('recognizes terminal job states', () => {

@@ -53,6 +53,7 @@ const rendererApiVersion = rootElement.dataset.apiVersion === '2' ? 2 : 1
 const rendererUrl = rootElement.dataset.rendererUrl ?? '/renderer.js'
 const propsListeners = new Set<PropsListener>()
 const backendListeners = new Set<(message: unknown) => void>()
+const fileDropListeners = new Set<(paths: string[]) => void>()
 const themeListeners = new Set<(theme: ToolboxTheme) => void>()
 const pendingTracker = new PluginRendererRpcPendingRequests()
 const pending = new Map<
@@ -74,6 +75,7 @@ let currentConfig: PluginConfig = {}
 let currentTheme: ToolboxTheme | null = null
 let requestSequence = 0
 let legacyLoadStarted = false
+let fatalRendered = false
 
 const ambientWindow = window as Window & {
   electronAPI?: unknown
@@ -107,6 +109,14 @@ document.body.style.margin = '0'
 document.body.style.minHeight = '100%'
 
 function renderFatal(error: unknown): void {
+  if (fatalRendered || disposed) return
+  fatalRendered = true
+  try {
+    mountCleanup?.()
+  } catch {
+    // A failing plugin cleanup must not hide the original renderer error.
+  }
+  mountCleanup = null
   const message = error instanceof Error ? error.message : String(error)
   rootElement.replaceChildren()
   const alert = document.createElement('pre')
@@ -117,6 +127,20 @@ function renderFatal(error: unknown): void {
   alert.textContent = `插件界面加载失败：${message}`
   rootElement.append(alert)
 }
+
+function handleWindowError(event: ErrorEvent): void {
+  renderFatal(event.error ?? new Error(event.message || '插件脚本执行失败'))
+}
+
+function handleUnhandledRejection(event: PromiseRejectionEvent): void {
+  renderFatal(event.reason ?? new Error('插件异步任务执行失败'))
+}
+
+// v2 renderer 的 React 挂载与 useEffect 错误不会经过 legacy renderer 的
+// loadLegacyRenderer().catch(renderFatal)。捕获 iframe 内未处理异常，避免宿主只
+// 留下一个空白页面，同时保留具体错误供用户/日志定位。
+window.addEventListener('error', handleWindowError)
+window.addEventListener('unhandledrejection', handleUnhandledRejection)
 
 function applyTheme(theme: ToolboxTheme): void {
   for (const [name, value] of Object.entries(themeToCssVars(theme))) {
@@ -186,6 +210,10 @@ const pluginApi: PluginRenderProps['api'] = {
     backendListeners.add(handler)
     return () => backendListeners.delete(handler)
   },
+  onFilesDropped(handler) {
+    fileDropListeners.add(handler)
+    return () => fileDropListeners.delete(handler)
+  },
   theme: {
     async get() {
       const result = await request('theme.get', {})
@@ -241,8 +269,12 @@ const subscribeProps: SubscribeProps = (listener) => {
 
 function mountWhenReady(): void {
   if (disposed || mountCleanup || !initialized || !currentTheme || !mountAdapter) return
-  const cleanup = mountAdapter(rootElement, createProps(), subscribeProps)
-  mountCleanup = typeof cleanup === 'function' ? cleanup : () => undefined
+  try {
+    const cleanup = mountAdapter(rootElement, createProps(), subscribeProps)
+    mountCleanup = typeof cleanup === 'function' ? cleanup : () => undefined
+  } catch (error) {
+    renderFatal(error)
+  }
 }
 
 async function loadLegacyRenderer(): Promise<void> {
@@ -312,6 +344,9 @@ function handleEvent(envelope: PluginRendererRpcEvent): void {
     case 'backend.message':
       for (const listener of backendListeners) listener(envelope.data.message)
       return
+    case 'host.filesDropped':
+      for (const listener of fileDropListeners) listener(envelope.data.paths)
+      return
     case 'host.dispose':
       dispose()
   }
@@ -357,7 +392,10 @@ function dispose(): void {
   pendingTracker.clear()
   propsListeners.clear()
   backendListeners.clear()
+  fileDropListeners.clear()
   themeListeners.clear()
+  window.removeEventListener('error', handleWindowError)
+  window.removeEventListener('unhandledrejection', handleUnhandledRejection)
   port?.close()
   port = null
 }

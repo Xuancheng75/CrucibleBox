@@ -4,12 +4,18 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:f
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sha256 } from './plugin-artifact-provenance.mjs'
+import { readTauriVersion } from './tauri-version.mjs'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
 const outputDirectory = resolve(repositoryRoot, 'artifacts', 'plugins')
 const catalog = JSON.parse(readFileSync(resolve(scriptDirectory, 'plugin-catalog.json'), 'utf8'))
 const hostPackage = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'))
+// Electron 发布链默认继续使用根 package.json（1.7.3 冻结线）；Tauri 工作流显式传入
+// --tauri，避免两条发布线互相污染版本清单。
+const applicationVersion = process.argv.includes('--tauri')
+  ? readTauriVersion(repositoryRoot)
+  : hostPackage.version
 const fixedTimestamp = new Date(2000, 0, 1, 0, 0, 0)
 const artifacts = []
 
@@ -58,7 +64,7 @@ writeFileSync(
   `${JSON.stringify(
     {
       schemaVersion: 1,
-      application: { name: hostPackage.name, version: hostPackage.version },
+      application: { name: hostPackage.name, version: applicationVersion },
       plugins: artifacts
     },
     null,

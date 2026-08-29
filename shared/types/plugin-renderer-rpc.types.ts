@@ -89,6 +89,9 @@ export interface PluginRendererRpcEventMap {
   'backend.message': {
     message: PluginRendererRpcJsonValue
   }
+  'host.filesDropped': {
+    paths: string[]
+  }
   'host.dispose': Record<string, never>
 }
 

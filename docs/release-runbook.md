@@ -51,8 +51,8 @@ npm run release:validate  # 全部 smoke + 更新元数据校验 + manifest（--
 - `CrucibleBox-<ver>-windows-x64-setup.exe` + `.blockmap`
 - `latest.yml` / `beta.yml`（含 installer SHA-512）
 - `SHA256SUMS`
-- 7 份 CycloneDX SBOM（`cruciblebox` + 6 插件 `.cdx.json`）
-- 6 个插件 ZIP + `manifest.json` + `manifest.sig.json`（Ed25519）
+- `cruciblebox` + 当前插件目录中每个正式插件各一份 CycloneDX SBOM（目前共 12 份）
+- 当前插件目录中的正式插件 ZIP + `manifest.json` + `manifest.sig.json`（Ed25519）
 - `release-manifest.json`（应用版本、插件版本、ZIP 清单、SHA-256、签名 key ID、SBOM、安装器摘要、attestation subject）
 - GitHub artifact attestation（`actions/attest@v4`）
 
@@ -85,8 +85,14 @@ gh attestation verify <setup.exe> -R Xuancheng75/CrucibleBox
 `tauri-frontend/package.json` 成对提升）→ 短分支 PR（双 CI 绿）→ merge → 打
 annotated tag `tauri-vX.Y.Z` 推送 → CI 自动完成：
 
+版本唯一来源为 `src-tauri/tauri.conf.json`。提交前运行
+`npm run verify:tauri-version`，它会校验 Tauri 配置、Cargo 包/锁文件和前端
+package/lockfile；根目录 `package.json` 的 1.7.3 属于冻结 Electron 遗留线，不能用于
+Tauri 版本或 channel 推导。
+
 - 门禁（fmt/clippy -D/test）→ 前端 build → frame runtime → 插件构建与 trusted
-  digest 校验 → 官方插件打包（`artifacts/plugins/*.zip`）→ sidecar 构建+stage →
+  digest 校验 → `npm run package:plugins:tauri` / `npm run verify:plugins:tauri` →
+  官方插件打包（`artifacts/plugins/*.zip`）→ sidecar 构建+stage →
   图标缓存强制清理 → `cargo tauri build --bundles nsis`（minisign 签名 latest.json）
 - **Verify embedded app icon**：解包 setup.exe 字节级校验内嵌应用图标
 - SBOM（cargo-cyclonedx 双源）→ attestation → GitHub Release 发布 → 同步滚动清单

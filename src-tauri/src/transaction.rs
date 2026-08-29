@@ -445,18 +445,25 @@ pub fn canonicalize_plugins_dir(p: &Path) -> Result<PathBuf, String> {
 
 /// permissions 含宿主固定可信服务权限 → 返回 pinned runtime 白名单，否则 None。
 pub fn trusted_allowlist(permissions: &[String]) -> Option<Vec<String>> {
-    if permissions
-        .iter()
-        .any(|p| matches!(p.as_str(), "trusted:unienv" | "trusted:document-engine"))
-    {
-        Some(vec![
+    if permissions.iter().any(|p| p == "trusted:document-engine") {
+        return Some(vec![
             "dist/main.js".to_string(),
             "dist/renderer.js".to_string(),
             "plugin.json".to_string(),
-        ])
-    } else {
-        None
+            "assets/models/ppocrv4-mobile-zh-en/manifest.json".to_string(),
+            "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".to_string(),
+            "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".to_string(),
+            "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt".to_string(),
+        ]);
     }
+    if permissions.iter().any(|p| p == "trusted:unienv") {
+        return Some(vec![
+            "dist/main.js".to_string(),
+            "dist/renderer.js".to_string(),
+            "plugin.json".to_string(),
+        ]);
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -756,9 +763,19 @@ fn copy_allowed_files(
     budget: &mut CopyBudget,
 ) -> Result<(), String> {
     for file in allowed {
+        let source_path = source.join(Path::new(file));
+        if is_optional_document_engine_asset(file)
+            && matches!(
+                fs::symlink_metadata(&source_path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            )
+        {
+            // Older Document Engine packages do not contain the embedded
+            // model. Keep them installable; the model manager can use mirrors.
+            continue;
+        }
         assert_trusted_runtime_file(source, file)?;
         let rel = Path::new(file);
-        let source_path = source.join(rel);
         let dest_path = dest.join(rel);
         if let Some(parent) = dest_path.parent() {
             fs::create_dir_all(parent)
@@ -768,6 +785,10 @@ fn copy_allowed_files(
         copy_regular_file(&source_path, &dest_path, &before, budget)?;
     }
     Ok(())
+}
+
+fn is_optional_document_engine_asset(path: &str) -> bool {
+    path.starts_with("assets/models/ppocrv4-mobile-zh-en/")
 }
 
 #[cfg(test)]
@@ -1072,7 +1093,11 @@ mod tests {
             Some(vec![
                 "dist/main.js".into(),
                 "dist/renderer.js".into(),
-                "plugin.json".into()
+                "plugin.json".into(),
+                "assets/models/ppocrv4-mobile-zh-en/manifest.json".into(),
+                "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".into(),
+                "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".into(),
+                "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt".into()
             ])
         );
         assert_eq!(trusted_allowlist(&["storage:read".into()]), None);

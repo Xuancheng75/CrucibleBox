@@ -81,4 +81,4 @@
 - API 类型唯一事实源：`packages/cruciblebox-plugin-api`（1.5.25 落地；此前各插件本地 `openbox-api.d.ts`）。
 - 模板提供双 API v2 构建：backend 用 esbuild 独立 main CJS，renderer 用 esbuild browser IIFE。
 - renderer 外部化 `react` + `cruciblebox-plugin-api`；产物进 `dist/`（`dist/main.js` + `dist/renderer.js`）。
-- 六个生产插件（Diary/DiceRoller/GIF Editor/ThemeManager/Turntable/UniEnv）均声明双 v2。
+- 当前 11 个正式插件均声明双 v2；插件目录与版本以 `scripts/plugin-catalog.json` 为准。
