@@ -59,9 +59,14 @@ prepared ──► awaiting-confirmation ──► staged ──► stopping-old
 | ---------------------------------------------- | --------------------------------------------------------------------- |
 | 未提交升级（journal 指示 staged/applied 中途） | 恢复 backup + 旧元数据 + 移除候选                                     |
 | 已提交 + backup 同时存在                       | 核对元数据指向新版后仅清理 backup                                     |
+| 多个升级 journal，但 target 有唯一较新 journal 且与 DB/manifest 一致 | 清理更早的 stage/backup，完成 target journal 收敛 |
 | 无 journal 的 backup + target 并存             | **歧义 → 双保留并阻止激活，绝不猜测删除**                             |
 | 有目录但无 DB 记录                             | 拒绝覆盖，留待人工恢复                                                |
 | 卸载中断（quarantine）                         | DB 删除失败 → 原位恢复；删除成功 → 提交清理，清理失败由启动恢复器继续 |
+
+> 多个 journal 只有在上述“唯一较新 target + DB/manifest 一致 + 更早事务均为升级残留”
+> 条件同时满足时才会自动收敛；顺序无法判定、操作类型混杂或元数据不一致时仍保持
+> `recoveryBlockedPluginNames` 阻断，等待人工处理。
 
 ## 4. 崩溃恢复（runtime 层，可靠性边界）
 

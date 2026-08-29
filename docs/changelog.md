@@ -3,6 +3,13 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 1.9.21（2026-08）
+
+修复：
+
+- 插件多次中断升级后恢复器不再因旧 stage/backup journal 叠加而永久阻断；当 target、数据库和
+  最新升级 journal 一致时自动清理更早的残留事务，顺序或元数据不确定时继续保持安全阻断。
+
 ## 1.9.20（2026-08）
 
 稳定性收尾版：

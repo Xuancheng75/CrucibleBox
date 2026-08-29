@@ -1,7 +1,7 @@
 # Document Engine Development Report
 
 日期：2026-08-29
-发布基线：CrucibleBox 1.9.20（Document Engine 0.1.2）
+发布基线：CrucibleBox 1.9.21（Document Engine 0.1.2）
 范围：`plugins/document-engine`、Rust trusted service、Rust OCR worker、Tauri Windows 打包链。
 
 ## 结论
@@ -97,7 +97,7 @@ cargo tauri build --debug --config '{"bundle":{"createUpdaterArtifacts":false}}'
 - renderer self-contained 校验：`document-engine` **244,349 bytes**，无 CommonJS/import/eval，runtime mount 标记存在。
 - trusted policy 校验：`document-engine 0.1.2` digest `37d713086be0df5213eb642739124ce973a0d4006314f800978946baa5c282b1`。
 - Tauri 前端 Vite production build：**3055 modules transformed，成功**。
-- Windows x64 NSIS：`src-tauri/target/release/bundle/nsis/CrucibleBox_1.9.20_x64-setup.exe` 生成成功；临时安装验证确认 OCR Worker 与 PDFium 均随包落地。
+- Windows x64 NSIS：`src-tauri/target/release/bundle/nsis/CrucibleBox_1.9.21_x64-setup.exe` 生成成功；临时安装验证确认 OCR Worker 与 PDFium 均随包落地。
 
 ## 性能冒烟数据
 

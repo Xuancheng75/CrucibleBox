@@ -31,7 +31,7 @@
 ## 快速开始
 
 ```bash
-# Tauri 线（当前发布线 1.9.20）
+# Tauri 线（当前发布线 1.9.21）
 cd src-tauri && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 cd tauri-frontend && npm install && npm run build
 npm run build:frame              # 插件 frame runtime（out/plugin-frame/runtime.js）
@@ -116,7 +116,7 @@ browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题�
 - **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2
   downloadBootstrapper 兜底）+ tauri-plugin-updater（minisign 强制签名 JSON）+ cargo-cyclonedx
   Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版为 **v1.9.2**；当前发布版本与
-  验证基线为 **v1.9.20**（详见下方“当前验证基线”）。
+  验证基线为 **v1.9.21**（详见下方“当前验证基线”）。
 - 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
   宿主和 11 个正式插件可生成 CycloneDX SBOM。
 - 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息（进程内存探针已于 1.9.3 移除）。
@@ -144,7 +144,7 @@ updater JSON + plugin signatures + CycloneDX SBOMs + SHA-256 checksums + GitHub 
 attestation. Windows installers are currently unsigned and can display Unknown publisher or
 SmartScreen warnings.
 
-## 当前验证基线（1.9.20）
+## 当前验证基线（1.9.21）
 
 - Tauri 线：`cargo test --workspace --locked`、`cargo clippy --workspace --all-targets --locked -D warnings`、
   `cargo fmt --check`、`tauri-frontend` vite build；插件独立 `clean && build`（11/11）。

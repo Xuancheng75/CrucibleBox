@@ -177,11 +177,22 @@ pub fn recover_interrupted(
             unique.push((j, root));
         }
         if unique.len() > 1 {
-            block_plugin(
+            match reconcile_superseded_journals(
                 &mut ctx,
                 &plugin_name,
-                "Multiple host journals exist for one transaction",
-            );
+                &target,
+                target_exists,
+                &unique,
+                &artifacts,
+            ) {
+                Ok(true) => continue,
+                Ok(false) => block_plugin(
+                    &mut ctx,
+                    &plugin_name,
+                    "Multiple host journals exist for one transaction",
+                ),
+                Err(e) => block_plugin(&mut ctx, &plugin_name, &e),
+            }
             continue;
         }
         if let Some((journal, journal_root)) = unique.into_iter().next() {
@@ -219,6 +230,161 @@ pub fn recover_interrupted(
     ctx.report.blocked_plugins.sort();
     ctx.report.blocked_plugins.dedup();
     report
+}
+
+/// 在多个 journal 并存时，仅自动收敛“可由当前 DB/target 明确判定”的升级残留。
+///
+/// 常见现场是第一次升级留下 stage，第二次升级已经把新版本落到 target，但在
+/// 清理 backup/journal 前进程退出。此时继续 fail-closed 会让后续导入永远无法触发
+/// 恢复。判定必须满足：target 恰有一个较新的 upgrade journal、target manifest 与
+/// DB 版本一致、其它 journal 都是更早的 upgrade artifact；否则仍返回 false 由调用方
+/// 保持阻断，避免在真正歧义时猜测删除。
+fn reconcile_superseded_journals(
+    ctx: &mut RecoveryCtx,
+    plugin_name: &str,
+    target: &Path,
+    target_exists: bool,
+    journals: &[(Journal, PathBuf)],
+    artifacts: &[Artifact],
+) -> Result<bool, String> {
+    if !target_exists {
+        return Ok(false);
+    }
+
+    let target_records: Vec<&(Journal, PathBuf)> =
+        journals.iter().filter(|(_, root)| root == target).collect();
+    if target_records.len() != 1 {
+        return Ok(false);
+    }
+    let (active, active_root) = target_records[0];
+    if active_root != target
+        || active.plugin_name != plugin_name
+        || active.operation != "upgrade"
+        || (active.phase != "applied" && active.phase != "committed")
+    {
+        return Ok(false);
+    }
+    let Some(active_created_at) = journal_created_at(&active.created_at) else {
+        return Ok(false);
+    };
+
+    let Some(metadata) = (ctx.find_metadata)(plugin_name) else {
+        return Ok(false);
+    };
+    if !target_matches_metadata(target, plugin_name, &metadata)? {
+        return Ok(false);
+    }
+
+    // 任何非当前事务的 artifact 都必须有对应 journal，且只能是更早的 upgrade
+    // stage/backup；没有 journal 或是卸载 artifact 时保持 fail-closed。
+    let mut stale: Vec<(&Journal, &PathBuf, ArtifactKind)> = Vec::new();
+    for (journal, root) in journals {
+        if root == target {
+            continue;
+        }
+        if journal.plugin_name != plugin_name
+            || journal.operation != "upgrade"
+            || (journal.phase != "prepared"
+                && journal.phase != "applied"
+                && journal.phase != "committed")
+        {
+            return Ok(false);
+        }
+        let Some(created_at) = journal_created_at(&journal.created_at) else {
+            return Ok(false);
+        };
+        if created_at >= active_created_at {
+            return Ok(false);
+        }
+        let Some(artifact) = artifacts.iter().find(|artifact| {
+            artifact.plugin_name == plugin_name
+                && artifact.transaction_id == journal.transaction_id
+                && artifact.path == *root
+        }) else {
+            return Ok(false);
+        };
+        if artifact.kind == ArtifactKind::Remove {
+            return Ok(false);
+        }
+        stale.push((journal, root, artifact.kind));
+    }
+    for artifact in artifacts {
+        if artifact.plugin_name != plugin_name || artifact.transaction_id == active.transaction_id {
+            continue;
+        }
+        if !stale.iter().any(|(_, root, _)| *root == &artifact.path) {
+            return Ok(false);
+        }
+    }
+
+    // 先清理旧 transaction 的目录。remove_internal_directory 会再次校验它们是
+    // pluginsDir 的直接普通子目录，失败时不继续清理当前事务。
+    for (journal, root, kind) in &stale {
+        let basename = match kind {
+            ArtifactKind::Stage => stage_basename(plugin_name, &journal.transaction_id),
+            ArtifactKind::Backup => backup_basename(plugin_name, &journal.transaction_id),
+            ArtifactKind::Remove => return Ok(false),
+        };
+        remove_internal_directory(&ctx.plugins_dir, root, &basename)?;
+        clear_journal(root, journal)?;
+        ctx.report
+            .actions
+            .push(format!("cleanup-superseded-upgrade {plugin_name}"));
+    }
+
+    // 当前 target 已经与 DB 一致，提交它的残留 journal，并清理同一事务的 backup
+    // / stage。此路径等价于原 commit 的最后清理阶段，不会触碰 target 本身。
+    for artifact in artifacts {
+        if artifact.plugin_name == plugin_name
+            && artifact.transaction_id == active.transaction_id
+            && artifact.kind != ArtifactKind::Remove
+        {
+            let basename = match artifact.kind {
+                ArtifactKind::Stage => stage_basename(plugin_name, &artifact.transaction_id),
+                ArtifactKind::Backup => backup_basename(plugin_name, &artifact.transaction_id),
+                ArtifactKind::Remove => return Ok(false),
+            };
+            remove_internal_directory(&ctx.plugins_dir, &artifact.path, &basename)?;
+        }
+    }
+    clear_journal(target, active)?;
+    ctx.report
+        .actions
+        .push(format!("reconcile-applied-upgrade {plugin_name}"));
+    Ok(true)
+}
+
+fn journal_created_at(value: &str) -> Option<u128> {
+    value.parse::<u128>().ok()
+}
+
+fn target_matches_metadata(
+    target: &Path,
+    plugin_name: &str,
+    metadata: &serde_json::Value,
+) -> Result<bool, String> {
+    let manifest = match crate::manifest::read_manifest(target) {
+        Ok(manifest) => manifest,
+        Err(_) => return Ok(false),
+    };
+    let Some(version) = metadata.get("version").and_then(|value| value.as_str()) else {
+        return Ok(false);
+    };
+    if manifest.name != plugin_name || manifest.version != version {
+        return Ok(false);
+    }
+    if let Some(installed_path) = metadata
+        .get("installed_path")
+        .and_then(|value| value.as_str())
+    {
+        let canonical_target = std::fs::canonicalize(target).map_err(|e| e.to_string())?;
+        let canonical_metadata =
+            std::fs::canonicalize(installed_path).map_err(|e| e.to_string())?;
+        if canonical_target != canonical_metadata {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +954,29 @@ mod tests {
         }
     }
 
+    fn write_recovery_manifest(root: &Path, version: &str) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(
+            root.join("plugin.json"),
+            json!({
+                "name": "demo",
+                "version": version,
+                "displayName": "Demo",
+                "description": "",
+                "author": "",
+                "main": "dist/main.js",
+                "renderer": "dist/renderer.js",
+                "manifestVersion": 2,
+                "rendererApiVersion": 2,
+                "backend": false,
+                "permissions": [],
+                "config": {}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn recovery_env(name: &str) -> (PathBuf, RefCell<HashMap<String, Value>>) {
         let root = temp_root(name);
         let plugins = root.join("plugins");
@@ -1025,6 +1214,98 @@ mod tests {
         assert!(!backup.exists());
         assert!(!plugins.join(".demo.stage-tx-1").exists());
         assert_eq!(metadata.borrow().get("demo").unwrap()["version"], "1.0.0");
+    }
+
+    #[test]
+    fn recover_multiple_upgrade_journals_when_target_is_current() {
+        let (plugins, metadata) = recovery_env("recover-multiple-upgrades");
+        let target = plugins.join("demo");
+        write_recovery_manifest(&target, "2.0.0");
+        let mut active = journal(
+            "upgrade",
+            "applied",
+            "demo",
+            "tx-new",
+            Some(json!({"version": "1.0.0"})),
+        );
+        active.created_at = "200".into();
+        write_journal(&target, &active).unwrap();
+
+        let backup = plugins.join(".demo.backup-tx-new");
+        write_recovery_manifest(&backup, "1.0.0");
+
+        let stale = plugins.join(".demo.stage-tx-old");
+        write_recovery_manifest(&stale, "2.0.0");
+        let mut stale_journal = journal(
+            "upgrade",
+            "applied",
+            "demo",
+            "tx-old",
+            Some(json!({"version": "1.0.0"})),
+        );
+        stale_journal.created_at = "100".into();
+        write_journal(&stale, &stale_journal).unwrap();
+
+        metadata.borrow_mut().insert(
+            "demo".into(),
+            json!({
+                "version": "2.0.0",
+                "installed_path": target.to_string_lossy()
+            }),
+        );
+
+        let report = run_recovery(&plugins, &metadata);
+        assert!(report.blocked_plugins.is_empty());
+        assert!(report
+            .actions
+            .iter()
+            .any(|action| action.contains("reconcile-applied-upgrade demo")));
+        assert!(target.exists());
+        assert!(!backup.exists());
+        assert!(!stale.exists());
+        assert!(read_journal(&target).unwrap().is_none());
+    }
+
+    #[test]
+    fn recover_multiple_upgrade_journals_blocks_when_order_is_ambiguous() {
+        let (plugins, metadata) = recovery_env("recover-multiple-upgrades-ambiguous");
+        let target = plugins.join("demo");
+        write_recovery_manifest(&target, "2.0.0");
+        let mut active = journal(
+            "upgrade",
+            "applied",
+            "demo",
+            "tx-new",
+            Some(json!({"version": "1.0.0"})),
+        );
+        active.created_at = "200".into();
+        write_journal(&target, &active).unwrap();
+
+        let stage = plugins.join(".demo.stage-tx-newer");
+        write_recovery_manifest(&stage, "2.0.0");
+        let mut newer = journal(
+            "upgrade",
+            "applied",
+            "demo",
+            "tx-newer",
+            Some(json!({"version": "1.0.0"})),
+        );
+        newer.created_at = "300".into();
+        write_journal(&stage, &newer).unwrap();
+        metadata.borrow_mut().insert(
+            "demo".into(),
+            json!({
+                "version": "2.0.0",
+                "installed_path": target.to_string_lossy()
+            }),
+        );
+
+        let report = run_recovery(&plugins, &metadata);
+        assert!(report.blocked_plugins.contains(&"demo".to_string()));
+        assert!(target.exists());
+        assert!(stage.exists());
+        assert!(read_journal(&target).unwrap().is_some());
+        assert!(read_journal(&stage).unwrap().is_some());
     }
 
     #[test]
