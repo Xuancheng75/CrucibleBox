@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveDropPaths } from '../tauri-frontend/src/utils/drop-target'
+import { resolveDocumentDropPaths, resolveDropPaths } from '../tauri-frontend/src/utils/drop-target'
 
 describe('resolveDropPaths', () => {
   it('单个 zip 返回批量目标且无忽略', () => {
@@ -33,5 +33,20 @@ describe('resolveDropPaths', () => {
 
   it('大写扩展名按 zip 处理', () => {
     expect(resolveDropPaths(['C:/A.ZiP'])?.kind).toBe('zip')
+  })
+})
+
+describe('resolveDocumentDropPaths', () => {
+  it('把文档与插件 zip 分开，保留真实路径', () => {
+    expect(
+      resolveDocumentDropPaths([' C:/Docs/report.pdf ', 'C:/Packages/theme.ZIP', 'D:/Docs'])
+    ).toEqual({
+      documents: ['C:/Docs/report.pdf', 'D:/Docs'],
+      pluginZips: ['C:/Packages/theme.ZIP']
+    })
+  })
+
+  it('全空输入返回 null', () => {
+    expect(resolveDocumentDropPaths(['', '  '])).toBeNull()
   })
 })

@@ -60,6 +60,7 @@ const EVENTS = new Set<PluginRendererRpcEventName>([
   'state.configChanged',
   'theme.changed',
   'backend.message',
+  'host.filesDropped',
   'host.dispose'
 ])
 
@@ -426,6 +427,16 @@ export function validatePluginRendererRpcEventData<EventName extends PluginRende
     case 'backend.message':
       exactObject(value, ['message'], [], code, path)
       return
+    case 'host.filesDropped': {
+      const data = exactObject(value, ['paths'], [], code, path)
+      if (!Array.isArray(data.paths) || data.paths.length > 512) {
+        fail(code, 'paths must be an array with at most 512 entries', `${path}.paths`)
+      }
+      data.paths.forEach((entry, index) =>
+        boundedString(entry, 1, 4096, code, `${path}.paths[${index}]`)
+      )
+      return
+    }
     case 'host.dispose':
       exactObject(value, [], [], code, path)
       return

@@ -154,10 +154,19 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
     page_objects.sort_by_key(|object| object.id);
 
     // Some generated PDFs omit a conventional page dictionary while still
-    // containing `/Type /Page` in raw bytes. Keep the result useful and
-    // deterministic instead of silently returning zero pages.
+    // containing `/Type /Page` in raw bytes. Prefer PDFium's page tree for
+    // object streams/xref streams, which the lightweight text parser does not
+    // expand, and keep a clear error only when both parsers reject the file.
     if page_objects.is_empty() {
         let fallback_count = count_page_markers(bytes).max(1);
+        if let Some(page_count) = pdfium_page_count(path) {
+            return Ok(fallback_document(
+                path,
+                bytes,
+                page_count,
+                "pdfium-page-tree",
+            ));
+        }
         return Err(format!(
             "PDF page tree is unsupported (detected {fallback_count} page marker(s))"
         ));
@@ -254,6 +263,66 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         "warnings": warnings,
         "document": document
     }))
+}
+
+fn pdfium_page_count(path: &str) -> Option<usize> {
+    let pdfium = bind_pdfium().ok()?;
+    let document = pdfium.load_pdf_from_file(path, None).ok()?;
+    usize::try_from(document.pages().len())
+        .ok()
+        .filter(|count| *count > 0)
+}
+
+/// Fallback envelope for PDFs whose page tree is represented by compressed
+/// object/xref streams. PDFium provides the authoritative page count; pages
+/// are explicitly routed to OCR so no fabricated text is returned.
+fn fallback_document(path: &str, bytes: &[u8], page_count: usize, engine: &str) -> Value {
+    let source_hash = {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    };
+    let pages = (1..=page_count)
+        .map(|number| {
+            json!({
+                "number": number,
+                "width": 612.0,
+                "height": 792.0,
+                "blocks": []
+            })
+        })
+        .collect::<Vec<_>>();
+    let ocr_page_numbers = (1..=page_count).collect::<Vec<_>>();
+    json!({
+        "route": "ocr",
+        "requiresOcr": true,
+        "ocrPageNumbers": ocr_page_numbers,
+        "warnings": [{
+            "code": "pdf-page-tree-fallback",
+            "message": "PDF 页面树由 PDFium 解析；页面将渲染后交给 OCR Worker。"
+        }],
+        "document": {
+            "id": format!("pdf-{source_hash}"),
+            "source": {
+                "path": path,
+                "mime": "application/pdf",
+                "size": bytes.len(),
+                "hash": source_hash,
+                "engine": engine,
+                "engineVersion": pdfium_bundled::PDFIUM_VERSION
+            },
+            "metadata": {
+                "pageCount": page_count,
+                "hasTextLayer": false,
+                "isScanned": true,
+                "hasTables": false,
+                "hasFormulas": false,
+                "hasImages": false
+            },
+            "pages": pages,
+            "structure": { "outline": [], "readingOrder": [] }
+        }
+    })
 }
 
 fn parse_objects(bytes: &[u8]) -> HashMap<u32, PdfObject> {
@@ -784,6 +853,18 @@ mod tests {
         assert_eq!(output["route"], "ocr");
         assert_eq!(output["requiresOcr"], true);
         assert_eq!(output["ocrPageNumbers"][0], 1);
+    }
+
+    #[test]
+    fn pdfium_fallback_preserves_page_count_without_fabricating_text() {
+        let output = fallback_document("input.pdf", b"%PDF-1.7", 3, "pdfium-page-tree");
+        assert_eq!(output["route"], "ocr");
+        assert_eq!(output["document"]["metadata"]["pageCount"], 3);
+        assert_eq!(output["ocrPageNumbers"], json!([1, 2, 3]));
+        assert!(output["document"]["pages"][0]["blocks"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     #[cfg(windows)]

@@ -9,7 +9,7 @@
 项目级 `.npmrc` 固定 `https://registry.npmjs.org/`；根 lockfile 不接受其他 registry
 主机。认证信息、代理和私有镜像不得写入仓库配置。
 
-根工程和六个 `plugins/*` 子工程组成 npm workspaces，根目录的 `package-lock.json`
+根工程和 `plugins/*` 子工程组成 npm workspaces，当前插件目录包含 11 个正式插件；根目录的 `package-lock.json`
 是唯一依赖锁定事实源。所有安装命令都从仓库根执行。
 
 ## 首次安装
@@ -18,7 +18,7 @@
 npm ci
 ```
 
-`npm ci` 会一次安装宿主和六个插件依赖，并为当前 Electron 版本重建
+`npm ci` 会一次安装宿主和所有插件依赖，并为冻结的 Electron 版本重建
 `better-sqlite3`；失败会直接中止。
 
 ## 日常开发
@@ -37,7 +37,7 @@ Vitest。自动修改代码只能显式运行 `npm run format` 或 `npm run lint
 npm run build
 ```
 
-此命令先清理并构建六个插件，再构建 Electron 主进程、preload 和 React renderer。
+此命令先清理并构建插件目录中的所有插件，再构建 Electron 主进程、preload 和 React renderer。
 插件不会被隐式打入宿主 ASAR。
 
 ## 插件产物
@@ -141,7 +141,7 @@ MSIX/Store 注册、自动更新与全局别名属于显式系统集成，不在
 
 ## 当前已知门禁边界
 
-- 根工程与六插件 `npm audit` 当前为 0 漏洞；CI 每次重新查询 advisory 服务，不能替代持续升级。
+- 根工程与正式插件 `npm audit` 当前为 0 漏洞；CI 每次重新查询 advisory 服务，不能替代持续升级。
 - renderer 已按工作台、日志、设置和插件详情拆分；当前总 JS 2,790,229 B、静态入口 1,091,990 B、
   默认首页启动闭包 2,018,469 B，分别受 3.4 MB、1.3 MB 和 2.3 MB 上限保护。
 - CI 仅在 Windows x64 执行 check/build/audit、unpacked 打包、Electron ABI 和 GUI 冒烟。macOS、Linux

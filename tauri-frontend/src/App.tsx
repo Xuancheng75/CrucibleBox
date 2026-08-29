@@ -49,8 +49,8 @@ export default function App() {
   const currentPage = useAppStore((s) => s.currentPage)
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const setPluginImportOpen = useAppStore((s) => s.setPluginImportOpen)
-  // 1.9.12：全窗口拖拽导入（zip/目录）+ 全局安装确认弹窗
-  const { dragActive } = useGlobalPluginDrop()
+  // 全窗口拖拽导入（插件 zip/目录或 Document Engine 文档）+ 全局安装确认弹窗
+  const { dragActive, dragTarget } = useGlobalPluginDrop()
 
   // 菜单「导入插件」事件（Tauri 2 菜单点击经 tauri://menu 事件下发，payload 为菜单项 id）。
   // 后端菜单尚未定义（1.9.3 后端 lane 并行处理），此处按契约订阅，payload 匹配
@@ -110,16 +110,13 @@ export default function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined
-    listen<{ pluginId: string; title: string; body: string }>(
-      'plugin:notification',
-      (event) => {
-        try {
-          new Notification(event.payload.title, { body: event.payload.body })
-        } catch {
-          // WebView2 Notification 不可用时静默降级
-        }
+    listen<{ pluginId: string; title: string; body: string }>('plugin:notification', (event) => {
+      try {
+        new Notification(event.payload.title, { body: event.payload.body })
+      } catch {
+        // WebView2 Notification 不可用时静默降级
       }
-    ).then((fn) => {
+    }).then((fn) => {
       unlisten = fn
     })
     return () => unlisten?.()
@@ -136,7 +133,7 @@ export default function App() {
           </PageErrorBoundary>
         </Suspense>
       </MainLayout>
-      <PluginDropOverlay active={dragActive} />
+      <PluginDropOverlay active={dragActive} target={dragTarget} />
       <PluginInstallPreviewModal />
     </ThemeProvider>
   )

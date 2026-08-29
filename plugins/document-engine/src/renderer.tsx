@@ -7,12 +7,14 @@ import {
   getStatus,
   getTask,
   installModel,
+  installModelBundle,
   installRemoteModel,
   isDocumentProgressMessage,
   isOcrResult,
   isParsedDocumentResult,
   isTerminalTask,
   listModels,
+  listModelCatalog,
   pauseTask,
   removeModel,
   retryTask,
@@ -25,6 +27,7 @@ import {
   updateRemoteModel,
   type DocumentTaskSnapshot,
   type EngineStatus,
+  type ModelCatalogEntry,
   type OcrProgress,
   type OcrResult,
   type ParsedDocumentResult
@@ -67,6 +70,12 @@ const FONT = {
 }
 
 const prettyJson = (value: unknown): string => JSON.stringify(value, null, 2) ?? ''
+
+/** Keep the actual path in state while showing a readable value in narrow inputs. */
+const displayPath = (path: string): string => {
+  if (path.length <= 72) return path
+  return `…${path.slice(-69)}`
+}
 
 const NAV_ITEMS = [
   { key: 'overview', label: '概览', icon: '📄' },
@@ -133,37 +142,15 @@ function StatusBadge({ state, label }: { state: 'ok' | 'neutral' | 'error'; labe
   )
 }
 
-function DropZone({
-  onFiles,
-  onPick
-}: {
-  onFiles: (files: string[]) => void
-  onPick: () => void
-}) {
-  const [dragOver, setDragOver] = useState(false)
+function DropZone({ onPick }: { onPick: () => void }) {
   return (
     <div
-      onDragOver={(e) => {
-        e.preventDefault()
-        setDragOver(true)
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault()
-        setDragOver(false)
-        // sandboxed iframe 中拖入文件无本地路径；
-        // 完整路径需经宿主文件选择 API（Phase 12 接入 openDialog）。
-        const paths = Array.from(e.dataTransfer.files).map(
-          (f) => (f as { path?: string }).path ?? f.name
-        )
-        onFiles(paths)
-      }}
       style={{
-        border: `2px dashed ${dragOver ? COLORS.primary : COLORS.border}`,
+        border: `2px dashed ${COLORS.border}`,
         borderRadius: 12,
         padding: '48px 24px',
         textAlign: 'center',
-        background: dragOver ? COLORS.primaryLight : COLORS.bgGray,
+        background: COLORS.bgGray,
         cursor: 'pointer',
         transition: 'all 0.2s'
       }}
@@ -269,7 +256,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [allTasks, setAllTasks] = useState<DocumentTaskSnapshot[]>([])
   const [jobsError, setJobsError] = useState<string | null>(null)
   const [models, setModels] = useState<Array<Record<string, unknown>>>([])
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogEntry[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null)
   const [modelSource, setModelSource] = useState('')
   const [modelName, setModelName] = useState('')
   const [modelUrl, setModelUrl] = useState('')
@@ -315,9 +304,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           throw new Error(response.error ?? '文件夹中没有支持的文档')
         }
         setPaths(
-          response.paths
-            .filter((path): path is string => typeof path === 'string')
-            .join('\n')
+          response.paths.filter((path): path is string => typeof path === 'string').join('\n')
         )
       } catch (error) {
         api.notify('文件夹导入失败', error instanceof Error ? error.message : String(error))
@@ -366,6 +353,17 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       setModelsError(null)
     } catch (error) {
       if (mounted.current) setModelsError(error instanceof Error ? error.message : String(error))
+    }
+  }, [send])
+
+  const refreshModelCatalog = useCallback(async () => {
+    try {
+      const catalog = await listModelCatalog(send)
+      if (mounted.current) setModelCatalog(catalog)
+      setModelCatalogError(null)
+    } catch (error) {
+      if (mounted.current)
+        setModelCatalogError(error instanceof Error ? error.message : String(error))
     }
   }, [send])
 
@@ -560,7 +558,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const runOcr = useCallback(async () => {
     const path = ocrPath.trim()
     if (!path) {
-      api.notify('请选择文件', '请输入图片绝对路径，或将文件拖入上方区域')
+      api.notify('请选择文件', '请点击“选择图片”，或从概览拖入图片')
       return
     }
     setOcrBusy(true)
@@ -601,7 +599,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const runParse = useCallback(async () => {
     const path = parsePath.trim()
     if (!path) {
-      api.notify('请选择 PDF', '请输入 PDF 绝对路径，或将 PDF 拖入概览区域')
+      api.notify('请选择 PDF', '请点击“选择 PDF”，或从概览拖入 PDF')
       return
     }
     setParseBusy(true)
@@ -642,7 +640,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const runChunk = useCallback(async () => {
     const path = chunkPath.trim()
     if (!path) {
-      api.notify('请选择文档', '请输入文档绝对路径')
+      api.notify('请选择文档', '请点击“选择文档”，或从概览拖入文档')
       return
     }
     setChunkBusy(true)
@@ -674,7 +672,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const runConvert = useCallback(async () => {
     const path = convertPath.trim()
     if (!path) {
-      api.notify('请选择文档', '请输入文档绝对路径')
+      api.notify('请选择文档', '请点击“选择源文档”，或从概览拖入文档')
       return
     }
     setConvertBusy(true)
@@ -714,7 +712,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       .map((path) => path.trim())
       .filter(Boolean)
     if (paths.length === 0) {
-      api.notify('请输入文件列表', '每行一个绝对路径')
+      api.notify('请输入文件列表', '请点击“选择多个文件”或“选择文件夹并导入”')
       return
     }
     setBatchBusy(true)
@@ -773,6 +771,23 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       setModelsBusy(false)
     }
   }, [api, modelName, modelSource, refreshModels, send])
+
+  const installCatalogModel = useCallback(
+    async (modelId: string) => {
+      setModelsBusy(true)
+      setModelsError(null)
+      try {
+        await installModelBundle(send, modelId)
+        await refreshModels()
+        api.notify('模型安装完成', 'OCR 模型已通过 SHA-256 校验并启用')
+      } catch (error) {
+        setModelsError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setModelsBusy(false)
+      }
+    },
+    [api, refreshModels, send]
+  )
 
   const installRemote = useCallback(async () => {
     const url = modelUrl.trim()
@@ -858,27 +873,66 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   }, [activeKey, refreshJobs])
 
   useEffect(() => {
-    if (activeKey === 'models') void refreshModels()
-  }, [activeKey, refreshModels])
+    if (activeKey === 'models') {
+      void refreshModels()
+      void refreshModelCatalog()
+    }
+  }, [activeKey, refreshModelCatalog, refreshModels])
 
   const handleFiles = useCallback(
-    (files: string[]) => {
+    async (files: string[]) => {
       if (files.length === 0) {
-        api.notify('请选择文件', '拖入文件，或在 OCR 页面输入绝对路径')
+        api.notify('请选择文件', '请从概览拖入文件，或点击对应的选择按钮')
         return
       }
-      if (mounted.current) {
-        if (/\.pdf$/i.test(files[0])) {
-          setParsePath(files[0])
-          setActiveKey('parse')
-        } else {
-          setOcrPath(files[0])
-          setActiveKey('ocr')
+      if (!mounted.current) return
+      if (files.length > 1) {
+        setBatchPaths(files.join('\n'))
+        setActiveKey('batch')
+        return
+      }
+
+      const path = files[0]
+      try {
+        const response = (await send({ type: 'document.files.enumerate', path })) as {
+          paths?: unknown
+          error?: string
         }
+        if (!mounted.current) return
+        const enumerated = Array.isArray(response.paths)
+          ? response.paths.filter((value): value is string => typeof value === 'string')
+          : []
+        if (enumerated.length === 0) {
+          throw new Error(response.error ?? '未找到可导入的文档')
+        }
+        // 文件夹会展开为内部文档；即使只有一个文件，也不能把文件夹本身当作 OCR 输入。
+        if (enumerated.length !== 1 || enumerated[0] !== path) {
+          setBatchPaths(enumerated.join('\n'))
+          setActiveKey('batch')
+          return
+        }
+      } catch (error) {
+        api.notify('文件导入失败', error instanceof Error ? error.message : String(error))
+        return
+      }
+
+      if (/\.pdf$/i.test(path)) {
+        setParsePath(path)
+        setActiveKey('parse')
+      } else if (/\.(png|jpe?g|webp|bmp|tiff?)$/i.test(path)) {
+        setOcrPath(path)
+        setActiveKey('ocr')
+      } else {
+        setBatchPaths(path)
+        setActiveKey('batch')
       }
     },
-    [api]
+    [api, send]
   )
+
+  // 兼容尚未升级 frame runtime 的宿主：旧 runtime 没有该可选能力时，
+  // 仍允许通过文件选择器使用插件，而不是在 effect 阶段把整个 iframe 弄空。
+  useEffect(() => api.onFilesDropped?.(handleFiles), [api, handleFiles])
 
   const cardStyle: React.CSSProperties = {
     background: COLORS.bgWhite,
@@ -904,7 +958,6 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       </div>
 
       <DropZone
-        onFiles={handleFiles}
         onPick={() => {
           void selectPaths({ type: 'file', multiple: true }).then((paths) => {
             if (paths.length > 1) {
@@ -1103,12 +1156,13 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           marginBottom: 6
         }}
       >
-        图片绝对路径
+        图片文件
       </label>
       <input
-        value={ocrPath}
-        onChange={(event) => setOcrPath(event.target.value)}
-        placeholder="例如 E:\\OCR\\test.png"
+        value={displayPath(ocrPath)}
+        readOnly
+        title={ocrPath || undefined}
+        placeholder="请点击“选择图片”，或从概览拖入"
         style={{
           width: '100%',
           boxSizing: 'border-box',
@@ -1244,12 +1298,13 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             marginBottom: 6
           }}
         >
-          PDF 绝对路径
+          PDF 文件
         </label>
         <input
-          value={parsePath}
-          onChange={(event) => setParsePath(event.target.value)}
-          placeholder="例如 E:\\Documents\\report.pdf"
+          value={displayPath(parsePath)}
+          readOnly
+          title={parsePath || undefined}
+          placeholder="请点击“选择 PDF”，或从概览拖入"
           style={{
             width: '100%',
             boxSizing: 'border-box',
@@ -1265,7 +1320,13 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             const [path] = await selectPaths({ type: 'file', extensions: ['pdf'] })
             if (path) setParsePath(path)
           }}
-          style={{ marginTop: 8, padding: '6px 10px', border: `1px solid ${COLORS.border}`, borderRadius: 5, background: COLORS.bgWhite }}
+          style={{
+            marginTop: 8,
+            padding: '6px 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 5,
+            background: COLORS.bgWhite
+          }}
         >
           选择 PDF
         </button>
@@ -1419,9 +1480,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         按结构/语义边界生成 RAG 可用 Chunk。
       </p>
       <input
-        value={chunkPath}
-        onChange={(event) => setChunkPath(event.target.value)}
-        placeholder="文档绝对路径"
+        value={displayPath(chunkPath)}
+        readOnly
+        title={chunkPath || undefined}
+        placeholder="请点击“选择文档”，或从概览拖入"
         style={{
           width: '100%',
           boxSizing: 'border-box',
@@ -1437,7 +1499,13 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           const [path] = await selectPaths({ type: 'file' })
           if (path) setChunkPath(path)
         }}
-        style={{ marginTop: 8, padding: '6px 10px', border: `1px solid ${COLORS.border}`, borderRadius: 5, background: COLORS.bgWhite }}
+        style={{
+          marginTop: 8,
+          padding: '6px 10px',
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 5,
+          background: COLORS.bgWhite
+        }}
       >
         选择文档
       </button>
@@ -1520,9 +1588,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         所有转换先经过统一 Document 模型。
       </p>
       <input
-        value={convertPath}
-        onChange={(event) => setConvertPath(event.target.value)}
-        placeholder="源文档绝对路径"
+        value={displayPath(convertPath)}
+        readOnly
+        title={convertPath || undefined}
+        placeholder="请点击“选择源文档”，或从概览拖入"
         style={{
           width: '100%',
           boxSizing: 'border-box',
@@ -1538,7 +1607,13 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           const [path] = await selectPaths({ type: 'file' })
           if (path) setConvertPath(path)
         }}
-        style={{ marginTop: 8, padding: '6px 10px', border: `1px solid ${COLORS.border}`, borderRadius: 5, background: COLORS.bgWhite }}
+        style={{
+          marginTop: 8,
+          padding: '6px 10px',
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 5,
+          background: COLORS.bgWhite
+        }}
       >
         选择源文档
       </button>
@@ -1667,14 +1742,24 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             const paths = await selectPaths({ type: 'file', multiple: true })
             if (paths.length) setBatchPaths(paths.join('\n'))
           }}
-          style={{ padding: '6px 10px', border: `1px solid ${COLORS.border}`, borderRadius: 5, background: COLORS.bgWhite }}
+          style={{
+            padding: '6px 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 5,
+            background: COLORS.bgWhite
+          }}
         >
           选择多个文件
         </button>
         <button
           type="button"
           onClick={() => void selectFolderFiles(setBatchPaths)}
-          style={{ padding: '6px 10px', border: `1px solid ${COLORS.border}`, borderRadius: 5, background: COLORS.bgWhite }}
+          style={{
+            padding: '6px 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 5,
+            background: COLORS.bgWhite
+          }}
         >
           选择文件夹
         </button>
@@ -1905,186 +1990,278 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     </div>
   )
 
-  const renderModels = () => (
-    <div style={{ ...cardStyle }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3 style={{ margin: 0, fontSize: FONT.sizeXl, fontWeight: 600 }}>模型与缓存</h3>
-        <button
-          type="button"
-          onClick={() => void refreshModels()}
-          style={{
-            padding: '5px 10px',
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 5,
-            background: COLORS.bgWhite
-          }}
-        >
-          刷新
-        </button>
-      </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-        <input
-          value={modelSource}
-          onChange={(event) => setModelSource(event.target.value)}
-          placeholder="本地模型文件/目录路径"
-          style={{
-            flex: 1,
-            padding: '8px 10px',
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 6
-          }}
-        />
-        <button
-          type="button"
-          onClick={async () => {
-            const [path] = await selectPaths({ type: 'folder' })
-            if (path) setModelSource(path)
-          }}
-          style={{ padding: '8px 10px', border: `1px solid ${COLORS.border}`, borderRadius: 6, background: COLORS.bgWhite }}
-        >
-          选择目录
-        </button>
-        <input
-          value={modelName}
-          onChange={(event) => setModelName(event.target.value)}
-          placeholder="名称（可选）"
-          style={{
-            width: 130,
-            padding: '8px 10px',
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 6
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => void installLocalModel()}
-          disabled={modelsBusy}
-          style={{
-            padding: '8px 12px',
-            border: 0,
-            borderRadius: 6,
-            background: COLORS.primary,
-            color: '#fff'
-          }}
-        >
-          安装
-        </button>
-      </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <input
-          value={modelUrl}
-          onChange={(event) => setModelUrl(event.target.value)}
-          placeholder="远程 HTTPS 模型地址（允许官方域名）"
-          style={{
-            flex: 2,
-            padding: '8px 10px',
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 6
-          }}
-        />
-        <input
-          value={modelSha256}
-          onChange={(event) => setModelSha256(event.target.value)}
-          placeholder="SHA-256"
-          style={{
-            flex: 1,
-            padding: '8px 10px',
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 6,
-            fontFamily: 'monospace'
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => void installRemote()}
-          disabled={modelsBusy}
-          style={{
-            padding: '8px 12px',
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 6,
-            background: COLORS.bgWhite
-          }}
-        >
-          远程安装
-        </button>
-      </div>
-      <button
-        type="button"
-        onClick={() => void clearEngineCache()}
-        disabled={modelsBusy}
-        style={{
-          marginTop: 10,
-          padding: '6px 10px',
-          border: `1px solid ${COLORS.warningBorder}`,
-          borderRadius: 5,
-          background: COLORS.warningBg,
-          color: COLORS.warning
-        }}
-      >
-        清理缓存
-      </button>
-      {modelsError && (
-        <div style={{ marginTop: 12, color: COLORS.danger, fontSize: FONT.sizeSm }}>
-          {modelsError}
+  const renderModels = () => {
+    const installedNames = new Set(
+      models
+        .map((model) => (typeof model.relativePath === 'string' ? model.relativePath : ''))
+        .filter(Boolean)
+    )
+    return (
+      <div style={{ ...cardStyle }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0, fontSize: FONT.sizeXl, fontWeight: 600 }}>模型与缓存</h3>
+          <button
+            type="button"
+            onClick={() => {
+              void refreshModels()
+              void refreshModelCatalog()
+            }}
+            style={{
+              padding: '5px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 5,
+              background: COLORS.bgWhite
+            }}
+          >
+            刷新
+          </button>
         </div>
-      )}
-      {models.length === 0 ? (
-        <div style={{ marginTop: 16, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-          模型目录为空
-        </div>
-      ) : (
-        models.map((model) => {
-          const path = typeof model.relativePath === 'string' ? model.relativePath : ''
-          return (
+        <div
+          style={{
+            marginTop: 16,
+            padding: 12,
+            border: `1px solid ${COLORS.primary}`,
+            borderRadius: 8,
+            background: COLORS.primaryLight
+          }}
+        >
+          <div style={{ fontWeight: 600, fontSize: FONT.sizeLg }}>推荐模型</div>
+          <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
+            首次使用建议安装标准 PP-OCRv4；包含 OCR 所需的检测、识别和字典文件。
+          </div>
+          <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
+            下载地址已固定并逐文件校验 SHA-256，安装完成后即可用于本地 OCR。
+          </div>
+          {modelCatalog.length === 0 ? (
             <div
-              key={path}
               style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                gap: 8,
-                marginTop: 8,
-                padding: 8,
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 5,
+                marginTop: 10,
+                color: modelCatalogError ? COLORS.danger : COLORS.textSecondary,
                 fontSize: FONT.sizeSm
               }}
             >
-              <span>
-                {path} · {String(model.bytes ?? 0)} bytes
-              </span>
-              <span style={{ display: 'flex', gap: 6 }}>
-                <button
-                  type="button"
-                  onClick={() => void updateRemote(path)}
-                  disabled={modelsBusy}
-                  style={{
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 4,
-                    background: COLORS.bgWhite
-                  }}
-                >
-                  更新
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void deleteModel(path)}
-                  disabled={modelsBusy}
-                  style={{
-                    border: `1px solid ${COLORS.danger}`,
-                    borderRadius: 4,
-                    background: COLORS.dangerBg,
-                    color: COLORS.danger
-                  }}
-                >
-                  删除
-                </button>
-              </span>
+              {modelCatalogError ?? '正在读取可下载模型目录…'}
             </div>
-          )
-        })
-      )}
-    </div>
-  )
+          ) : (
+            modelCatalog.map((entry) => {
+              const ready = entry.artifacts.every((artifact) => installedNames.has(artifact.name))
+              return (
+                <div
+                  key={entry.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    marginTop: 10,
+                    padding: 10,
+                    background: COLORS.bgWhite,
+                    border: `1px solid ${COLORS.border}`,
+                    borderRadius: 6
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600 }}>{entry.name}</div>
+                    <div
+                      style={{ color: COLORS.textSecondary, fontSize: FONT.sizeSm, marginTop: 3 }}
+                    >
+                      {entry.description} · {entry.artifacts.length} 个文件 ·{' '}
+                      {Math.round((entry.totalBytes ?? 0) / 1024 / 1024)} MiB
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void installCatalogModel(entry.id)}
+                    disabled={modelsBusy || ready}
+                    style={{
+                      flexShrink: 0,
+                      padding: '7px 12px',
+                      border: 0,
+                      borderRadius: 5,
+                      background: ready ? COLORS.successBg : COLORS.primary,
+                      color: ready ? COLORS.success : '#fff'
+                    }}
+                  >
+                    {ready ? '已安装' : modelsBusy ? '安装中…' : '下载并安装'}
+                  </button>
+                </div>
+              )
+            })
+          )}
+        </div>
+        <div style={{ marginTop: 16, fontWeight: 600, fontSize: FONT.sizeLg }}>高级安装</div>
+        <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
+          已有本地模型目录或受信任下载地址时使用；普通用户直接安装上面的推荐模型即可。
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+          <input
+            value={modelSource}
+            onChange={(event) => setModelSource(event.target.value)}
+            placeholder="本地模型文件/目录路径"
+            style={{
+              flex: 1,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6
+            }}
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              const [path] = await selectPaths({ type: 'folder' })
+              if (path) setModelSource(path)
+            }}
+            style={{
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              background: COLORS.bgWhite
+            }}
+          >
+            选择目录
+          </button>
+          <input
+            value={modelName}
+            onChange={(event) => setModelName(event.target.value)}
+            placeholder="名称（可选）"
+            style={{
+              width: 130,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void installLocalModel()}
+            disabled={modelsBusy}
+            style={{
+              padding: '8px 12px',
+              border: 0,
+              borderRadius: 6,
+              background: COLORS.primary,
+              color: '#fff'
+            }}
+          >
+            安装
+          </button>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <input
+            value={modelUrl}
+            onChange={(event) => setModelUrl(event.target.value)}
+            placeholder="远程 HTTPS 模型地址（允许官方域名）"
+            style={{
+              flex: 2,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6
+            }}
+          />
+          <input
+            value={modelSha256}
+            onChange={(event) => setModelSha256(event.target.value)}
+            placeholder="SHA-256"
+            style={{
+              flex: 1,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontFamily: 'monospace'
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void installRemote()}
+            disabled={modelsBusy}
+            style={{
+              padding: '8px 12px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              background: COLORS.bgWhite
+            }}
+          >
+            远程安装
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => void clearEngineCache()}
+          disabled={modelsBusy}
+          style={{
+            marginTop: 10,
+            padding: '6px 10px',
+            border: `1px solid ${COLORS.warningBorder}`,
+            borderRadius: 5,
+            background: COLORS.warningBg,
+            color: COLORS.warning
+          }}
+        >
+          清理缓存
+        </button>
+        {modelsError && (
+          <div style={{ marginTop: 12, color: COLORS.danger, fontSize: FONT.sizeSm }}>
+            {modelsError}
+          </div>
+        )}
+        {models.length === 0 ? (
+          <div style={{ marginTop: 16, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
+            模型目录为空
+          </div>
+        ) : (
+          models.map((model) => {
+            const path = typeof model.relativePath === 'string' ? model.relativePath : ''
+            return (
+              <div
+                key={path}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  marginTop: 8,
+                  padding: 8,
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 5,
+                  fontSize: FONT.sizeSm
+                }}
+              >
+                <span>
+                  {path} · {String(model.bytes ?? 0)} bytes
+                </span>
+                <span style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => void updateRemote(path)}
+                    disabled={modelsBusy}
+                    style={{
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 4,
+                      background: COLORS.bgWhite
+                    }}
+                  >
+                    更新
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteModel(path)}
+                    disabled={modelsBusy}
+                    style={{
+                      border: `1px solid ${COLORS.danger}`,
+                      borderRadius: 4,
+                      background: COLORS.dangerBg,
+                      color: COLORS.danger
+                    }}
+                  >
+                    删除
+                  </button>
+                </span>
+              </div>
+            )
+          })
+        )}
+      </div>
+    )
+  }
 
   const renderHistory = () => {
     const completed = allTasks.filter((task) => isTerminalTask(task))

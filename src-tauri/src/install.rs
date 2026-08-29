@@ -168,6 +168,14 @@ impl InstallManager {
             return Err("install token expired".into());
         }
         let name = install.manifest.name.clone();
+        let _lifecycle = match self.backend.begin_lifecycle_operation(&name) {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = install.transaction.rollback();
+                lock(&self.in_flight).remove(&name);
+                return Err(error);
+            }
+        };
         {
             let mut in_flight = lock(&self.in_flight);
             if in_flight.contains(&name) {
@@ -205,14 +213,21 @@ impl InstallManager {
         if self.is_blocked(&row.name) {
             return Err("plugin is blocked after interrupted transaction".into());
         }
-        self.backend.begin_maintenance(id)?;
+        if lock(&self.prepared)
+            .values()
+            .any(|prepared| prepared.manifest.name == row.name)
+        {
+            return Err(format!(
+                "{}: install preview is waiting for confirmation",
+                row.name
+            ));
+        }
+        let _lifecycle = self.backend.begin_lifecycle_operation(id)?;
+        let _maintenance = self.backend.enter_maintenance(id)?;
         if let Err(error) = self.backend.deactivate(id) {
-            self.backend.end_maintenance(id);
             return Err(format!("failed to deactivate plugin: {error}"));
         }
-        let result = self.perform_uninstall(&row);
-        self.backend.end_maintenance(id);
-        result
+        self.perform_uninstall(&row)
     }
 
     fn perform_uninstall(&self, row: &PluginRow) -> Result<serde_json::Value, String> {
@@ -316,6 +331,15 @@ impl InstallManager {
         if self.is_blocked(&manifest.name) {
             return Err(format!(
                 "{}: plugin is blocked after an interrupted transaction",
+                manifest.name
+            ));
+        }
+        if lock(&self.prepared)
+            .values()
+            .any(|prepared| prepared.manifest.name == manifest.name)
+        {
+            return Err(format!(
+                "{}: another install preview is already waiting for confirmation",
                 manifest.name
             ));
         }
@@ -525,6 +549,13 @@ impl InstallManager {
         let id = existing.id.clone();
         let was_enabled = existing.enabled;
         let previous_metadata = plugin_row_to_metadata(&existing);
+        let _maintenance = match self.backend.enter_maintenance(&id) {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = install.transaction.rollback();
+                return Err(error);
+            }
+        };
 
         let journal = Journal {
             version: JOURNAL_VERSION,
@@ -540,7 +571,12 @@ impl InstallManager {
             return Err(e);
         }
         if was_enabled {
-            let _ = self.backend.deactivate(&id);
+            if let Err(error) = self.backend.deactivate(&id) {
+                let _ = install.transaction.rollback();
+                return Err(format!(
+                    "failed to deactivate plugin before upgrade: {error}"
+                ));
+            }
         }
         if let Err(e) = install.transaction.swap() {
             self.rollback_upgrade(install, &previous_metadata);
@@ -562,7 +598,12 @@ impl InstallManager {
         if was_enabled {
             let record = lock(&self.db).plugin_backend_record(&id).ok().flatten();
             if let Some(record) = record {
-                let _ = self.backend.ensure_activated(&id, record);
+                if let Err(error) = self.backend.ensure_activated(&id, record) {
+                    self.block(name);
+                    return Err(format!(
+                        "failed to reactivate plugin after upgrade: {error}"
+                    ));
+                }
             }
         }
         let committed = Journal {
@@ -1001,6 +1042,21 @@ mod tests {
         assert!(plugins.join("demo").join("dist/main.js").exists());
         assert!(plugins.join("demo").join("plugin.json").exists());
         // stage 已清理
+        assert!(!has_prefix(&plugins, ".demo.stage-"));
+    }
+
+    #[test]
+    fn preview_rejects_duplicate_pending_install_for_same_plugin() {
+        let (mgr, plugins, root) = setup("duplicate-preview");
+        let source_dir = root.join("source");
+        write_fixture(&source_dir, "1.0.0");
+        mgr.remember_trusted_path(source_dir.clone());
+
+        let first = mgr.preview(directory_source(&source_dir)).unwrap();
+        let error = mgr.preview(directory_source(&source_dir)).unwrap_err();
+        assert!(error.contains("another install preview"));
+        mgr.discard(first["installToken"].as_str().unwrap().to_string())
+            .unwrap();
         assert!(!has_prefix(&plugins, ".demo.stage-"));
     }
 

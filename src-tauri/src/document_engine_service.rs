@@ -71,6 +71,106 @@ fn err(code: &str, message: String) -> Value {
     json!({ "error": message, "code": code })
 }
 
+/// Curated model choices shown by the Document Engine UI.
+///
+/// The worker currently requires this exact PP-OCRv4 triplet.  Keep the
+/// catalog static and hash-pinned so a model update is an explicit source
+/// change, not an arbitrary JSON/URL fetched at runtime.
+fn model_catalog() -> Value {
+    json!([
+        {
+            "id": "ppocrv4-mobile-zh-en",
+            "name": "PP-OCRv4 中文/英文标准模型",
+            "version": "4.0",
+            "description": "适用于中文、英文及混合文档的本地 OCR；包含检测模型、识别模型和中文字符字典。",
+            "recommended": true,
+            "license": "Apache-2.0",
+            "totalBytes": 15568058u64,
+            "artifacts": [
+                {
+                    "name": "ch_PP-OCRv4_det.onnx",
+                    "purpose": "文本检测",
+                    "bytes": 4729474u64,
+                    "url": "https://huggingface.co/anyforge/anyocr/resolve/645af1fbf520b16a1212124d432eac1f4929a561/anyocr/models/anyocr_det_ch_v4_lite.onnx",
+                    "sha256": "69ce850fec741a2a4568c7c924bb025c9d4f1129e5f96ab428c799ccc5ef2275"
+                },
+                {
+                    "name": "ch_PP-OCRv4_rec.onnx",
+                    "purpose": "文本识别",
+                    "bytes": 10812334u64,
+                    "url": "https://huggingface.co/cycloneboy/ch_PP-OCRv4_rec_infer/resolve/5f3c64a6e7a01c45e92c9284318b961bbe51d308/model.onnx",
+                    "sha256": "ad7dd55f6759fa02333bff6eb179a4f51be5b89cbe6f710249c95f47d0211350"
+                },
+                {
+                    "name": "ppocr_keys_v1.txt",
+                    "purpose": "CTC 字典",
+                    "bytes": 26250u64,
+                    "url": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
+                    "sha256": "a1c84d9bdb9ab29043c58896224d32941783eb821629618416dcb08f12886492"
+                }
+            ]
+        }
+    ])
+}
+
+fn install_model_bundle(root: &std::path::Path, model_id: &str) -> Result<Vec<PathBuf>, String> {
+    let catalog = model_catalog();
+    let entry = catalog
+        .as_array()
+        .and_then(|entries| entries.iter().find(|entry| entry["id"] == model_id))
+        .ok_or_else(|| "未找到可用的模型包".to_string())?;
+    let artifacts = entry["artifacts"]
+        .as_array()
+        .ok_or_else(|| "模型目录条目缺少文件清单".to_string())?;
+    std::fs::create_dir_all(root).map_err(|error| format!("创建模型目录失败: {error}"))?;
+    let staging = root.join(format!(".{model_id}.bundle-{}", std::process::id()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)
+            .map_err(|error| format!("清理模型临时目录失败: {error}"))?;
+    }
+    std::fs::create_dir_all(&staging).map_err(|error| format!("创建模型临时目录失败: {error}"))?;
+
+    let result = (|| {
+        for artifact in artifacts {
+            let name = artifact["name"]
+                .as_str()
+                .ok_or_else(|| "模型文件名缺失".to_string())?;
+            let url = artifact["url"]
+                .as_str()
+                .ok_or_else(|| format!("模型 {name} 下载地址缺失"))?;
+            let sha256 = artifact["sha256"]
+                .as_str()
+                .ok_or_else(|| format!("模型 {name} SHA-256 缺失"))?;
+            crate::document_engine_cache::install_remote(&staging, url, name, sha256, false)?;
+        }
+
+        let mut installed = Vec::new();
+        for artifact in artifacts {
+            let name = artifact["name"].as_str().unwrap_or_default();
+            let sha256 = artifact["sha256"].as_str().unwrap_or_default();
+            let source = staging.join(name);
+            let target = root.join(name);
+            if target.is_file()
+                && crate::document_engine_cache::file_hash(&target)
+                    .is_ok_and(|hash| hash.eq_ignore_ascii_case(sha256))
+            {
+                installed.push(target);
+                continue;
+            }
+            if target.exists() {
+                std::fs::remove_file(&target)
+                    .map_err(|error| format!("替换模型文件失败: {error}"))?;
+            }
+            std::fs::rename(&source, &target)
+                .map_err(|error| format!("提交模型文件失败: {error}"))?;
+            installed.push(target);
+        }
+        Ok(installed)
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
 // ---------------------------------------------------------------------------
 // 配置（从插件 config_data 现读；缺失回退默认值）
 // ---------------------------------------------------------------------------
@@ -1111,6 +1211,25 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 None => err("retry-unavailable", "任务请求已过期，无法重试".into()),
             }
         }
+        "document.models.catalog" => {
+            json!({ "catalog": model_catalog() })
+        }
+        "document.models.installBundle" => {
+            let model_id = match str_field(request, "modelId", 128) {
+                Ok(Some(id)) => id,
+                Ok(None) => return err("invalid-value", "missing field: modelId".into()),
+                Err(error) => return error,
+            };
+            let cfg = load_config(db, plugin_id);
+            match install_model_bundle(PathBuf::from(&cfg.model_directory).as_path(), model_id) {
+                Ok(installed) => json!({
+                    "success": true,
+                    "modelId": model_id,
+                    "files": installed.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>()
+                }),
+                Err(message) => err("model-bundle-install-failed", message),
+            }
+        }
         "document.models.list" => {
             let cfg = load_config(db, plugin_id);
             match crate::document_engine_cache::list_files(std::path::Path::new(
@@ -1533,6 +1652,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out["code"], "task-not-found");
+    }
+
+    #[test]
+    fn model_catalog_exposes_worker_compatible_bundle() {
+        let catalog = model_catalog();
+        let entry = &catalog[0];
+        assert_eq!(entry["id"], "ppocrv4-mobile-zh-en");
+        assert_eq!(entry["recommended"], true);
+        assert_eq!(entry["artifacts"].as_array().map(Vec::len), Some(3));
+        assert_eq!(entry["totalBytes"].as_u64(), Some(15_568_058));
+        for artifact in entry["artifacts"].as_array().unwrap() {
+            assert_eq!(artifact["sha256"].as_str().map(str::len), Some(64));
+            assert!(artifact["url"].as_str().unwrap().starts_with("https://"));
+        }
+
+        let t = TempDb::new("model-catalog");
+        let response = dispatch(
+            &t.db,
+            "document-engine",
+            "message",
+            Some(&json!({ "type": "document.models.catalog" })),
+        )
+        .unwrap();
+        assert_eq!(response["catalog"][0]["id"], "ppocrv4-mobile-zh-en");
+    }
+
+    #[test]
+    fn unknown_model_bundle_is_rejected_before_download() {
+        let t = TempDb::new("model-bundle");
+        let out = dispatch(
+            &t.db,
+            "document-engine",
+            "message",
+            Some(&json!({
+                "type": "document.models.installBundle",
+                "modelId": "missing-model"
+            })),
+        )
+        .unwrap();
+        assert_eq!(out["code"], "model-bundle-install-failed");
+        assert_eq!(out["error"], "未找到可用的模型包");
     }
 
     #[test]

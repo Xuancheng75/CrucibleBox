@@ -92,7 +92,7 @@ async function main() {
     throw new Error('Plugin signature is required but manifest.sig.json is missing')
   }
 
-  // SBOM 文件清单（必须精确等于 cruciblebox + 6 插件 7 份，不允许残留/改名错位）
+  // SBOM 文件清单必须精确等于 cruciblebox + 当前插件目录中的制品，不允许残留/改名错位。
   const catalog = JSON.parse(readFileSync(resolve(scriptDirectory, 'plugin-catalog.json'), 'utf8'))
   const expectedSbomFiles = [
     'cruciblebox.cdx.json',

@@ -60,7 +60,10 @@ export function PluginHost({
     setReady(false)
 
     tauriApi.plugin
-      .createRendererSession(pluginId, useThemeStore.getState().theme.mode === 'light' ? 'light' : 'dark')
+      .createRendererSession(
+        pluginId,
+        useThemeStore.getState().theme.mode === 'light' ? 'light' : 'dark'
+      )
       .then((nextSession) => {
         issuedToken = nextSession.token
         if (active) {
@@ -96,18 +99,35 @@ export function PluginHost({
 
   useEffect(() => {
     let unlisten: (() => void) | undefined
-    tauriApi.events.onMessage((data) => {
-      if (data.pluginId === pluginId) {
-        try {
-          bridgeRef.current?.sendBackendMessage(data.message as PluginRendererRpcJsonValue)
-        } catch (reason) {
-          console.error('[PluginFrameBridge] invalid backend event', reason)
+    tauriApi.events
+      .onMessage((data) => {
+        if (data.pluginId === pluginId) {
+          try {
+            bridgeRef.current?.sendBackendMessage(data.message as PluginRendererRpcJsonValue)
+          } catch (reason) {
+            console.error('[PluginFrameBridge] invalid backend event', reason)
+          }
         }
-      }
-    }).then((fn) => {
-      unlisten = fn
-    })
+      })
+      .then((fn) => {
+        unlisten = fn
+      })
     return () => unlisten?.()
+  }, [pluginId])
+
+  // 窗口级 OS 拖放由宿主解析真实路径后转发；iframe 内的 File 对象不再自行猜测路径。
+  useEffect(() => {
+    const handleDocumentDrop = (event: Event) => {
+      const detail = (event as CustomEvent<{ pluginId?: unknown; paths?: unknown }>).detail
+      if (detail?.pluginId !== undefined && detail.pluginId !== pluginId) return
+      const paths = detail?.paths
+      if (!Array.isArray(paths)) return
+      const safePaths = paths.filter((path): path is string => typeof path === 'string')
+      if (safePaths.length > 0) bridgeRef.current?.sendFilesDropped(safePaths)
+    }
+    window.addEventListener('cruciblebox:document-files-dropped', handleDocumentDrop)
+    return () =>
+      window.removeEventListener('cruciblebox:document-files-dropped', handleDocumentDrop)
   }, [pluginId])
 
   const connectFrame = useCallback(() => {
