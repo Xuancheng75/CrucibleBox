@@ -19,7 +19,7 @@ use crate::document_engine_task::{
 use crate::ocr_worker::{OcrWorkerManager, OcrWorkerRequest};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 fn tasks() -> &'static Arc<TaskManager> {
@@ -32,6 +32,7 @@ type Emitter = Arc<dyn Fn(&str, Value) + Send + Sync>;
 static OCR_WORKER: OnceLock<Arc<OcrWorkerManager>> = OnceLock::new();
 static EVENT_EMITTER: OnceLock<Emitter> = OnceLock::new();
 static RETRY_REQUESTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+const DEFAULT_MODEL_ID: &str = "ppocrv4-mobile-zh-en";
 
 fn worker_manager() -> Option<&'static Arc<OcrWorkerManager>> {
     OCR_WORKER.get()
@@ -84,6 +85,8 @@ fn model_catalog() -> Value {
             "version": "4.0",
             "description": "适用于中文、英文及混合文档的本地 OCR；包含检测模型、识别模型和中文字符字典。",
             "recommended": true,
+            "default": true,
+            "offline": true,
             "license": "Apache-2.0",
             "totalBytes": 15568058u64,
             "artifacts": [
@@ -91,6 +94,11 @@ fn model_catalog() -> Value {
                     "name": "ch_PP-OCRv4_det.onnx",
                     "purpose": "文本检测",
                     "bytes": 4729474u64,
+                    "sources": [
+                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx",
+                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_det.onnx",
+                        "https://huggingface.co/anyforge/anyocr/resolve/645af1fbf520b16a1212124d432eac1f4929a561/anyocr/models/anyocr_det_ch_v4_lite.onnx"
+                    ],
                     "url": "https://huggingface.co/anyforge/anyocr/resolve/645af1fbf520b16a1212124d432eac1f4929a561/anyocr/models/anyocr_det_ch_v4_lite.onnx",
                     "sha256": "69ce850fec741a2a4568c7c924bb025c9d4f1129e5f96ab428c799ccc5ef2275"
                 },
@@ -98,6 +106,11 @@ fn model_catalog() -> Value {
                     "name": "ch_PP-OCRv4_rec.onnx",
                     "purpose": "文本识别",
                     "bytes": 10812334u64,
+                    "sources": [
+                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx",
+                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_rec.onnx",
+                        "https://huggingface.co/cycloneboy/ch_PP-OCRv4_rec_infer/resolve/5f3c64a6e7a01c45e92c9284318b961bbe51d308/model.onnx"
+                    ],
                     "url": "https://huggingface.co/cycloneboy/ch_PP-OCRv4_rec_infer/resolve/5f3c64a6e7a01c45e92c9284318b961bbe51d308/model.onnx",
                     "sha256": "ad7dd55f6759fa02333bff6eb179a4f51be5b89cbe6f710249c95f47d0211350"
                 },
@@ -105,6 +118,11 @@ fn model_catalog() -> Value {
                     "name": "ppocr_keys_v1.txt",
                     "purpose": "CTC 字典",
                     "bytes": 26250u64,
+                    "sources": [
+                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt",
+                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ppocr_keys_v1.txt",
+                        "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt"
+                    ],
                     "url": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
                     "sha256": "a1c84d9bdb9ab29043c58896224d32941783eb821629618416dcb08f12886492"
                 }
@@ -113,12 +131,122 @@ fn model_catalog() -> Value {
     ])
 }
 
-fn install_model_bundle(root: &std::path::Path, model_id: &str) -> Result<Vec<PathBuf>, String> {
-    let catalog = model_catalog();
-    let entry = catalog
+fn model_catalog_entry(model_id: &str) -> Result<Value, String> {
+    model_catalog()
         .as_array()
         .and_then(|entries| entries.iter().find(|entry| entry["id"] == model_id))
-        .ok_or_else(|| "未找到可用的模型包".to_string())?;
+        .cloned()
+        .ok_or_else(|| "未找到可用的模型包".to_string())
+}
+
+fn plugin_install_root(db: &Db, plugin_id: &str) -> Option<PathBuf> {
+    db.plugin_backend_record(plugin_id)
+        .ok()
+        .flatten()
+        .map(|record| PathBuf::from(record.installed_path))
+        .filter(|path| path.is_dir())
+}
+
+fn embedded_model_path(plugin_root: &Path, model_id: &str, name: &str) -> PathBuf {
+    plugin_root
+        .join("assets")
+        .join("models")
+        .join(model_id)
+        .join(name)
+}
+
+fn artifact_sources(artifact: &Value) -> Vec<String> {
+    let mut sources = artifact["sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if sources.is_empty() {
+        if let Some(url) = artifact["url"].as_str() {
+            sources.push(url.to_string());
+        }
+    }
+    sources
+}
+
+fn model_bundle_status(root: &Path, entry: &Value) -> Value {
+    let mut missing = Vec::new();
+    let mut invalid = Vec::new();
+    let artifacts = entry["artifacts"].as_array().cloned().unwrap_or_default();
+    for artifact in artifacts {
+        let name = artifact["name"].as_str().unwrap_or_default();
+        let expected = artifact["sha256"].as_str().unwrap_or_default();
+        let path = root.join(name);
+        if !path.is_file() {
+            missing.push(name.to_string());
+            continue;
+        }
+        match crate::document_engine_cache::file_hash(&path) {
+            Ok(actual) if actual.eq_ignore_ascii_case(expected) => {}
+            Ok(_) | Err(_) => invalid.push(name.to_string()),
+        }
+    }
+    json!({
+        "id": entry["id"],
+        "version": entry["version"],
+        "ready": missing.is_empty() && invalid.is_empty(),
+        "missing": missing,
+        "invalid": invalid,
+        "offline": entry["offline"].as_bool().unwrap_or(false),
+        "default": entry["default"].as_bool().unwrap_or(false)
+    })
+}
+
+fn embedded_bundle_available(db: &Db, plugin_id: &str, model_id: &str, entry: &Value) -> bool {
+    let Some(plugin_root) = plugin_install_root(db, plugin_id) else {
+        return false;
+    };
+    entry["artifacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .all(|artifact| {
+            let name = artifact["name"].as_str().unwrap_or_default();
+            let expected = artifact["sha256"].as_str().unwrap_or_default();
+            let path = embedded_model_path(&plugin_root, model_id, name);
+            path.is_file()
+                && crate::document_engine_cache::file_hash(&path)
+                    .is_ok_and(|hash| hash.eq_ignore_ascii_case(expected))
+        })
+}
+
+fn ensure_default_model(db: &Db, plugin_id: &str, root: &Path) -> Value {
+    let entry = match model_catalog_entry(DEFAULT_MODEL_ID) {
+        Ok(entry) => entry,
+        Err(error) => return json!({ "ready": false, "error": error }),
+    };
+    let current = model_bundle_status(root, &entry);
+    if current["ready"].as_bool() == Some(true) {
+        return current;
+    }
+    if embedded_bundle_available(db, plugin_id, DEFAULT_MODEL_ID, &entry) {
+        if let Err(error) = install_model_bundle(db, plugin_id, root, DEFAULT_MODEL_ID) {
+            return json!({
+                "id": DEFAULT_MODEL_ID,
+                "ready": false,
+                "offline": true,
+                "error": error
+            });
+        }
+        return model_bundle_status(root, &entry);
+    }
+    current
+}
+
+fn install_model_bundle(
+    db: &Db,
+    plugin_id: &str,
+    root: &Path,
+    model_id: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let entry = model_catalog_entry(model_id)?;
     let artifacts = entry["artifacts"]
         .as_array()
         .ok_or_else(|| "模型目录条目缺少文件清单".to_string())?;
@@ -135,13 +263,31 @@ fn install_model_bundle(root: &std::path::Path, model_id: &str) -> Result<Vec<Pa
             let name = artifact["name"]
                 .as_str()
                 .ok_or_else(|| "模型文件名缺失".to_string())?;
-            let url = artifact["url"]
-                .as_str()
-                .ok_or_else(|| format!("模型 {name} 下载地址缺失"))?;
             let sha256 = artifact["sha256"]
                 .as_str()
                 .ok_or_else(|| format!("模型 {name} SHA-256 缺失"))?;
-            crate::document_engine_cache::install_remote(&staging, url, name, sha256, false)?;
+            let embedded = plugin_install_root(db, plugin_id)
+                .map(|root| embedded_model_path(&root, model_id, name));
+            let embedded_ready = embedded
+                .as_ref()
+                .filter(|path| path.is_file())
+                .and_then(|path| crate::document_engine_cache::file_hash(path).ok())
+                .is_some_and(|hash| hash.eq_ignore_ascii_case(sha256));
+            if embedded_ready {
+                std::fs::copy(
+                    embedded.as_ref().expect("embedded path exists"),
+                    staging.join(name),
+                )
+                .map_err(|error| format!("复制内置模型 {name} 失败: {error}"))?;
+                continue;
+            }
+            let sources = artifact_sources(artifact);
+            if sources.is_empty() {
+                return Err(format!("模型 {name} 没有可用的下载源"));
+            }
+            crate::document_engine_cache::install_remote_from_sources(
+                &staging, &sources, name, sha256, false,
+            )?;
         }
 
         let mut installed = Vec::new();
@@ -660,6 +806,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
         // ---- Phase 3 实现 ----
         "getStatus" => {
             let cfg = load_config(db, plugin_id);
+            let default_model =
+                ensure_default_model(db, plugin_id, Path::new(&cfg.model_directory));
             let cache_entries = crate::document_engine_cache::list_files(std::path::Path::new(
                 &cfg.cache_directory,
             ))
@@ -678,6 +826,10 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 "status": {
                     "ocrWorker": worker,
                     "pdfium": crate::pdf_parser::renderer_status(),
+                    "models": {
+                        "default": default_model,
+                        "directory": cfg.model_directory,
+                    },
                     "gpu": gpu_status(),
                     "workers": {
                         "ocr": worker.get("running").and_then(Value::as_bool).unwrap_or(false) as u8,
@@ -1221,7 +1373,12 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Err(error) => return error,
             };
             let cfg = load_config(db, plugin_id);
-            match install_model_bundle(PathBuf::from(&cfg.model_directory).as_path(), model_id) {
+            match install_model_bundle(
+                db,
+                plugin_id,
+                PathBuf::from(&cfg.model_directory).as_path(),
+                model_id,
+            ) {
                 Ok(installed) => json!({
                     "success": true,
                     "modelId": model_id,
@@ -1237,10 +1394,17 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             )) {
                 Ok(models) => {
                     let count = models.len();
+                    let bundles = model_catalog()
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|entry| model_bundle_status(Path::new(&cfg.model_directory), entry))
+                        .collect::<Vec<_>>();
                     json!({
                         "directory": cfg.model_directory,
                         "models": models,
-                        "count": count
+                        "count": count,
+                        "bundles": bundles
                     })
                 }
                 Err(message) => err("model-list-failed", message),
@@ -1374,6 +1538,10 @@ pub fn dispatch(
     if operation == "activate" {
         // 初始化任务表；Worker 仍按需启动，避免仅激活插件就加载模型。
         let _ = tasks();
+        // 内置模型只做本地校验和复制，不在激活阶段主动阻塞网络下载。
+        // 没有内置资源时由模型页的 installBundle 触发镜像回退。
+        let cfg = load_config(db, plugin_id);
+        let _ = ensure_default_model(db, plugin_id, Path::new(&cfg.model_directory));
         return Ok(Value::Null);
     }
     if operation == "deactivate" {
@@ -1660,11 +1828,16 @@ mod tests {
         let entry = &catalog[0];
         assert_eq!(entry["id"], "ppocrv4-mobile-zh-en");
         assert_eq!(entry["recommended"], true);
+        assert_eq!(entry["default"], true);
+        assert_eq!(entry["offline"], true);
         assert_eq!(entry["artifacts"].as_array().map(Vec::len), Some(3));
         assert_eq!(entry["totalBytes"].as_u64(), Some(15_568_058));
         for artifact in entry["artifacts"].as_array().unwrap() {
             assert_eq!(artifact["sha256"].as_str().map(str::len), Some(64));
             assert!(artifact["url"].as_str().unwrap().starts_with("https://"));
+            assert!(artifact["sources"]
+                .as_array()
+                .is_some_and(|sources| sources.len() >= 2));
         }
 
         let t = TempDb::new("model-catalog");
@@ -1676,6 +1849,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response["catalog"][0]["id"], "ppocrv4-mobile-zh-en");
+    }
+
+    #[test]
+    fn model_bundle_status_reports_missing_files_without_network() {
+        let t = TempDb::new("model-status");
+        let root = t.dir.join("models");
+        let entry = model_catalog_entry(DEFAULT_MODEL_ID).unwrap();
+        let status = model_bundle_status(&root, &entry);
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["offline"], true);
+        assert_eq!(status["missing"].as_array().map(Vec::len), Some(3));
     }
 
     #[test]
