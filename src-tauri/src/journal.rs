@@ -433,6 +433,7 @@ fn recover_upgrade(
     let target = ctx.plugins_dir.join(plugin_name);
     let stage = artifacts.iter().find(|a| a.kind == ArtifactKind::Stage);
     let backup = artifacts.iter().find(|a| a.kind == ArtifactKind::Backup);
+    let mut displaced_target: Option<(PathBuf, String)> = None;
 
     if journal.phase == "committed" {
         if let Some(b) = backup {
@@ -481,6 +482,7 @@ fn recover_upgrade(
                 block_plugin(ctx, plugin_name, &e);
                 return;
             }
+            displaced_target = Some((stage_path, stage_name));
         }
         let backup_name = backup_basename(plugin_name, &b.transaction_id);
         if let Err(e) = rename_internal_directory(
@@ -520,6 +522,13 @@ fn recover_upgrade(
     if let Some(s) = stage {
         let basename = stage_basename(plugin_name, &s.transaction_id);
         if let Err(e) = remove_internal_directory(&ctx.plugins_dir, &s.path, &basename) {
+            block_plugin(ctx, plugin_name, &e);
+            return;
+        }
+    } else if let Some((path, basename)) = displaced_target {
+        // target 中的候选版本刚在本次恢复中移到 stage_path；它不在启动扫描得到的
+        // artifacts 集合里，必须本轮删除，避免需要第二次重启才能清理。
+        if let Err(e) = remove_internal_directory(&ctx.plugins_dir, &path, &basename) {
             block_plugin(ctx, plugin_name, &e);
             return;
         }
@@ -1014,6 +1023,7 @@ mod tests {
             "old"
         );
         assert!(!backup.exists());
+        assert!(!plugins.join(".demo.stage-tx-1").exists());
         assert_eq!(metadata.borrow().get("demo").unwrap()["version"], "1.0.0");
     }
 

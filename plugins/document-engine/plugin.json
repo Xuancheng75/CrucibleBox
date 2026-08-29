@@ -1,6 +1,6 @@
 {
   "name": "document-engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "displayName": "Document Engine",
   "description": "统一本地文档处理基础设施：OCR、PDF/Office 解析、文档切分、格式转换、批量处理、任务队列、缓存和模型管理（Rust + PaddleOCR ONNX）",
   "author": "CrucibleBox",

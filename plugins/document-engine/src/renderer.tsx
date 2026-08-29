@@ -28,6 +28,7 @@ import {
   type DocumentTaskSnapshot,
   type EngineStatus,
   type ModelCatalogEntry,
+  type ModelListResponse,
   type OcrProgress,
   type OcrResult,
   type ParsedDocumentResult
@@ -94,6 +95,13 @@ interface RecentTask {
   name: string
   action: string
   status: string
+}
+
+interface ImportedDocument {
+  path: string
+  name: string
+  kind: 'pdf' | 'image' | 'document'
+  source: 'overview' | 'picker' | 'drop'
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -210,6 +218,7 @@ function QuickAction({
 
 export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [activeKey, setActiveKey] = useState('overview')
+  const [activeDocument, setActiveDocument] = useState<ImportedDocument | null>(null)
   const [status, setStatus] = useState<EngineStatus | null>(null)
   const [recentTasks, setRecentTasks] = useState<RecentTask[]>([])
   const [loadingStatus, setLoadingStatus] = useState(false)
@@ -258,6 +267,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [models, setModels] = useState<Array<Record<string, unknown>>>([])
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogEntry[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
+  const [modelBundles, setModelBundles] = useState<NonNullable<ModelListResponse['bundles']>>([])
   const [modelCatalogError, setModelCatalogError] = useState<string | null>(null)
   const [modelSource, setModelSource] = useState('')
   const [modelName, setModelName] = useState('')
@@ -290,6 +300,36 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     },
     [api]
   )
+
+  const setSharedDocument = useCallback(
+    (path: string, kind: ImportedDocument['kind'], source: ImportedDocument['source']) => {
+      const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path
+      setActiveDocument({ path, name, kind, source })
+      if (kind === 'pdf') {
+        setParsePath(path)
+        setChunkPath(path)
+        setConvertPath(path)
+      } else if (kind === 'image') {
+        setParsePath('')
+        setChunkPath('')
+        setConvertPath('')
+        setOcrPath(path)
+      } else {
+        setParsePath('')
+        setChunkPath('')
+        setConvertPath('')
+      }
+    },
+    []
+  )
+
+  const clearSharedDocument = useCallback(() => {
+    setActiveDocument(null)
+    setParsePath('')
+    setChunkPath('')
+    setConvertPath('')
+    setOcrPath('')
+  }, [])
 
   const selectFolderFiles = useCallback(
     async (setPaths: (value: string) => void) => {
@@ -348,8 +388,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
 
   const refreshModels = useCallback(async () => {
     try {
-      const response = (await listModels(send)) as { models: Array<Record<string, unknown>> }
+      const response = await listModels(send)
       if (mounted.current) setModels(response.models)
+      if (mounted.current) setModelBundles(response.bundles ?? [])
       setModelsError(null)
     } catch (error) {
       if (mounted.current) setModelsError(error instanceof Error ? error.message : String(error))
@@ -880,13 +921,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   }, [activeKey, refreshModelCatalog, refreshModels])
 
   const handleFiles = useCallback(
-    async (files: string[]) => {
+    async (files: string[], source: ImportedDocument['source'] = 'drop') => {
       if (files.length === 0) {
         api.notify('请选择文件', '请从概览拖入文件，或点击对应的选择按钮')
         return
       }
       if (!mounted.current) return
       if (files.length > 1) {
+        clearSharedDocument()
         setBatchPaths(files.join('\n'))
         setActiveKey('batch')
         return
@@ -907,6 +949,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         }
         // 文件夹会展开为内部文档；即使只有一个文件，也不能把文件夹本身当作 OCR 输入。
         if (enumerated.length !== 1 || enumerated[0] !== path) {
+          clearSharedDocument()
           setBatchPaths(enumerated.join('\n'))
           setActiveKey('batch')
           return
@@ -917,17 +960,18 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       }
 
       if (/\.pdf$/i.test(path)) {
-        setParsePath(path)
+        setSharedDocument(path, 'pdf', source)
         setActiveKey('parse')
       } else if (/\.(png|jpe?g|webp|bmp|tiff?)$/i.test(path)) {
-        setOcrPath(path)
+        setSharedDocument(path, 'image', source)
         setActiveKey('ocr')
       } else {
+        setSharedDocument(path, 'document', source)
         setBatchPaths(path)
         setActiveKey('batch')
       }
     },
-    [api, send]
+    [api, clearSharedDocument, send, setSharedDocument]
   )
 
   // 兼容尚未升级 frame runtime 的宿主：旧 runtime 没有该可选能力时，
@@ -940,6 +984,43 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     borderRadius: 8,
     padding: 16,
     marginBottom: 12
+  }
+
+  const renderCurrentDocument = () => {
+    if (!activeDocument) return null
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+          marginBottom: 12,
+          padding: '8px 10px',
+          border: `1px solid ${COLORS.primary}`,
+          borderRadius: 6,
+          background: COLORS.primaryLight,
+          fontSize: FONT.sizeSm
+        }}
+      >
+        <span title={activeDocument.path} style={{ minWidth: 0 }}>
+          当前文档：{activeDocument.name} · {displayPath(activeDocument.path)}
+        </span>
+        <button
+          type="button"
+          onClick={clearSharedDocument}
+          style={{
+            flexShrink: 0,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 4,
+            background: COLORS.bgWhite,
+            padding: '3px 7px'
+          }}
+        >
+          清除
+        </button>
+      </div>
+    )
   }
 
   // ============================================================
@@ -961,10 +1042,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         onPick={() => {
           void selectPaths({ type: 'file', multiple: true }).then((paths) => {
             if (paths.length > 1) {
+              clearSharedDocument()
               setBatchPaths(paths.join('\n'))
               setActiveKey('batch')
             } else if (paths[0]) {
-              handleFiles(paths)
+              handleFiles(paths, 'overview')
             }
           })
         }}
@@ -990,10 +1072,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           onClick={async () => {
             const paths = await selectPaths({ type: 'file', multiple: true })
             if (paths.length > 1) {
+              clearSharedDocument()
               setBatchPaths(paths.join('\n'))
               setActiveKey('batch')
             } else if (paths[0]) {
-              handleFiles(paths)
+              handleFiles(paths, 'overview')
             }
           }}
           style={{
@@ -1009,6 +1092,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           type="button"
           onClick={() =>
             void selectFolderFiles((value) => {
+              clearSharedDocument()
               setBatchPaths(value)
               setActiveKey('batch')
             })
@@ -1048,6 +1132,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             {(() => {
               const worker = status.ocrWorker
               const pdfium = status.pdfium
+              const defaultModel = status.models?.default
               const gpu = status.gpu
               const gpuRequired = status.config?.device === 'gpu'
               return (
@@ -1071,9 +1156,31 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                     }
                   />
                   <StatusBadge
-                    state={pdfium ? (pdfium.available ? 'ok' : 'error') : 'neutral'}
+                    state={
+                      pdfium
+                        ? pdfium.error
+                          ? 'error'
+                          : pdfium.initialized || pdfium.available
+                            ? 'ok'
+                            : 'error'
+                        : 'neutral'
+                    }
                     label={
-                      pdfium ? `PDFium ${pdfium.available ? '可用' : '缺失'}` : 'PDFium 状态未知'
+                      pdfium
+                        ? pdfium.error
+                          ? 'PDFium 绑定失败'
+                          : `PDFium ${pdfium.initialized ? '已绑定' : pdfium.available ? '可用' : '缺失'}`
+                        : 'PDFium 状态未知'
+                    }
+                  />
+                  <StatusBadge
+                    state={defaultModel?.ready ? 'ok' : defaultModel?.error ? 'error' : 'neutral'}
+                    label={
+                      defaultModel?.ready
+                        ? '默认模型已就绪'
+                        : defaultModel?.error
+                          ? '默认模型准备失败'
+                          : '默认模型未安装'
                     }
                   />
                   <StatusBadge
@@ -1086,6 +1193,18 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                           : 'GPU 未检测到（CPU 回退）'
                     }
                   />
+                  {pdfium?.error && (
+                    <div
+                      style={{
+                        flexBasis: '100%',
+                        color: COLORS.danger,
+                        fontSize: FONT.sizeSm,
+                        marginTop: 2
+                      }}
+                    >
+                      PDFium 诊断：{pdfium.error}
+                    </div>
+                  )}
                 </>
               )
             })()}
@@ -1144,6 +1263,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
 
   const renderOcr = () => (
     <div style={{ ...cardStyle }}>
+      {renderCurrentDocument()}
       <h3 style={{ margin: '0 0 8px', fontSize: FONT.sizeXl, fontWeight: 600 }}>OCR</h3>
       <p style={{ margin: '0 0 14px', color: COLORS.textSecondary, fontSize: FONT.sizeMd }}>
         使用本地 Rust + PaddleOCR ONNX Worker 识别图片，模型不会上传到网络。
@@ -1179,7 +1299,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             type: 'file',
             extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff']
           })
-          if (path) setOcrPath(path)
+          if (path) setSharedDocument(path, 'image', 'picker')
         }}
         style={{
           marginTop: 8,
@@ -1286,6 +1406,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     const metadata = parseResult?.document.metadata
     return (
       <div style={{ ...cardStyle }}>
+        {renderCurrentDocument()}
         <h3 style={{ margin: '0 0 8px', fontSize: FONT.sizeXl, fontWeight: 600 }}>PDF 解析</h3>
         <p style={{ margin: '0 0 14px', color: COLORS.textSecondary, fontSize: FONT.sizeMd }}>
           提取 PDF 文本层并转换为统一 Document JSON；扫描页会标记为待 OCR。
@@ -1318,7 +1439,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           type="button"
           onClick={async () => {
             const [path] = await selectPaths({ type: 'file', extensions: ['pdf'] })
-            if (path) setParsePath(path)
+            if (path) setSharedDocument(path, 'pdf', 'picker')
           }}
           style={{
             marginTop: 8,
@@ -1475,6 +1596,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
 
   const renderChunk = () => (
     <div style={{ ...cardStyle }}>
+      {renderCurrentDocument()}
       <h3 style={{ margin: '0 0 8px', fontSize: FONT.sizeXl, fontWeight: 600 }}>文档切分</h3>
       <p style={{ margin: '0 0 14px', color: COLORS.textSecondary, fontSize: FONT.sizeMd }}>
         按结构/语义边界生成 RAG 可用 Chunk。
@@ -1497,7 +1619,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         type="button"
         onClick={async () => {
           const [path] = await selectPaths({ type: 'file' })
-          if (path) setChunkPath(path)
+          if (path) {
+            setSharedDocument(path, /\.pdf$/i.test(path) ? 'pdf' : 'document', 'picker')
+            setChunkPath(path)
+          }
         }}
         style={{
           marginTop: 8,
@@ -1583,6 +1708,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
 
   const renderConvert = () => (
     <div style={{ ...cardStyle }}>
+      {renderCurrentDocument()}
       <h3 style={{ margin: '0 0 8px', fontSize: FONT.sizeXl, fontWeight: 600 }}>格式转换</h3>
       <p style={{ margin: '0 0 14px', color: COLORS.textSecondary, fontSize: FONT.sizeMd }}>
         所有转换先经过统一 Document 模型。
@@ -1605,7 +1731,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         type="button"
         onClick={async () => {
           const [path] = await selectPaths({ type: 'file' })
-          if (path) setConvertPath(path)
+          if (path) {
+            setSharedDocument(path, /\.pdf$/i.test(path) ? 'pdf' : 'document', 'picker')
+            setConvertPath(path)
+          }
         }}
         style={{
           marginTop: 8,
@@ -1740,7 +1869,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           type="button"
           onClick={async () => {
             const paths = await selectPaths({ type: 'file', multiple: true })
-            if (paths.length) setBatchPaths(paths.join('\n'))
+            if (paths.length) {
+              clearSharedDocument()
+              setBatchPaths(paths.join('\n'))
+            }
           }}
           style={{
             padding: '6px 10px',
@@ -2044,7 +2176,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             </div>
           ) : (
             modelCatalog.map((entry) => {
-              const ready = entry.artifacts.every((artifact) => installedNames.has(artifact.name))
+              const bundle = modelBundles.find((candidate) => candidate.id === entry.id)
+              const ready =
+                bundle?.ready ??
+                entry.artifacts.every((artifact) => installedNames.has(artifact.name))
               return (
                 <div
                   key={entry.id}
@@ -2067,6 +2202,17 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                     >
                       {entry.description} · {entry.artifacts.length} 个文件 ·{' '}
                       {Math.round((entry.totalBytes ?? 0) / 1024 / 1024)} MiB
+                    </div>
+                    <div
+                      style={{ color: COLORS.textSecondary, fontSize: FONT.sizeSm, marginTop: 3 }}
+                    >
+                      {ready
+                        ? '已校验，可离线使用'
+                        : bundle?.missing?.length
+                          ? `缺少 ${bundle.missing.length} 个文件`
+                          : entry.offline
+                            ? '插件内置，可离线安装'
+                            : '支持镜像回退下载'}
                     </div>
                   </div>
                   <button
