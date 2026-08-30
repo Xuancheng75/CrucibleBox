@@ -1,8 +1,8 @@
 {
   "name": "unienv",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "displayName": "UniEnv",
-  "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java、Rust、PHP 的检测、安装、切换与卸载；Node/Go/Java 支持联网检查上游新版本，面向初学者",
+  "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java、Rust、PHP 的版本管理、安装后环境配置、切换与卸载",
   "author": "UniEnv Team",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
@@ -37,6 +37,16 @@
       "options": [
         { "label": "开启（推荐）", "value": "on" },
         { "label": "关闭", "value": "off" }
+      ]
+    },
+    "autoConfigureEnvironment": {
+      "type": "select",
+      "label": "安装后自动配置环境",
+      "description": "安装或组合包完成后，将 UniEnv 的当前版本入口加入当前用户 PATH；可随时关闭并恢复原环境。",
+      "default": "on",
+      "options": [
+        { "label": "开启（推荐）", "value": "on" },
+        { "label": "仅安装，不修改环境", "value": "off" }
       ]
     },
     "customCombos": {

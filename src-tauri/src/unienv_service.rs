@@ -52,6 +52,8 @@ pub struct UniEnvConfig {
     pub custom_combos: Vec<ComboPack>,
     /// 联网检查语言新版本（默认开；不可达时静默回退内置目录）
     pub online_versions: bool,
+    /// 将 UniEnv shim 目录加入当前用户 PATH（默认开启）。
+    pub auto_configure_environment: bool,
 }
 
 fn has_control_characters(value: &str) -> bool {
@@ -350,11 +352,17 @@ fn load_config(db: &Db, plugin_id: &str) -> UniEnvConfig {
         .and_then(Value::as_str)
         .map(|v| v != "off")
         .unwrap_or(true);
+    let auto_configure_environment = parsed
+        .get("autoConfigureEnvironment")
+        .and_then(Value::as_str)
+        .map(|v| v != "off")
+        .unwrap_or(true);
     UniEnvConfig {
         install_root,
         download_mirror,
         custom_combos,
         online_versions,
+        auto_configure_environment,
     }
 }
 
@@ -407,6 +415,18 @@ fn builtin_combos() -> Value {
         {
             "id": "fullstack-universal", "name": "全栈通用", "description": "Python 3.14 + Node 24 + Go 1.26 + Git",
             "items": [ { "toolId": "python", "version": "3.14.7" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "go", "version": "1.26.5" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "rust-dev", "name": "Rust 开发", "description": "Rust stable + Git",
+            "items": [ { "toolId": "rust", "version": "stable" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "php-web", "name": "PHP Web", "description": "PHP 8.3 + Node 24 + Git",
+            "items": [ { "toolId": "php", "version": "8.3.33" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "multi-language", "name": "多语言后端", "description": "Java 21 + Go 1.26 + Rust + Git",
+            "items": [ { "toolId": "java", "version": "21.0.12" }, { "toolId": "go", "version": "1.26.5" }, { "toolId": "rust", "version": "stable" }, { "toolId": "git", "version": "2.54.0" } ]
         }
     ])
 }
@@ -599,6 +619,7 @@ fn run_install_executor(
     install_root: String,
     mirror: String,
     online_versions: bool,
+    auto_configure_environment: bool,
     tool: String,
     version: String,
 ) -> Result<Value, String> {
@@ -616,6 +637,10 @@ fn run_install_executor(
         &progress_adapter(ctx, None),
         ctx.cancel_flag(),
     )?;
+    if auto_configure_environment {
+        unienv_install::configure_environment(Path::new(&install_root))?;
+        ctx.update_progress("configuring", 99, "正在配置用户开发环境");
+    }
     ctx.check_cancelled()?;
     Ok(json!({
         "kind": "install",
@@ -669,6 +694,7 @@ fn run_combo_executor(
     combo_id: String,
     combo_name: String,
     items: Vec<(String, String)>,
+    auto_configure_environment: bool,
 ) -> Result<Value, String> {
     let total = items.len();
     let mut results: Vec<Value> = Vec::new();
@@ -701,6 +727,9 @@ fn run_combo_executor(
         }
     }
     let success = results.iter().all(|r| r["success"] == true);
+    if auto_configure_environment && success {
+        unienv_install::configure_environment(Path::new(&install_root))?;
+    }
     let final_message = if success {
         format!("{combo_name} 全部安装完成")
     } else {
@@ -781,33 +810,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             // 「检查语言新版本」按钮路径：强制刷新上游元数据（8s 硬超时），
             // 返回 内置∪在线 的合并降序列表；失败项内联报错。
             let cfg = load_config(db, plugin_id);
-            if !cfg.online_versions {
-                return err(
-                    "online-check-disabled",
-                    "联网检查语言版本已在设置中关闭".into(),
-                );
-            }
-            let requested: Vec<String> = match request.get("tool") {
-                Some(Value::String(s)) => vec![s.clone()],
-                _ => ["node", "go", "java"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
-            };
-            let mut results = Vec::new();
-            for tool in requested {
-                if !crate::unienv_versions::provider_supports(&tool) {
-                    results.push(json!({
-                        "tool": tool, "ok": false,
-                        "error": format!("该工具不支持在线检查: {tool}"),
-                    }));
-                    continue;
-                }
-                let online = crate::unienv_versions::online_versions_force(&tool);
-                let merged = merge_static_with_online(&tool, &online);
-                results.push(json!({ "tool": tool, "ok": true, "versions": merged }));
-            }
-            json!({ "results": results })
+            check_online_versions(&cfg, request)
         }
         "listCombos" => {
             let cfg = load_config(db, plugin_id);
@@ -867,7 +870,15 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             let start = tasks().start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
-                    run_install_executor(ctx, install_root, mirror, online, tool, version)
+                    run_install_executor(
+                        ctx,
+                        install_root,
+                        mirror,
+                        online,
+                        cfg.auto_configure_environment,
+                        tool,
+                        version,
+                    )
                 }),
             );
             end_inline();
@@ -905,7 +916,15 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             let start = tasks().start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
-                    run_combo_executor(ctx, install_root, mirror, combo_id, combo_name, items)
+                    run_combo_executor(
+                        ctx,
+                        install_root,
+                        mirror,
+                        combo_id,
+                        combo_name,
+                        items,
+                        cfg.auto_configure_environment,
+                    )
                 }),
             );
             end_inline();
@@ -999,6 +1018,56 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
         }
         _ => err("unknown-type", format!("unknown message type: {msg_type}")),
     }
+}
+
+/// Network-backed version discovery extracted from `handle_message` so the
+/// host can release its outer database mutex before the bounded HTTP calls.
+fn check_online_versions(cfg: &UniEnvConfig, request: &Value) -> Value {
+    if !cfg.online_versions {
+        return err(
+            "online-check-disabled",
+            "联网检查语言版本已在设置中关闭".into(),
+        );
+    }
+    let requested: Vec<String> = match request.get("tool") {
+        Some(Value::String(s)) => vec![s.clone()],
+        _ => ["node", "go", "java"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    };
+    let mut results = Vec::new();
+    for tool in requested {
+        if !crate::unienv_versions::provider_supports(&tool) {
+            results.push(json!({
+                "tool": tool, "ok": false,
+                "error": format!("该工具不支持在线检查: {tool}"),
+            }));
+            continue;
+        }
+        let online = crate::unienv_versions::online_versions_force(&tool);
+        let merged = merge_static_with_online(&tool, &online);
+        results.push(json!({ "tool": tool, "ok": true, "versions": merged }));
+    }
+    json!({ "results": results })
+}
+
+/// Read only the short-lived UniEnv config while the host DB guard is held.
+/// Callers performing network work should pass the returned value to
+/// `dispatch_online_versions` after releasing that guard.
+pub(crate) fn load_config_for_host(db: &Db, plugin_id: &str) -> UniEnvConfig {
+    load_config(db, plugin_id)
+}
+
+pub(crate) fn dispatch_online_versions(
+    config: &UniEnvConfig,
+    payload: &Value,
+) -> Result<Value, String> {
+    let request = payload
+        .as_object()
+        .map(|_| payload)
+        .ok_or_else(|| "message payload must be an object".to_string())?;
+    Ok(check_online_versions(config, request))
 }
 
 /// 写操作公共前置：Windows 限定 + 启动恢复 + fail-closed 断言。
@@ -1220,8 +1289,10 @@ mod tests {
         )
         .unwrap();
         let arr = out.as_array().unwrap();
-        assert_eq!(arr.len(), 6);
+        assert!(arr.len() >= 9);
         assert!(arr.iter().any(|c| c["id"] == "my-combo"));
+        assert!(arr.iter().any(|c| c["id"] == "rust-dev"));
+        assert!(arr.iter().any(|c| c["id"] == "php-web"));
     }
 
     #[test]

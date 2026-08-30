@@ -9,9 +9,9 @@ import type {
   TaskSnapshot,
   TaskStatus
 } from '../../../plugin-system/trusted-services/unienv/task-manager'
-import type { ToolId } from '../../../plugin-system/trusted-services/unienv/protocol'
 import {
   TOOL_VERSION_LIFECYCLE_AS_OF,
+  type ToolId,
   formatComboLifecycleSummary,
   formatToolVersionOption,
   getPreferredToolVersion,
@@ -19,7 +19,7 @@ import {
   orderToolVersionsForDisplay,
   requiresComboVersionConfirmation,
   requiresToolVersionConfirmation
-} from '../../../plugin-system/trusted-services/unienv/version-lifecycle'
+} from './catalog'
 
 // ============================================================
 // 内联样式常量 — 复刻 Ant Design 5.x 视觉风格

@@ -157,6 +157,54 @@ export const PRESET_THEMES: ToolboxTheme[] = [
     name: '零号城区',
     mode: 'dark',
     tokens: createNeonDistrictTokens()
+  },
+  {
+    id: 'warm-sun',
+    name: '暖阳米白',
+    mode: 'light',
+    tokens: createLightTokens('#d97706', '#f59e0b', '#fff7ed')
+  },
+  {
+    id: 'sakura',
+    name: '樱花粉',
+    mode: 'light',
+    tokens: createLightTokens('#db2777', '#ec4899', '#fdf2f8')
+  },
+  {
+    id: 'amber-autumn',
+    name: '琥珀秋日',
+    mode: 'light',
+    tokens: createLightTokens('#b45309', '#d97706', '#fffbeb')
+  },
+  {
+    id: 'mono',
+    name: '极简黑白',
+    mode: 'light',
+    tokens: createLightTokens('#374151', '#4b5563', '#f3f4f6')
+  },
+  {
+    id: 'mist-blue',
+    name: '雾霾蓝',
+    mode: 'light',
+    tokens: createLightTokens('#2563eb', '#3b82f6', '#eff6ff')
+  },
+  {
+    id: 'lavender',
+    name: '薰衣草',
+    mode: 'light',
+    tokens: createLightTokens('#7c3aed', '#8b5cf6', '#f5f3ff')
+  },
+  {
+    id: 'ink-oriental',
+    name: '墨色东方',
+    mode: 'dark',
+    tokens: createDarkTokens('#ef4444', '#f87171', '#3b1518')
+  },
+  {
+    id: 'aurora-night',
+    name: '极光夜色',
+    mode: 'dark',
+    tokens: createDarkTokens('#14b8a6', '#2dd4bf', '#0c2928')
   }
 ]
 

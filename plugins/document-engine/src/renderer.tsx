@@ -244,6 +244,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [chunkResult, setChunkResult] = useState<unknown>(null)
   const [chunkError, setChunkError] = useState<string | null>(null)
   const [chunkBusy, setChunkBusy] = useState(false)
+  const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic'>('hybrid')
   const [convertPath, setConvertPath] = useState('')
   const [convertTarget, setConvertTarget] = useState('md')
   const [convertOutput, setConvertOutput] = useState('')
@@ -690,7 +691,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setChunkProgress(null)
     setChunkTask(null)
     try {
-      const accepted = await startChunk(send, path)
+      const accepted = await startChunk(send, path, { strategy: chunkStrategy })
       setChunkTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
@@ -708,7 +709,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setChunkBusy(false)
     }
-  }, [api, chunkPath, send])
+  }, [api, chunkPath, chunkStrategy, send])
 
   const runConvert = useCallback(async () => {
     const path = convertPath.trim()
@@ -1634,6 +1635,30 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       >
         选择文档
       </button>
+      <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+        切分方式
+        <select
+          value={chunkStrategy}
+          onChange={(event) => setChunkStrategy(event.target.value as typeof chunkStrategy)}
+          style={{
+            display: 'block',
+            width: '100%',
+            marginTop: 6,
+            height: 36,
+            padding: '0 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 6,
+            background: COLORS.bgWhite,
+            color: COLORS.text
+          }}
+        >
+          <option value="hybrid">结构 + 长度（推荐）</option>
+          <option value="pages">按页切分</option>
+          <option value="chapters">按章节/标题切分</option>
+          <option value="structure">按结构边界</option>
+          <option value="semantic">按语义/长度</option>
+        </select>
+      </label>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button
           type="button"

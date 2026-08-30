@@ -141,6 +141,11 @@ export interface PluginStatusChangeEventPayload {
   status: string
 }
 
+export interface PluginClipboardEventPayload {
+  pluginId: string
+  text: string
+}
+
 // ---------------------------------------------------------------------------
 // API 封装
 // ---------------------------------------------------------------------------
@@ -286,6 +291,13 @@ export const tauriApi = {
       callback: (payload: PluginStatusChangeEventPayload) => void
     ): Promise<UnlistenFn> =>
       listen<PluginStatusChangeEventPayload>('plugin:status-change', (event) =>
+        callback(event.payload)
+      ),
+
+    onClipboard: (
+      callback: (payload: PluginClipboardEventPayload) => void
+    ): Promise<UnlistenFn> =>
+      listen<PluginClipboardEventPayload>('plugin:clipboard', (event) =>
         callback(event.payload)
       )
   }

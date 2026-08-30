@@ -120,9 +120,11 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
   }, [api])
 
   useEffect(() => {
-    refresh()
-    const timer = setInterval(refresh, 2000)
-    return () => clearInterval(timer)
+    void refresh()
+    return api.onBackendMessage((message) => {
+      const event = message as { type?: unknown }
+      if (event.type === 'clipboard:changed') void refresh()
+    })
   }, [refresh])
 
   const filtered = items.filter((item) =>

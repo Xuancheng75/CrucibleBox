@@ -1,8 +1,8 @@
 {
   "name": "document-engine",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "displayName": "Document Engine",
-  "description": "统一本地文档处理基础设施：OCR、PDF/Office 解析、文档切分、格式转换、批量处理、任务队列、缓存和模型管理（Rust + PaddleOCR ONNX）",
+  "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的流式 OCR、解析、切分、转换、批量任务、结果缓存和模型管理",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
