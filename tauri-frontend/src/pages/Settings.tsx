@@ -31,10 +31,10 @@ interface UpdateState {
 }
 
 const UPDATE_CHANNEL_KEY = 'ob-update-channel'
-const UPDATE_CHECK_TIMEOUT_MS = 12_000
-const UPDATE_CHECK_ATTEMPTS = 2
-const UPDATE_CHECK_RETRY_DELAY_MS = 800
-const UPDATE_DOWNLOAD_TIMEOUT_MS = 60_000
+const UPDATE_CHECK_TIMEOUT_MS = 30_000
+const UPDATE_CHECK_ATTEMPTS = 3
+const UPDATE_CHECK_RETRY_DELAY_MS = 1_000
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 5 * 60_000
 
 function loadChannel(): AppUpdateChannel {
   try {
@@ -60,6 +60,7 @@ export default function Settings() {
   const [downloading, setDownloading] = useState(false)
   const updateRef = useRef<Update | null>(null)
   const checkInFlightRef = useRef(false)
+  const downloadProgressRef = useRef(0)
 
   const descriptionStyles = {
     label: {
@@ -159,6 +160,8 @@ export default function Settings() {
     const update = updateRef.current
     if (!update || downloading) return
     setDownloading(true)
+    downloadProgressRef.current = 0
+    let activeUpdate = update
     setUpdateState((current) => ({
       ...current,
       phase: 'downloading',
@@ -168,14 +171,27 @@ export default function Settings() {
     try {
       await retryUpdateDownload(
         async (attempt) => {
+          // A failed native stream cannot always be reused (notably after
+          // `error decoding response body`).  Re-fetch the signed manifest
+          // before retrying so each attempt owns a fresh response stream.
+          if (attempt > 1) {
+            await activeUpdate.close().catch(() => {})
+            const refreshed = await checkUpdate({ timeout: UPDATE_CHECK_TIMEOUT_MS })
+            if (!refreshed) throw new Error('更新在重试期间已不可用')
+            activeUpdate = refreshed
+            updateRef.current = refreshed
+          }
           let contentLength = 0
           let downloaded = 0
           setUpdateState((current) => ({
             ...current,
-            progressPercent: attempt === 1 ? 0 : null,
+            // Keep the last visible byte percentage while retrying.  The
+            // native updater restarts a failed stream, so resetting to zero
+            // made a healthy retry look like a download regression.
+            progressPercent: attempt === 1 ? 0 : current.progressPercent,
             message: attempt === 1 ? null : `网络抖动，正在重试下载（第 ${attempt} 次）…`
           }))
-          await update.download(
+          await activeUpdate.download(
             (event: DownloadEvent) => {
               if (event.event === 'Started') {
                 contentLength = event.data.contentLength ?? 0
@@ -185,7 +201,16 @@ export default function Settings() {
                   contentLength > 0
                     ? Math.min(100, Math.round((downloaded / contentLength) * 100))
                     : null
-                setUpdateState((current) => ({ ...current, progressPercent: percent }))
+                if (percent !== null) {
+                  downloadProgressRef.current = Math.max(downloadProgressRef.current, percent)
+                }
+                setUpdateState((current) => ({
+                  ...current,
+                  progressPercent:
+                    percent === null
+                      ? current.progressPercent
+                      : Math.max(current.progressPercent ?? 0, downloadProgressRef.current)
+                }))
               }
             },
             {

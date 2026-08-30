@@ -1,6 +1,6 @@
 {
   "name": "unienv",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "UniEnv - 一键式开发环境配置工具（Python/Node/Go/Java/Rust/PHP/Ruby/Zig/Deno/Bun）",
   "main": "dist/main.js",

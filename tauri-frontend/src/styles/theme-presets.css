@@ -1,0 +1,60 @@
+/* Distinct non-cyber preset treatments.  Token colors provide the palette;
+ * these lightweight surfaces provide each preset its own visual language. */
+[data-ob-theme='leaf'] .ob-layout,
+[data-ob-theme='leaf'] body { background-image: radial-gradient(circle at 12% 8%, rgba(47,133,90,.12), transparent 30%), linear-gradient(145deg, #e4efe3, #f8fcf6 62%); }
+[data-ob-theme='leaf'] .ob-surface-card,
+[data-ob-theme='leaf'] .ob-launcher { border-radius: 16px !important; border-left: 5px solid #2f855a !important; box-shadow: 0 8px 20px rgba(47,133,90,.12); }
+
+[data-ob-theme='ocean'] .ob-layout,
+[data-ob-theme='ocean'] body { background-image: linear-gradient(rgba(21,94,170,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(21,94,170,.06) 1px, transparent 1px), linear-gradient(135deg, #e2ecf8, #f8fbff); background-size: 24px 24px, 24px 24px, auto; }
+[data-ob-theme='ocean'] .ob-surface-card,
+[data-ob-theme='ocean'] .ob-launcher { border-radius: 3px !important; border-top: 3px solid #155eaa !important; }
+
+[data-ob-theme='neon-district'] .ob-layout,
+[data-ob-theme='neon-district'] body { background-image: radial-gradient(circle at 25% 20%, rgba(168,85,247,.2), transparent 28%), repeating-linear-gradient(0deg, rgba(251,146,60,.05) 0 1px, transparent 1px 6px), linear-gradient(135deg, #100d1d, #211a38); }
+[data-ob-theme='neon-district'] .ob-surface-card,
+[data-ob-theme='neon-district'] .ob-launcher { border: 2px solid #a855f7 !important; border-radius: 10px !important; box-shadow: 4px 4px 0 rgba(249,115,22,.35) !important; }
+[data-ob-theme='neon-district'] .ob-plugin-glyph { border-radius: 4px !important; background: linear-gradient(135deg, #f97316, #a855f7) !important; }
+
+[data-ob-theme='warm-sun'] .ob-layout,
+[data-ob-theme='warm-sun'] body { background-image: radial-gradient(circle at 85% 10%, rgba(180,83,9,.14), transparent 25%), linear-gradient(135deg, #f2e4d5, #fffaf4); }
+[data-ob-theme='warm-sun'] .ob-surface-card,
+[data-ob-theme='warm-sun'] .ob-launcher { border-radius: 18px !important; border-bottom: 4px solid #b45309 !important; }
+
+[data-ob-theme='sakura'] .ob-layout,
+[data-ob-theme='sakura'] body { background-image: radial-gradient(circle at 10% 15%, rgba(190,24,93,.11), transparent 24%), linear-gradient(160deg, #f7e8f0, #fffafd); }
+[data-ob-theme='sakura'] .ob-surface-card,
+[data-ob-theme='sakura'] .ob-launcher { border-radius: 0 !important; border: 1px solid #e7b9cc !important; box-shadow: 6px 6px 0 rgba(159,18,57,.1); }
+
+[data-ob-theme='amber-autumn'] .ob-layout,
+[data-ob-theme='amber-autumn'] body { background-image: repeating-linear-gradient(135deg, rgba(180,83,9,.045) 0 2px, transparent 2px 10px), linear-gradient(135deg, #e2e5e7, #fafafa); }
+[data-ob-theme='amber-autumn'] .ob-surface-card,
+[data-ob-theme='amber-autumn'] .ob-launcher { border-radius: 2px !important; border-left: 6px solid #b45309 !important; }
+
+[data-ob-theme='mono'] .ob-surface-card,
+[data-ob-theme='mono'] .ob-launcher { border-radius: 0 !important; border: 2px solid #111 !important; box-shadow: none !important; }
+[data-ob-theme='mono'] .ob-button[data-ob-kind='primary'] { border-radius: 0 !important; text-transform: uppercase; letter-spacing: 1px; }
+
+[data-ob-theme='mist-blue'] :focus-visible { outline: 3px solid #005fcc !important; outline-offset: 3px; }
+[data-ob-theme='mist-blue'] .ob-surface-card,
+[data-ob-theme='mist-blue'] .ob-launcher { border-radius: 6px !important; border: 2px solid #486581 !important; }
+
+[data-ob-theme='lavender'] .ob-surface-card,
+[data-ob-theme='lavender'] .ob-launcher { border-radius: 24px !important; border: 1px solid #d9c8e6 !important; box-shadow: 0 12px 24px rgba(124,58,237,.12); }
+[data-ob-theme='lavender'] .ob-plugin-glyph { border-radius: 50% !important; }
+
+[data-ob-theme='ink-oriental'] .ob-layout,
+[data-ob-theme='ink-oriental'] body { background-image: radial-gradient(ellipse at 75% 5%, rgba(245,158,11,.1), transparent 30%), linear-gradient(160deg, #101010, #2d2d2d); }
+[data-ob-theme='ink-oriental'] .ob-surface-card,
+[data-ob-theme='ink-oriental'] .ob-launcher { border-radius: 4px !important; border-left: 3px solid #f59e0b !important; }
+
+[data-ob-theme='aurora-night'] .ob-app-header,
+[data-ob-theme='aurora-night'] .ob-rail-shell { backdrop-filter: blur(18px) saturate(140%); background: rgba(16,26,44,.76) !important; }
+[data-ob-theme='aurora-night'] .ob-surface-card,
+[data-ob-theme='aurora-night'] .ob-launcher { border-radius: 16px !important; border: 1px solid rgba(103,232,249,.38) !important; box-shadow: 0 12px 30px rgba(8,16,32,.35); }
+
+[data-ob-theme='terminal-green'] .ob-layout,
+[data-ob-theme='terminal-green'] body { background-image: repeating-linear-gradient(0deg, rgba(0,210,106,.035) 0 1px, transparent 1px 4px), #020302; }
+[data-ob-theme='terminal-green'] .ob-surface-card,
+[data-ob-theme='terminal-green'] .ob-launcher { border-radius: 0 !important; border: 1px solid #1e5b32 !important; box-shadow: inset 0 0 18px rgba(0,210,106,.05) !important; }
+[data-ob-theme='terminal-green'] .ob-button[data-ob-kind='primary'] { border-radius: 0 !important; font-family: 'Cascadia Code', Consolas, monospace; }

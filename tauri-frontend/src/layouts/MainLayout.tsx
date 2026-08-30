@@ -40,10 +40,14 @@ export default function MainLayout({ children }: MainLayoutProps) {
         style={{
           background: token.colorBgContainer,
           borderRight: `1px solid ${token.colorBorder}`,
-          position: 'sticky',
+          // Keep the rail anchored to the viewport.  `sticky` can still move
+          // with an intermediate flex scrolling context in compact windows.
+          position: 'fixed',
+          left: 0,
           top: 0,
           height: '100dvh',
           minHeight: 0,
+          zIndex: 20,
           flexShrink: 0,
           overflow: 'hidden',
           alignSelf: 'flex-start'
@@ -53,7 +57,13 @@ export default function MainLayout({ children }: MainLayoutProps) {
       </Sider>
       <Layout
         className="ob-app-main-layout"
-        style={{ height: '100dvh', minWidth: 0, minHeight: 0, overflow: 'hidden' }}
+        style={{
+          height: '100dvh',
+          minWidth: 0,
+          minHeight: 0,
+          overflow: 'hidden',
+          marginLeft: 72
+        }}
       >
         <Header
           className="ob-app-header"

@@ -454,6 +454,103 @@ fn export_parsed_result(
     Ok(result)
 }
 
+/// Parse a document once and reuse the completed result across parse, chunk,
+/// convert and batch operations.  The previous implementation only cached the
+/// final `document.parse` response; chunk/convert therefore started a fresh
+/// page render + OCR pass every time.  Cache the raw unified document before
+/// exporting operation-specific files so every consumer can share it.
+fn parse_document_with_cache(
+    path: &str,
+    cfg: &DocumentEngineConfig,
+    manager: Option<&OcrWorkerManager>,
+    ctx: &TaskContext,
+    plugin_id: &str,
+) -> Result<Value, String> {
+    let source_hash = crate::document_engine_cache::file_hash(Path::new(path))?;
+    let cache_key = crate::document_engine_cache::cache_key(
+        &source_hash,
+        "document-parser",
+        "native-parser-v3",
+        &json!({ "ocrModel": ocr_model_version(cfg), "pipeline": "layout-ocr-v1" }),
+    );
+    if let Ok(Some(cached)) =
+        crate::document_engine_cache::read_result(Path::new(&cfg.cache_directory), &cache_key)
+    {
+        if cached.get("document").is_some() {
+            ctx.update_progress(
+                "cache",
+                100,
+                "命中页面解析缓存",
+                Some(json!({ "cacheHit": true, "cacheKey": cache_key })),
+            );
+            return Ok(cached);
+        }
+    }
+
+    ctx.update_progress("classify", 8, "判断页面类型", None);
+    let mut parsed = crate::document_parser::parse_file(path)?;
+    if parsed["requiresOcr"].as_bool().unwrap_or(false) {
+        let manager = manager.ok_or_else(|| "扫描 PDF 需要已配置 OCR Worker".to_string())?;
+        parsed = merge_ocr_pages(parsed, path, manager, ctx, plugin_id, cfg, None)?;
+    }
+    ctx.check_cancelled()?;
+    ctx.update_progress("quality", 96, "检查解析质量", None);
+    let _ = crate::document_engine_cache::write_result(
+        Path::new(&cfg.cache_directory),
+        &cache_key,
+        &parsed,
+    );
+    Ok(parsed)
+}
+
+/// Conservative OCR block classification used by the local pipeline.  It is
+/// intentionally deterministic and does not pretend to be a full vision model:
+/// short chapter/section labels become headings and math-heavy lines are kept
+/// as formula blocks so Markdown conversion can preserve display equations.
+fn classify_ocr_block(content: &str) -> &'static str {
+    let trimmed = content.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if trimmed.chars().count() <= 120
+        && (lower.starts_with("chapter ")
+            || lower.starts_with("section ")
+            || lower.starts_with("appendix ")
+            || trimmed.starts_with("第")
+            || trimmed
+                .chars()
+                .next()
+                .is_some_and(|value| value.is_ascii_digit()))
+    {
+        return "heading";
+    }
+    let operators = trimmed
+        .chars()
+        .filter(|value| {
+            matches!(
+                value,
+                '=' | '＝' | '+' | '-' | '−' | '*' | '×' | '/' | '÷' | '^' | '√'
+            )
+        })
+        .count();
+    let digits = trimmed
+        .chars()
+        .filter(|value| value.is_ascii_digit())
+        .count();
+    if digits > 0 && operators > 0 && trimmed.chars().count() <= 180 {
+        return "formula";
+    }
+    "paragraph"
+}
+
+fn normalize_formula(value: &str) -> String {
+    value
+        .replace('＝', "=")
+        .replace('−', "-")
+        .replace('×', "\\times ")
+        .replace('÷', "\\div ")
+        .trim()
+        .to_string()
+}
+
 fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
     if let Some(emitter) = emitter() {
         emitter(
@@ -770,8 +867,51 @@ fn merge_ocr_pages(
         .map_err(|error| format!("创建 PDF OCR 临时目录失败: {error}"))?;
     let result = (|| {
         let page_total = page_numbers.len();
+        let source_hash = crate::document_engine_cache::file_hash(Path::new(path))?;
+        let model_version = ocr_model_version(cfg);
         for (page_index, page_number) in page_numbers.iter().enumerate() {
             ctx.wait_if_paused()?;
+            let page_cache_key = crate::document_engine_cache::cache_key(
+                &source_hash,
+                "ocr-page",
+                "ocr-page-v2",
+                &json!({
+                    "page": page_number,
+                    "ocrModel": model_version,
+                    "renderWidth": 1800
+                }),
+            );
+            if let Ok(Some(cached_page)) = crate::document_engine_cache::read_result(
+                Path::new(&cfg.cache_directory),
+                &page_cache_key,
+            ) {
+                if let Some(pages) = parsed["document"]["pages"].as_array_mut() {
+                    if let Some(page) = pages
+                        .iter_mut()
+                        .find(|page| page["number"].as_u64() == Some(u64::from(*page_number)))
+                    {
+                        if let Some(cached_document_page) = cached_page.get("page") {
+                            *page = cached_document_page.clone();
+                        }
+                    }
+                }
+                ctx.update_progress(
+                    "ocr-cache",
+                    (((page_index + 1) * 100) / page_total.max(1)) as u32,
+                    &format!(
+                        "命中 OCR 页面缓存：第 {} / {} 页",
+                        page_index + 1,
+                        page_total
+                    ),
+                    Some(json!({
+                        "pageIndex": page_index,
+                        "pageTotal": page_total,
+                        "pageNumber": page_number,
+                        "cacheHit": true
+                    })),
+                );
+                continue;
+            }
             let page_percent = ((page_index * 100) / page_total.max(1)) as u32;
             ctx.update_progress(
                 "render",
@@ -806,26 +946,41 @@ fn merge_ocr_pages(
                 if content.is_empty() {
                     continue;
                 }
+                let block_type = classify_ocr_block(content);
+                let normalized_content = if block_type == "formula" {
+                    normalize_formula(content)
+                } else {
+                    content.to_string()
+                };
                 blocks.push(json!({
                     "id": format!("p{page_number}-b{}", block_index + 1),
-                    "type": "text",
-                    "content": content,
+                    "type": block_type,
+                    "content": normalized_content,
                     "bbox": block.get("bbox").cloned().unwrap_or(Value::Null),
                     "polygon": block.get("polygon").cloned().unwrap_or(Value::Null),
                     "confidence": block.get("confidence").cloned().unwrap_or(Value::Null),
                     "language": if content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) { "zh" } else { "en" },
                 }));
             }
+            let page_value = json!({
+                "number": page_number,
+                "width": dimensions.0,
+                "height": dimensions.1,
+                "blocks": blocks
+            });
             if let Some(pages) = parsed["document"]["pages"].as_array_mut() {
                 if let Some(page) = pages
                     .iter_mut()
                     .find(|page| page["number"].as_u64() == Some(u64::from(*page_number)))
                 {
-                    page["width"] = json!(dimensions.0);
-                    page["height"] = json!(dimensions.1);
-                    page["blocks"] = Value::Array(blocks);
+                    *page = page_value.clone();
                 }
             }
+            let _ = crate::document_engine_cache::write_result(
+                Path::new(&cfg.cache_directory),
+                &page_cache_key,
+                &json!({ "page": page_value }),
+            );
         }
         parsed["requiresOcr"] = json!(false);
         parsed["ocrPageNumbers"] = json!([]);
@@ -839,6 +994,16 @@ fn merge_ocr_pages(
             warnings.retain(|warning| warning["code"] != "pdf-render-unavailable");
         }
         parsed["document"]["metadata"]["hasOcrText"] = json!(true);
+        parsed["document"]["metadata"]["hasFormulas"] = json!(parsed["document"]["pages"]
+            .as_array()
+            .map(|pages| {
+                pages.iter().any(|page| {
+                    page["blocks"]
+                        .as_array()
+                        .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "formula"))
+                })
+            })
+            .unwrap_or(false));
         Ok(parsed)
     })();
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1062,44 +1227,14 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 RESOURCE_PARSE,
                 Box::new(move |ctx| {
                     ctx.update_progress("parse", 5, "读取文档", None);
-                    let source_hash =
-                        crate::document_engine_cache::file_hash(PathBuf::from(&path).as_path())?;
-                    let cache_key = crate::document_engine_cache::cache_key(
-                        &source_hash,
-                        "document-parser",
-                        "native-parser-v2",
-                        &json!({ "ocrModel": ocr_model_version(&parse_cfg) }),
-                    );
-                    if let Ok(Some(cached)) = crate::document_engine_cache::read_result(
-                        PathBuf::from(&parse_cfg.cache_directory).as_path(),
-                        &cache_key,
-                    ) {
-                        let cached = export_parsed_result(cached, &path, &parse_output_directory)?;
-                        ctx.update_progress(
-                            "cache",
-                            100,
-                            "命中文档解析缓存",
-                            Some(json!({ "cacheHit": true, "cacheKey": cache_key })),
-                        );
-                        return Ok(cached);
-                    }
-                    let mut result = crate::document_parser::parse_file(&path)?;
-                    if result["requiresOcr"].as_bool().unwrap_or(false) {
-                        let manager = parse_manager
-                            .as_ref()
-                            .ok_or_else(|| "扫描 PDF 需要已配置 OCR Worker".to_string())?;
-                        result = merge_ocr_pages(
-                            result,
-                            &path,
-                            manager,
-                            ctx,
-                            &parse_plugin_id,
-                            &parse_cfg,
-                            None,
-                        )?;
-                    }
-                    ctx.check_cancelled()?;
-                    result = export_parsed_result(result, &path, &parse_output_directory)?;
+                    let parsed = parse_document_with_cache(
+                        &path,
+                        &parse_cfg,
+                        parse_manager.as_deref(),
+                        ctx,
+                        &parse_plugin_id,
+                    )?;
+                    let result = export_parsed_result(parsed, &path, &parse_output_directory)?;
                     let page_count = result["document"]["metadata"]["pageCount"]
                         .as_u64()
                         .unwrap_or(0);
@@ -1113,11 +1248,6 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                             "文档解析完成（已完成 OCR）"
                         },
                         Some(json!({ "page": page_count, "route": route })),
-                    );
-                    let _ = crate::document_engine_cache::write_result(
-                        PathBuf::from(&parse_cfg.cache_directory).as_path(),
-                        &cache_key,
-                        &result,
                     );
                     Ok(result)
                 }),
@@ -1229,21 +1359,13 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         document
                     } else {
                         let path = path.ok_or_else(|| "缺少文档路径".to_string())?;
-                        let mut parsed = crate::document_parser::parse_file(&path)?;
-                        if parsed["requiresOcr"].as_bool().unwrap_or(false) {
-                            let manager = chunk_manager
-                                .as_ref()
-                                .ok_or_else(|| "扫描 PDF 分块需要已配置 OCR Worker".to_string())?;
-                            parsed = merge_ocr_pages(
-                                parsed,
-                                &path,
-                                manager,
-                                ctx,
-                                &chunk_plugin_id,
-                                &chunk_cfg,
-                                None,
-                            )?;
-                        }
+                        let parsed = parse_document_with_cache(
+                            &path,
+                            &chunk_cfg,
+                            chunk_manager.as_deref(),
+                            ctx,
+                            &chunk_plugin_id,
+                        )?;
                         parsed["document"].clone()
                     };
                     let mut result =
@@ -1313,22 +1435,14 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             let task_id = match tasks().start(
                 RESOURCE_CONVERT,
                 Box::new(move |ctx| {
-                    ctx.update_progress("convert", 5, "解析源文档", None);
-                    let mut parsed = crate::document_parser::parse_file(&path)?;
-                    if parsed["requiresOcr"].as_bool().unwrap_or(false) {
-                        let manager = convert_manager
-                            .as_ref()
-                            .ok_or_else(|| "扫描 PDF 转换需要已配置 OCR Worker".to_string())?;
-                        parsed = merge_ocr_pages(
-                            parsed,
-                            &path,
-                            manager,
-                            ctx,
-                            &convert_plugin_id,
-                            &convert_cfg,
-                            None,
-                        )?;
-                    }
+                    ctx.update_progress("convert", 5, "解析源文档（可复用页面缓存）", None);
+                    let parsed = parse_document_with_cache(
+                        &path,
+                        &convert_cfg,
+                        convert_manager.as_deref(),
+                        ctx,
+                        &convert_plugin_id,
+                    )?;
                     let result = crate::document_converter::convert_document_with_cache(
                         &parsed["document"],
                         &target,
@@ -1420,59 +1534,40 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                                         .and_then(|value| value.to_str())
                                         .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
                                     {
-                                        let parsed = crate::document_parser::parse_file(path)?;
-                                        if parsed["requiresOcr"].as_bool().unwrap_or(false) {
-                                            merge_ocr_pages(
-                                                parsed,
-                                                path,
-                                                manager,
-                                                ctx,
-                                                &batch_plugin_id,
-                                                &batch_cfg,
-                                                None,
-                                            )
-                                        } else {
-                                            Ok(parsed)
-                                        }
+                                        parse_document_with_cache(
+                                            path,
+                                            &batch_cfg,
+                                            Some(manager),
+                                            ctx,
+                                            &batch_plugin_id,
+                                        )
                                     } else {
                                         Err("批量 OCR 仅支持图片和 PDF".into())
                                     }
                                 })
                             }
                             "parse" => {
-                                let mut parsed = crate::document_parser::parse_file(path)?;
-                                if parsed["requiresOcr"].as_bool().unwrap_or(false) {
-                                    let manager = batch_manager
-                                        .as_ref()
-                                        .ok_or_else(|| "扫描 PDF 需要已配置 OCR Worker".to_string())?;
-                                    parsed = merge_ocr_pages(
-                                        parsed,
-                                        path,
-                                        manager,
-                                        ctx,
-                                        &batch_plugin_id,
-                                        &batch_cfg,
-                                        None,
-                                    )?;
-                                }
-                                Ok(parsed)
+                                let parsed = parse_document_with_cache(
+                                    path,
+                                    &batch_cfg,
+                                    batch_manager.as_deref(),
+                                    ctx,
+                                    &batch_plugin_id,
+                                )?;
+                                export_parsed_result(
+                                    parsed,
+                                    path,
+                                    Path::new(&batch_cfg.output_directory),
+                                )
                             }
                             _ => {
-                                let mut parsed = crate::document_parser::parse_file(path)?;
-                                if parsed["requiresOcr"].as_bool().unwrap_or(false) {
-                                    let manager = batch_manager
-                                        .as_ref()
-                                        .ok_or_else(|| "扫描 PDF 转换需要已配置 OCR Worker".to_string())?;
-                                    parsed = merge_ocr_pages(
-                                        parsed,
-                                        path,
-                                        manager,
-                                        ctx,
-                                        &batch_plugin_id,
-                                        &batch_cfg,
-                                        None,
-                                    )?;
-                                }
+                                let parsed = parse_document_with_cache(
+                                    path,
+                                    &batch_cfg,
+                                    batch_manager.as_deref(),
+                                    ctx,
+                                    &batch_plugin_id,
+                                )?;
                                 crate::document_converter::convert_document_with_cache(
                                     &parsed["document"],
                                     &target,

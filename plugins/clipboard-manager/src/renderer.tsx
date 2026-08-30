@@ -126,7 +126,7 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
       const event = message as { type?: unknown }
       if (event.type === 'clipboard:changed') void refresh()
     })
-  }, [refresh])
+  }, [api, refresh])
 
   const filtered = items.filter((item) =>
     item.text.toLowerCase().includes(search.toLowerCase()) && (!pinnedOnly || item.pinned)
@@ -137,6 +137,10 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
 
   const handleCopy = async (text: string) => {
     await api.sendToBackend({ type: 'copyToClipboard', text })
+    // The host clipboard event is debounced and may arrive after this view
+    // renders.  Refresh immediately so an explicit copy is visible even when
+    // the native event is coalesced or the clipboard owner is this plugin.
+    await refresh()
     api.notify('已复制', text.slice(0, 50))
   }
 

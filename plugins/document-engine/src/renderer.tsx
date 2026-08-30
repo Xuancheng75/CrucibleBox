@@ -98,6 +98,53 @@ function setMergedProgress(
 
 const prettyJson = (value: unknown): string => JSON.stringify(value, null, 2) ?? ''
 
+/** Show produced artifacts first; keep the bounded task metadata behind a
+ * disclosure so users do not mistake a JSON response for the actual output. */
+const renderArtifactResult = (value: unknown, kind: 'chunk' | 'convert'): React.ReactNode => {
+  if (!value || typeof value !== 'object') return <pre>{prettyJson(value)}</pre>
+  const result = value as Record<string, unknown>
+  const outputPath = typeof result.outputPath === 'string' ? result.outputPath : ''
+  const files = Array.isArray(result.files)
+    ? result.files.filter(
+        (file): file is { path: string; startPage?: number; endPage?: number } =>
+          Boolean(file && typeof file === 'object' && typeof (file as Record<string, unknown>).path === 'string')
+      )
+    : []
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {outputPath && (
+        <div style={{ wordBreak: 'break-all' }}>
+          输出文件：<strong>{outputPath}</strong>
+        </div>
+      )}
+      {files.length > 0 && (
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            {kind === 'chunk' ? '拆分后的 PDF 文件' : '生成的文件'}
+          </div>
+          {files.map((file) => (
+            <div key={file.path} style={{ marginTop: 3, wordBreak: 'break-all' }}>
+              {file.startPage && file.endPage
+                ? `第 ${file.startPage}-${file.endPage} 页：`
+                : ''}
+              {file.path}
+            </div>
+          ))}
+        </div>
+      )}
+      {kind === 'chunk' && files.length === 0 && outputPath && (
+        <div style={{ color: COLORS.textSecondary }}>
+          这是用于 AI/RAG 的文本分块索引（JSON），原始 PDF 未被改写。
+        </div>
+      )}
+      <details>
+        <summary style={{ cursor: 'pointer', color: COLORS.textSecondary }}>查看任务元数据</summary>
+        <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>{prettyJson(value)}</pre>
+      </details>
+    </div>
+  )
+}
+
 /** Keep the actual path in state while showing a readable value in narrow inputs. */
 const displayPath = (path: string): string => {
   if (path.length <= 72) return path
@@ -1864,12 +1911,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         </div>
       )}
       {chunkResult != null && (
-        <pre
+        <div
           style={{
             marginTop: 14,
-            whiteSpace: 'pre-wrap',
-            maxHeight: 360,
-            overflow: 'auto',
             padding: 12,
             background: COLORS.bgGray,
             border: `1px solid ${COLORS.border}`,
@@ -1877,8 +1921,8 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             fontSize: FONT.sizeSm
           }}
         >
-          {prettyJson(chunkResult)}
-        </pre>
+          {renderArtifactResult(chunkResult, 'chunk')}
+        </div>
       )}
     </div>
   )
@@ -2004,10 +2048,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         </div>
       )}
       {convertResult != null && (
-        <pre
+        <div
           style={{
             marginTop: 14,
-            whiteSpace: 'pre-wrap',
             padding: 12,
             background: COLORS.successBg,
             border: `1px solid ${COLORS.successBorder}`,
@@ -2015,8 +2058,8 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             fontSize: FONT.sizeSm
           }}
         >
-          {prettyJson(convertResult)}
-        </pre>
+          {renderArtifactResult(convertResult, 'convert')}
+        </div>
       )}
     </div>
   )

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CrucibleBox",
-  "version": "1.9.25",
+  "version": "1.9.26",
   "identifier": "com.cruciblebox.app",
   "build": {
     "beforeDevCommand": "",
@@ -34,10 +34,15 @@
     "targets": ["nsis"],
     "icon": [
       "icons/icon.ico",
+      "icons/openbox-neon-16.png",
+      "icons/openbox-neon-24.png",
       "icons/openbox-neon-32.png",
+      "icons/openbox-neon-48.png",
+      "icons/openbox-neon-64.png",
       "icons/openbox-neon-128.png",
       "icons/openbox-neon-256.png",
-      "icons/openbox-neon-512.png"
+      "icons/openbox-neon-512.png",
+      "icons/openbox-neon-1024.png"
     ],
     "windows": {
       "nsis": {

@@ -35,7 +35,12 @@ export function isTransientUpdateError(error: unknown): boolean {
     'fetch failed',
     'error decoding response body',
     'decoding response body',
-    'body decode'
+    'body decode',
+    'connection aborted',
+    'connection closed',
+    'unexpected eof',
+    'incomplete message',
+    'stream error'
   ].some((marker) => message.includes(marker))
 }
 
@@ -67,7 +72,9 @@ export async function retryUpdateCheck<T>(
     } catch (error) {
       lastError = error
       if (attempt >= attempts || !isTransientUpdateError(error)) throw error
-      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs * attempt))
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(15_000, retryDelayMs * 2 ** (attempt - 1)))
+      )
     }
   }
 
@@ -76,9 +83,9 @@ export async function retryUpdateCheck<T>(
 
 /**
  * The updater stream can be interrupted by a proxy or a transient GitHub
- * edge error.  The native updater does not expose byte-range resume, so a
- * retry restarts the bounded download and lets the signed archive be checked
- * again from the beginning.
+ * edge error.  The native updater does not expose byte-range resume; callers
+ * keep the last displayed percentage while the signed archive is retried
+ * from a clean temporary stream.
  */
 export async function retryUpdateDownload<T>(
   operation: (attempt: number) => Promise<T>,
@@ -92,7 +99,9 @@ export async function retryUpdateDownload<T>(
     } catch (error) {
       lastError = error
       if (attempt >= attempts || !isTransientUpdateError(error)) throw error
-      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs * attempt))
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(30_000, retryDelayMs * 2 ** (attempt - 1)))
+      )
     }
   }
   throw lastError ?? new Error('更新下载失败')

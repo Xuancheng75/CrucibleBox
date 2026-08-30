@@ -243,7 +243,7 @@ pub fn plugin_enable(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("plugin not found: {id}"))?;
     if install.is_blocked(&record.name) {
-        return Err("plugin is blocked after interrupted transaction".into());
+        install.recover_if_blocked(&record.name)?;
     }
     let _lifecycle = backend.begin_lifecycle_operation(&id)?;
     lock(&db)
@@ -282,7 +282,7 @@ pub fn plugin_disable(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("plugin not found: {id}"))?;
     if install.is_blocked(&record.name) {
-        return Err("plugin is blocked after interrupted transaction".into());
+        install.recover_if_blocked(&record.name)?;
     }
     let _lifecycle = backend.begin_lifecycle_operation(&id)?;
     let _maintenance = backend.enter_maintenance(&id)?;

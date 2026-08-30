@@ -1,12 +1,12 @@
 # Document Engine Development Report
 
 日期：2026-08-29
-发布基线：CrucibleBox 1.9.25（Document Engine 0.2.2）
+发布基线：CrucibleBox 1.9.26（Document Engine 0.2.3）
 范围：`plugins/document-engine`、Rust trusted service、Rust OCR worker、Tauri Windows 打包链。
 
 ## 结论
 
-Document Engine 0.2.2 在上述基础上增加解析结果落盘、AI/RAG 文本分块与真实 PDF 物理拆分的明确分流，修复 Windows 输出文件替换和大结果 RPC 限制。插件已注册到宿主，前端通过 self-contained renderer 构建，所有文档处理请求均经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。当前实现不依赖 Python、pip、Conda、CUDA Toolkit 或 Paddle Python 环境。
+Document Engine 0.2.3 在上述基础上增加页面级 OCR 缓存和统一解析流水线，避免解析、切分、转换重复渲染同一页；Markdown 输出保留章节层级与公式块，PDF 拆分明确输出真实 PDF 文件，JSON 仅用于显式 RAG 索引。插件已注册到宿主，前端通过 self-contained renderer 构建，所有文档处理请求均经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。当前实现不依赖 Python、pip、Conda、CUDA Toolkit 或 Paddle Python 环境。
 
 ## 架构
 

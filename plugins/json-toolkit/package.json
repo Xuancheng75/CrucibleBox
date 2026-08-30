@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox-plugin-json-toolkit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "JSON and text toolkit plugin for CrucibleBox",
   "main": "dist/main.js",

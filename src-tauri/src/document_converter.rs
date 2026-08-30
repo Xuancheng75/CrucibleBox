@@ -103,22 +103,9 @@ pub fn convert_document_with_cache(
     if bytes.len() > MAX_OUTPUT_BYTES {
         return Err("转换输出超过大小限制".into());
     }
-    let temp_path = destination.with_extension(format!("{}.{}.tmp", target, unique_suffix()));
-    if temp_path.exists() {
-        std::fs::remove_file(&temp_path)
-            .map_err(|error| format!("清理上一次转换临时文件失败: {error}"))?;
-    }
-    std::fs::write(&temp_path, &bytes).map_err(|error| format!("写入转换结果失败: {error}"))?;
-    if destination.exists() {
-        std::fs::remove_file(&destination)
-            .map_err(|error| format!("替换已有转换结果失败: {error}"))?;
-    }
-    if let Err(error) = std::fs::rename(&temp_path, &destination) {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(format!("提交转换结果失败: {error}"));
-    }
+    let committed = write_atomic_bytes(&destination, &bytes)?;
     let result = json!({
-        "outputPath": destination.to_string_lossy(),
+        "outputPath": committed.to_string_lossy(),
         "target": target,
         "bytes": bytes.len(),
         "cacheKey": cache_key,
@@ -261,13 +248,49 @@ fn write_atomic_bytes(destination: &Path, bytes: &[u8]) -> Result<PathBuf, Strin
             .map_err(|error| format!("清理输出临时文件失败: {error}"))?;
     }
     std::fs::write(&temp_path, bytes).map_err(|error| format!("写入输出文件失败: {error}"))?;
-    if destination.exists() {
-        std::fs::remove_file(destination)
-            .map_err(|error| format!("替换已有输出文件失败: {error}"))?;
+    let target = if destination.exists() {
+        match std::fs::remove_file(destination) {
+            Ok(()) => destination.to_path_buf(),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                // Windows refuses to replace a file that is still open by a
+                // previewer/editor.  Preserve the completed result under a
+                // deterministic sibling instead of reporting a generic
+                // "os error 5" after a long conversion.
+                next_available_sibling(destination).ok_or_else(|| {
+                    format!("输出文件被其他程序占用，且无法生成备用文件名：{error}")
+                })?
+            }
+            Err(error) => return Err(format!("替换已有输出文件失败: {error}")),
+        }
+    } else {
+        destination.to_path_buf()
+    };
+    if let Err(error) = std::fs::rename(&temp_path, &target) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("提交输出文件失败: {error}"));
     }
-    std::fs::rename(&temp_path, destination)
-        .map_err(|error| format!("提交输出文件失败: {error}"))?;
-    Ok(destination.to_path_buf())
+    Ok(target)
+}
+
+fn next_available_sibling(destination: &Path) -> Option<PathBuf> {
+    let stem = destination.file_stem()?.to_string_lossy();
+    let extension = destination.extension().map(|value| value.to_string_lossy());
+    for index in 1..=99u32 {
+        let name = match &extension {
+            Some(extension) => format!("{stem} ({index}).{extension}"),
+            None => format!("{stem} ({index})"),
+        };
+        let candidate = destination.with_file_name(name);
+        if !candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn unique_suffix() -> u128 {
@@ -343,15 +366,41 @@ fn document_to_text(document: &Value) -> String {
 fn document_to_markdown(document: &Value) -> String {
     let mut result = String::new();
     for (_, block_type, content) in document_blocks(document) {
-        if block_type == "heading" {
-            result.push_str("## ");
-            result.push_str(&content);
-        } else {
-            result.push_str(&content);
+        match block_type.as_str() {
+            "heading" => {
+                // Keep chapter/section hierarchy readable while remaining
+                // compatible with blocks produced by older parser versions.
+                let lower = content.to_ascii_lowercase();
+                let level =
+                    if lower.starts_with("chapter ") || content.trim_start().starts_with('第') {
+                        1
+                    } else {
+                        2
+                    };
+                result.push_str(&"#".repeat(level));
+                result.push(' ');
+                result.push_str(&content);
+            }
+            "formula" => {
+                result.push_str("$$\n");
+                result.push_str(&normalize_formula(&content));
+                result.push_str("\n$$");
+            }
+            _ => result.push_str(&content),
         }
         result.push_str("\n\n");
     }
     result
+}
+
+fn normalize_formula(value: &str) -> String {
+    value
+        .replace('＝', "=")
+        .replace('−', "-")
+        .replace('×', "\\times ")
+        .replace('÷', "\\div ")
+        .trim()
+        .to_string()
 }
 
 fn document_to_html(document: &Value) -> String {

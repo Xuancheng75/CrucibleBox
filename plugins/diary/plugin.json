@@ -1,6 +1,6 @@
 {
   "name": "diary",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "displayName": "日记",
   "description": "支持 Markdown 与 LaTeX 的日记插件，内置月历视图，支持单篇及按月导出",
   "author": "OpenBox",
