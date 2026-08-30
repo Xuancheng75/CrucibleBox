@@ -1,5 +1,8 @@
 # 开发、构建与验证
 
+> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.0**。
+> 根目录 Electron 1.7.3 仅为冻结参照，不接受功能性改动。
+
 ## 环境
 
 - Windows x64（M1 已验证平台）
@@ -21,15 +24,40 @@ npm ci
 `npm ci` 会一次安装宿主和所有插件依赖，并为冻结的 Electron 版本重建
 `better-sqlite3`；失败会直接中止。
 
-## 日常开发
+## Tauri 日常开发
 
 ```powershell
-npm run dev
-npm run check
+cd tauri-frontend
+npm install
+npm run build
+
+cd ..\src-tauri
+cargo fmt --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
-`check` 依次运行非写入式格式检查、零 warning ESLint、宿主/测试/插件类型检查及
-Vitest。自动修改代码只能显式运行 `npm run format` 或 `npm run lint:fix`。
+根目录 `npm run check` 只作为冻结 Electron 兼容与供应链参照门禁。自动修改代码只能显式运行格式化命令。
+
+## 2.0 页面与状态约定
+
+- 页面在 `tauri-frontend/src/app-pages.ts` 注册，侧边栏、命令面板和页面标题必须同步提供入口。
+- 长任务写入统一任务中心；插件安装至少包含预检、等待确认、提交、完成/失败四个阶段。
+- 插件卡片身份由 `plugin-identity.ts` 维护。第一方插件发布者统一为 `CrucibleBox`，不得再用单字母作为唯一辨识。
+- 工作台和设置卡片使用主题边框、圆角和切角，不添加宿主默认阴影；主题可覆盖几何风格，但不能露出底层矩形轮廓。
+
+## 插件市场开发约定
+
+- 2.0.0 使用应用内置展示目录，并从 `tauri-stable/plugins.json` 获取权威下载地址和摘要；不接入 GitHub Marketplace，也不实现账户注册、登录或上传。
+- 市场数据与安装执行分离：目录只描述插件，安装仍复用既有预检、权限确认、staging、journal 和原子替换流程。
+- 市场主页保持双栏布局，必须显示图标、名称、版本、发布者、简介及“获取/已安装”状态；详情页展示权限和长描述。
+- 在线获取仅接受 CrucibleBox 仓库的 HTTPS Release 地址，限制目录/包体大小并校验 SHA-256；不能直接执行仓库源代码。后续若引入第三方远程目录，必须再增加目录级签名和密钥轮换机制。
+
+## 稳定版与测试版
+
+- `stable` 读取 `tauri-stable/latest.json`，只发布正式版本；`beta` 读取 `tauri-beta/latest.json`，允许 `-beta.N` / `-rc.N`。
+- 通道是持久化设置，检查更新时必须显式传给 Rust updater；禁止仅切换界面标签却继续访问同一端点。
+- 两个滚动元数据互不覆盖。所有安装包仍要求 minisign 签名、SHA-512 元数据和 HTTPS。
 
 ## 生产构建
 

@@ -14,6 +14,8 @@ import { tauriApi } from './api/tauriApi'
 
 const PAGE_COMPONENTS: Record<AppPage, React.LazyExoticComponent<React.ComponentType>> = {
   home: lazy(APP_PAGE_LOADERS.home),
+  marketplace: lazy(APP_PAGE_LOADERS.marketplace),
+  tasks: lazy(APP_PAGE_LOADERS.tasks),
   logs: lazy(APP_PAGE_LOADERS.logs),
   pluginView: lazy(APP_PAGE_LOADERS.pluginView),
   settings: lazy(APP_PAGE_LOADERS.settings)
@@ -21,6 +23,8 @@ const PAGE_COMPONENTS: Record<AppPage, React.LazyExoticComponent<React.Component
 
 const PAGE_NAMES: Record<AppPage, string> = {
   home: '主页',
+  marketplace: '插件市场',
+  tasks: '任务中心',
   logs: '插件日志',
   pluginView: '插件详情',
   settings: '设置'

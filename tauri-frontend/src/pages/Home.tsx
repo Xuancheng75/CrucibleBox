@@ -613,8 +613,6 @@ export default function Home() {
             className="ob-sortable-list"
             style={{
               display: 'grid',
-              // 1.9.12：固定一排四个（最小窗宽 800px 下每卡约 165px）
-              gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
               gap: 16
             }}
           >
@@ -662,7 +660,7 @@ export default function Home() {
                         borderRadius: token.borderRadius,
                         background: token.colorBgContainer,
                         border: `1px solid ${token.colorBorderSecondary}`,
-                        boxShadow: token.boxShadow,
+                        boxShadow: 'none',
                         transform: 'rotate(3deg)'
                       }}
                     />
@@ -674,7 +672,7 @@ export default function Home() {
                         borderRadius: token.borderRadius,
                         background: token.colorBgContainer,
                         border: `1px solid ${token.colorBorderSecondary}`,
-                        boxShadow: token.boxShadow,
+                        boxShadow: 'none',
                         transform: 'rotate(-2deg)'
                       }}
                     />
@@ -710,7 +708,7 @@ export default function Home() {
                       background: token.colorPrimary,
                       fontSize: 12,
                       fontWeight: 600,
-                      boxShadow: token.boxShadowSecondary
+                      border: `1px solid ${token.colorBgContainer}`
                     }}
                   >
                     {activeDragPlugins.length}

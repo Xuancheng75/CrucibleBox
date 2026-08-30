@@ -83,7 +83,7 @@ gh attestation verify <setup.exe> -R Xuancheng75/CrucibleBox
 
 流程：版本提升（`src-tauri/tauri.conf.json` + 两处 `Cargo.toml` + lockfile +
 `tauri-frontend/package.json` 成对提升）→ 短分支 PR（双 CI 绿）→ merge → 打
-annotated tag `tauri-vX.Y.Z` 推送 → CI 自动完成：
+annotated tag `tauri-vX.Y.Z`（稳定）或 `tauri-vX.Y.Z-beta.N` / `-rc.N`（测试）推送 → CI 自动完成：
 
 版本唯一来源为 `src-tauri/tauri.conf.json`。提交前运行
 `npm run verify:tauri-version`，它会校验 Tauri 配置、Cargo 包/锁文件和前端
@@ -95,8 +95,11 @@ Tauri 版本或 channel 推导。
   官方插件打包（`artifacts/plugins/*.zip`）→ sidecar 构建+stage →
   图标缓存强制清理 → `cargo tauri build --bundles nsis`（minisign 签名 latest.json）
 - **Verify embedded app icon**：解包 setup.exe 字节级校验内嵌应用图标
-- SBOM（cargo-cyclonedx 双源）→ attestation → GitHub Release 发布 → 同步滚动清单
-  `tauri-latest/latest.json`（任何旧版客户端由此发现新版）
+- SBOM（cargo-cyclonedx 双源）→ attestation → GitHub Release 发布 → 按通道同步滚动清单：
+  正式版本写入 `tauri-stable/latest.json`，beta/rc 写入 `tauri-beta/latest.json`。两个通道互不覆盖。
+
+设置页将 `stable` / `beta` 持久化到 `settings.updateChannel`，Rust updater 按该值选择端点。
+不得恢复为单一 `tauri-latest`：否则测试版发布会污染稳定版用户的更新结果。
 
 产物：`CrucibleBox_X.Y.Z_x64-setup.exe(+.sig)`、`latest.json`、双 SBOM、
 **官方插件包 zip（unienv/diary 等）**。已装用户升级宿主后需导入对应插件包以启用

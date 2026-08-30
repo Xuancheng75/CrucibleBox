@@ -1,9 +1,9 @@
 {
   "name": "turntable",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "displayName": "转盘抽奖",
   "description": "自定义转盘抽奖插件，支持添加、修改、删除选项和权重配置",
-  "author": "openbox-plugin",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,

@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox-plugin-system-info",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "System info dashboard plugin for CrucibleBox",
   "main": "dist/main.js",

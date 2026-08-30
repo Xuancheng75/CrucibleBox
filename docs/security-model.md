@@ -1,7 +1,7 @@
-# CrucibleBox 安全模型（Tauri 2 基线，1.9.26）
+# CrucibleBox 安全模型（Tauri 2 基线，2.0.0）
 
 > 当前规范（替代 trusted-release.md / adr-0005 / adr-0011 中的安全部分；ADR 原文保留在 docs/ 作决策溯源）。
-> 运行时基线：Tauri 2.11.x（Rust core + WebView2）+ 插件 Rust sidecar（quickjs-ng）。本文按 1.9.26
+> 运行时基线：Tauri 2.11.x（Rust core + WebView2）+ 插件 Rust sidecar（quickjs-ng）。本文按 2.0.0
 > 发布基线维护，仅支持 Windows 10/11 x64。
 > Electron 历史安全面（utilityProcess.fork / webRequest HMAC / Electron fuses）见 `docs/electron-legacy-registry.md` 冻结层。
 

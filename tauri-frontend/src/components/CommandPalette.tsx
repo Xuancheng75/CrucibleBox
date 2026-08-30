@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { theme } from 'antd'
-import { AppstoreOutlined, SettingOutlined, FileTextOutlined } from '@ant-design/icons'
+import {
+  AppstoreOutlined,
+  ClockCircleOutlined,
+  FileTextOutlined,
+  SettingOutlined,
+  ShopOutlined
+} from '@ant-design/icons'
 import { useAppStore } from '../store/app.store'
 import { usePluginStore } from '../store/plugin.store'
 
@@ -48,6 +54,18 @@ export default function CommandPalette() {
         label: '工作台',
         icon: <AppstoreOutlined />,
         action: () => setCurrentPage('home')
+      },
+      {
+        key: 'marketplace',
+        label: '插件市场',
+        icon: <ShopOutlined />,
+        action: () => setCurrentPage('marketplace')
+      },
+      {
+        key: 'tasks',
+        label: '任务中心',
+        icon: <ClockCircleOutlined />,
+        action: () => setCurrentPage('tasks')
       },
       {
         key: 'logs',

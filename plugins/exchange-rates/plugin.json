@@ -1,9 +1,9 @@
 {
   "name": "exchange-rates",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "displayName": "实时汇率",
-  "description": "查询实时汇率，支持多币种转换，自动缓存减少网络请求。",
-  "author": "cruciblebox",
+  "description": "查询实时汇率，支持币种交换、常用货币收藏与自动缓存。",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,

@@ -134,6 +134,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
   const [from, setFrom] = useState('USD')
   const [to, setTo] = useState('CNY')
   const [convertResult, setConvertResult] = useState<{ result: number; rate: number } | null>(null)
+  const [favorites, setFavorites] = useState<string[]>(['CNY', 'EUR', 'JPY', 'GBP'])
 
   const fetchRates = useCallback(async () => {
     setLoading(true)
@@ -186,6 +187,18 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
     setLoading(false)
   }
 
+  const swapCurrencies = () => {
+    setFrom(to)
+    setTo(from)
+    setConvertResult(null)
+  }
+
+  const toggleFavorite = (code: string) => {
+    setFavorites((current) =>
+      current.includes(code) ? current.filter((item) => item !== code) : [...current, code].slice(-8)
+    )
+  }
+
   const displayRates = rates
     ? Object.entries(rates)
         .filter(([code]) => CURRENCIES.includes(code) && code !== 'USD')
@@ -218,7 +231,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
               {CURRENCIES.map((c) => <option key={c} value={c}>{c} {CURRENCY_NAMES[c] || ''}</option>)}
             </select>
           </div>
-          <div style={{ fontSize: 18, padding: '8px 0' }}>→</div>
+          <button style={{ ...s.btnSecondary, padding: '8px 12px' }} onClick={swapCurrencies} title="交换币种">⇄</button>
           <div style={s.field}>
             <label style={s.label}>到</label>
             <select style={s.select} value={to} onChange={(e) => setTo(e.target.value)}>
@@ -251,9 +264,12 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
           <>
             <div style={s.rateList}>
               {displayRates.map(([code, rate]) => (
-                <div key={code} style={s.rateItem}>
+                <div key={code} style={{ ...s.rateItem, order: favorites.includes(code) ? -1 : 0 }}>
                   <span>{CURRENCY_NAMES[code] || code} ({code})</span>
-                  <span style={{ fontWeight: 600 }}>{rate.toFixed(4)}</span>
+                  <span>
+                    <button onClick={() => toggleFavorite(code)} style={{ border: 0, background: 'transparent', cursor: 'pointer', color: favorites.includes(code) ? '#faad14' : '#999' }} aria-label={`${favorites.includes(code) ? '取消收藏' : '收藏'} ${code}`}>★</button>
+                    <strong>{rate.toFixed(4)}</strong>
+                  </span>
                 </div>
               ))}
             </div>

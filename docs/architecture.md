@@ -1,6 +1,6 @@
-# CrucibleBox 架构（Tauri 2 基线，1.9.26）
+# CrucibleBox 架构（Tauri 2 基线，2.0.0）
 
-> 运行时基线自 1.9.1 起为 **Tauri 2 + Rust core + WebView2 + 插件 Rust sidecar**；本文按 1.9.26
+> 运行时基线自 1.9.1 起为 **Tauri 2 + Rust core + WebView2 + 插件 Rust sidecar**；本文按 2.0.0
 > 发布基线维护。
 > Electron 43 历史架构（1.5.23 ~ 1.7.3 生产线）已冻结并归档至 `docs/history/` 与
 > `docs/electron-legacy-registry.md`（快照 tag `electron-1.7.3-production`）。

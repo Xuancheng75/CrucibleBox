@@ -1,9 +1,9 @@
 {
   "name": "theme-manager",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "displayName": "主题管理",
   "description": "切换工具箱 16 个主题：保留亮色、深色、科幻面板与纸张编辑，新增森林木屋、蓝图工坊、像素街机、陶土工坊、装饰艺术、工业仪表、瑞士网格、高对比无障碍、包豪斯几何、水墨东方、极光玻璃和终端控制台；旧主题 ID（清新绿、海洋蓝、零号城区等）保持配置兼容。",
-  "author": "OpenBox",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,

@@ -8,6 +8,8 @@ const { Header, Sider, Content } = Layout
 
 const PAGE_META: Record<string, { title: string; subtitle: string; hud: string }> = {
   home: { title: '工作台', subtitle: '启动与管理工作台中的工具插件', hud: 'WORKBENCH' },
+  marketplace: { title: '插件市场', subtitle: '发现和获取新的工具能力', hud: 'MARKET' },
+  tasks: { title: '任务中心', subtitle: '统一查看下载、安装与后台任务', hud: 'TASKS' },
   logs: { title: '插件日志', subtitle: '查看插件运行日志', hud: 'TRACE LOG' },
   settings: { title: '设置', subtitle: '应用信息与运行环境', hud: 'SYSTEM CFG' },
   pluginView: { title: '插件详情', subtitle: '插件运行界面', hud: 'PLUGIN LINK' }
@@ -84,9 +86,10 @@ export default function MainLayout({ children }: MainLayoutProps) {
         >
           <div
             style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 12,
+              display: 'grid',
+              gridTemplateColumns: 'auto minmax(0, 1fr)',
+              alignItems: 'center',
+              columnGap: 18,
               flexShrink: 0,
               minWidth: 0
             }}
@@ -103,16 +106,23 @@ export default function MainLayout({ children }: MainLayoutProps) {
             >
               CrucibleBox
             </span>
-            <span
-              className="ob-page-subtitle"
-              style={{
-                fontSize: 12,
-                color: token.colorTextTertiary,
-                whiteSpace: 'nowrap'
-              }}
-            >
-              {pageMeta.subtitle}
-            </span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ color: token.colorText, fontSize: 14, fontWeight: 650 }}>
+                {pageMeta.title}
+              </div>
+              <div
+                className="ob-page-subtitle"
+                style={{
+                  fontSize: 11,
+                  color: token.colorTextTertiary,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis'
+                }}
+              >
+                {pageMeta.subtitle}
+              </div>
+            </div>
           </div>
           <div style={{ flex: 1 }} />
           <div

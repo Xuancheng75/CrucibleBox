@@ -12,7 +12,7 @@ import {
   Progress
 } from 'antd'
 import { SettingOutlined, CheckCircleOutlined } from '@ant-design/icons'
-import { check as checkUpdate, Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
+import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { tauriApi } from '../api/tauriApi'
 import { formatUpdateError, retryUpdateCheck, retryUpdateDownload } from '../utils/update-check'
 
@@ -95,6 +95,12 @@ export default function Settings() {
       .getPlatform()
       .then(setPlatform)
       .catch(() => {})
+    tauriApi.settings
+      .get('updateChannel')
+      .then((saved) => {
+        if (saved === 'beta' || saved === 'stable') setChannel(saved)
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -120,7 +126,10 @@ export default function Settings() {
     })
     try {
       const update = await retryUpdateCheck(
-        () => checkUpdate({ timeout: UPDATE_CHECK_TIMEOUT_MS }),
+        async () => {
+          const metadata = await tauriApi.app.checkUpdate(channel, UPDATE_CHECK_TIMEOUT_MS)
+          return metadata ? new Update(metadata) : null
+        },
         {
           timeoutMs: UPDATE_CHECK_TIMEOUT_MS,
           maxAttempts: UPDATE_CHECK_ATTEMPTS,
@@ -154,7 +163,7 @@ export default function Settings() {
       checkInFlightRef.current = false
       setChecking(false)
     }
-  }, [downloading])
+  }, [channel, downloading])
 
   const handleDownload = useCallback(async () => {
     const update = updateRef.current
@@ -176,7 +185,8 @@ export default function Settings() {
           // before retrying so each attempt owns a fresh response stream.
           if (attempt > 1) {
             await activeUpdate.close().catch(() => {})
-            const refreshed = await checkUpdate({ timeout: UPDATE_CHECK_TIMEOUT_MS })
+            const metadata = await tauriApi.app.checkUpdate(channel, UPDATE_CHECK_TIMEOUT_MS)
+            const refreshed = metadata ? new Update(metadata) : null
             if (!refreshed) throw new Error('更新在重试期间已不可用')
             activeUpdate = refreshed
             updateRef.current = refreshed
@@ -241,7 +251,7 @@ export default function Settings() {
     } finally {
       setDownloading(false)
     }
-  }, [downloading])
+  }, [channel, downloading])
 
   const handleInstall = useCallback(async () => {
     const update = updateRef.current
@@ -301,10 +311,11 @@ export default function Settings() {
       </div>
 
       <Card
+        className="ob-surface-card ob-settings-card"
         style={{
           border: `1px solid ${token.colorBorder}`,
           borderRadius: token.borderRadius,
-          boxShadow: token.boxShadow
+          boxShadow: 'none'
         }}
         styles={{ body: { padding: 24 } }}
       >
@@ -318,12 +329,13 @@ export default function Settings() {
       </Card>
 
       <Card
+        className="ob-surface-card ob-settings-card"
         title="应用更新"
         style={{
           marginTop: 16,
           border: `1px solid ${token.colorBorder}`,
           borderRadius: token.borderRadius,
-          boxShadow: token.boxShadow
+          boxShadow: 'none'
         }}
         styles={{ body: { padding: 24 } }}
       >
@@ -347,6 +359,7 @@ export default function Settings() {
               ]}
               onChange={(next) => {
                 setChannel(next)
+                void tauriApi.settings.set('updateChannel', next).catch(() => {})
                 try {
                   localStorage.setItem(UPDATE_CHANNEL_KEY, next)
                 } catch {

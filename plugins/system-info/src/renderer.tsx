@@ -97,6 +97,7 @@ export default function SystemInfoPlugin({ api, config }: PluginRenderProps) {
   const [loading, setLoading] = useState(true)
   const [intervalSeconds, setIntervalSeconds] = useState(() => Math.max(1, Math.min(30, Number(config.refreshInterval) || 3)))
   const [samples, setSamples] = useState<Array<{ cpu: number; memory: number }>>([])
+  const [paused, setPaused] = useState(false)
   const refreshInterval = intervalSeconds * 1000
 
   const refresh = useCallback(async () => {
@@ -107,10 +108,28 @@ export default function SystemInfoPlugin({ api, config }: PluginRenderProps) {
   }, [api])
 
   useEffect(() => {
-    refresh()
+    if (paused) return
+    void refresh()
     const timer = setInterval(refresh, refreshInterval)
     return () => clearInterval(timer)
-  }, [refresh, refreshInterval])
+  }, [paused, refresh, refreshInterval])
+
+  useEffect(() => {
+    const syncVisibility = () => setPaused(document.hidden)
+    document.addEventListener('visibilitychange', syncVisibility)
+    return () => document.removeEventListener('visibilitychange', syncVisibility)
+  }, [])
+
+  const exportSnapshot = () => {
+    if (!info) return
+    const blob = new Blob([JSON.stringify({ capturedAt: new Date().toISOString(), info, samples }, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `cruciblebox-system-${Date.now()}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
 
   if (loading || !info) {
     return <div style={s.page}><div style={s.loading}>正在获取系统信息...</div></div>
@@ -128,6 +147,8 @@ export default function SystemInfoPlugin({ api, config }: PluginRenderProps) {
             </select>
           </label>
           <button style={s.refreshBtn} onClick={refresh}>刷新</button>
+          <button style={s.refreshBtn} onClick={() => setPaused((value) => !value)}>{paused ? '继续采样' : '暂停采样'}</button>
+          <button style={s.refreshBtn} onClick={exportSnapshot}>导出诊断</button>
         </div>
       </div>
 

@@ -1,6 +1,6 @@
 [package]
 name = "cruciblebox"
-version = "1.9.26"
+version = "2.0.0-beta.1"
 edition = "2021"
 description = "CrucibleBox - extensible Windows toolbox (Tauri 2)"
 authors = ["CrucibleBox"]

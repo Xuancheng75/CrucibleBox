@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { PluginMeta, PluginConfig } from '../../../shared/types/plugin.types'
 import { PluginLifecycleStatus } from '../../../shared/types/plugin.types'
 import { tauriApi, type PluginInstallPreviewResponse } from '../api/tauriApi'
+import { useTaskStore } from './task.store'
 
 export interface PendingInstall {
   source: 'zip' | 'directory'
@@ -75,6 +76,7 @@ type PluginStoreSet = (
 ) => void
 
 let pluginsFetchSequence = 0
+let activeInstallTaskId: string | null = null
 
 async function runBatchLifecycle(
   get: () => PluginStore,
@@ -179,6 +181,16 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       Object.keys(get().pluginOperationBusy).length > 0
     )
       return false
+    const taskId = `plugin-install-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    activeInstallTaskId = taskId
+    useTaskStore.getState().upsertTask({
+      id: taskId,
+      title: '准备安装插件',
+      detail: path,
+      source: 'host',
+      status: 'running',
+      progress: 10
+    })
     set({ loading: true, error: null })
     try {
       // 后端 preview 要求路径必须来自用户对话框/拖拽登记（trusted_paths 防线）
@@ -186,11 +198,26 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       const result = await tauriApi.plugin.installPreview({ type: source, path })
       if (result.success && result.installToken) {
         set({ installPreview: result, activeInstallPath: path, loading: false })
+        useTaskStore.getState().patchTask(taskId, {
+          title: result.data?.isUpgrade ? '等待确认插件升级' : '等待确认插件安装',
+          status: 'queued',
+          progress: 35
+        })
         return true
       }
+      useTaskStore.getState().patchTask(taskId, {
+        status: 'failed',
+        error: result.error ?? '安装预览失败'
+      })
+      activeInstallTaskId = null
       set({ error: result.error ?? '安装预览失败', loading: false })
       return false
     } catch (err) {
+      useTaskStore.getState().patchTask(taskId, {
+        status: 'failed',
+        error: toErrorMessage(err, '安装预览失败')
+      })
+      activeInstallTaskId = null
       set({ error: toErrorMessage(err, '安装预览失败'), loading: false })
       return false
     }
@@ -206,6 +233,13 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     )
       return false
     set({ loading: true, error: null })
+    if (activeInstallTaskId) {
+      useTaskStore.getState().patchTask(activeInstallTaskId, {
+        title: preview.data?.isUpgrade ? '正在升级插件' : '正在安装插件',
+        status: 'running',
+        progress: 60
+      })
+    }
     try {
       const result = await tauriApi.plugin.installCommit(preview.installToken)
       if (result.success) {
@@ -217,7 +251,21 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
           batchSucceeded: state.batchSucceeded + 1
         }))
         void get().processNextInQueue()
+        if (activeInstallTaskId) {
+          useTaskStore.getState().patchTask(activeInstallTaskId, {
+            status: 'completed',
+            progress: 100
+          })
+          activeInstallTaskId = null
+        }
         return true
+      }
+      if (activeInstallTaskId) {
+        useTaskStore.getState().patchTask(activeInstallTaskId, {
+          status: 'failed',
+          error: result.error ?? '安装失败'
+        })
+        activeInstallTaskId = null
       }
       set((state) => ({
         error: result.error ?? '安装失败',
@@ -227,6 +275,13 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       void get().processNextInQueue()
       return false
     } catch (err) {
+      if (activeInstallTaskId) {
+        useTaskStore.getState().patchTask(activeInstallTaskId, {
+          status: 'failed',
+          error: toErrorMessage(err, '安装失败')
+        })
+        activeInstallTaskId = null
+      }
       set((state) => ({
         error: toErrorMessage(err, '安装失败'),
         loading: false,
@@ -250,6 +305,13 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       } catch {
         // 丢弃失败不阻断 UI
       }
+    }
+    if (activeInstallTaskId) {
+      useTaskStore.getState().patchTask(activeInstallTaskId, {
+        status: 'cancelled',
+        detail: '用户取消了安装确认'
+      })
+      activeInstallTaskId = null
     }
     void get().processNextInQueue()
   },

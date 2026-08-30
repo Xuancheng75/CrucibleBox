@@ -98,6 +98,15 @@ export interface IpcResult<T = unknown> {
   error?: string
 }
 
+export interface AppUpdateMetadata {
+  rid: number
+  currentVersion: string
+  version: string
+  date?: string
+  body?: string
+  rawJson: Record<string, unknown>
+}
+
 export interface InstallSource {
   type: 'zip' | 'directory'
   path: string
@@ -160,10 +169,17 @@ export const tauriApi = {
 
   app: {
     getVersion: (): Promise<string> => invoke<string>('app_get_version'),
-    getPlatform: (): Promise<string> => invoke<string>('app_get_platform')
+    getPlatform: (): Promise<string> => invoke<string>('app_get_platform'),
+    checkUpdate: (
+      channel: 'stable' | 'beta',
+      timeoutMs?: number
+    ): Promise<AppUpdateMetadata | null> =>
+      invoke<AppUpdateMetadata | null>('app_check_update', { channel, timeoutMs })
   },
 
   plugin: {
+    marketplaceDownload: (id: string): Promise<string> =>
+      invoke<string>('marketplace_download_plugin', { id }),
     list: async (): Promise<PluginMeta[]> => {
       const dtos = await invoke<PluginMetaDto[]>('plugin_list')
       return dtos.map(toPluginMeta)

@@ -1,9 +1,9 @@
 {
   "name": "system-info",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "displayName": "系统信息面板",
   "description": "展示 CPU、内存、磁盘、操作系统和网络等系统信息，支持自动刷新。",
-  "author": "cruciblebox",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,

@@ -8,12 +8,15 @@
 
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{State, WebviewWindow};
+use tauri::{Manager, State, Webview, WebviewWindow};
+use tauri_plugin_updater::UpdaterExt;
 
 /// 渲染进程可写 settings key 白名单（对等 electron/ipc/settings.ipc.ts）
-const ALLOWED_SETTINGS_KEYS: &[&str] = &["theme"];
+const ALLOWED_SETTINGS_KEYS: &[&str] = &["theme", "updateChannel"];
 
 fn lock<'a>(db: &'a Arc<Mutex<Db>>) -> std::sync::MutexGuard<'a, Db> {
     db.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -117,6 +120,57 @@ pub fn app_get_platform() -> String {
     } else {
         "linux".into()
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateMetadata {
+    pub rid: tauri::ResourceId,
+    pub current_version: String,
+    pub version: String,
+    pub date: Option<String>,
+    pub body: Option<String>,
+    pub raw_json: serde_json::Value,
+}
+
+/// 2.0 update-channel entry point.  The JS updater API only accepts headers
+/// and timeout options, so endpoint selection must happen in the trusted host.
+#[tauri::command]
+pub async fn app_check_update(
+    webview: Webview,
+    channel: String,
+    timeout_ms: Option<u64>,
+) -> Result<Option<AppUpdateMetadata>, String> {
+    if webview.label() != "main" {
+        return Err("unauthorized".into());
+    }
+    let endpoint = match channel.as_str() {
+        "stable" => {
+            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/latest.json"
+        }
+        "beta" => {
+            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-beta/latest.json"
+        }
+        _ => return Err("unsupported update channel".into()),
+    };
+    let endpoint = tauri::Url::parse(endpoint).map_err(|error| error.to_string())?;
+    let mut builder = webview
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| error.to_string())?;
+    if let Some(timeout_ms) = timeout_ms {
+        builder = builder.timeout(std::time::Duration::from_millis(timeout_ms));
+    }
+    let updater = builder.build().map_err(|error| error.to_string())?;
+    let update = updater.check().await.map_err(|error| error.to_string())?;
+    Ok(update.map(|update| AppUpdateMetadata {
+        current_version: update.current_version.clone(),
+        version: update.version.clone(),
+        date: update.date.map(|date| date.to_string()),
+        body: update.body.clone(),
+        raw_json: update.raw_json.clone(),
+        rid: webview.resources_table().add(update),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +452,121 @@ pub struct InstallSourceDto {
     #[serde(rename = "type")]
     pub source_type: String,
     pub path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketplaceCatalog {
+    schema_version: u32,
+    plugins: Vec<MarketplaceCatalogPlugin>,
+}
+
+#[derive(Deserialize)]
+struct MarketplaceCatalogPlugin {
+    id: String,
+    version: String,
+    artifact: String,
+    sha256: String,
+    size: u64,
+    url: String,
+}
+
+/// Download a first-party plugin bundle from the signed release catalog.
+/// Installation still goes through plugin_install_preview/commit, so this
+/// command only materializes a digest-verified ZIP in a bounded temp folder.
+#[tauri::command(async)]
+pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<String, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    if id.is_empty()
+        || id.len() > 100
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err("invalid plugin id".into());
+    }
+    const CATALOG_URL: &str =
+        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json";
+    const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
+    let response = ureq::get(CATALOG_URL)
+        .timeout(std::time::Duration::from_secs(15))
+        .call()
+        .map_err(|error| format!("读取官方插件目录失败: {error}"))?;
+    let mut catalog_text = String::new();
+    response
+        .into_reader()
+        .take(4 * 1024 * 1024)
+        .read_to_string(&mut catalog_text)
+        .map_err(|error| format!("读取官方插件目录失败: {error}"))?;
+    let catalog: MarketplaceCatalog = serde_json::from_str(&catalog_text)
+        .map_err(|error| format!("解析官方插件目录失败: {error}"))?;
+    if catalog.schema_version != 1 {
+        return Err("unsupported marketplace catalog schema".into());
+    }
+    let plugin = catalog
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.id == id)
+        .ok_or_else(|| "官方目录中没有该插件".to_string())?;
+    if plugin.size == 0 || plugin.size > MAX_PLUGIN_BYTES {
+        return Err("插件包大小超出安全限制".into());
+    }
+    let expected_artifact = format!("{}-{}.zip", plugin.id, plugin.version);
+    if plugin.artifact != expected_artifact
+        || !plugin
+            .url
+            .starts_with("https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v")
+    {
+        return Err("官方目录包含不受信任的下载地址".into());
+    }
+    let response = ureq::get(&plugin.url)
+        .timeout(std::time::Duration::from_secs(60))
+        .call()
+        .map_err(|error| format!("下载插件失败: {error}"))?;
+    if response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|size| size > plugin.size || size > MAX_PLUGIN_BYTES)
+    {
+        return Err("下载响应超过目录声明大小".into());
+    }
+    let root = std::env::temp_dir().join("cruciblebox-marketplace");
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let target = root.join(&plugin.artifact);
+    let partial = root.join(format!(".{}.part", plugin.artifact));
+    let mut reader = response.into_reader();
+    let mut file = std::fs::File::create(&partial).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        if total > plugin.size || total > MAX_PLUGIN_BYTES {
+            let _ = std::fs::remove_file(&partial);
+            return Err("下载插件超过目录声明大小".into());
+        }
+        hasher.update(&buffer[..read]);
+        file.write_all(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+    }
+    file.sync_all().map_err(|error| error.to_string())?;
+    if total != plugin.size || format!("{:x}", hasher.finalize()) != plugin.sha256 {
+        let _ = std::fs::remove_file(&partial);
+        return Err("插件包完整性校验失败".into());
+    }
+    if target.exists() {
+        std::fs::remove_file(&target).map_err(|error| error.to_string())?;
+    }
+    std::fs::rename(&partial, &target).map_err(|error| error.to_string())?;
+    Ok(target.to_string_lossy().into_owned())
 }
 
 /// 安装预览：校验来源 + manifest + 升级策略，返回 installToken（对等 previewInstall）。
