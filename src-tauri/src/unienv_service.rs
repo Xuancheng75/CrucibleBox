@@ -378,7 +378,11 @@ fn supported_versions_raw() -> Value {
         "go": ["1.21.6", "1.22.4", "1.23.0", "1.26.5"],
         "java": ["17.0.11", "17.0.12", "17.0.20", "21.0.3", "21.0.5", "21.0.12", "22.0.1", "25.0.4"],
         "rust": ["stable", "beta", "nightly"],
-        "php": ["8.2.30", "8.3.33", "8.4.16"]
+        "php": ["8.2.30", "8.3.33", "8.4.16"],
+        "ruby": ["3.4.5"],
+        "zig": ["0.14.1"],
+        "deno": ["2.4.5"],
+        "bun": ["1.2.21"]
     })
 }
 
@@ -390,7 +394,11 @@ fn tool_meta() -> Value {
         { "id": "go", "displayName": "Go", "icon": "\u{1F4C0}", "description": "Go 编程语言工具链" },
         { "id": "java", "displayName": "Java (JDK)", "icon": "\u{2615}\u{FE0F}", "description": "Java 开发工具包 (Temurin)" },
         { "id": "rust", "displayName": "Rust", "icon": "\u{1F980}", "description": "Rust 工具链（stable / beta / nightly 通道）" },
-        { "id": "php", "displayName": "PHP", "icon": "\u{1F418}", "description": "PHP 运行时（8.2 / 8.3 / 8.4 NTS x64）" }
+        { "id": "php", "displayName": "PHP", "icon": "\u{1F418}", "description": "PHP 运行时（8.2 / 8.3 / 8.4 NTS x64）" },
+        { "id": "ruby", "displayName": "Ruby", "icon": "💎", "description": "Ruby 运行时（RubyInstaller x64）" },
+        { "id": "zig", "displayName": "Zig", "icon": "⚡", "description": "Zig 原生工具链" },
+        { "id": "deno", "displayName": "Deno", "icon": "🦕", "description": "Deno TypeScript/JavaScript 运行时" },
+        { "id": "bun", "displayName": "Bun", "icon": "🥟", "description": "Bun JavaScript 运行时与工具链" }
     ])
 }
 
@@ -427,6 +435,22 @@ fn builtin_combos() -> Value {
         {
             "id": "multi-language", "name": "多语言后端", "description": "Java 21 + Go 1.26 + Rust + Git",
             "items": [ { "toolId": "java", "version": "21.0.12" }, { "toolId": "go", "version": "1.26.5" }, { "toolId": "rust", "version": "stable" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "ruby-web", "name": "Ruby Web", "description": "Ruby 3.4 + Node 24 + Git",
+            "items": [ { "toolId": "ruby", "version": "3.4.5" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "zig-native", "name": "Zig 原生开发", "description": "Zig 0.14 + Git",
+            "items": [ { "toolId": "zig", "version": "0.14.1" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "modern-typescript", "name": "现代 TypeScript", "description": "Node 24 + Deno 2.4 + Bun 1.2 + Git",
+            "items": [ { "toolId": "node", "version": "24.18.1" }, { "toolId": "deno", "version": "2.4.5" }, { "toolId": "bun", "version": "1.2.21" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "polyglot-web", "name": "多运行时 Web", "description": "Python 3.14 + Ruby 3.4 + Node 24 + Git",
+            "items": [ { "toolId": "python", "version": "3.14.7" }, { "toolId": "ruby", "version": "3.4.5" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "git", "version": "2.54.0" } ]
         }
     ])
 }
@@ -440,6 +464,10 @@ fn display_name(tool: &str) -> String {
         "java" => "Java (JDK)".into(),
         "rust" => "Rust".into(),
         "php" => "PHP".into(),
+        "ruby" => "Ruby".into(),
+        "zig" => "Zig".into(),
+        "deno" => "Deno".into(),
+        "bun" => "Bun".into(),
         other => other.to_string(),
     }
 }
@@ -657,7 +685,11 @@ fn install_plan(
     tool: &str,
     version: &str,
 ) -> Result<unienv_install::InstallPlan, String> {
-    if is_supported_version(tool, version) {
+    // The extended runtimes are online-only: their release metadata carries
+    // the authoritative SHA-256 digest and must be resolved at install time.
+    // Existing static tools retain the offline, compile-time pinned catalog.
+    let online_only = matches!(tool, "ruby" | "zig" | "deno" | "bun");
+    if is_supported_version(tool, version) && !online_only {
         return Ok(unienv_install::InstallPlan {
             urls: crate::unienv_catalog::download_urls(tool, version, mirror)?,
             sha256: crate::unienv_catalog::artifact(tool, version)?
@@ -1031,7 +1063,7 @@ fn check_online_versions(cfg: &UniEnvConfig, request: &Value) -> Value {
     }
     let requested: Vec<String> = match request.get("tool") {
         Some(Value::String(s)) => vec![s.clone()],
-        _ => ["node", "go", "java"]
+        _ => ["node", "go", "java", "ruby", "zig", "deno", "bun"]
             .iter()
             .map(|s| s.to_string())
             .collect(),
@@ -1124,6 +1156,10 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
         "java" => Some(("java.exe", vec!["-version"], true)),
         "rust" => Some(("rustc.exe", vec!["--version"], false)),
         "php" => Some(("php.exe", vec!["--version"], false)),
+        "ruby" => Some(("ruby.exe", vec!["--version"], false)),
+        "zig" => Some(("zig.exe", vec!["version"], false)),
+        "deno" => Some(("deno.exe", vec!["--version"], false)),
+        "bun" => Some(("bun.exe", vec!["--version"], false)),
         _ => None,
     };
     if let Some((exe, args, from_stderr)) = global {
@@ -1144,6 +1180,10 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
         "rust" => Some(("cargo\\bin\\rustc.exe", vec!["--version"], false)),
         // php zip 解压根
         "php" => Some(("runtime\\php.exe", vec!["--version"], false)),
+        "ruby" => Some(("ruby.exe", vec!["--version"], false)),
+        "zig" => Some(("runtime\\zig.exe", vec!["version"], false)),
+        "deno" => Some(("runtime\\deno.exe", vec!["--version"], false)),
+        "bun" => Some(("runtime\\bun.exe", vec!["--version"], false)),
         _ => None,
     };
     if let Some((rel_exe, args, from_stderr)) = rel {
@@ -1232,7 +1272,7 @@ mod tests {
         )
         .unwrap();
         let arr = out.as_array().unwrap();
-        assert_eq!(arr.len(), 7);
+        assert_eq!(arr.len(), 11);
         assert!(arr.iter().any(|tool| tool["id"] == "python"));
         assert!(arr.iter().any(|tool| tool["id"] == "rust"));
         assert!(arr.iter().any(|tool| tool["id"] == "php"));
@@ -1258,7 +1298,7 @@ mod tests {
             Some(&json!({ "type": "listVersions", "tool": "ruby" })),
         )
         .unwrap();
-        assert_eq!(out["code"], "unknown-tool");
+        assert!(out.as_array().unwrap().contains(&json!("3.4.5")));
     }
 
     #[test]
@@ -1289,7 +1329,7 @@ mod tests {
         )
         .unwrap();
         let arr = out.as_array().unwrap();
-        assert!(arr.len() >= 9);
+        assert!(arr.len() >= 12);
         assert!(arr.iter().any(|c| c["id"] == "my-combo"));
         assert!(arr.iter().any(|c| c["id"] == "rust-dev"));
         assert!(arr.iter().any(|c| c["id"] == "php-web"));

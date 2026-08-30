@@ -445,12 +445,24 @@ fn ocr_model_version(cfg: &DocumentEngineConfig) -> String {
 }
 
 fn gpu_status() -> Value {
+    static GPU_STATUS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    GPU_STATUS.get_or_init(gpu_status_uncached).clone()
+}
+
+fn gpu_status_uncached() -> Value {
     #[cfg(windows)]
     {
-        match std::process::Command::new("nvidia-smi")
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let mut command = Command::new("nvidia-smi");
+        command
             .args(["--query-gpu=name,memory.total", "--format=csv,noheader"])
-            .output()
-        {
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        match command.output() {
             Ok(output) if output.status.success() => {
                 let line = String::from_utf8_lossy(&output.stdout)
                     .lines()
@@ -503,7 +515,11 @@ fn report_ocr_progress(
             .unwrap_or("OCR 处理中"),
         Some(progress.clone()),
     );
-    emit_progress(plugin_id, &ctx.task_id(), &progress);
+    // TaskRecord clamps progress and assigns a sequence number. Emit exactly
+    // that canonical snapshot instead of the raw worker frame; otherwise a
+    // late 5%/20% frame can overwrite a newer polling snapshot in the UI.
+    let canonical = ctx.progress_snapshot();
+    emit_progress(plugin_id, &ctx.task_id(), &canonical);
     Ok(())
 }
 
@@ -553,7 +569,7 @@ fn run_ocr_input(
             "命中 OCR 缓存",
             Some(progress.clone()),
         );
-        emit_progress(plugin_id, &ctx.task_id(), &progress);
+        emit_progress(plugin_id, &ctx.task_id(), &ctx.progress_snapshot());
         return Ok(cached);
     }
 
@@ -579,6 +595,12 @@ fn run_ocr_input(
         }
     })?;
     ctx.check_cancelled()?;
+    report_ocr_progress(
+        ctx,
+        plugin_id,
+        json!({ "stage": "done", "percent": 100, "message": "OCR 完成" }),
+        scope,
+    )?;
     let _ = crate::document_engine_cache::write_result(
         PathBuf::from(&cfg.cache_directory).as_path(),
         &key,
@@ -707,8 +729,20 @@ fn merge_ocr_pages(
     std::fs::create_dir_all(&temp_dir)
         .map_err(|error| format!("创建 PDF OCR 临时目录失败: {error}"))?;
     let result = (|| {
-        for page_number in &page_numbers {
+        let page_total = page_numbers.len();
+        for (page_index, page_number) in page_numbers.iter().enumerate() {
             ctx.wait_if_paused()?;
+            let page_percent = ((page_index * 100) / page_total.max(1)) as u32;
+            ctx.update_progress(
+                "render",
+                page_percent,
+                &format!("渲染 PDF 第 {} / {} 页", page_index + 1, page_total),
+                Some(json!({
+                    "pageIndex": page_index,
+                    "pageTotal": page_total,
+                    "pageNumber": page_number
+                })),
+            );
             let rendered = temp_dir.join(format!("page-{page_number}.png"));
             let dimensions = crate::pdf_parser::render_page_to_png(path, *page_number, &rendered)?;
             let ocr = run_ocr_input(
@@ -719,7 +753,7 @@ fn merge_ocr_pages(
                 &rendered.to_string_lossy(),
                 None,
                 None,
-                None,
+                Some((page_index, page_total)),
             )?;
             let ocr_blocks = ocr["blocks"].as_array().cloned().unwrap_or_default();
             let mut blocks = Vec::with_capacity(ocr_blocks.len());

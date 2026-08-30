@@ -11,6 +11,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 
 const MAX_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 100_000_000;
@@ -81,7 +82,12 @@ impl OcrEngine {
         })
     }
 
-    fn recognize(&mut self, request_id: &str, input_path: &str) -> Result<OcrResponse, String> {
+    fn recognize(
+        &mut self,
+        request_id: &str,
+        input_path: &str,
+        on_progress: &mut dyn FnMut(u8, &'static str, &'static str),
+    ) -> Result<OcrResponse, String> {
         let path = Path::new(input_path);
         let file_meta = std::fs::metadata(path).map_err(|e| format!("input unavailable: {e}"))?;
         if !file_meta.is_file() {
@@ -91,17 +97,28 @@ impl OcrEngine {
             return Err(format!("input exceeds {MAX_IMAGE_BYTES} bytes"));
         }
         let image = image::open(path).map_err(|e| format!("image decode failed: {e}"))?;
+        on_progress(10, "decode", "图像已解码");
         let (width, height) = image.dimensions();
         if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
             return Err("image dimensions exceed worker limits".into());
         }
 
         let boxes = detect_text(&mut self.detection, &image)?;
+        let box_count = boxes.len();
+        on_progress(35, "detect", "文本区域检测完成");
         let mut blocks = Vec::with_capacity(boxes.len());
-        for polygon in boxes {
+        for (index, polygon) in boxes.into_iter().enumerate() {
             let crop = crop_text_region(&image, &polygon);
             let (text, confidence) =
                 recognize_text(&mut self.recognition, &self.dictionary, &crop)?;
+            let percent = if box_count == 0 {
+                95
+            } else {
+                35u16
+                    .saturating_add((((index + 1) * 60) / box_count) as u16)
+                    .min(95) as u8
+            };
+            on_progress(percent, "recognize", "正在识别文本区域");
             if !text.trim().is_empty() {
                 blocks.push(TextBlock {
                     text,
@@ -199,10 +216,24 @@ impl WorkerState {
 }
 
 fn gpu_available() -> bool {
+    static GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *GPU_AVAILABLE.get_or_init(|| gpu_available_uncached())
+}
+
+fn gpu_available_uncached() -> bool {
     #[cfg(windows)]
     {
-        std::process::Command::new("nvidia-smi")
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let mut command = Command::new("nvidia-smi");
+        command
             .args(["-L"])
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command
             .output()
             .map(|output| output.status.success() && !output.stdout.is_empty())
             .unwrap_or(false)
@@ -259,13 +290,20 @@ fn process_request(line: &str, state: &mut WorkerState, stdout: &mut impl Write)
         return response;
     }
     let request_id = request.request_id().to_string();
-    emit_progress(stdout, &request_id, "loading", 5, "loading OCR models");
+    let cold_start = state.engine.is_none();
+    if cold_start {
+        emit_progress(stdout, &request_id, "loading", 5, "正在加载 OCR 模型");
+    } else {
+        emit_progress(stdout, &request_id, "ready", 5, "OCR 模型已就绪");
+    }
     let engine = match state.engine_for(request.options.as_ref()) {
         Ok(engine) => engine,
         Err(message) => return error(request_id, "model-unavailable", message),
     };
-    emit_progress(stdout, &request_id, "ocr", 20, "running OCR");
-    match engine.recognize(&request_id, &request.input) {
+    let mut progress = |percent, stage, message| {
+        emit_progress(stdout, &request_id, stage, percent, message);
+    };
+    match engine.recognize(&request_id, &request.input, &mut progress) {
         Ok(response) => serde_json::to_value(response).unwrap_or_else(|e| {
             error(
                 request_id,

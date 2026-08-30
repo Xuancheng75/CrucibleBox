@@ -72,6 +72,20 @@ impl TaskContext {
         self.record.update_progress(stage, percent, message, extra);
     }
 
+    /// Return the canonical progress snapshot after monotonic normalization.
+    /// Real-time events and polling must expose the same value so the renderer
+    /// cannot regress when a late worker frame arrives.
+    pub fn progress_snapshot(&self) -> Value {
+        self.record
+            .core
+            .lock()
+            .unwrap()
+            .snapshot
+            .get("progress")
+            .cloned()
+            .unwrap_or_else(|| json!({ "stage": "queued", "percent": 0, "message": "" }))
+    }
+
     fn mark_running(&self) {
         let mut core = self.record.core.lock().unwrap();
         if core.settled {
@@ -117,6 +131,11 @@ impl TaskRecord {
             "percent": percent_value,
             "message": message,
         });
+        let sequence = core.snapshot["progress"]["sequence"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_add(1);
+        progress["sequence"] = json!(sequence);
         if let Some(started_at) = core.snapshot["startedAt"].as_u64() {
             let elapsed_ms = now_ms().saturating_sub(started_at);
             progress["elapsedMs"] = json!(elapsed_ms);

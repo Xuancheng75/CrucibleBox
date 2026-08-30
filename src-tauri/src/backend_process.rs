@@ -1226,7 +1226,7 @@ mod tests {
 
         let tools = send(&proc, "listTools", json!({ "type": "listTools" }));
         assert!(
-            tools.as_array().map(|a| a.len() == 7).unwrap_or(false),
+            tools.as_array().map(|a| a.len() == 11).unwrap_or(false),
             "listTools: {tools}"
         );
         send(&proc, "listCombos", json!({ "type": "listCombos" }));

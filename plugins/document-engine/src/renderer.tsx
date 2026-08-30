@@ -70,6 +70,31 @@ const FONT = {
   sizeTitle: '20px'
 }
 
+/** Merge progress from the event stream and polling without allowing a late
+ * worker frame to move the task backwards. Older hosts may not send sequence,
+ * so percent remains a safe fallback ordering key. */
+function mergeProgress(current: OcrProgress | null, incoming: OcrProgress): OcrProgress {
+  if (!current) return incoming
+  const currentSequence = typeof current.sequence === 'number' ? current.sequence : 0
+  const incomingSequence = typeof incoming.sequence === 'number' ? incoming.sequence : 0
+  if (
+    incomingSequence < currentSequence ||
+    (incomingSequence === currentSequence && incoming.percent < current.percent)
+  ) {
+    return current
+  }
+  return incoming.percent < current.percent
+    ? { ...incoming, percent: current.percent }
+    : incoming
+}
+
+function setMergedProgress(
+  setter: React.Dispatch<React.SetStateAction<OcrProgress | null>>,
+  progress: OcrProgress
+) {
+  setter((current) => mergeProgress(current, progress))
+}
+
 const prettyJson = (value: unknown): string => JSON.stringify(value, null, 2) ?? ''
 
 /** Keep the actual path in state while showing a readable value in narrow inputs. */
@@ -414,11 +439,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   useEffect(() => {
     return api.onBackendMessage((message) => {
       if (!isDocumentProgressMessage(message)) return
-      if (ocrTaskId && message.taskId === ocrTaskId) setOcrProgress(message.progress)
-      if (parseTaskId && message.taskId === parseTaskId) setParseProgress(message.progress)
-      if (chunkTaskId && message.taskId === chunkTaskId) setChunkProgress(message.progress)
-      if (convertTaskId && message.taskId === convertTaskId) setConvertProgress(message.progress)
-      if (batchTaskId && message.taskId === batchTaskId) setBatchProgress(message.progress)
+      if (ocrTaskId && message.taskId === ocrTaskId) setMergedProgress(setOcrProgress, message.progress)
+      if (parseTaskId && message.taskId === parseTaskId) setMergedProgress(setParseProgress, message.progress)
+      if (chunkTaskId && message.taskId === chunkTaskId) setMergedProgress(setChunkProgress, message.progress)
+      if (convertTaskId && message.taskId === convertTaskId) setMergedProgress(setConvertProgress, message.progress)
+      if (batchTaskId && message.taskId === batchTaskId) setMergedProgress(setBatchProgress, message.progress)
     })
   }, [api, ocrTaskId, parseTaskId, chunkTaskId, convertTaskId, batchTaskId])
 
@@ -431,7 +456,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         const snapshot = await getTask(send, ocrTaskId)
         if (!active) return
         setOcrTask(snapshot)
-        if (snapshot.progress) setOcrProgress(snapshot.progress)
+        if (snapshot.progress) setMergedProgress(setOcrProgress, snapshot.progress)
         if (snapshot.status === 'succeeded' && isOcrResult(snapshot.result))
           setOcrResult(snapshot.result)
         if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
@@ -468,7 +493,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         const snapshot = await getTask(send, parseTaskId)
         if (!active) return
         setParseTask(snapshot)
-        if (snapshot.progress) setParseProgress(snapshot.progress)
+        if (snapshot.progress) setMergedProgress(setParseProgress, snapshot.progress)
         if (snapshot.status === 'succeeded' && isParsedDocumentResult(snapshot.result)) {
           setParseResult(snapshot.result)
         }
@@ -501,14 +526,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     async (
       taskId: string,
       setTask: (task: DocumentTaskSnapshot) => void,
-      setProgress: (progress: OcrProgress) => void,
+      setProgress: React.Dispatch<React.SetStateAction<OcrProgress | null>>,
       setResult: (result: unknown) => void,
       setError: (error: string) => void
     ) => {
       try {
         const snapshot = await getTask(send, taskId)
         setTask(snapshot)
-        if (snapshot.progress) setProgress(snapshot.progress)
+        if (snapshot.progress) setMergedProgress(setProgress, snapshot.progress)
         if (snapshot.status === 'succeeded') setResult(snapshot.result)
         if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
           setError(

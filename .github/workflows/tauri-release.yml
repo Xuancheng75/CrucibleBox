@@ -2,7 +2,7 @@ name: Tauri Release (v1.8.4+)
 
 # 1.8.4 引入的 Tauri 发布链（与 Electron release.yml 的 v* 链并存、互不干扰）。
 # 触发：tauri-v* tag（首个 Tauri 正式版 v1.8.4 即 tauri-v1.8.4）。
-# 产物：NSIS 安装器 + updater 签名 JSON（latest.json）+ SBOM + attestation。
+# 产物：NSIS 安装器 + updater 签名 JSON（latest.json）+ 插件清单（plugins.json）+ SBOM + attestation。
 # 签名：TAURI_SIGNING_PRIVATE_KEY（GitHub secret，minisign 私钥）——发布前必须配置。
 #
 # oracle 审查修复（1.8.4）：C1 tauri-cli 安装、C2 根 npm ci、C3 frontendDist→dist、
@@ -303,6 +303,8 @@ jobs:
           cp artifacts/sbom/*.cdx.json artifacts/tauri/
           # 1.9.13：官方插件包随 release 附带（供已装用户导入升级）
           cp artifacts/plugins/*.zip artifacts/tauri/
+          # 1.9.24：发布可消费的官方插件更新目录，避免宿主升级后插件版本漂移。
+          node -e "const fs=require('fs'); const path='artifacts/plugins/manifest.json'; const source=JSON.parse(fs.readFileSync(path,'utf8')); const tag='${{ steps.release.outputs.tag }}'; const plugins=source.plugins.map(p=>({...p,url:'https://github.com/${{ github.repository }}/releases/download/'+tag+'/'+p.artifact})); fs.writeFileSync('artifacts/tauri/plugins.json', JSON.stringify({schemaVersion:1,application:source.application,plugins},null,2)+'\\n');"
           ls -la artifacts/tauri/
 
       - name: Attest artifacts
@@ -326,7 +328,7 @@ jobs:
       # 1.9.7: 滚动更新清单同步到固定 tag（tauri-latest）。客户端 tauri.conf.json
       # endpoint 指向 tauri-latest/latest.json；此处把本次 latest.json 覆盖上去，
       # 让任何已安装版本的 app 都能读到最新 version（version = 本次 tag）。
-      # 仅上传 latest.json（version 指向本次），setup.exe/.sig 仍留在各自 tauri-v* release。
+      # 上传 latest.json 与 plugins.json；setup.exe/.sig 仍留在各自 tauri-v* release。
       # tauri-latest 不匹配 v* / tauri-v* 触发模式，不会误触发其他发布链。
       - name: Sync rolling updater manifest (tauri-latest)
         shell: bash
@@ -337,11 +339,11 @@ jobs:
             --latest=false \
             --title "CrucibleBox rolling updater manifest" \
             --notes "Rolling updater manifest for the CrucibleBox Tauri client." \
-            artifacts/tauri/latest.json 2>/dev/null || \
+            artifacts/tauri/latest.json artifacts/tauri/plugins.json 2>/dev/null || \
           gh release upload tauri-latest \
             --repo "$GITHUB_REPOSITORY" \
             --clobber \
-            artifacts/tauri/latest.json
-          echo "synced latest.json to tauri-latest (version=${{ steps.release.outputs.version }})"
+            artifacts/tauri/latest.json artifacts/tauri/plugins.json
+          echo "synced rolling manifests (version=${{ steps.release.outputs.version }})"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,9 +1,20 @@
 /**
  * Renderer-side UniEnv catalog.  Keep this in the plugin bundle so the UI
  * remains compatible with older archived Electron protocol files while the
- * Tauri trusted service exposes the Rust and PHP tools.
+ * Tauri trusted service exposes the complete eleven-tool catalog.
  */
-export type ToolId = 'python' | 'node' | 'git' | 'go' | 'java' | 'rust' | 'php'
+export type ToolId =
+  | 'python'
+  | 'node'
+  | 'git'
+  | 'go'
+  | 'java'
+  | 'rust'
+  | 'php'
+  | 'ruby'
+  | 'zig'
+  | 'deno'
+  | 'bun'
 
 export type ToolVersionLifecycle = {
   status: 'current' | 'maintained-branch' | 'eol' | 'legacy'
@@ -75,6 +86,18 @@ const CATALOG: Record<ToolId, Record<string, ToolVersionLifecycle>> = {
     '8.2.30': current('PHP 8.2 NTS x64 维护分支。'),
     '8.3.33': current('PHP 8.3 NTS x64 当前目录中已验证的版本。', true),
     '8.4.16': current('PHP 8.4 NTS x64 当前稳定版本。')
+  },
+  ruby: {
+    '3.4.5': current('Ruby 3.4 RubyInstaller x64 当前稳定版本。', true)
+  },
+  zig: {
+    '0.14.1': current('Zig 0.14 原生工具链。', true)
+  },
+  deno: {
+    '2.4.5': current('Deno 2.4 TypeScript/JavaScript 运行时。', true)
+  },
+  bun: {
+    '1.2.21': current('Bun 1.2 JavaScript 运行时。', true)
   }
 }
 

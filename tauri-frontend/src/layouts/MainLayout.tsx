@@ -27,7 +27,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
   return (
     <Layout
       className="ob-app-layout"
-      style={{ minHeight: '100vh', background: token.colorBgLayout }}
+      style={{
+        height: '100dvh',
+        minHeight: 0,
+        overflow: 'hidden',
+        background: token.colorBgLayout
+      }}
     >
       <Sider
         className="ob-rail-shell"
@@ -35,12 +40,21 @@ export default function MainLayout({ children }: MainLayoutProps) {
         style={{
           background: token.colorBgContainer,
           borderRight: `1px solid ${token.colorBorder}`,
-          position: 'relative'
+          position: 'sticky',
+          top: 0,
+          height: '100dvh',
+          minHeight: 0,
+          flexShrink: 0,
+          overflow: 'hidden',
+          alignSelf: 'flex-start'
         }}
       >
         <IconRail selectedKey={currentPage} onChange={setCurrentPage} />
       </Sider>
-      <Layout className="ob-app-main-layout">
+      <Layout
+        className="ob-app-main-layout"
+        style={{ height: '100dvh', minWidth: 0, minHeight: 0, overflow: 'hidden' }}
+      >
         <Header
           className="ob-app-header"
           style={{
@@ -113,8 +127,10 @@ export default function MainLayout({ children }: MainLayoutProps) {
           style={{
             margin: '0 28px 28px',
             padding: 4,
-            minHeight: 'calc(100vh - 92px)',
-            overflow: 'auto'
+            minHeight: 0,
+            flex: 1,
+            overflow: 'auto',
+            overscrollBehavior: 'contain'
           }}
         >
           <div className="ob-hud-strip" aria-hidden="true">

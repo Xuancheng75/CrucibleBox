@@ -1,8 +1,8 @@
 {
   "name": "unienv",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "displayName": "UniEnv",
-  "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java、Rust、PHP 的版本管理、安装后环境配置、切换与卸载",
+  "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java、Rust、PHP、Ruby、Zig、Deno、Bun 的版本管理、安装后环境配置、切换与卸载",
   "author": "UniEnv Team",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
@@ -32,7 +32,7 @@
     "onlineVersions": {
       "type": "select",
       "label": "联网检查语言版本",
-      "description": "开启后 Node/Go/Java 会从官方源发现新版本并可直接安装（Python/Git 暂不支持在线新版本）；关闭则仅显示内置版本目录。网络不可达时自动回退内置目录。",
+      "description": "开启后 Node/Go/Java/Ruby/Zig/Deno/Bun 会从官方源发现新版本并可直接安装（Python/Git 暂不支持在线新版本）；关闭则仅显示内置版本目录。网络不可达时自动回退内置目录。",
       "default": "on",
       "options": [
         { "label": "开启（推荐）", "value": "on" },

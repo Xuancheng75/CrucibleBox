@@ -749,8 +749,9 @@ export default function UniEnvUI({
   const isToolLoading = operationLoading[activeKey] || false
   const activeVersions = versions[activeKey] || []
 
-  /** 该工具是否有在线版本源（node/go/java，与宿主 provider_supports 对齐） */
-  const isProviderTool = (toolId: string) => ['node', 'go', 'java'].includes(toolId)
+  /** 在线版本源与宿主 provider_supports 保持一致。 */
+  const isProviderTool = (toolId: string) =>
+    ['node', 'go', 'java', 'ruby', 'zig', 'deno', 'bun'].includes(toolId)
   const selectedVersion = selectedVersions[activeKey]
   const selectedLifecycle =
     activeTool && selectedVersion

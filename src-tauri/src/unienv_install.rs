@@ -539,10 +539,11 @@ pub fn current_link(install_root: &Path, tool: &str) -> PathBuf {
     tool_dir(install_root, tool).join("current")
 }
 
-/// 运行时子目录：node→runtime、go→go、java→jdk、php→runtime；python/git 直装于版本目录
+/// 运行时子目录：node/php/zig/deno/bun→runtime、go→go、java→jdk；
+/// python/git/ruby 直装于版本目录。
 fn runtime_subdir(tool: &str) -> Option<&'static str> {
     match tool {
-        "node" | "php" => Some("runtime"),
+        "node" | "php" | "zig" | "deno" | "bun" => Some("runtime"),
         "go" => Some("go"),
         "java" => Some("jdk"),
         _ => None,
@@ -604,6 +605,10 @@ pub fn configure_environment(install_root: &Path) -> Result<(), String> {
             current("rust").join("cargo").join("bin").join("cargo.exe"),
         ),
         ("php.cmd", current("php").join("runtime").join("php.exe")),
+        ("ruby.cmd", current("ruby").join("ruby.exe")),
+        ("zig.cmd", current("zig").join("runtime").join("zig.exe")),
+        ("deno.cmd", current("deno").join("runtime").join("deno.exe")),
+        ("bun.cmd", current("bun").join("runtime").join("bun.exe")),
     ];
     for (name, target) in shims {
         let shim = shim_dir.join(name);
@@ -830,6 +835,11 @@ fn install_from_installer(
             "/SP-".into(),
             "/NOICONS".into(),
         ],
+        "ruby" => vec![
+            "/VERYSILENT".into(),
+            format!("/DIR={}", dir.display()),
+            "/NORESTART".into(),
+        ],
         "rust" => vec![],
         other => return Err(format!("unsupported installer tool: {other}")),
     };
@@ -955,6 +965,10 @@ fn display_name(tool: &str, _version: &str) -> String {
         "java" => "JDK".into(),
         "rust" => "Rust".into(),
         "php" => "PHP".into(),
+        "ruby" => "Ruby".into(),
+        "zig" => "Zig".into(),
+        "deno" => "Deno".into(),
+        "bun" => "Bun".into(),
         other => other.into(),
     }
 }
