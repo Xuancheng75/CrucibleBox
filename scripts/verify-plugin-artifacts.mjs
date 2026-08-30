@@ -54,6 +54,16 @@ for (const plugin of catalog) {
     .filter((entry) => !entry.isDirectory)
     .map((entry) => entry.entryName)
     .sort()
+
+  const unsafeEntry = zip.getEntries().find((entry) => {
+    const normalized = entry.entryName.replaceAll('\\', '/')
+    return normalized.split('/').includes('node_modules') || normalized.split('/').includes('.pnpm')
+  })
+  if (unsafeEntry) {
+    throw new Error(
+      `${plugin.id}: artifact must not contain development dependency tree ${unsafeEntry.entryName}`
+    )
+  }
   const expectedEntries = [...plugin.runtimeFiles].sort()
 
   if (JSON.stringify(actualEntries) !== JSON.stringify(expectedEntries)) {

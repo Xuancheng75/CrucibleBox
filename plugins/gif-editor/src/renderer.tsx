@@ -120,6 +120,8 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
   const [batchDelay, setBatchDelay] = useState(150)
   const [batchFrom, setBatchFrom] = useState(1)
   const [batchTo, setBatchTo] = useState(1)
+  const [selectedFrames, setSelectedFrames] = useState<Set<number>>(new Set())
+  const [frameSelectMode, setFrameSelectMode] = useState(false)
   const [thumbCache, setThumbCache] = useState<ThumbnailCache<ImageData>>(new Map())
   const [dragOver, setDragOver] = useState(false)
   const [residueReport, setResidueReport] = useState<ResidueReport | null>(null)
@@ -827,6 +829,13 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
       return { ...d, frames }
     })
     setCurrent((c) => Math.min(c, (doc.frames.length - 1) - 1))
+  }
+
+  const removeSelectedFrames = () => {
+    if (!doc || selectedFrames.size === 0 || selectedFrames.size >= doc.frames.length) return
+    commit((d) => ({ ...d, frames: d.frames.filter((_, index) => !selectedFrames.has(index)) }))
+    setSelectedFrames(new Set())
+    setCurrent((index) => Math.min(index, Math.max(0, doc.frames.length - selectedFrames.size - 1)))
   }
 
   const moveFrame = (dir: -1 | 1) => {
@@ -1927,6 +1936,10 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           <button className="ge-btn ge-btn-sm" onClick={removeFrame} disabled={!doc}>
             删除
           </button>
+          <button className={`ge-btn ge-btn-sm ${frameSelectMode ? 'ge-btn-active' : ''}`} onClick={() => { setFrameSelectMode((value) => !value); setSelectedFrames(new Set()) }} disabled={!doc}>
+            {frameSelectMode ? '退出多选' : '多选帧'}
+          </button>
+          {frameSelectMode && <button className="ge-btn ge-btn-sm" onClick={removeSelectedFrames} disabled={selectedFrames.size === 0 || selectedFrames.size >= (doc?.frames.length ?? 0)}>删除所选 ({selectedFrames.size})</button>}
           <button className="ge-btn ge-btn-sm" onClick={() => moveFrame(-1)} disabled={!doc || current === 0}>
             ◀ 左移
           </button>
@@ -1972,7 +1985,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
         </div>
         <div className="ge-thumbs">
           {doc?.frames.map((f, i) => (
-            <div key={f.id} className={`ge-thumb ${i === current ? 'ge-thumb-active' : ''}`} onClick={() => { stopPlay(); setCurrent(i); setLassoMask(null); setLassoPoints([]); setLassoPreview(null); setLayerSession(null); setActiveLayerId(null) }}>
+            <div key={f.id} className={`ge-thumb ${i === current ? 'ge-thumb-active' : ''} ${selectedFrames.has(i) ? 'ge-thumb-selected' : ''}`} onClick={() => { stopPlay(); if (frameSelectMode) { setSelectedFrames((previous) => { const next = new Set(previous); if (next.has(i)) next.delete(i); else next.add(i); return next }) } else { setCurrent(i); setLassoMask(null); setLassoPoints([]); setLassoPreview(null); setLayerSession(null); setActiveLayerId(null) } }}>
               <div className="ge-thumb-img-wrap">
                 <img src={thumbCache.get(f.id)?.url} alt={`帧 ${i + 1}`} className="ge-thumb-img" />
                 <span className="ge-thumb-index">{i + 1}</span>

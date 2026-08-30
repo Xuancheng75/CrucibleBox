@@ -121,8 +121,8 @@ describe('Preset themes', () => {
     expect(typeof light.fontFamily).toBe('string')
   })
 
-  it('keeps primary text readable in all six presets', () => {
-    expect(PRESET_THEMES).toHaveLength(6)
+  it('keeps primary text readable in every preset', () => {
+    expect(PRESET_THEMES.length).toBeGreaterThanOrEqual(6)
     for (const theme of PRESET_THEMES) {
       expect(
         contrastRatio(theme.tokens.colorText, theme.tokens.colorBgContainer)

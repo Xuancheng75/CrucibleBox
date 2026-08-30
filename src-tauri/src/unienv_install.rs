@@ -859,7 +859,7 @@ fn install_from_installer(
             let mut full_args: Vec<String> = vec![
                 "-y".into(),
                 "--default-toolchain".into(),
-                "stable-x86_64-pc-windows-msvc".into(),
+                format!("{version}-x86_64-pc-windows-msvc"),
                 "--no-modify-path".into(),
             ];
             full_args.extend(args.clone());

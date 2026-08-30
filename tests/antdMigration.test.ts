@@ -49,8 +49,8 @@ describe('Ant Design 6 migration boundary', () => {
     }
   })
 
-  it('keeps a complete six-theme by six-plugin visual contract matrix', () => {
-    expect(PRESET_THEMES).toHaveLength(6)
+  it('keeps a complete theme by plugin visual contract matrix', () => {
+    expect(PRESET_THEMES.length).toBeGreaterThanOrEqual(6)
     for (const plugin of productionPlugins) {
       const manifest = JSON.parse(
         readFileSync(join(projectRoot, 'plugins', plugin, 'plugin.json'), 'utf8')

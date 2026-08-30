@@ -121,6 +121,38 @@ export function createNeonDistrictTokens(): ThemeTokens {
   }
 }
 
+function createEditorialTokens(): ThemeTokens {
+  return {
+    ...createLightTokens('#0f766e', '#14b8a6', '#ccfbf1'),
+    colorBg: '#f4f7f6',
+    colorBgLayout: '#e9f0ee',
+    colorBgContainer: '#fffdf8',
+    colorBgElevated: '#ffffff',
+    colorText: '#173b3a',
+    colorTextSecondary: '#52706d',
+    colorBorder: '#c8dad5',
+    colorBorderSecondary: '#dce9e5',
+    borderRadius: 4,
+    fontFamily: "Georgia, 'Noto Serif SC', serif"
+  }
+}
+
+function createTerminalTokens(): ThemeTokens {
+  return {
+    ...createDarkTokens('#a3e635', '#bef264', '#1a2e05'),
+    colorBg: '#080b08',
+    colorBgLayout: '#0d120d',
+    colorBgContainer: '#111a11',
+    colorBgElevated: '#182418',
+    colorText: '#e7f7e7',
+    colorTextSecondary: '#93b493',
+    colorBorder: '#294229',
+    colorBorderSecondary: '#1d301d',
+    borderRadius: 2,
+    fontFamily: "'Cascadia Code', Consolas, monospace"
+  }
+}
+
 export const PRESET_THEMES: ToolboxTheme[] = [
   {
     id: 'light',
@@ -205,6 +237,18 @@ export const PRESET_THEMES: ToolboxTheme[] = [
     name: '极光夜色',
     mode: 'dark',
     tokens: createDarkTokens('#14b8a6', '#2dd4bf', '#0c2928')
+  },
+  {
+    id: 'editorial-paper',
+    name: '纸张编辑',
+    mode: 'light',
+    tokens: createEditorialTokens()
+  },
+  {
+    id: 'terminal-green',
+    name: '终端绿',
+    mode: 'dark',
+    tokens: createTerminalTokens()
   }
 ]
 

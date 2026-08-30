@@ -32,7 +32,10 @@ export function isTransientUpdateError(error: unknown): boolean {
     'connection refused',
     'failed to connect',
     'dns',
-    'fetch failed'
+    'fetch failed',
+    'error decoding response body',
+    'decoding response body',
+    'body decode'
   ].some((marker) => message.includes(marker))
 }
 
@@ -69,6 +72,30 @@ export async function retryUpdateCheck<T>(
   }
 
   throw lastError ?? new Error('更新检查失败')
+}
+
+/**
+ * The updater stream can be interrupted by a proxy or a transient GitHub
+ * edge error.  The native updater does not expose byte-range resume, so a
+ * retry restarts the bounded download and lets the signed archive be checked
+ * again from the beginning.
+ */
+export async function retryUpdateDownload<T>(
+  operation: (attempt: number) => Promise<T>,
+  { timeoutMs, maxAttempts = 3, retryDelayMs = 1_200 }: UpdateRetryOptions
+): Promise<T> {
+  const attempts = Math.max(1, Math.floor(maxAttempts))
+  let lastError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await withUpdateTimeout(() => operation(attempt), timeoutMs)
+    } catch (error) {
+      lastError = error
+      if (attempt >= attempts || !isTransientUpdateError(error)) throw error
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs * attempt))
+    }
+  }
+  throw lastError ?? new Error('更新下载失败')
 }
 
 export function formatUpdateError(error: unknown): string {

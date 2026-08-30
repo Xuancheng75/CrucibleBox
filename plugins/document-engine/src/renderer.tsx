@@ -245,6 +245,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [chunkError, setChunkError] = useState<string | null>(null)
   const [chunkBusy, setChunkBusy] = useState(false)
   const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic'>('hybrid')
+  const [chunkOutputDirectory, setChunkOutputDirectory] = useState('')
   const [convertPath, setConvertPath] = useState('')
   const [convertTarget, setConvertTarget] = useState('md')
   const [convertOutput, setConvertOutput] = useState('')
@@ -691,7 +692,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setChunkProgress(null)
     setChunkTask(null)
     try {
-      const accepted = await startChunk(send, path, { strategy: chunkStrategy })
+      const accepted = await startChunk(send, path, {
+        strategy: chunkStrategy,
+        outputDirectory: chunkOutputDirectory.trim() || undefined
+      })
       setChunkTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
@@ -709,7 +713,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setChunkBusy(false)
     }
-  }, [api, chunkPath, chunkStrategy, send])
+  }, [api, chunkPath, chunkOutputDirectory, chunkStrategy, send])
 
   const runConvert = useCallback(async () => {
     const path = convertPath.trim()
@@ -1658,6 +1662,45 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           <option value="structure">按结构边界</option>
           <option value="semantic">按语义/长度</option>
         </select>
+      </label>
+      <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+        输出文件夹
+        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+          <input
+            value={displayPath(chunkOutputDirectory)}
+            readOnly
+            title={chunkOutputDirectory || undefined}
+            placeholder="默认使用 Document Engine/output"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              boxSizing: 'border-box',
+              padding: '9px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd
+            }}
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              const [path] = await selectPaths({ type: 'folder' })
+              if (path) setChunkOutputDirectory(path)
+            }}
+            style={{
+              padding: '6px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 5,
+              background: COLORS.bgWhite,
+              whiteSpace: 'nowrap'
+            }}
+          >
+            选择文件夹
+          </button>
+        </div>
+        <span style={{ display: 'block', marginTop: 4, color: COLORS.textTertiary, fontSize: FONT.sizeSm }}>
+          切分结果会写入所选文件夹，并在任务结果中显示完整路径。
+        </span>
       </label>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button

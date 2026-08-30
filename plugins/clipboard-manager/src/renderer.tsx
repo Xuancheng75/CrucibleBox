@@ -111,6 +111,7 @@ const s: Record<string, CSSProperties> = {
 export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
   const [items, setItems] = useState<ClipItem[]>([])
   const [search, setSearch] = useState('')
+  const [pinnedOnly, setPinnedOnly] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async () => {
@@ -128,7 +129,7 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
   }, [refresh])
 
   const filtered = items.filter((item) =>
-    item.text.toLowerCase().includes(search.toLowerCase())
+    item.text.toLowerCase().includes(search.toLowerCase()) && (!pinnedOnly || item.pinned)
   )
 
   const pinned = filtered.filter((i) => i.pinned)
@@ -176,6 +177,9 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
           onChange={(e) => setSearch(e.target.value)}
         />
         <button style={s.btnDanger} onClick={handleClear}>清空</button>
+        <button style={s.iconBtn} onClick={() => setPinnedOnly((value) => !value)}>
+          {pinnedOnly ? '显示全部' : '仅置顶'}
+        </button>
       </div>
 
       {filtered.length === 0 && (

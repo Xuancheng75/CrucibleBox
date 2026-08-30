@@ -14,7 +14,7 @@ import {
 import { SettingOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { check as checkUpdate, Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { tauriApi } from '../api/tauriApi'
-import { formatUpdateError, retryUpdateCheck } from '../utils/update-check'
+import { formatUpdateError, retryUpdateCheck, retryUpdateDownload } from '../utils/update-check'
 
 const { Title, Text } = Typography
 
@@ -166,22 +166,40 @@ export default function Settings() {
       message: null
     }))
     try {
-      let contentLength = 0
-      let downloaded = 0
-      await update.download(
-        (event: DownloadEvent) => {
-          if (event.event === 'Started') {
-            contentLength = event.data.contentLength ?? 0
-          } else if (event.event === 'Progress') {
-            downloaded += event.data.chunkLength
-            const percent =
-              contentLength > 0
-                ? Math.min(100, Math.round((downloaded / contentLength) * 100))
-                : null
-            setUpdateState((current) => ({ ...current, progressPercent: percent }))
-          }
+      await retryUpdateDownload(
+        async (attempt) => {
+          let contentLength = 0
+          let downloaded = 0
+          setUpdateState((current) => ({
+            ...current,
+            progressPercent: attempt === 1 ? 0 : null,
+            message: attempt === 1 ? null : `网络抖动，正在重试下载（第 ${attempt} 次）…`
+          }))
+          await update.download(
+            (event: DownloadEvent) => {
+              if (event.event === 'Started') {
+                contentLength = event.data.contentLength ?? 0
+              } else if (event.event === 'Progress') {
+                downloaded += event.data.chunkLength
+                const percent =
+                  contentLength > 0
+                    ? Math.min(100, Math.round((downloaded / contentLength) * 100))
+                    : null
+                setUpdateState((current) => ({ ...current, progressPercent: percent }))
+              }
+            },
+            {
+              timeout: UPDATE_DOWNLOAD_TIMEOUT_MS,
+              headers: {
+                Accept: 'application/octet-stream',
+                // Avoid content-encoding transformations that have caused
+                // response stream decoding failures on some domestic proxies.
+                'Accept-Encoding': 'identity'
+              }
+            }
+          )
         },
-        { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS }
+        { timeoutMs: UPDATE_DOWNLOAD_TIMEOUT_MS, maxAttempts: 3, retryDelayMs: 1_200 }
       )
       setUpdateState((current) => ({
         ...current,

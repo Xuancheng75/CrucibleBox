@@ -1057,7 +1057,16 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 );
             }
             let chunk_cfg = load_config(db, plugin_id);
-            let output_directory = chunk_cfg.output_directory.clone();
+            // A chunk run may override the configured destination.  This lets
+            // the renderer offer a folder picker while retaining the stable
+            // plugin default for API callers that do not provide one.
+            let output_directory = options
+                .as_ref()
+                .and_then(|value| value.get("outputDirectory"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| chunk_cfg.output_directory.clone());
             let task_id = match tasks().start(
                 RESOURCE_CHUNK,
                 Box::new(move |ctx| {

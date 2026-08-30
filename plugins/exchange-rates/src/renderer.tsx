@@ -126,6 +126,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
   const [rates, setRates] = useState<Record<string, number> | null>(null)
   const [updatedAt, setUpdatedAt] = useState(0)
   const [cached, setCached] = useState(false)
+  const [provider, setProvider] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -138,7 +139,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
     setLoading(true)
     setError('')
     const res = await api.sendToBackend({ type: 'getRates' }) as {
-      rates?: Record<string, number>; updatedAt?: number; cached?: boolean; error?: string
+      rates?: Record<string, number>; updatedAt?: number; cached?: boolean; provider?: string; error?: string
     }
     if (res.error) {
       setError(res.error)
@@ -146,6 +147,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
       setRates(res.rates)
       setUpdatedAt(res.updatedAt || 0)
       setCached(res.cached || false)
+      setProvider(res.provider || '')
     }
     setLoading(false)
   }, [api])
@@ -171,7 +173,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
     setLoading(true)
     setError('')
     const res = await api.sendToBackend({ type: 'refresh' }) as {
-      rates?: Record<string, number>; updatedAt?: number; error?: string
+      rates?: Record<string, number>; updatedAt?: number; provider?: string; error?: string
     }
     if (res.error) {
       setError(res.error)
@@ -179,6 +181,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
       setRates(res.rates)
       setUpdatedAt(res.updatedAt || 0)
       setCached(false)
+      setProvider(res.provider || '')
     }
     setLoading(false)
   }
@@ -256,7 +259,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
             </div>
             <div style={s.meta}>
               更新时间: {updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : '未知'}
-              {cached && ' (缓存)'}
+              {cached && ' · 缓存'}{provider && ` · ${provider}`}
             </div>
           </>
         )}

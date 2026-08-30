@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox-plugin-diary",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "private": true,
   "description": "Diary plugin for OpenBox",
   "main": "dist/main.js",

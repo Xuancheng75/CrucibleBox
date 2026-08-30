@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PluginRenderProps } from 'cruciblebox-plugin-api'
-import { rollDice } from './random.js'
+import { parseDiceNotation, rollDice } from './random.js'
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number(value)
@@ -20,19 +20,32 @@ export default function DiceRollerPlugin({ config }: PluginRenderProps) {
   const defaultSides = clampNumber(config.defaultSides, 2, 100, 6)
   const [count, setCount] = useState(2)
   const [sides, setSides] = useState(defaultSides)
+  const [notation, setNotation] = useState('2d6')
+  const [notationError, setNotationError] = useState<string | null>(null)
   const [result, setResult] = useState<number[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
 
   const total = result.reduce((sum, value) => sum + value, 0)
 
   const handleRoll = () => {
-    const next = rollDice(count, sides)
+    let parsed = { count, sides, modifier: 0 }
+    try {
+      parsed = parseDiceNotation(notation)
+      setCount(parsed.count)
+      setSides(parsed.sides)
+      setNotationError(null)
+    } catch (error) {
+      setNotationError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    const next = rollDice(parsed.count, parsed.sides)
+    if (parsed.modifier !== 0) next.push(parsed.modifier)
     setResult(next)
     setHistory((prev) =>
       [
         {
           id: Date.now(),
-          label: `${count}d${sides}`,
+          label: notation,
           values: next,
           total: next.reduce((sum, value) => sum + value, 0)
         },
@@ -97,6 +110,29 @@ export default function DiceRollerPlugin({ config }: PluginRenderProps) {
           />
         </label>
       </div>
+
+      <label
+        style={{
+          display: 'block',
+          marginBottom: 12,
+          fontSize: 13,
+          color: 'var(--ob-color-text-secondary, #52616b)'
+        }}
+      >
+        骰子表达式
+        <input
+          value={notation}
+          onChange={(event) => setNotation(event.target.value)}
+          placeholder="例如 2d6+1"
+          aria-label="骰子表达式"
+          style={{ ...numberInputStyle, marginTop: 6 }}
+        />
+      </label>
+      {notationError && (
+        <div style={{ color: 'var(--ob-color-error, #ff4d4f)', marginBottom: 10 }}>
+          {notationError}
+        </div>
+      )}
 
       <button
         onClick={handleRoll}

@@ -1,8 +1,8 @@
 {
   "name": "theme-manager",
-  "version": "0.1.14",
+  "version": "0.2.0",
   "displayName": "主题管理",
-  "description": "切换工具箱主题：内置多种明暗、护眼、极简和赛博风格，支持自定义颜色、预览回滚与导入导出。",
+  "description": "切换工具箱主题：内置亮色、清新绿、科幻面板、零号城区、纸张编辑和终端绿等多种结构化风格，支持自定义颜色、预览回滚与导入导出。",
   "author": "OpenBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",

@@ -67,10 +67,14 @@ const CATALOG: Record<ToolId, Record<string, ToolVersionLifecycle>> = {
     '25.0.4': current('Temurin 25 LTS 安全补丁。')
   },
   rust: {
-    stable: current('Rust stable 工具链；安装在 UniEnv 独立目录。', true)
+    stable: current('Rust stable 工具链；安装在 UniEnv 独立目录。', true),
+    beta: current('Rust beta 预览工具链，适合提前验证即将发布的特性。'),
+    nightly: current('Rust nightly 每日构建，适合实验性项目。')
   },
   php: {
-    '8.3.33': current('PHP 8.3 NTS x64 当前目录中已验证的版本。', true)
+    '8.2.30': current('PHP 8.2 NTS x64 维护分支。'),
+    '8.3.33': current('PHP 8.3 NTS x64 当前目录中已验证的版本。', true),
+    '8.4.16': current('PHP 8.4 NTS x64 当前稳定版本。')
   }
 }
 

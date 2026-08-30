@@ -631,6 +631,20 @@ fn copy_directory_contents(
         let source_path = entry.path();
         let dest_path = dest.join(entry.file_name());
         let meta = fs::symlink_metadata(&source_path).map_err(|e| e.to_string())?;
+        // Source-directory imports often point at a plugin checkout.  Package
+        // managers keep their dependency graph under node_modules/.pnpm and
+        // use junctions/symlinks there; those files are not runtime payload
+        // (the packager allowlist already excludes them).  Ignore these
+        // development-only trees while retaining the fail-closed policy for
+        // symlinks anywhere in the actual plugin payload.
+        if meta.is_dir()
+            && matches!(
+                entry.file_name().to_string_lossy().as_ref(),
+                "node_modules" | ".pnpm" | ".git" | "target"
+            )
+        {
+            continue;
+        }
         if meta.file_type().is_symlink() {
             return Err(format!(
                 "Plugin directory contains a symbolic link: {}",
@@ -1030,6 +1044,27 @@ mod tests {
         let err = txn.stage().unwrap_err();
         assert!(err.contains("symbolic link"));
         assert!(!txn.stage_dir().exists());
+    }
+
+    #[test]
+    fn stage_ignores_dependency_symlink_trees() {
+        let root = temp_root("stage-node-modules");
+        let plugins = root.join("plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        let source = make_source(&root);
+        let dependencies = source.join("node_modules").join(".pnpm");
+        fs::create_dir_all(&dependencies).unwrap();
+        let link = dependencies.join("linked-package");
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_dir(&source, &link).is_ok();
+        #[cfg(not(windows))]
+        let created = std::os::unix::fs::symlink(&source, &link).is_ok();
+        if !created {
+            return;
+        }
+        let mut txn = DirectoryTransaction::new(opts(&plugins, "demo", &source, false)).unwrap();
+        txn.stage().unwrap();
+        assert!(!txn.stage_dir().join("node_modules").exists());
     }
 
     #[test]

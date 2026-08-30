@@ -1,6 +1,6 @@
 {
   "name": "unienv",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "UniEnv - 一键式开发环境配置工具",
   "main": "dist/main.js",

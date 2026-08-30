@@ -377,8 +377,8 @@ fn supported_versions_raw() -> Value {
         "git": ["2.43.0", "2.44.0", "2.45.2", "2.46.0", "2.54.0"],
         "go": ["1.21.6", "1.22.4", "1.23.0", "1.26.5"],
         "java": ["17.0.11", "17.0.12", "17.0.20", "21.0.3", "21.0.5", "21.0.12", "22.0.1", "25.0.4"],
-        "rust": ["stable"],
-        "php": ["8.3.33"]
+        "rust": ["stable", "beta", "nightly"],
+        "php": ["8.2.30", "8.3.33", "8.4.16"]
     })
 }
 
@@ -389,8 +389,8 @@ fn tool_meta() -> Value {
         { "id": "git", "displayName": "Git", "icon": "\u{1F527}", "description": "分布式版本控制" },
         { "id": "go", "displayName": "Go", "icon": "\u{1F4C0}", "description": "Go 编程语言工具链" },
         { "id": "java", "displayName": "Java (JDK)", "icon": "\u{2615}\u{FE0F}", "description": "Java 开发工具包 (Temurin)" },
-        { "id": "rust", "displayName": "Rust", "icon": "\u{1F980}", "description": "Rust 工具链（rustup，stable 通道）" },
-        { "id": "php", "displayName": "PHP", "icon": "\u{1F418}", "description": "PHP 运行时（NTS x64）" }
+        { "id": "rust", "displayName": "Rust", "icon": "\u{1F980}", "description": "Rust 工具链（stable / beta / nightly 通道）" },
+        { "id": "php", "displayName": "PHP", "icon": "\u{1F418}", "description": "PHP 运行时（8.2 / 8.3 / 8.4 NTS x64）" }
     ])
 }
 

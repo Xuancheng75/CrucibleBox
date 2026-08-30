@@ -135,6 +135,29 @@ function JsonTab() {
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+
+  const runQuery = () => {
+    try {
+      const parsed: unknown = JSON.parse(input)
+      const value = query
+        .trim()
+        .replace(/^\$\.?/, '')
+        .split('.')
+        .filter(Boolean)
+        .reduce<unknown>((current, key) => {
+          if (current && typeof current === 'object' && key in current) {
+            return (current as Record<string, unknown>)[key]
+          }
+          throw new Error(`未找到路径: ${key}`)
+        }, parsed)
+      setOutput(JSON.stringify(value, null, 2))
+      setError('')
+    } catch (e) {
+      setError((e as Error).message)
+      setOutput('')
+    }
+  }
 
   const format = () => {
     try {
@@ -179,6 +202,11 @@ function JsonTab() {
         <button style={s.btn} onClick={format}>格式化</button>
         <button style={s.btn} onClick={minify}>压缩</button>
         <button style={s.btnSecondary} onClick={validate}>校验</button>
+      </div>
+      <label style={s.label}>JSONPath 查询（支持 $.user.name 这类点路径）</label>
+      <div style={{ ...s.row, alignItems: 'center' }}>
+        <input style={s.input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="$.data.items" />
+        <button style={s.btnSecondary} onClick={runQuery}>查询</button>
       </div>
       {error && <div style={s.error}>{error}</div>}
       {output && <div style={s.output}>{output}</div>}
