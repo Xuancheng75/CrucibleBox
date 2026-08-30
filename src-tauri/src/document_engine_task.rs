@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const RESOURCE_OCR: &str = "ocr";
 pub const RESOURCE_PARSE: &str = "parse";
 pub const RESOURCE_CHUNK: &str = "chunk";
+pub const RESOURCE_SPLIT: &str = "split";
 pub const RESOURCE_CONVERT: &str = "convert";
 pub const RESOURCE_BATCH: &str = "batch";
 const MAX_RETAINED_TASKS: usize = 100;
@@ -428,6 +429,13 @@ fn compact_result(result: &Value) -> Value {
                 "count",
                 "target",
                 "outputPath",
+                "outputDirectory",
+                "outputs",
+                "sourcePath",
+                "pageCount",
+                "pagesPerFile",
+                "fileCount",
+                "files",
                 "bytes",
                 "message",
             ] {

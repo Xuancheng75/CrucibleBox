@@ -14,7 +14,7 @@
 use crate::db::Db;
 use crate::document_engine_task::{
     TaskContext, TaskManager, RESOURCE_BATCH, RESOURCE_CHUNK, RESOURCE_CONVERT, RESOURCE_OCR,
-    RESOURCE_PARSE,
+    RESOURCE_PARSE, RESOURCE_SPLIT,
 };
 use crate::ocr_worker::{OcrWorkerManager, OcrWorkerRequest};
 use serde_json::{json, Value};
@@ -412,6 +412,46 @@ fn str_field<'a>(request: &'a Value, key: &str, max_len: usize) -> Result<Option
         }
         Some(_) => Err(err("invalid-value", format!("{key} must be a string"))),
     }
+}
+
+fn document_stem(path: &str) -> String {
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document");
+    let mut safe = stem
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    while safe.ends_with('.') || safe.ends_with(' ') {
+        safe.pop();
+    }
+    if safe.trim().is_empty() {
+        "document".into()
+    } else {
+        safe
+    }
+}
+
+fn export_parsed_result(
+    mut result: Value,
+    path: &str,
+    output_directory: &Path,
+) -> Result<Value, String> {
+    let bundle = crate::document_converter::export_document_bundle(
+        result
+            .get("document")
+            .ok_or_else(|| "解析器未返回 Document".to_string())?,
+        output_directory,
+        &document_stem(path),
+    )?;
+    result["outputs"] = bundle;
+    result["outputDirectory"] = json!(output_directory.to_string_lossy());
+    Ok(result)
 }
 
 fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
@@ -1005,7 +1045,17 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     "解析器支持 PDF/TXT/Markdown/HTML/DOCX/PPTX/XLSX".into(),
                 );
             }
+            let parse_options = request.get("options").cloned().unwrap_or(Value::Null);
+            if !parse_options.is_null() && !parse_options.is_object() {
+                return err("invalid-value", "options must be an object".into());
+            }
             let parse_cfg = load_config(db, plugin_id);
+            let parse_output_directory = parse_options
+                .get("outputDirectory")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&parse_cfg.output_directory));
             let parse_manager = worker_manager().cloned();
             let parse_plugin_id = plugin_id.to_string();
             let task_id = match tasks().start(
@@ -1024,6 +1074,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         PathBuf::from(&parse_cfg.cache_directory).as_path(),
                         &cache_key,
                     ) {
+                        let cached = export_parsed_result(cached, &path, &parse_output_directory)?;
                         ctx.update_progress(
                             "cache",
                             100,
@@ -1048,6 +1099,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         )?;
                     }
                     ctx.check_cancelled()?;
+                    result = export_parsed_result(result, &path, &parse_output_directory)?;
                     let page_count = result["document"]["metadata"]["pageCount"]
                         .as_u64()
                         .unwrap_or(0);
@@ -1076,7 +1128,73 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             remember_retry(&task_id, request);
             json!({ "taskId": task_id, "status": "queued" })
         }
-        // ---- Phase 7：统一模型切分 ----
+        // ---- Phase 7：PDF 物理拆分 ----
+        "document.pdf.split" | "document.split" => {
+            let path = match str_field(request, "path", 32 * 1024) {
+                Ok(Some(path)) => path.to_string(),
+                Ok(None) => return err("invalid-value", "missing field: path".into()),
+                Err(error) => return error,
+            };
+            if !Path::new(&path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
+            {
+                return err("unsupported-format", "PDF 拆分只支持 .pdf 文件".into());
+            }
+            let options = request.get("options").cloned().unwrap_or(Value::Null);
+            if !options.is_null() && !options.is_object() {
+                return err("invalid-value", "options must be an object".into());
+            }
+            let cfg = load_config(db, plugin_id);
+            let output_directory = options
+                .get("outputDirectory")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(&cfg.output_directory));
+            let pages_per_file = options
+                .get("pagesPerFile")
+                .and_then(Value::as_u64)
+                .unwrap_or(50) as usize;
+            if !(1..=crate::pdf_parser::MAX_PDF_PAGES).contains(&pages_per_file) {
+                return err(
+                    "invalid-value",
+                    format!(
+                        "pagesPerFile 必须在 1..={} 之间",
+                        crate::pdf_parser::MAX_PDF_PAGES
+                    ),
+                );
+            }
+            let task_id = match tasks().start(
+                RESOURCE_SPLIT,
+                Box::new(move |ctx| {
+                    ctx.update_progress("split", 5, "读取 PDF 页面", None);
+                    let result = crate::pdf_parser::split_pdf_file(
+                        &path,
+                        &output_directory,
+                        pages_per_file,
+                    )?;
+                    ctx.check_cancelled()?;
+                    ctx.update_progress(
+                        "split",
+                        100,
+                        "PDF 拆分完成",
+                        Some(json!({
+                            "pageCount": result["pageCount"],
+                            "fileCount": result["fileCount"]
+                        })),
+                    );
+                    Ok(result)
+                }),
+            ) {
+                Ok(task_id) => task_id,
+                Err(message) => return err("task-busy", message),
+            };
+            remember_retry(&task_id, request);
+            json!({ "taskId": task_id, "status": "queued" })
+        }
+        // ---- Phase 8：统一模型切分 ----
         "document.chunk" => {
             let options = request.get("options").cloned();
             let document = request.get("document").cloned();
@@ -1101,6 +1219,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 .filter(|value| !value.trim().is_empty())
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(|| chunk_cfg.output_directory.clone());
+            let chunk_manager = worker_manager().cloned();
+            let chunk_plugin_id = plugin_id.to_string();
             let task_id = match tasks().start(
                 RESOURCE_CHUNK,
                 Box::new(move |ctx| {
@@ -1109,10 +1229,30 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         document
                     } else {
                         let path = path.ok_or_else(|| "缺少文档路径".to_string())?;
-                        crate::document_parser::parse_file(&path)?["document"].clone()
+                        let mut parsed = crate::document_parser::parse_file(&path)?;
+                        if parsed["requiresOcr"].as_bool().unwrap_or(false) {
+                            let manager = chunk_manager
+                                .as_ref()
+                                .ok_or_else(|| "扫描 PDF 分块需要已配置 OCR Worker".to_string())?;
+                            parsed = merge_ocr_pages(
+                                parsed,
+                                &path,
+                                manager,
+                                ctx,
+                                &chunk_plugin_id,
+                                &chunk_cfg,
+                                None,
+                            )?;
+                        }
+                        parsed["document"].clone()
                     };
                     let mut result =
                         crate::document_chunker::chunk_document(&parsed, options.as_ref())?;
+                    if result["count"].as_u64() == Some(0) {
+                        return Err(
+                            "未提取到可分块文本；请确认 PDF 包含文本层或 OCR 已识别内容".into()
+                        );
+                    }
                     if !output_directory.trim().is_empty() {
                         let directory = PathBuf::from(&output_directory);
                         std::fs::create_dir_all(&directory)
@@ -1778,7 +1918,8 @@ mod tests {
             "message",
             Some(&json!({
                 "type": "document.parse",
-                "path": path.to_string_lossy().into_owned()
+                "path": path.to_string_lossy().into_owned(),
+                "options": { "outputDirectory": dir.to_string_lossy().into_owned() }
             })),
         )
         .unwrap();

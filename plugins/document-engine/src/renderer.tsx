@@ -22,6 +22,7 @@ import {
   startBatch,
   startChunk,
   startConvert,
+  startPdfSplit,
   startParse,
   startOcr,
   updateRemoteModel,
@@ -262,6 +263,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [parseResult, setParseResult] = useState<ParsedDocumentResult | null>(null)
   const [parseError, setParseError] = useState<string | null>(null)
   const [parseBusy, setParseBusy] = useState(false)
+  const [parseOutputDirectory, setParseOutputDirectory] = useState('')
   const [chunkPath, setChunkPath] = useState('')
   const [chunkTaskId, setChunkTaskId] = useState<string | null>(null)
   const [chunkTask, setChunkTask] = useState<DocumentTaskSnapshot | null>(null)
@@ -269,8 +271,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [chunkResult, setChunkResult] = useState<unknown>(null)
   const [chunkError, setChunkError] = useState<string | null>(null)
   const [chunkBusy, setChunkBusy] = useState(false)
-  const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic'>('hybrid')
+  const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic' | 'pdf'>('hybrid')
   const [chunkOutputDirectory, setChunkOutputDirectory] = useState('')
+  const [splitPagesPerFile, setSplitPagesPerFile] = useState(50)
   const [convertPath, setConvertPath] = useState('')
   const [convertTarget, setConvertTarget] = useState('md')
   const [convertOutput, setConvertOutput] = useState('')
@@ -676,7 +679,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setParseProgress(null)
     setParseTask(null)
     try {
-      const accepted = await startParse(send, path)
+      const accepted = await startParse(send, path, {
+        outputDirectory: parseOutputDirectory.trim() || undefined
+      })
       setParseTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
@@ -694,7 +699,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setParseBusy(false)
     }
-  }, [api, parsePath, send])
+  }, [api, parseOutputDirectory, parsePath, send])
 
   const stopParse = useCallback(async () => {
     if (!parseTaskId) return
@@ -717,17 +722,22 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setChunkProgress(null)
     setChunkTask(null)
     try {
-      const accepted = await startChunk(send, path, {
-        strategy: chunkStrategy,
-        outputDirectory: chunkOutputDirectory.trim() || undefined
-      })
+      const accepted = chunkStrategy === 'pdf'
+        ? await startPdfSplit(send, path, {
+            outputDirectory: chunkOutputDirectory.trim() || undefined,
+            pagesPerFile: splitPagesPerFile
+          })
+        : await startChunk(send, path, {
+            strategy: chunkStrategy,
+            outputDirectory: chunkOutputDirectory.trim() || undefined
+          })
       setChunkTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
           {
             id: accepted.taskId,
             name: path.split(/[\\/]/).pop() || path,
-            action: '切分',
+            action: chunkStrategy === 'pdf' ? 'PDF 拆分' : '文本分块',
             status: accepted.status
           },
           ...previous
@@ -738,7 +748,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setChunkBusy(false)
     }
-  }, [api, chunkPath, chunkOutputDirectory, chunkStrategy, send])
+  }, [api, chunkPath, chunkOutputDirectory, chunkStrategy, send, splitPagesPerFile])
 
   const runConvert = useCallback(async () => {
     const path = convertPath.trim()
@@ -1481,6 +1491,38 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         >
           选择 PDF
         </button>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <input
+            value={displayPath(parseOutputDirectory)}
+            readOnly
+            title={parseOutputDirectory || undefined}
+            placeholder="解析结果目录（默认使用 Document Engine/output）"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: '9px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd
+            }}
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              const [path] = await selectPaths({ type: 'folder' })
+              if (path) setParseOutputDirectory(path)
+            }}
+            style={{
+              padding: '6px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 5,
+              background: COLORS.bgWhite,
+              whiteSpace: 'nowrap'
+            }}
+          >
+            选择输出目录
+          </button>
+        </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <button
             type="button"
@@ -1620,6 +1662,26 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             </pre>
           </div>
         )}
+        {parseResult?.outputs?.files && parseResult.outputs.files.length > 0 && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              background: COLORS.successBg,
+              border: `1px solid ${COLORS.successBorder}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeSm
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>可直接交给 AI 的完整结果</div>
+            {parseResult.outputs.files.map((file) => (
+              <div key={file.path} style={{ marginTop: 4, wordBreak: 'break-all' }}>
+                {file.kind === 'markdown' ? 'Markdown' : file.kind === 'text' ? 'TXT' : 'Document JSON'}：
+                {file.path}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     )
   }
@@ -1629,7 +1691,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       {renderCurrentDocument()}
       <h3 style={{ margin: '0 0 8px', fontSize: FONT.sizeXl, fontWeight: 600 }}>文档切分</h3>
       <p style={{ margin: '0 0 14px', color: COLORS.textSecondary, fontSize: FONT.sizeMd }}>
-        按结构/语义边界生成 RAG 可用 Chunk。
+        可生成 AI/RAG 文本分块，也可以将 PDF 拆分为多个真实 PDF 文件。
       </p>
       <input
         value={displayPath(chunkPath)}
@@ -1686,8 +1748,30 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           <option value="chapters">按章节/标题切分</option>
           <option value="structure">按结构边界</option>
           <option value="semantic">按语义/长度</option>
+          <option value="pdf">拆分为多个 PDF 文件</option>
         </select>
       </label>
+      {chunkStrategy === 'pdf' && (
+        <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+          每个 PDF 页数
+          <input
+            type="number"
+            min={1}
+            max={2000}
+            value={splitPagesPerFile}
+            onChange={(event) => setSplitPagesPerFile(Math.max(1, Math.min(2000, Number(event.target.value) || 1)))}
+            style={{
+              display: 'block',
+              width: 140,
+              marginTop: 6,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd
+            }}
+          />
+        </label>
+      )}
       <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
         输出文件夹
         <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
@@ -1741,7 +1825,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             cursor: 'pointer'
           }}
         >
-          {chunkBusy ? '启动中…' : '开始切分'}
+          {chunkBusy ? '启动中…' : chunkStrategy === 'pdf' ? '开始拆分 PDF' : '开始文本分块'}
         </button>
         {(chunkTask?.status === 'running' || chunkTask?.status === 'queued') && (
           <button

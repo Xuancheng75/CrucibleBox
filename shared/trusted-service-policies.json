@@ -1,15 +1,22 @@
 {
   "unienv": {
     "name": "unienv",
-    "version": "0.8.0",
-    "digest": "bb8c236ba02ad6b04d7dd415a0a85966343206c7da97481df27d9148d53f4627",
-    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
+    "version": "0.9.0",
+    "digest": "48dc1466b1586d344245019f592266e0b96774cd2272db68ceb14460dbd06233",
+    "files": [
+      "dist/main.js",
+      "dist/renderer.js",
+      "plugin.json"
+    ]
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.2.1",
-    "permissions": ["trusted:document-engine", "dialog"],
-    "digest": "d21c812586a2bfeface445750bafcd9533153991f607981fce2db14492c62161",
+    "version": "0.2.2",
+    "permissions": [
+      "trusted:document-engine",
+      "dialog"
+    ],
+    "digest": "810b8710b531dc6aecf77a48f80af9771f2a158d443d21aaa66b7af2e5def266",
     "files": [
       "dist/main.js",
       "dist/renderer.js",

@@ -154,6 +154,12 @@ export interface ParsedDocumentResult {
   ocrPageNumbers: number[]
   warnings: Array<{ code?: string; message?: string }>
   document: ParsedDocument
+  outputDirectory?: string
+  outputs?: {
+    directory?: string
+    textCharacters?: number
+    files?: Array<{ kind: string; path: string; bytes: number }>
+  }
 }
 
 export interface ChunkResult {
@@ -161,6 +167,21 @@ export interface ChunkResult {
   strategy: string
   count: number
   chunks: Array<Record<string, unknown>>
+}
+
+export interface PdfSplitResult {
+  sourcePath: string
+  outputDirectory: string
+  pageCount: number
+  pagesPerFile: number
+  fileCount: number
+  files: Array<{
+    index: number
+    path: string
+    startPage: number
+    endPage: number
+    pageCount: number
+  }>
 }
 
 export interface ConversionResult {
@@ -331,14 +352,32 @@ export async function startOcr(
 
 export async function startParse(
   send: (message: unknown) => Promise<unknown>,
-  path: string
+  path: string,
+  options?: { outputDirectory?: string }
 ): Promise<TaskAccepted> {
-  const response = (await send({ type: 'document.parse', path })) as Partial<TaskAccepted> & {
+  const response = (await send(omitUndefined({ type: 'document.parse', path, options }))) as Partial<TaskAccepted> & {
     error?: string
     code?: string
   }
   if (typeof response.taskId !== 'string' || response.taskId.length === 0) {
     throw new Error(response.error ?? response.code ?? 'PDF 解析任务启动失败')
+  }
+  return { taskId: response.taskId, status: response.status ?? 'queued' }
+}
+
+export async function startPdfSplit(
+  send: (message: unknown) => Promise<unknown>,
+  path: string,
+  options?: { outputDirectory?: string; pagesPerFile?: number }
+): Promise<TaskAccepted> {
+  const response = (await send(
+    omitUndefined({ type: 'document.pdf.split', path, options })
+  )) as Partial<TaskAccepted> & {
+    error?: string
+    code?: string
+  }
+  if (typeof response.taskId !== 'string' || response.taskId.length === 0) {
+    throw new Error(response.error ?? response.code ?? 'PDF 拆分任务启动失败')
   }
   return { taskId: response.taskId, status: response.status ?? 'queued' }
 }

@@ -61,7 +61,13 @@ pub fn convert_document_with_cache(
         .filter(|path| !path.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| default_output_path(source_path, target));
-    if source_path == destination.to_string_lossy() {
+    if destination.exists() && destination.is_dir() {
+        return Err(format!(
+            "转换输出路径是文件夹，请选择一个文件名：{}",
+            destination.to_string_lossy()
+        ));
+    }
+    if same_path(source_path, &destination) {
         return Err("输出路径不能覆盖输入文件".into());
     }
     if let Some(cache_directory) = cache_directory {
@@ -77,8 +83,12 @@ pub fn convert_document_with_cache(
             }
         }
     }
-    if let Some(parent) = destination.parent() {
+    if let Some(parent) = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(parent).map_err(|error| format!("创建输出目录失败: {error}"))?;
+        ensure_writable_directory(parent)?;
     }
     let bytes = match target {
         "txt" => document_to_text(document).into_bytes(),
@@ -93,8 +103,16 @@ pub fn convert_document_with_cache(
     if bytes.len() > MAX_OUTPUT_BYTES {
         return Err("转换输出超过大小限制".into());
     }
-    let temp_path = destination.with_extension(format!("{}.tmp", target));
+    let temp_path = destination.with_extension(format!("{}.{}.tmp", target, unique_suffix()));
+    if temp_path.exists() {
+        std::fs::remove_file(&temp_path)
+            .map_err(|error| format!("清理上一次转换临时文件失败: {error}"))?;
+    }
     std::fs::write(&temp_path, &bytes).map_err(|error| format!("写入转换结果失败: {error}"))?;
+    if destination.exists() {
+        std::fs::remove_file(&destination)
+            .map_err(|error| format!("替换已有转换结果失败: {error}"))?;
+    }
     if let Err(error) = std::fs::rename(&temp_path, &destination) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(format!("提交转换结果失败: {error}"));
@@ -115,6 +133,148 @@ pub fn convert_document_with_cache(
         );
     }
     Ok(result)
+}
+
+/// Export the complete parsed document to bounded, AI-friendly files. The
+/// task RPC only returns metadata and a preview for large documents; callers
+/// should use these paths for the full content.
+pub fn export_document_bundle(
+    document: &Value,
+    output_directory: &Path,
+    stem: &str,
+) -> Result<Value, String> {
+    std::fs::create_dir_all(output_directory)
+        .map_err(|error| format!("创建解析输出目录失败: {error}"))?;
+    ensure_writable_directory(output_directory)?;
+    let safe_stem = sanitize_stem(stem);
+    let files = [
+        (
+            "markdown",
+            "md",
+            document_to_markdown(document).into_bytes(),
+        ),
+        ("text", "txt", document_to_text(document).into_bytes()),
+        (
+            "document",
+            "document.json",
+            serde_json::to_vec_pretty(document)
+                .map_err(|error| format!("序列化解析结果失败: {error}"))?,
+        ),
+    ];
+    let mut outputs = Vec::with_capacity(files.len());
+    for (kind, extension, bytes) in files {
+        if bytes.len() > MAX_OUTPUT_BYTES {
+            return Err(format!("{kind} 解析输出超过大小限制"));
+        }
+        let destination = output_directory.join(format!("{safe_stem}.{extension}"));
+        let output_path = write_atomic_bytes(&destination, &bytes)?;
+        outputs.push(json!({
+            "kind": kind,
+            "path": output_path.to_string_lossy(),
+            "bytes": bytes.len()
+        }));
+    }
+    Ok(json!({
+        "directory": output_directory.to_string_lossy(),
+        "files": outputs,
+        "textCharacters": document_to_text(document).chars().count()
+    }))
+}
+
+fn sanitize_stem(value: &str) -> String {
+    let trimmed = value.trim();
+    let mut result = trimmed
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    while result.ends_with('.') || result.ends_with(' ') {
+        result.pop();
+    }
+    if result.is_empty() {
+        "document".into()
+    } else {
+        result
+    }
+}
+
+fn same_path(source: &str, destination: &Path) -> bool {
+    let source_path = Path::new(source);
+    if source_path == destination {
+        return true;
+    }
+    match (source_path.canonicalize(), destination.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn ensure_writable_directory(directory: &Path) -> Result<(), String> {
+    let probe = directory.join(format!(
+        ".cruciblebox-write-test-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(probe);
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "输出目录不可写：{} ({error})",
+            directory.to_string_lossy()
+        )),
+    }
+}
+
+fn write_atomic_bytes(destination: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    if destination.exists() && destination.is_dir() {
+        return Err(format!(
+            "输出目标是文件夹：{}",
+            destination.to_string_lossy()
+        ));
+    }
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        std::fs::create_dir_all(parent).map_err(|error| format!("创建输出目录失败: {error}"))?;
+        ensure_writable_directory(parent)?;
+    }
+    let temp_path = destination.with_extension(format!(
+        "{}.{}.tmp",
+        destination
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("out"),
+        unique_suffix()
+    ));
+    if temp_path.exists() {
+        std::fs::remove_file(&temp_path)
+            .map_err(|error| format!("清理输出临时文件失败: {error}"))?;
+    }
+    std::fs::write(&temp_path, bytes).map_err(|error| format!("写入输出文件失败: {error}"))?;
+    if destination.exists() {
+        std::fs::remove_file(destination)
+            .map_err(|error| format!("替换已有输出文件失败: {error}"))?;
+    }
+    std::fs::rename(&temp_path, destination)
+        .map_err(|error| format!("提交输出文件失败: {error}"))?;
+    Ok(destination.to_path_buf())
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_else(|_| u128::from(std::process::id()))
 }
 
 fn normalize_target(target: &str) -> Result<&'static str, String> {

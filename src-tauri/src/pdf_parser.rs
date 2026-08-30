@@ -43,6 +43,91 @@ pub fn parse_file(path: &str) -> Result<Value, String> {
     parse_bytes(path, &bytes)
 }
 
+/// Split a PDF into real, independently readable PDF files. This is kept
+/// separate from the text chunker: callers asking for PDF splitting must get
+/// PDF artifacts, not a JSON RAG manifest.
+pub fn split_pdf_file(
+    path: &str,
+    output_directory: &Path,
+    pages_per_file: usize,
+) -> Result<Value, String> {
+    if !(1..=MAX_PDF_PAGES).contains(&pages_per_file) {
+        return Err(format!(
+            "每个 PDF 文件的页数必须在 1..={MAX_PDF_PAGES} 之间"
+        ));
+    }
+    let pdfium = bind_pdfium()?;
+    let source = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|error| format!("加载 PDF 失败: {error}"))?;
+    let page_count = source.pages().len() as usize;
+    if page_count == 0 {
+        return Err("PDF 不包含可拆分的页面".into());
+    }
+    if page_count > MAX_PDF_PAGES {
+        return Err(format!("PDF 页数超过 {MAX_PDF_PAGES} 页限制"));
+    }
+    std::fs::create_dir_all(output_directory)
+        .map_err(|error| format!("创建 PDF 拆分输出目录失败: {error}"))?;
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document")
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    let stem = if stem.trim().is_empty() {
+        "document"
+    } else {
+        stem.trim()
+    };
+    let mut files = Vec::new();
+    for start in (0..page_count).step_by(pages_per_file) {
+        let end = (start + pages_per_file).min(page_count) - 1;
+        let part_number = files.len() + 1;
+        let destination =
+            output_directory.join(format!("{stem}_{:03}-{:03}页.pdf", start + 1, end + 1));
+        let temporary = destination.with_extension(format!("pdf.{}.tmp", std::process::id()));
+        if temporary.exists() {
+            std::fs::remove_file(&temporary)
+                .map_err(|error| format!("清理 PDF 临时文件失败: {error}"))?;
+        }
+        let mut part = pdfium
+            .create_new_pdf()
+            .map_err(|error| format!("创建拆分 PDF 失败: {error}"))?;
+        part.pages_mut()
+            .copy_page_range_from_document(&source, (start as i32)..=(end as i32), 0)
+            .map_err(|error| format!("复制 PDF 页面 {}-{} 失败: {error}", start + 1, end + 1))?;
+        part.save_to_file(&temporary)
+            .map_err(|error| format!("写入拆分 PDF 失败: {error}"))?;
+        if destination.exists() {
+            std::fs::remove_file(&destination)
+                .map_err(|error| format!("替换已有拆分 PDF 失败: {error}"))?;
+        }
+        std::fs::rename(&temporary, &destination)
+            .map_err(|error| format!("提交拆分 PDF 失败: {error}"))?;
+        files.push(json!({
+            "index": part_number,
+            "path": destination.to_string_lossy(),
+            "startPage": start + 1,
+            "endPage": end + 1,
+            "pageCount": end - start + 1
+        }));
+    }
+    Ok(json!({
+        "sourcePath": path,
+        "outputDirectory": output_directory.to_string_lossy(),
+        "pageCount": page_count,
+        "pagesPerFile": pages_per_file,
+        "fileCount": files.len(),
+        "files": files
+    }))
+}
+
 /// Render one PDF page to a PNG for the OCR worker.
 ///
 /// The application ships `pdfium.dll` as a Tauri resource. Development

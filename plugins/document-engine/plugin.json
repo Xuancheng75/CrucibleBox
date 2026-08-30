@@ -1,8 +1,8 @@
 {
   "name": "document-engine",
-  "version": "0.3.0",
+  "version": "0.2.2",
   "displayName": "Document Engine",
-  "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的流式 OCR、解析、切分、转换、批量任务、结果缓存和模型管理",
+  "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的 OCR、解析结果导出、真实 PDF 拆分、AI/RAG 文本分块、格式转换、批量任务、缓存和模型管理",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
