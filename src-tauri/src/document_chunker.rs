@@ -21,6 +21,8 @@ enum Strategy {
     Structure,
     Semantic,
     Hybrid,
+    Pages,
+    Chapters,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +75,8 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
         "structure" => Strategy::Structure,
         "semantic" => Strategy::Semantic,
         "hybrid" => Strategy::Hybrid,
+        "pages" | "page" => Strategy::Pages,
+        "chapters" | "chapter" => Strategy::Chapters,
         other => return Err(format!("unsupported chunk strategy: {other}")),
     };
     let number = |name: &str, default: usize| {
@@ -151,13 +155,52 @@ fn build_chunks(
     options: ChunkOptions,
 ) -> Vec<Value> {
     let mut chunks = Vec::new();
+    if options.strategy == Strategy::Pages {
+        let mut page_blocks: Vec<&BlockInput> = Vec::new();
+        let mut current_page: Option<usize> = None;
+        let mut chunk_index = 0usize;
+        for block in blocks {
+            if current_page.is_some_and(|page| page != block.page) && !page_blocks.is_empty() {
+                push_chunk(
+                    &mut chunks,
+                    &mut chunk_index,
+                    document_id,
+                    source_file,
+                    source_path,
+                    &page_blocks,
+                    options,
+                );
+                page_blocks.clear();
+            }
+            current_page = Some(block.page);
+            page_blocks.push(block);
+        }
+        if !page_blocks.is_empty() {
+            push_chunk(
+                &mut chunks,
+                &mut chunk_index,
+                document_id,
+                source_file,
+                source_path,
+                &page_blocks,
+                options,
+            );
+        }
+        for (index, chunk) in chunks.iter_mut().enumerate() {
+            chunk["chunk_index"] = json!(index);
+            chunk["chunk_id"] = json!(format!("{document_id}-c{index}"));
+        }
+        return chunks;
+    }
     let mut current: Vec<&BlockInput> = Vec::new();
     let mut current_tokens = 0usize;
     let mut chunk_index = 0usize;
     for block in blocks {
         let block_tokens = estimate_tokens(&block.content);
-        let starts_structure = matches!(options.strategy, Strategy::Structure | Strategy::Hybrid)
-            && block.block_type == "heading";
+        let starts_structure = matches!(
+            options.strategy,
+            Strategy::Structure | Strategy::Hybrid | Strategy::Chapters
+        ) && block.block_type == "heading";
         // A proof is semantically owned by the immediately preceding theorem
         // (and a formula/definition block is likewise structural context).
         // Keep that pair together even when the proof heading would normally
@@ -330,6 +373,8 @@ impl Strategy {
             Self::Structure => "structure",
             Self::Semantic => "semantic",
             Self::Hybrid => "hybrid",
+            Self::Pages => "pages",
+            Self::Chapters => "chapters",
         }
     }
 }

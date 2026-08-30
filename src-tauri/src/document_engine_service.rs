@@ -1056,6 +1056,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     "document.chunk 需要 path 或 document".into(),
                 );
             }
+            let chunk_cfg = load_config(db, plugin_id);
+            let output_directory = chunk_cfg.output_directory.clone();
             let task_id = match tasks().start(
                 RESOURCE_CHUNK,
                 Box::new(move |ctx| {
@@ -1066,8 +1068,30 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         let path = path.ok_or_else(|| "缺少文档路径".to_string())?;
                         crate::document_parser::parse_file(&path)?["document"].clone()
                     };
-                    let result =
+                    let mut result =
                         crate::document_chunker::chunk_document(&parsed, options.as_ref())?;
+                    if !output_directory.trim().is_empty() {
+                        let directory = PathBuf::from(&output_directory);
+                        std::fs::create_dir_all(&directory)
+                            .map_err(|error| format!("创建切分输出目录失败: {error}"))
+                            .and_then(|_| {
+                                let output_path = directory
+                                    .join(format!("document-chunks-{}.json", ctx.task_id()));
+                                result["outputPath"] = json!(output_path.to_string_lossy());
+                                let bytes = serde_json::to_vec_pretty(&result)
+                                    .map_err(|error| format!("序列化切分结果失败: {error}"))?;
+                                std::fs::write(&output_path, bytes)
+                                    .map_err(|error| format!("写入切分结果失败: {error}"))?;
+                                Ok::<(), String>(())
+                            })
+                            .unwrap_or_else(|error| {
+                                // A read-only or unavailable output directory must not discard
+                                // an otherwise successful in-memory chunking task.  Keep the
+                                // chunks in the task/cache response and expose the reason so the
+                                // renderer can offer another directory.
+                                result["outputError"] = json!(error);
+                            });
+                    }
                     ctx.check_cancelled()?;
                     ctx.update_progress(
                         "chunk",
@@ -1412,28 +1436,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
         }
         "document.models.install" => {
             let cfg = load_config(db, plugin_id);
-            if let Some(url) = request.get("url").and_then(Value::as_str) {
-                let name = request
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .or_else(|| url.rsplit('/').next())
-                    .unwrap_or("model");
-                let expected = match request.get("sha256").and_then(Value::as_str) {
-                    Some(value) => value,
-                    None => return err("invalid-value", "远程模型必须提供 sha256".into()),
-                };
-                return match crate::document_engine_cache::install_remote(
-                    PathBuf::from(&cfg.model_directory).as_path(),
-                    url,
-                    name,
-                    expected,
-                    false,
-                ) {
-                    Ok(target) => {
-                        json!({ "success": true, "path": target.to_string_lossy(), "name": name, "source": "remote" })
-                    }
-                    Err(message) => err("model-install-failed", message),
-                };
+            if request.get("url").and_then(Value::as_str).is_some() {
+                return install_remote_model(&cfg, request, false);
             }
             let source = match str_field(request, "sourcePath", 32 * 1024) {
                 Ok(Some(path)) => PathBuf::from(path),
@@ -1461,34 +1465,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         "document.models.update" => {
-            let url = match str_field(request, "url", 32 * 1024) {
-                Ok(Some(url)) => url,
-                Ok(None) => return err("invalid-value", "missing field: url".into()),
-                Err(error) => return error,
-            };
-            let expected = match str_field(request, "sha256", 128) {
-                Ok(Some(value)) => value,
-                Ok(None) => return err("invalid-value", "missing field: sha256".into()),
-                Err(error) => return error,
-            };
-            let name = match str_field(request, "name", 256) {
-                Ok(Some(value)) => value.to_string(),
-                Ok(None) => return err("invalid-value", "missing field: name".into()),
-                Err(error) => return error,
-            };
             let cfg = load_config(db, plugin_id);
-            match crate::document_engine_cache::install_remote(
-                PathBuf::from(&cfg.model_directory).as_path(),
-                url,
-                &name,
-                expected,
-                true,
-            ) {
-                Ok(target) => {
-                    json!({ "success": true, "path": target.to_string_lossy(), "name": name, "source": "remote", "updated": true })
-                }
-                Err(message) => err("model-update-failed", message),
-            }
+            install_remote_model(&cfg, request, true)
         }
         "document.models.remove" => {
             let relative = match str_field(request, "path", 4096) {
@@ -1524,6 +1502,69 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         _ => err("unknown-type", format!("unknown message type: {msg_type}")),
+    }
+}
+
+fn install_remote_model(cfg: &DocumentEngineConfig, request: &Value, update: bool) -> Value {
+    let url = match str_field(request, "url", 32 * 1024) {
+        Ok(Some(url)) => url,
+        Ok(None) => return err("invalid-value", "missing field: url".into()),
+        Err(error) => return error,
+    };
+    let expected = match str_field(request, "sha256", 128) {
+        Ok(Some(value)) => value,
+        Ok(None) => return err("invalid-value", "远程模型必须提供 sha256".into()),
+        Err(error) => return error,
+    };
+    let name = match str_field(request, "name", 256) {
+        Ok(Some(value)) => value.to_string(),
+        Ok(None) => url.rsplit('/').next().unwrap_or("model").to_string(),
+        Err(error) => return error,
+    };
+    match crate::document_engine_cache::install_remote(
+        PathBuf::from(&cfg.model_directory).as_path(),
+        url,
+        &name,
+        expected,
+        update,
+    ) {
+        Ok(target) => json!({
+            "success": true,
+            "path": target.to_string_lossy(),
+            "name": name,
+            "source": "remote",
+            "updated": update
+        }),
+        Err(message) => err(
+            if update {
+                "model-update-failed"
+            } else {
+                "model-install-failed"
+            },
+            message,
+        ),
+    }
+}
+
+/// Read the short-lived configuration under the host DB mutex, then let the
+/// caller perform a remote model download after releasing that mutex.
+pub(crate) fn load_config_for_host(db: &Db, plugin_id: &str) -> DocumentEngineConfig {
+    load_config(db, plugin_id)
+}
+
+pub(crate) fn dispatch_remote_model(
+    config: &DocumentEngineConfig,
+    payload: &Value,
+) -> Result<Value, String> {
+    let request = payload
+        .as_object()
+        .map(|_| payload)
+        .ok_or_else(|| "message payload must be an object".to_string())?;
+    let msg_type = request.get("type").and_then(Value::as_str).unwrap_or("");
+    match msg_type {
+        "document.models.install" => Ok(install_remote_model(config, request, false)),
+        "document.models.update" => Ok(install_remote_model(config, request, true)),
+        _ => Err(format!("unsupported remote model operation: {msg_type}")),
     }
 }
 

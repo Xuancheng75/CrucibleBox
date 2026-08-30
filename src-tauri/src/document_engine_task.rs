@@ -15,6 +15,10 @@ pub const RESOURCE_CHUNK: &str = "chunk";
 pub const RESOURCE_CONVERT: &str = "convert";
 pub const RESOURCE_BATCH: &str = "batch";
 const MAX_RETAINED_TASKS: usize = 100;
+/// Keep task polling below the renderer RPC budget. Large documents remain
+/// available in the on-disk cache, while the task view receives a useful
+/// preview and byte/count metadata.
+const MAX_RESULT_PREVIEW_BYTES: usize = 192 * 1024;
 
 pub struct TaskContext {
     cancelled: Arc<AtomicBool>,
@@ -103,12 +107,16 @@ impl TaskRecord {
         if status != "queued" && status != "running" {
             return;
         }
+        let previous_percent = core.snapshot["progress"]["percent"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(100) as u32;
+        let percent_value = percent.clamp(0, 100).max(previous_percent);
         let mut progress = json!({
             "stage": stage,
-            "percent": percent.clamp(0, 100),
+            "percent": percent_value,
             "message": message,
         });
-        let percent_value = percent.clamp(0, 100);
         if let Some(started_at) = core.snapshot["startedAt"].as_u64() {
             let elapsed_ms = now_ms().saturating_sub(started_at);
             progress["elapsedMs"] = json!(elapsed_ms);
@@ -318,7 +326,7 @@ impl TaskManager {
         let inner = self.inner.lock().unwrap();
         inner.tasks.get(task_id).map(|r| {
             let core = r.core.lock().unwrap();
-            core.snapshot.clone()
+            compact_snapshot(&core.snapshot)
         })
     }
 
@@ -329,7 +337,7 @@ impl TaskManager {
             .values()
             .map(|r| {
                 let core = r.core.lock().unwrap();
-                core.snapshot.clone()
+                compact_snapshot(&core.snapshot)
             })
             .collect()
     }
@@ -362,6 +370,132 @@ impl TaskManager {
             let oldest = inner.terminal_order.remove(0);
             inner.tasks.remove(&oldest);
         }
+    }
+}
+
+/// Return a bounded task envelope. The full result is written to the
+/// Document Engine cache by each executor; transporting thousands of pages in
+/// every 500 ms poll would otherwise trip the renderer JSON budget.
+fn compact_snapshot(snapshot: &Value) -> Value {
+    let encoded = snapshot
+        .get("result")
+        .and_then(|result| serde_json::to_vec(result).ok());
+    let Some(encoded) = encoded else {
+        return snapshot.clone();
+    };
+    if encoded.len() <= MAX_RESULT_PREVIEW_BYTES {
+        return snapshot.clone();
+    }
+
+    let mut compact = snapshot.clone();
+    let result = snapshot.get("result").cloned().unwrap_or(Value::Null);
+    compact["resultBytes"] = json!(encoded.len());
+    compact["resultTruncated"] = json!(true);
+    compact["result"] = compact_result(&result);
+    compact
+}
+
+fn compact_result(result: &Value) -> Value {
+    match result {
+        Value::Object(object) => {
+            let mut out = serde_json::Map::new();
+            for key in [
+                "kind",
+                "type",
+                "route",
+                "requiresOcr",
+                "documentId",
+                "strategy",
+                "count",
+                "target",
+                "outputPath",
+                "bytes",
+                "message",
+            ] {
+                if let Some(value) = object.get(key) {
+                    out.insert(key.to_string(), value.clone());
+                }
+            }
+            if let Some(document) = object.get("document").and_then(Value::as_object) {
+                let mut doc = serde_json::Map::new();
+                for key in ["id", "source", "metadata", "structure"] {
+                    if let Some(value) = document.get(key) {
+                        doc.insert(key.to_string(), compact_nested(value, 16));
+                    }
+                }
+                if let Some(pages) = document.get("pages").and_then(Value::as_array) {
+                    doc.insert(
+                        "pages".into(),
+                        Value::Array(
+                            pages
+                                .iter()
+                                .take(3)
+                                .map(|page| compact_nested(page, 16))
+                                .collect(),
+                        ),
+                    );
+                    doc.insert("pagePreviewCount".into(), json!(pages.len().min(3)));
+                    doc.insert("pageTotal".into(), json!(pages.len()));
+                }
+                out.insert("document".into(), Value::Object(doc));
+            }
+            for key in ["warnings", "ocrPageNumbers"] {
+                if let Some(values) = object.get(key).and_then(Value::as_array) {
+                    out.insert(
+                        key.to_string(),
+                        Value::Array(values.iter().take(32).cloned().collect()),
+                    );
+                }
+            }
+            for key in ["chunks", "items", "blocks"] {
+                if let Some(values) = object.get(key).and_then(Value::as_array) {
+                    out.insert(
+                        key.to_string(),
+                        Value::Array(
+                            values
+                                .iter()
+                                .take(32)
+                                .map(|v| compact_nested(v, 16))
+                                .collect(),
+                        ),
+                    );
+                    out.insert(format!("{key}PreviewCount"), json!(values.len().min(32)));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .take(32)
+                .map(|v| compact_nested(v, 16))
+                .collect(),
+        ),
+        _ => result.clone(),
+    }
+}
+
+fn compact_nested(value: &Value, max_chars: usize) -> Value {
+    match value {
+        Value::String(text) if text.len() > max_chars => Value::String(format!(
+            "{}…",
+            text.chars().take(max_chars).collect::<String>()
+        )),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .take(32)
+                .map(|(key, value)| (key.clone(), compact_nested(value, max_chars)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .take(32)
+                .map(|value| compact_nested(value, max_chars))
+                .collect(),
+        ),
+        _ => value.clone(),
     }
 }
 

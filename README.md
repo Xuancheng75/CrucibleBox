@@ -12,7 +12,7 @@
 - **权限模型**：每位插件声明所需权限（网络、文件、数据库、剪贴板、通知、快捷键等），由宿主侧 `PermissionGuard` 逐调用门控；插件为可信代码，权限声明用于功能控制
 - **命令系统**：插件可注册全局命令，通过 `Cmd/Ctrl+Shift+P` 唤起
 - **全局快捷键**：插件可注册系统级快捷键（如 `Cmd/Ctrl+I` 唤起插件导入）
-- **主题系统**：内置亮色（默认）/深色/清新绿/海洋蓝/科幻面板/零号城区六套预设，运行时切换并下发 CSS 变量，插件可实时感知主题变化
+- **主题系统**：内置 14 套明暗、护眼、极简、暖色与赛博风格预设，运行时切换并下发 CSS 变量，插件可实时感知主题变化
 - **插件排序**：普通模式长按卡片约半秒拖动排序，或使用卡片操作区的上移/下移按钮（键盘可操作）；批量管理模式支持像手机多选应用一样拖动整组插件；顺序持久化于数据库 schema v3 `plugins.sort_order`，插件激活顺序跟随列表
 - **批量插件管理**：主页批量管理支持批量启用、批量禁用、批量删除和多选组拖拽，操作按插件串行执行并汇总失败项
 - **生命周期恢复**：导入、升级、启停、卸载和崩溃恢复按插件单飞，目录替换使用可恢复事务，避免频繁操作导致进程或会话残留
@@ -32,7 +32,7 @@
 ## 快速开始
 
 ```bash
-# Tauri 线（当前发布线 1.9.21）
+# Tauri 线（当前发布线 1.9.22）
 cd src-tauri && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 cd tauri-frontend && npm install && npm run build
 npm run build:frame              # 插件 frame runtime（out/plugin-frame/runtime.js）
@@ -117,7 +117,7 @@ browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题�
 - **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2
   downloadBootstrapper 兜底）+ tauri-plugin-updater（minisign 强制签名 JSON）+ cargo-cyclonedx
   Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版为 **v1.9.2**；当前发布版本与
-  验证基线为 **v1.9.21**（详见下方“当前验证基线”）。
+  验证基线为 **v1.9.22**（详见下方“当前验证基线”）。
 - 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
   宿主和 11 个正式插件可生成 CycloneDX SBOM。
 - 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息（进程内存探针已于 1.9.3 移除）。
@@ -145,7 +145,7 @@ updater JSON + plugin signatures + CycloneDX SBOMs + SHA-256 checksums + GitHub 
 attestation. Windows installers are currently unsigned and can display Unknown publisher or
 SmartScreen warnings.
 
-## 当前验证基线（1.9.21）
+## 当前验证基线（1.9.22）
 
 - Tauri 线：`cargo test --workspace --locked`、`cargo clippy --workspace --all-targets --locked -D warnings`、
   `cargo fmt --check`、`tauri-frontend` vite build；插件独立 `clean && build`（11/11）。
@@ -153,10 +153,10 @@ SmartScreen warnings.
   `npm run verify:tauri-version` 校验 Cargo、前端 package/lockfile 与发布制品；根目录
   `package.json` 的 `1.7.3` 仅属于冻结 Electron 遗留线。
 - 数据库 schema v3（rusqlite bundled WAL）；`%APPDATA%\cruciblebox` 数据路径（L3 已迁移）。
-- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.1.2，内置 CPU OCR 默认模型并支持镜像回退）、
+- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.2.0，支持最多 2000 页 PDF、流式任务预览、按页/章节切分、内置 CPU OCR 默认模型并支持镜像回退）、
   Diary、Dice Roller、GIF Editor、Theme Manager、Turntable、UniEnv、JSON/文本工具箱、
   剪贴板管理器、系统信息面板和实时汇率，共 11 个。
-- 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 崩溃 backoff+隔离 / PermissionGuard /
+- 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 按插件激活单飞 / 崩溃 backoff+隔离 / PermissionGuard /
   storage/log/db host 方法（e2e：真实 sidecar + gif-editor dist 全链路）。
 - Electron 冻结线测试（宿主 36 文件 263 项 + 六插件 199 项 + 供应链 16 项）作为参照保留。
 - 历史发布文档已归档至 `docs/history/`，记录的是当时状态。

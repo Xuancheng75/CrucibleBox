@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_PDF_PAGES: usize = 2000;
 const MAX_OBJECTS: usize = 100_000;
 const PDF_RENDER_WIDTH: i32 = 1800;
 
@@ -211,7 +212,19 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
     // expand, and keep a clear error only when both parsers reject the file.
     if page_objects.is_empty() {
         let fallback_count = count_page_markers(bytes).max(1);
+        if fallback_count > MAX_PDF_PAGES {
+            return Err(format!(
+                "PDF 页数超过上限（最多 {} 页，检测到 {} 页）",
+                MAX_PDF_PAGES, fallback_count
+            ));
+        }
         if let Some(page_count) = pdfium_page_count(path) {
+            if page_count > MAX_PDF_PAGES {
+                return Err(format!(
+                    "PDF 页数超过上限（最多 {} 页，检测到 {} 页）",
+                    MAX_PDF_PAGES, page_count
+                ));
+            }
             return Ok(fallback_document(
                 path,
                 bytes,
@@ -221,6 +234,14 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         }
         return Err(format!(
             "PDF page tree is unsupported (detected {fallback_count} page marker(s))"
+        ));
+    }
+
+    if page_objects.len() > MAX_PDF_PAGES {
+        return Err(format!(
+            "PDF 页数超过上限（最多 {} 页，检测到 {} 页）",
+            MAX_PDF_PAGES,
+            page_objects.len()
         ));
     }
 
@@ -917,6 +938,16 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn rejects_fallback_documents_over_page_limit() {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        for _ in 0..(MAX_PDF_PAGES + 1) {
+            pdf.extend_from_slice(b"/Type /Page\n");
+        }
+        let error = parse_bytes("input.pdf", &pdf).unwrap_err();
+        assert!(error.contains("页数超过上限"));
     }
 
     #[cfg(windows)]
