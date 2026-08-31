@@ -471,6 +471,27 @@ struct MarketplaceCatalogPlugin {
     url: String,
 }
 
+const MARKETPLACE_MAX_CATALOG_BYTES: u64 = 4 * 1024 * 1024;
+const MARKETPLACE_DOWNLOAD_ATTEMPTS: usize = 3;
+
+fn marketplace_agent(connect_secs: u64, read_secs: u64) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(connect_secs))
+        .timeout_read(std::time::Duration::from_secs(read_secs))
+        .build()
+}
+
+fn marketplace_catalog_urls() -> &'static [&'static str] {
+    if env!("CARGO_PKG_VERSION").contains("-beta.") || env!("CARGO_PKG_VERSION").contains("-rc.") {
+        &[
+            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-beta/plugins.json",
+            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json",
+        ]
+    } else {
+        &["https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json"]
+    }
+}
+
 /// Download a first-party plugin bundle from the signed release catalog.
 /// Installation still goes through plugin_install_preview/commit, so this
 /// command only materializes a digest-verified ZIP in a bounded temp folder.
@@ -487,21 +508,54 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
     {
         return Err("invalid plugin id".into());
     }
-    const CATALOG_URL: &str =
-        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json";
     const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
-    let response = ureq::get(CATALOG_URL)
-        .timeout(std::time::Duration::from_secs(15))
-        .call()
-        .map_err(|error| format!("读取官方插件目录失败: {error}"))?;
-    let mut catalog_text = String::new();
-    response
-        .into_reader()
-        .take(4 * 1024 * 1024)
-        .read_to_string(&mut catalog_text)
-        .map_err(|error| format!("读取官方插件目录失败: {error}"))?;
-    let catalog: MarketplaceCatalog = serde_json::from_str(&catalog_text)
-        .map_err(|error| format!("解析官方插件目录失败: {error}"))?;
+    let agent = marketplace_agent(15, 45);
+    let mut catalog: Option<MarketplaceCatalog> = None;
+    let mut catalog_error = String::from("未找到可用的官方插件目录");
+    for catalog_url in marketplace_catalog_urls() {
+        for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
+            let response = match agent
+                .get(catalog_url)
+                .set("Accept", "application/json")
+                .set(
+                    "User-Agent",
+                    concat!("CrucibleBox/", env!("CARGO_PKG_VERSION")),
+                )
+                .call()
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    catalog_error = format!("读取官方插件目录失败（第 {attempt} 次）：{error}");
+                    continue;
+                }
+            };
+            let mut catalog_text = String::new();
+            if let Err(error) = response
+                .into_reader()
+                .take(MARKETPLACE_MAX_CATALOG_BYTES + 1)
+                .read_to_string(&mut catalog_text)
+            {
+                catalog_error = format!("读取官方插件目录失败（第 {attempt} 次）：{error}");
+                continue;
+            }
+            if catalog_text.len() as u64 > MARKETPLACE_MAX_CATALOG_BYTES {
+                catalog_error = "官方插件目录超过安全大小限制".into();
+                continue;
+            }
+            match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
+                Ok(value) if value.schema_version == 1 => {
+                    catalog = Some(value);
+                    break;
+                }
+                Ok(_) => catalog_error = "官方插件目录版本不受支持".into(),
+                Err(error) => catalog_error = format!("解析官方插件目录失败：{error}"),
+            }
+        }
+        if catalog.is_some() {
+            break;
+        }
+    }
+    let catalog = catalog.ok_or(catalog_error)?;
     if catalog.schema_version != 1 {
         return Err("unsupported marketplace catalog schema".into());
     }
@@ -521,46 +575,92 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
     {
         return Err("官方目录包含不受信任的下载地址".into());
     }
-    let response = ureq::get(&plugin.url)
-        .timeout(std::time::Duration::from_secs(60))
-        .call()
-        .map_err(|error| format!("下载插件失败: {error}"))?;
-    if response
-        .header("Content-Length")
-        .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|size| size > plugin.size || size > MAX_PLUGIN_BYTES)
-    {
-        return Err("下载响应超过目录声明大小".into());
-    }
     let root = std::env::temp_dir().join("cruciblebox-marketplace");
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let target = root.join(&plugin.artifact);
     let partial = root.join(format!(".{}.part", plugin.artifact));
-    let mut reader = response.into_reader();
-    let mut file = std::fs::File::create(&partial).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut total = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
+    let mut last_download_error = String::from("下载插件失败");
+    for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
+        let response = match agent
+            .get(&plugin.url)
+            .set("Accept", "application/octet-stream")
+            .set(
+                "User-Agent",
+                concat!("CrucibleBox/", env!("CARGO_PKG_VERSION")),
+            )
+            .call()
+        {
+            Ok(response) => response,
+            Err(error) => {
+                last_download_error = format!("下载插件失败（第 {attempt} 次）：{error}");
+                continue;
+            }
+        };
+        if !response.get_url().starts_with("https://") {
+            last_download_error = "下载响应不是 HTTPS 地址".into();
+            continue;
         }
-        total += read as u64;
-        if total > plugin.size || total > MAX_PLUGIN_BYTES {
-            let _ = std::fs::remove_file(&partial);
-            return Err("下载插件超过目录声明大小".into());
+        if response
+            .header("Content-Length")
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some_and(|size| size > plugin.size || size > MAX_PLUGIN_BYTES)
+        {
+            last_download_error = "下载响应超过目录声明大小".into();
+            continue;
         }
-        hasher.update(&buffer[..read]);
-        file.write_all(&buffer[..read])
-            .map_err(|error| error.to_string())?;
-    }
-    file.sync_all().map_err(|error| error.to_string())?;
-    if total != plugin.size || format!("{:x}", hasher.finalize()) != plugin.sha256 {
         let _ = std::fs::remove_file(&partial);
-        return Err("插件包完整性校验失败".into());
+        let mut reader = response.into_reader();
+        let mut file = match std::fs::File::create(&partial) {
+            Ok(file) => file,
+            Err(error) => return Err(format!("无法创建下载临时文件：{error}")),
+        };
+        let mut hasher = Sha256::new();
+        let mut total = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut read_error = None;
+        loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(read) => read,
+                Err(error) => {
+                    read_error = Some(error.to_string());
+                    break;
+                }
+            };
+            if read == 0 {
+                break;
+            }
+            total += read as u64;
+            if total > plugin.size || total > MAX_PLUGIN_BYTES {
+                read_error = Some("下载内容超过目录声明大小".into());
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            if let Err(error) = file.write_all(&buffer[..read]) {
+                read_error = Some(error.to_string());
+                break;
+            }
+        }
+        if let Some(error) = read_error {
+            last_download_error = format!("下载插件失败（第 {attempt} 次）：{error}");
+            let _ = std::fs::remove_file(&partial);
+            continue;
+        }
+        if let Err(error) = file.sync_all() {
+            last_download_error = format!("保存插件包失败：{error}");
+            let _ = std::fs::remove_file(&partial);
+            continue;
+        }
+        if total != plugin.size
+            || !format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(&plugin.sha256)
+        {
+            last_download_error = "插件包完整性校验失败".into();
+            let _ = std::fs::remove_file(&partial);
+            continue;
+        }
+        break;
+    }
+    if !partial.exists() {
+        return Err(last_download_error);
     }
     if target.exists() {
         std::fs::remove_file(&target).map_err(|error| error.to_string())?;

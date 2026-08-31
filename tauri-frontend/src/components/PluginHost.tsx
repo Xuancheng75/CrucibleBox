@@ -265,7 +265,9 @@ export function PluginHost({
           width: '100%',
           height,
           border: 0,
-          background: 'transparent'
+          background: 'transparent',
+          borderRadius: 'var(--ob-radius, 8px)',
+          overflow: 'hidden'
         }}
       />
     </>

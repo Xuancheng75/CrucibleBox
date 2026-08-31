@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import MainLayout from './layouts/MainLayout'
 import { useAppStore } from './store/app.store'
@@ -50,11 +50,16 @@ function PageLoading() {
 }
 
 export default function App() {
+  const [appVersion, setAppVersion] = useState('')
   const currentPage = useAppStore((s) => s.currentPage)
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const setPluginImportOpen = useAppStore((s) => s.setPluginImportOpen)
   // 全窗口拖拽导入（插件 zip/目录或 Document Engine 文档）+ 全局安装确认弹窗
   const { dragActive, dragTarget } = useGlobalPluginDrop()
+
+  useEffect(() => {
+    void tauriApi.app.getVersion().then(setAppVersion).catch(() => undefined)
+  }, [])
 
   // 菜单「导入插件」事件（Tauri 2 菜单点击经 tauri://menu 事件下发，payload 为菜单项 id）。
   // 后端菜单尚未定义（1.9.3 后端 lane 并行处理），此处按契约订阅，payload 匹配
@@ -139,6 +144,11 @@ export default function App() {
       </MainLayout>
       <PluginDropOverlay active={dragActive} target={dragTarget} />
       <PluginInstallPreviewModal />
+      {/-((beta|rc)\.)/i.test(appVersion) && (
+        <div className="ob-beta-badge" role="status" aria-label={`测试版 ${appVersion}`}>
+          测试版 · {appVersion}
+        </div>
+      )}
     </ThemeProvider>
   )
 }
