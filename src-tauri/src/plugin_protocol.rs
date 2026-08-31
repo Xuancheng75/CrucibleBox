@@ -51,7 +51,7 @@ fn generated_index(session: &RendererSession) -> String {
     // Bug E：首帧关键 CSS 直接内联进 index.html。runtime.js 的深色兜底要等脚本
     // 下载+执行后才生效，WebView2 在此之前按默认白底渲染 → 深色主题闪白屏。
     let critical_style = format!(
-        "html{{background:{};color-scheme:{}}}body{{margin:0;background:{};min-height:100%}}",
+        "html{{background:{};color-scheme:{}}}body{{margin:0;background:{};min-height:100%}}html,body{{width:100%;min-height:100%;overflow-x:hidden}}#root{{min-height:100%;background:inherit;overflow:hidden}}",
         escape_html_attr(&session.initial_background),
         escape_html_attr(&session.color_scheme),
         escape_html_attr(&session.initial_background)

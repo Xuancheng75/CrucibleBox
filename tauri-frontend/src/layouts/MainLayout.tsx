@@ -84,16 +84,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
             zIndex: 10
           }}
         >
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'auto minmax(0, 1fr)',
-              alignItems: 'center',
-              columnGap: 18,
-              flexShrink: 0,
-              minWidth: 0
-            }}
-          >
+          <div style={{ flexShrink: 0, minWidth: 0 }}>
             <span
               className="ob-brand-wordmark"
               style={{
@@ -106,23 +97,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
             >
               CrucibleBox
             </span>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ color: token.colorText, fontSize: 14, fontWeight: 650 }}>
-                {pageMeta.title}
-              </div>
-              <div
-                className="ob-page-subtitle"
-                style={{
-                  fontSize: 11,
-                  color: token.colorTextTertiary,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis'
-                }}
-              >
-                {pageMeta.subtitle}
-              </div>
-            </div>
           </div>
           <div style={{ flex: 1 }} />
           <div
@@ -153,10 +127,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
             overscrollBehavior: 'contain'
           }}
         >
-          <div className="ob-hud-strip" aria-hidden="true">
-            <span>CRUCIBLEBOX // {pageMeta.hud}</span>
-            <span>LINK STABLE · NODE 01</span>
-          </div>
           <div className="ob-main-surface">{children}</div>
         </Content>
       </Layout>

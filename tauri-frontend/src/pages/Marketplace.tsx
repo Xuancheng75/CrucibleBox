@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Drawer, Empty, Input, Space, Tag, Typography, theme } from 'antd'
+import { Alert, Button, Drawer, Empty, Input, Space, Tag, Typography, theme } from 'antd'
 import {
   CheckOutlined,
   DownloadOutlined,
@@ -21,14 +21,14 @@ export default function Marketplace() {
   const plugins = usePluginStore((state) => state.plugins)
   const setActivePluginId = useAppStore((state) => state.setActivePluginId)
   const setCurrentPage = useAppStore((state) => state.setCurrentPage)
-  const setPluginImportOpen = useAppStore((state) => state.setPluginImportOpen)
   const installPlugin = usePluginStore((state) => state.installPlugin)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<MarketplacePlugin | null>(null)
 
-  const installedByName = useMemo(
-    () => new Map(plugins.map((plugin) => [plugin.name, plugin])),
+  const installedById = useMemo(
+    () => new Map(plugins.map((plugin) => [plugin.id, plugin])),
     [plugins]
   )
   const catalog = useMemo(() => {
@@ -42,13 +42,14 @@ export default function Marketplace() {
   }, [query])
 
   const openInstalled = (plugin: MarketplacePlugin) => {
-    const installed = installedByName.get(plugin.id)
+    const installed = installedById.get(plugin.id)
     if (!installed) return
     setActivePluginId(installed.id)
     setCurrentPage('pluginView')
   }
 
   const requestInstall = async (plugin: MarketplacePlugin) => {
+    setDownloadError(null)
     const taskId = `marketplace-${plugin.id}-${Date.now()}`
     setDownloadingId(plugin.id)
     useTaskStore.getState().upsertTask({ id: taskId, title: `下载 ${plugin.name}`, source: 'marketplace', status: 'running', progress: 10 })
@@ -57,10 +58,11 @@ export default function Marketplace() {
       useTaskStore.getState().patchTask(taskId, { title: `校验 ${plugin.name}`, progress: 70 })
       const prepared = await installPlugin('zip', path)
       useTaskStore.getState().patchTask(taskId, prepared ? { status: 'completed', progress: 100 } : { status: 'failed', error: '插件安装预检失败' })
+      if (!prepared) setDownloadError('插件安装预检失败，请查看任务中心后重试。')
     } catch (error) {
-      useTaskStore.getState().patchTask(taskId, { status: 'failed', error: error instanceof Error ? error.message : String(error) })
-      setCurrentPage('home')
-      setPluginImportOpen(true)
+      const message = error instanceof Error ? error.message : String(error)
+      useTaskStore.getState().patchTask(taskId, { status: 'failed', error: message })
+      setDownloadError(message)
     } finally {
       setDownloadingId(null)
     }
@@ -91,12 +93,24 @@ export default function Marketplace() {
         style={{ marginBottom: 20 }}
       />
 
+      {downloadError && (
+        <Alert
+          type="error"
+          showIcon
+          closable
+          message="插件下载失败"
+          description={downloadError}
+          onClose={() => setDownloadError(null)}
+          style={{ marginBottom: 20 }}
+        />
+      )}
+
       {catalog.length === 0 ? (
         <Empty description="没有找到匹配的插件" />
       ) : (
         <div className="ob-market-grid" role="list" aria-label="插件市场目录">
           {catalog.map((plugin) => {
-            const installed = installedByName.get(plugin.id)
+            const installed = installedById.get(plugin.id)
             const identity = pluginIdentity(plugin.id)
             return (
               <article
@@ -127,7 +141,7 @@ export default function Marketplace() {
                   >
                     {plugin.description}
                   </Paragraph>
-                  <Button
+                <Button
                     size="small"
                     type={installed ? 'default' : 'primary'}
                     loading={downloadingId === plugin.id}
@@ -138,7 +152,7 @@ export default function Marketplace() {
                       else void requestInstall(plugin)
                     }}
                   >
-                    {installed ? '已安装' : '获取'}
+                    {installed ? '打开' : '获取'}
                   </Button>
                 </div>
               </article>
@@ -180,13 +194,13 @@ export default function Marketplace() {
               block
               loading={downloadingId === selected.id}
               icon={
-                installedByName.has(selected.id) ? <CheckOutlined /> : <DownloadOutlined />
+                installedById.has(selected.id) ? <CheckOutlined /> : <DownloadOutlined />
               }
               onClick={() =>
-                installedByName.has(selected.id) ? openInstalled(selected) : void requestInstall(selected)
+                installedById.has(selected.id) ? openInstalled(selected) : void requestInstall(selected)
               }
             >
-              {installedByName.has(selected.id) ? '打开已安装插件' : '选择插件包安装'}
+              {installedById.has(selected.id) ? '打开' : '获取'}
             </Button>
           </Space>
         )}

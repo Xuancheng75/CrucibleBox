@@ -56,8 +56,9 @@ export default function PluginView() {
 
   if (!plugin.enabled) {
     return (
-      <div>
+      <div className="ob-plugin-view">
         <Button
+          className="ob-plugin-back"
           type="text"
           icon={<ArrowLeftOutlined />}
           onClick={handleBack}
@@ -98,7 +99,7 @@ export default function PluginView() {
           : token.colorFillTertiary
 
   return (
-    <div>
+    <div className="ob-plugin-view">
       <div
         style={{
           display: 'flex',
@@ -109,6 +110,7 @@ export default function PluginView() {
         }}
       >
         <Button
+          className="ob-plugin-back"
           type="text"
           icon={<ArrowLeftOutlined />}
           onClick={handleBack}
