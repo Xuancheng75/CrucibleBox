@@ -46,6 +46,13 @@ cargo test --workspace --locked
 - 插件卡片身份由 `plugin-identity.ts` 维护。第一方插件发布者统一为 `CrucibleBox`，不得再用单字母作为唯一辨识。
 - 工作台和设置卡片使用主题边框、圆角和切角，不添加宿主默认阴影；主题可覆盖几何风格，但不能露出底层矩形轮廓。
 
+## Document Engine 0.4.0
+
+- 统一流水线为页面类型判断 → 240 DPI 渲染 → 区域分流 → PP-OCRv6-small-det / PP-OCRv5-mobile-rec → 公式 LaTeX 适配 → 阅读顺序恢复 → Document IR v2。
+- 格式转换和 Chunk 切分只消费 IR，不得再次触发 OCR；PDF 物理拆分直接操作原始页并输出真实 PDF。
+- Chunk 任务输出逐行 JSONL 与 manifest JSON；任务快照只返回受限元数据，完整结果通过输出路径读取，避免 IPC payload 超限。
+- 默认模型随插件离线分发，`ppocrv4-mobile-zh-en` 作为兼容 profile 保留；新增模型或流水线字段时必须同步缓存版本、协议文档、插件目录和 trusted policy。
+
 ## 插件市场开发约定
 
 - 2.0.0 使用应用内置展示目录，并从 `tauri-stable/plugins.json` 获取权威下载地址和摘要；不接入 GitHub Marketplace，也不实现账户注册、登录或上传。

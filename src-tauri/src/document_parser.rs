@@ -84,22 +84,45 @@ fn build_result(
     let mut reading_order = Vec::new();
     let mut outline = Vec::new();
     let mut has_tables = false;
+    let mut has_formulas = false;
+    let mut title: Option<String> = None;
     for page in pages {
         let mut blocks = Vec::new();
         let mut paragraph_index = 0usize;
         for paragraph in split_paragraphs(&page.text) {
             paragraph_index += 1;
-            let (block_type, content, level) = markdown_heading(&paragraph);
+            let (mut block_type, mut content, level) = markdown_heading(&paragraph);
+            if block_type == "paragraph" && is_formula_block(&content) {
+                block_type = "formula";
+                content = strip_formula_delimiters(&content);
+                has_formulas = true;
+            } else if block_type == "paragraph" && (content.contains('|') || content.contains('\t'))
+            {
+                block_type = "table";
+                has_tables = true;
+            }
             let id = format!("p{}-b{paragraph_index}", page.number);
             reading_order.push(id.clone());
             let mut block = json!({
                 "id": id,
                 "type": block_type,
                 "content": content,
+                "rawText": paragraph.clone(),
                 "language": detect_language(&paragraph),
             });
+            if block_type == "formula" {
+                block["latex"] = json!(
+                    crate::formula_ocr::recognize_text(
+                        block["content"].as_str().unwrap_or_default()
+                    )
+                    .latex
+                );
+            }
             if let Some(level) = level {
                 block["level"] = json!(level);
+                title.get_or_insert_with(|| {
+                    block["content"].as_str().unwrap_or_default().to_string()
+                });
                 outline.push(json!({
                     "id": format!("p{}-b{paragraph_index}", page.number),
                     "title": content,
@@ -108,7 +131,6 @@ fn build_result(
                     "children": []
                 }));
             }
-            has_tables |= paragraph.contains('|') || paragraph.contains('\t');
             blocks.push(block);
         }
         page_json.push(json!({
@@ -143,7 +165,8 @@ fn build_result(
             "hasTextLayer": true,
             "isScanned": false,
             "hasTables": has_tables,
-            "hasFormulas": kind == "xlsx" && bytes.windows(2).any(|window| window == b"f>"),
+            "hasFormulas": has_formulas || (kind == "xlsx" && bytes.windows(2).any(|window| window == b"f>")),
+            "title": title,
             "hasImages": false,
             "encoding": if matches!(kind, "text" | "markdown" | "html") { Some(detect_encoding(bytes).to_string()) } else { None::<String> }
         },
@@ -218,6 +241,28 @@ fn markdown_heading(text: &str) -> (&'static str, String, Option<u8>) {
         );
     }
     ("paragraph", trimmed.to_string(), None)
+}
+
+fn is_formula_block(text: &str) -> bool {
+    let trimmed = text.trim();
+    (trimmed.starts_with("$$") && trimmed.ends_with("$$"))
+        || (trimmed.starts_with("\\[") && trimmed.ends_with("\\]"))
+        || (trimmed.starts_with("\\(") && trimmed.ends_with("\\)"))
+}
+
+fn strip_formula_delimiters(text: &str) -> String {
+    let trimmed = text.trim();
+    for (open, close) in [("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)")] {
+        if trimmed.starts_with(open)
+            && trimmed.ends_with(close)
+            && trimmed.len() >= open.len() + close.len()
+        {
+            return trimmed[open.len()..trimmed.len() - close.len()]
+                .trim()
+                .to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 fn html_to_text(html: &str) -> String {

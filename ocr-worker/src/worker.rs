@@ -24,6 +24,7 @@ struct OcrEngine {
     dictionary: Dictionary,
     metadata: ModelMetadata,
     device: &'static str,
+    profile: &'static str,
 }
 
 impl OcrEngine {
@@ -79,6 +80,7 @@ impl OcrEngine {
             dictionary,
             metadata,
             device: if use_gpu { "directml" } else { "cpu" },
+            profile: paths.profile.id(),
         })
     }
 
@@ -103,14 +105,14 @@ impl OcrEngine {
             return Err("image dimensions exceed worker limits".into());
         }
 
-        let boxes = detect_text(&mut self.detection, &image)?;
+        let boxes = detect_text(&mut self.detection, &image, self.profile)?;
         let box_count = boxes.len();
         on_progress(35, "detect", "文本区域检测完成");
         let mut blocks = Vec::with_capacity(boxes.len());
         for (index, polygon) in boxes.into_iter().enumerate() {
             let crop = crop_text_region(&image, &polygon);
             let (text, confidence) =
-                recognize_text(&mut self.recognition, &self.dictionary, &crop)?;
+                recognize_text(&mut self.recognition, &self.dictionary, &crop, self.profile)?;
             let percent = if box_count == 0 {
                 95
             } else {
@@ -145,6 +147,7 @@ impl OcrEngine {
                 recognition_sha256: self.metadata.recognition_sha256.clone(),
                 dictionary_sha256: self.metadata.dictionary_sha256.clone(),
                 device: self.device,
+                model_profile: self.profile,
             },
         })
     }
@@ -169,6 +172,7 @@ impl WorkerState {
             device: None,
             model_directory: None,
             dictionary_path: None,
+            model_profile: None,
         });
         let requested_device = options.device.as_deref().unwrap_or("auto");
         if !matches!(requested_device, "auto" | "cpu" | "gpu") {
@@ -184,6 +188,7 @@ impl WorkerState {
         let paths = ModelPaths::resolve(
             options.model_directory.as_deref(),
             options.dictionary_path.as_deref(),
+            options.model_profile.as_deref(),
         )?;
         let use_gpu = match requested_device {
             "gpu" => true,
@@ -293,8 +298,6 @@ fn process_request(line: &str, state: &mut WorkerState, stdout: &mut impl Write)
     let cold_start = state.engine.is_none();
     if cold_start {
         emit_progress(stdout, &request_id, "loading", 5, "正在加载 OCR 模型");
-    } else {
-        emit_progress(stdout, &request_id, "ready", 5, "OCR 模型已就绪");
     }
     let engine = match state.engine_for(request.options.as_ref()) {
         Ok(engine) => engine,
@@ -337,7 +340,11 @@ fn emit_progress(
 
 type Polygon = [[i32; 2]; 4];
 
-fn detect_text(session: &mut Session, image: &DynamicImage) -> Result<Vec<Polygon>, String> {
+fn detect_text(
+    session: &mut Session,
+    image: &DynamicImage,
+    profile: &str,
+) -> Result<Vec<Polygon>, String> {
     let (original_width, original_height) = image.dimensions();
     let max_size = 960.0f32;
     let scale = (max_size / original_width.max(original_height) as f32).min(1.0);
@@ -354,10 +361,15 @@ fn detect_text(session: &mut Session, image: &DynamicImage) -> Result<Vec<Polygo
     for y in 0..height {
         for x in 0..width {
             let pixel = rgb.get_pixel(x, y);
+            let (r, g, b) = if profile == "ppocrv6-small-det-v5-mobile-rec" {
+                (pixel[2], pixel[1], pixel[0])
+            } else {
+                (pixel[0], pixel[1], pixel[2])
+            };
             let index = (y * width + x) as usize;
-            input_data[index] = (pixel[0] as f32 / 255.0 - mean[0]) / std[0];
-            input_data[plane + index] = (pixel[1] as f32 / 255.0 - mean[1]) / std[1];
-            input_data[2 * plane + index] = (pixel[2] as f32 / 255.0 - mean[2]) / std[2];
+            input_data[index] = (r as f32 / 255.0 - mean[0]) / std[0];
+            input_data[plane + index] = (g as f32 / 255.0 - mean[1]) / std[1];
+            input_data[2 * plane + index] = (b as f32 / 255.0 - mean[2]) / std[2];
         }
     }
     let input = Tensor::from_array(([1usize, 3, height as usize, width as usize], input_data))
@@ -499,6 +511,7 @@ fn recognize_text(
     session: &mut Session,
     dictionary: &Dictionary,
     image: &DynamicImage,
+    profile: &str,
 ) -> Result<(String, f32), String> {
     let target_height = 48u32;
     let (width, height) = image.dimensions();
@@ -519,10 +532,15 @@ fn recognize_text(
     for y in 0..target_height {
         for x in 0..resized_width {
             let pixel = rgb.get_pixel(x, y);
+            let (r, g, b) = if profile == "ppocrv6-small-det-v5-mobile-rec" {
+                (pixel[2], pixel[1], pixel[0])
+            } else {
+                (pixel[0], pixel[1], pixel[2])
+            };
             let index = (y * target_width + x) as usize;
-            input_data[index] = pixel[0] as f32 / 127.5 - 1.0;
-            input_data[plane + index] = pixel[1] as f32 / 127.5 - 1.0;
-            input_data[2 * plane + index] = pixel[2] as f32 / 127.5 - 1.0;
+            input_data[index] = r as f32 / 127.5 - 1.0;
+            input_data[plane + index] = g as f32 / 127.5 - 1.0;
+            input_data[2 * plane + index] = b as f32 / 127.5 - 1.0;
         }
     }
     let input = Tensor::from_array((

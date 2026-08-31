@@ -43,6 +43,8 @@ pub struct OcrWorkerOptions {
     pub model_directory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_profile: Option<String>,
 }
 
 impl OcrWorkerRequest {
@@ -53,6 +55,7 @@ impl OcrWorkerRequest {
         device: Option<String>,
         model_directory: Option<String>,
         dictionary_path: Option<String>,
+        model_profile: Option<String>,
     ) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -64,6 +67,7 @@ impl OcrWorkerRequest {
                 device,
                 model_directory,
                 dictionary_path,
+                model_profile,
             }),
         }
     }
@@ -424,6 +428,7 @@ mod tests {
             Some("cpu".into()),
             Some("C:\\models".into()),
             Some("C:\\models\\dict.txt".into()),
+            Some("ppocrv4-mobile-zh-en".into()),
         );
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["protocolVersion"], 1);
@@ -449,8 +454,15 @@ mod tests {
             PathBuf::from("C:\\definitely-missing\\ocr-worker.exe"),
             Duration::from_millis(100),
         );
-        let request =
-            OcrWorkerRequest::new("task-1".into(), "input.png".into(), None, None, None, None);
+        let request = OcrWorkerRequest::new(
+            "task-1".into(),
+            "input.png".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let cancelled = AtomicBool::new(false);
         let error = manager.run(&request, &cancelled, &|_| {}).unwrap_err();
         assert!(error.contains("unavailable"));

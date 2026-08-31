@@ -134,7 +134,7 @@ const renderArtifactResult = (value: unknown, kind: 'chunk' | 'convert'): React.
       )}
       {kind === 'chunk' && files.length === 0 && outputPath && (
         <div style={{ color: COLORS.textSecondary }}>
-          这是用于 AI/RAG 的文本分块索引（JSON），原始 PDF 未被改写。
+          这是用于 AI/RAG 的逐行 Chunk 索引（JSONL）；同目录还会生成清单 JSON，原始 PDF 未被改写。
         </div>
       )}
       <details>
@@ -318,9 +318,10 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [chunkResult, setChunkResult] = useState<unknown>(null)
   const [chunkError, setChunkError] = useState<string | null>(null)
   const [chunkBusy, setChunkBusy] = useState(false)
-  const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic' | 'pdf'>('hybrid')
+  const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic' | 'pdf-pages' | 'pdf-fixed' | 'pdf-chapters' | 'pdf-ranges'>('hybrid')
   const [chunkOutputDirectory, setChunkOutputDirectory] = useState('')
   const [splitPagesPerFile, setSplitPagesPerFile] = useState(50)
+  const [splitRanges, setSplitRanges] = useState('1-10\n11-20')
   const [convertPath, setConvertPath] = useState('')
   const [convertTarget, setConvertTarget] = useState('md')
   const [convertOutput, setConvertOutput] = useState('')
@@ -769,10 +770,22 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setChunkProgress(null)
     setChunkTask(null)
     try {
-      const accepted = chunkStrategy === 'pdf'
+      const pdfMode = chunkStrategy.startsWith('pdf-')
+      const ranges = splitRanges
+        .split(/\r?\n|[,;]+/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => {
+          const match = value.match(/^(\d+)\s*[-~]\s*(\d+)$/)
+          return match ? { start: Number(match[1]), end: Number(match[2]) } : null
+        })
+        .filter((value): value is { start: number; end: number } => Boolean(value))
+      const accepted = pdfMode
         ? await startPdfSplit(send, path, {
             outputDirectory: chunkOutputDirectory.trim() || undefined,
-            pagesPerFile: splitPagesPerFile
+            pagesPerFile: splitPagesPerFile,
+            mode: chunkStrategy === 'pdf-pages' ? 'pages' : chunkStrategy === 'pdf-ranges' ? 'ranges' : chunkStrategy === 'pdf-chapters' ? 'chapters' : 'fixed',
+            ranges: chunkStrategy === 'pdf-ranges' ? ranges : undefined
           })
         : await startChunk(send, path, {
             strategy: chunkStrategy,
@@ -784,7 +797,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           {
             id: accepted.taskId,
             name: path.split(/[\\/]/).pop() || path,
-            action: chunkStrategy === 'pdf' ? 'PDF 拆分' : '文本分块',
+            action: pdfMode ? 'PDF 拆分' : '文本分块',
             status: accepted.status
           },
           ...previous
@@ -795,7 +808,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setChunkBusy(false)
     }
-  }, [api, chunkPath, chunkOutputDirectory, chunkStrategy, send, splitPagesPerFile])
+  }, [api, chunkPath, chunkOutputDirectory, chunkStrategy, send, splitPagesPerFile, splitRanges])
 
   const runConvert = useCallback(async () => {
     const path = convertPath.trim()
@@ -1795,10 +1808,13 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           <option value="chapters">按章节/标题切分</option>
           <option value="structure">按结构边界</option>
           <option value="semantic">按语义/长度</option>
-          <option value="pdf">拆分为多个 PDF 文件</option>
+          <option value="pdf-pages">PDF 按页拆分</option>
+          <option value="pdf-fixed">PDF 按固定页数拆分</option>
+          <option value="pdf-chapters">PDF 按章节/标题拆分</option>
+          <option value="pdf-ranges">PDF 按页码范围拆分</option>
         </select>
       </label>
-      {chunkStrategy === 'pdf' && (
+      {chunkStrategy.startsWith('pdf-') && !['pdf-ranges', 'pdf-chapters'].includes(chunkStrategy) && (
         <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
           每个 PDF 页数
           <input
@@ -1815,6 +1831,27 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
               border: `1px solid ${COLORS.border}`,
               borderRadius: 6,
               fontSize: FONT.sizeMd
+            }}
+          />
+        </label>
+      )}
+      {chunkStrategy === 'pdf-ranges' && (
+        <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+          页码范围（每行一个，如 1-10）
+          <textarea
+            value={splitRanges}
+            onChange={(event) => setSplitRanges(event.target.value)}
+            rows={3}
+            style={{
+              display: 'block',
+              width: '100%',
+              boxSizing: 'border-box',
+              marginTop: 6,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd,
+              resize: 'vertical'
             }}
           />
         </label>
@@ -1872,7 +1909,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             cursor: 'pointer'
           }}
         >
-          {chunkBusy ? '启动中…' : chunkStrategy === 'pdf' ? '开始拆分 PDF' : '开始文本分块'}
+          {chunkBusy ? '启动中…' : chunkStrategy.startsWith('pdf-') ? '开始拆分 PDF' : '开始文本分块'}
         </button>
         {(chunkTask?.status === 'running' || chunkTask?.status === 'queued') && (
           <button
@@ -2379,7 +2416,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         >
           <div style={{ fontWeight: 600, fontSize: FONT.sizeLg }}>推荐模型</div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-            首次使用建议安装标准 PP-OCRv4；包含 OCR 所需的检测、识别和字典文件。
+            首次使用推荐内置 PP-OCRv6-small-det + PP-OCRv5-mobile-rec 轻量方案；公式区域按需进入 Formula OCR。
           </div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
             下载地址已固定并逐文件校验 SHA-256，安装完成后即可用于本地 OCR。

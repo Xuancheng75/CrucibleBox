@@ -14,6 +14,7 @@ struct ChunkOptions {
     max_tokens: usize,
     overlap: usize,
     min_chunk_size: usize,
+    pages_per_chunk: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,7 @@ struct BlockInput {
     content: String,
     block_type: String,
     page: usize,
+    section_path: String,
 }
 
 /// Chunk a unified document. Token counts are deterministic character-based
@@ -90,11 +92,13 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
     let max_tokens = number("maxTokens", DEFAULT_MAX_TOKENS);
     let overlap = number("overlap", DEFAULT_OVERLAP);
     let min_chunk_size = number("minChunkSize", DEFAULT_MIN_CHARS);
+    let pages_per_chunk = number("pagesPerChunk", 1);
     if !(1..=32_768).contains(&target_tokens)
         || !(1..=65_536).contains(&max_tokens)
         || max_tokens < target_tokens
         || overlap >= max_tokens
         || min_chunk_size > 1_000_000
+        || !(1..=100).contains(&pages_per_chunk)
     {
         return Err(
             "invalid chunk options: require 1 <= targetTokens <= maxTokens, overlap < maxTokens"
@@ -107,11 +111,13 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
         max_tokens,
         overlap,
         min_chunk_size,
+        pages_per_chunk,
     })
 }
 
 fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
     let mut blocks = Vec::new();
+    let mut sections: Vec<(u8, String)> = Vec::new();
     let Some(pages) = document.get("pages").and_then(Value::as_array) else {
         return blocks;
     };
@@ -128,6 +134,30 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
             if content.is_empty() {
                 continue;
             }
+            let block_type = block
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("paragraph")
+                .to_string();
+            if block_type == "heading" {
+                let level = block
+                    .get("level")
+                    .and_then(Value::as_u64)
+                    .map(|value| value.clamp(1, 6) as u8)
+                    .unwrap_or_else(|| heading_level(content));
+                while sections
+                    .last()
+                    .is_some_and(|(current, _)| *current >= level)
+                {
+                    sections.pop();
+                }
+                sections.push((level, content.to_string()));
+            }
+            let section_path = sections
+                .iter()
+                .map(|(_, title)| title.as_str())
+                .collect::<Vec<_>>()
+                .join(" / ");
             blocks.push(BlockInput {
                 id: block
                     .get("id")
@@ -135,12 +165,9 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| format!("p{page_number}-b{}", index + 1)),
                 content: content.to_string(),
-                block_type: block
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("paragraph")
-                    .to_string(),
+                block_type,
                 page: page_number,
+                section_path,
             });
         }
     }
@@ -157,10 +184,13 @@ fn build_chunks(
     let mut chunks = Vec::new();
     if options.strategy == Strategy::Pages {
         let mut page_blocks: Vec<&BlockInput> = Vec::new();
-        let mut current_page: Option<usize> = None;
+        let mut first_page: Option<usize> = None;
         let mut chunk_index = 0usize;
         for block in blocks {
-            if current_page.is_some_and(|page| page != block.page) && !page_blocks.is_empty() {
+            if first_page
+                .is_some_and(|page| block.page >= page.saturating_add(options.pages_per_chunk))
+                && !page_blocks.is_empty()
+            {
                 push_chunk(
                     &mut chunks,
                     &mut chunk_index,
@@ -171,8 +201,9 @@ fn build_chunks(
                     options,
                 );
                 page_blocks.clear();
+                first_page = None;
             }
-            current_page = Some(block.page);
+            first_page.get_or_insert(block.page);
             page_blocks.push(block);
         }
         if !page_blocks.is_empty() {
@@ -248,6 +279,7 @@ fn build_chunks(
                     content: part,
                     block_type: block.block_type.clone(),
                     page: block.page,
+                    section_path: block.section_path.clone(),
                 };
                 push_chunk(
                     &mut chunks,
@@ -312,12 +344,16 @@ fn push_chunk(
                 .map(|block| block.block_type.as_str())
                 .unwrap_or("text")
         });
+    let section_path = blocks
+        .iter()
+        .find_map(|block| (!block.section_path.is_empty()).then_some(block.section_path.clone()));
     chunks.push(json!({
         "chunk_id": format!("{document_id}-c{chunk_index}"),
         "document_id": document_id,
         "parent_id": Value::Null,
         "chunk_index": *chunk_index,
         "title": blocks.iter().find(|block| block.block_type == "heading").map(|block| block.content.clone()),
+        "section_path": section_path,
         "content": content,
         "page_start": page_start,
         "page_end": page_end,
@@ -351,6 +387,19 @@ fn split_long_block(block: &BlockInput, max_tokens: usize, overlap: usize) -> Ve
 
 fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4).max(1)
+}
+
+fn heading_level(text: &str) -> u8 {
+    let trimmed = text.trim();
+    let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    if (1..=6).contains(&hashes) {
+        return hashes as u8;
+    }
+    if trimmed.to_ascii_lowercase().starts_with("chapter ") || trimmed.starts_with('第') {
+        1
+    } else {
+        2
+    }
 }
 
 fn is_theorem_heading(block: &BlockInput) -> bool {

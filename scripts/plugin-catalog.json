@@ -45,10 +45,10 @@
       "plugin.json",
       "dist/main.js",
       "dist/renderer.js",
-      "assets/models/ppocrv4-mobile-zh-en/manifest.json",
-      "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx",
-      "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx",
-      "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt"
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
     ]
   }
 ]

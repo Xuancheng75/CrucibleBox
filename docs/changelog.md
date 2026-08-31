@@ -23,6 +23,13 @@
 - 11 个第一方插件完成 2.0 版本提升、独立构建和市场元数据接入，发布者统一为 `CrucibleBox`；Document Engine、UniEnv、日记、GIF、主题和转盘保留 1.9.26 已验收的深度能力与 SDK v2 兼容性。
 - 应用版本、README、开发指南、开发规范和发布工作流同步到 2.0.0。
 
+### Document Engine 0.4.0
+
+- 解析管线统一为 240 DPI 页面渲染、区域分流、轻量 PP-OCRv6/v5 OCR、公式 LaTeX 适配和阅读顺序恢复，生成 Document IR v2。
+- 默认随插件携带可离线使用的轻量模型；保留 PP-OCRv4 profile 以兼容已有模型目录，缓存会按 profile、DPI 和流水线版本自动失效。
+- 格式转换、Chunk 切分和 PDF 物理拆分共享解析结果；Chunk 输出 JSONL 与 manifest JSON，PDF 支持按页、固定页数和自定义范围输出真实 PDF。
+- 支持 2000 页 PDF 上限，任务结果仅返回受限元数据和输出路径，避免 IPC 超大 payload。
+
 ## 1.9.26（2026-08）
 
 1.9.26 是 1.9 系列最后一个过渡版本，后续功能演进转入 2.0.0。

@@ -5,12 +5,62 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const DETECTION_MODEL: &str = "ch_PP-OCRv4_det.onnx";
-pub const RECOGNITION_MODEL: &str = "ch_PP-OCRv4_rec.onnx";
-pub const DEFAULT_DICTIONARY: &str = "ppocr_keys_v1.txt";
+pub const LEGACY_DETECTION_MODEL: &str = "ch_PP-OCRv4_det.onnx";
+pub const LEGACY_RECOGNITION_MODEL: &str = "ch_PP-OCRv4_rec.onnx";
+pub const LEGACY_DICTIONARY: &str = "ppocr_keys_v1.txt";
+pub const SMALL_DETECTION_MODEL: &str = "ppocrv6_small_det.onnx";
+pub const MOBILE_RECOGNITION_MODEL: &str = "en_PP-OCRv5_mobile_rec.onnx";
+pub const MOBILE_DICTIONARY: &str = "en_ppocrv5_dict.txt";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelProfile {
+    PpOcrv6SmallDetV5MobileRec,
+    PpOcrv4MobileZhEn,
+}
+
+impl ModelProfile {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::PpOcrv6SmallDetV5MobileRec => "ppocrv6-small-det-v5-mobile-rec",
+            Self::PpOcrv4MobileZhEn => "ppocrv4-mobile-zh-en",
+        }
+    }
+
+    fn from_id(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ppocrv6-small-det-v5-mobile-rec" | "ppocrv6" | "default" | "auto" => {
+                Some(Self::PpOcrv6SmallDetV5MobileRec)
+            }
+            "ppocrv4-mobile-zh-en" | "ppocrv4" | "legacy" => Some(Self::PpOcrv4MobileZhEn),
+            _ => None,
+        }
+    }
+
+    pub fn detection_name(self) -> &'static str {
+        match self {
+            Self::PpOcrv6SmallDetV5MobileRec => SMALL_DETECTION_MODEL,
+            Self::PpOcrv4MobileZhEn => LEGACY_DETECTION_MODEL,
+        }
+    }
+
+    pub fn recognition_name(self) -> &'static str {
+        match self {
+            Self::PpOcrv6SmallDetV5MobileRec => MOBILE_RECOGNITION_MODEL,
+            Self::PpOcrv4MobileZhEn => LEGACY_RECOGNITION_MODEL,
+        }
+    }
+
+    pub fn dictionary_name(self) -> &'static str {
+        match self {
+            Self::PpOcrv6SmallDetV5MobileRec => MOBILE_DICTIONARY,
+            Self::PpOcrv4MobileZhEn => LEGACY_DICTIONARY,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ModelPaths {
+    pub profile: ModelProfile,
     pub directory: PathBuf,
     pub detection: PathBuf,
     pub recognition: PathBuf,
@@ -28,6 +78,7 @@ impl ModelPaths {
     pub fn resolve(
         model_directory: Option<&str>,
         dictionary_path: Option<&str>,
+        requested_profile: Option<&str>,
     ) -> Result<Self, String> {
         let directory = model_directory
             .filter(|path| !path.trim().is_empty())
@@ -39,13 +90,32 @@ impl ModelPaths {
                     .and_then(|p| p.parent().map(|p| p.join("models")))
             })
             .ok_or_else(|| "model directory is not configured".to_string())?;
+        let profile = if let Some(requested) = requested_profile
+            .filter(|value| !value.trim().is_empty())
+            .filter(|value| !value.eq_ignore_ascii_case("auto"))
+        {
+            ModelProfile::from_id(requested)
+                .ok_or_else(|| format!("unsupported model profile: {requested}"))?
+        } else if [
+            directory.join(SMALL_DETECTION_MODEL),
+            directory.join(MOBILE_RECOGNITION_MODEL),
+            directory.join(MOBILE_DICTIONARY),
+        ]
+        .iter()
+        .all(|path| path.is_file())
+        {
+            ModelProfile::PpOcrv6SmallDetV5MobileRec
+        } else {
+            ModelProfile::PpOcrv4MobileZhEn
+        };
         let dictionary = dictionary_path
             .filter(|path| !path.trim().is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| directory.join(DEFAULT_DICTIONARY));
+            .unwrap_or_else(|| directory.join(profile.dictionary_name()));
         let paths = Self {
-            detection: directory.join(DETECTION_MODEL),
-            recognition: directory.join(RECOGNITION_MODEL),
+            profile,
+            detection: directory.join(profile.detection_name()),
+            recognition: directory.join(profile.recognition_name()),
             dictionary,
             directory,
         };
@@ -84,6 +154,16 @@ impl ModelPaths {
                 fs::read(&manifest_path).map_err(|e| format!("model manifest read failed: {e}"))?;
             let manifest: ModelManifest = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("model manifest is invalid JSON: {e}"))?;
+            if manifest
+                .profile
+                .as_deref()
+                .is_some_and(|profile| profile != self.profile.id())
+            {
+                return Err(format!(
+                    "model manifest profile does not match selected profile {}",
+                    self.profile.id()
+                ));
+            }
             if manifest.detection_sha256 != metadata.detection_sha256
                 || manifest.recognition_sha256 != metadata.recognition_sha256
                 || manifest.dictionary_sha256 != metadata.dictionary_sha256
@@ -98,6 +178,8 @@ impl ModelPaths {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelManifest {
+    #[serde(default)]
+    profile: Option<String>,
     detection_sha256: String,
     recognition_sha256: String,
     dictionary_sha256: String,
@@ -117,6 +199,7 @@ mod tests {
     #[test]
     fn explicit_model_directory_is_used_without_machine_specific_fallback() {
         let paths = ModelPaths {
+            profile: ModelProfile::PpOcrv4MobileZhEn,
             directory: PathBuf::from("m"),
             detection: PathBuf::from("m/det.onnx"),
             recognition: PathBuf::from("m/rec.onnx"),

@@ -1,6 +1,6 @@
 {
   "name": "document-engine",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "displayName": "Document Engine",
   "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的 OCR、解析结果导出、真实 PDF 拆分、AI/RAG 文本分块、格式转换、批量任务、缓存和模型管理",
   "author": "CrucibleBox",
@@ -14,13 +14,24 @@
     "modelDirectory": {
       "type": "string",
       "label": "OCR 模型目录",
-      "description": "PaddleOCR ONNX 模型与字典目录；留空使用 Worker 默认目录",
+      "description": "PaddleOCR ONNX 模型与字典目录；留空使用内置轻量模型",
       "default": ""
+    },
+    "modelProfile": {
+      "type": "select",
+      "label": "OCR 模型方案",
+      "description": "默认使用 PP-OCRv6-small-det + PP-OCRv5-mobile-rec；旧模型仅用于兼容",
+      "default": "auto",
+      "options": [
+        { "label": "自动（推荐）", "value": "auto" },
+        { "label": "PP-OCRv6/v5 轻量方案", "value": "ppocrv6-small-det-v5-mobile-rec" },
+        { "label": "PP-OCRv4 兼容方案", "value": "ppocrv4-mobile-zh-en" }
+      ]
     },
     "dictionaryPath": {
       "type": "string",
       "label": "OCR 字典路径",
-      "description": "ppocr_keys_v1.txt 路径；留空使用模型目录中的同名文件",
+      "description": "识别字典路径；留空根据模型方案自动选择",
       "default": ""
     },
     "cacheDirectory": {

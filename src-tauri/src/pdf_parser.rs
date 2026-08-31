@@ -15,7 +15,13 @@ use std::sync::OnceLock;
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_PDF_PAGES: usize = 2000;
 const MAX_OBJECTS: usize = 100_000;
-const PDF_RENDER_WIDTH: i32 = 1800;
+/// OCR rendering target.  A 240 DPI page keeps small mathematical glyphs
+/// legible while the caps prevent a very large page from exhausting memory.
+pub const PDF_RENDER_DPI: f32 = 240.0;
+const PDF_RENDER_MIN_WIDTH: f32 = 1400.0;
+const PDF_RENDER_MAX_WIDTH: f32 = 2800.0;
+const PDF_RENDER_MIN_HEIGHT: f32 = 1800.0;
+const PDF_RENDER_MAX_HEIGHT: i32 = 3800;
 
 #[derive(Debug)]
 struct PdfObject {
@@ -128,6 +134,92 @@ pub fn split_pdf_file(
     }))
 }
 
+/// Split a PDF using explicit inclusive page ranges.  This is the physical
+/// PDF splitter counterpart to text Chunk splitting: every returned artifact
+/// is a standalone, readable PDF file.
+pub fn split_pdf_file_with_ranges(
+    path: &str,
+    output_directory: &Path,
+    ranges: &[(usize, usize)],
+) -> Result<Value, String> {
+    if ranges.is_empty() {
+        return Err("至少需要一个 PDF 页码范围".into());
+    }
+    let pdfium = bind_pdfium()?;
+    let source = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|error| format!("加载 PDF 失败: {error}"))?;
+    let page_count = source.pages().len() as usize;
+    if page_count == 0 {
+        return Err("PDF 不包含可拆分的页面".into());
+    }
+    if page_count > MAX_PDF_PAGES {
+        return Err(format!("PDF 页数超过 {MAX_PDF_PAGES} 页限制"));
+    }
+    for (start, end) in ranges {
+        if *start == 0 || *end < *start || *end > page_count {
+            return Err(format!(
+                "页码范围无效: {start}-{end}（PDF 共 {page_count} 页）"
+            ));
+        }
+    }
+    std::fs::create_dir_all(output_directory)
+        .map_err(|error| format!("创建 PDF 拆分输出目录失败: {error}"))?;
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document")
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    let stem = if stem.trim().is_empty() {
+        "document"
+    } else {
+        stem.trim()
+    };
+    let mut files = Vec::with_capacity(ranges.len());
+    for (index, (start, end)) in ranges.iter().copied().enumerate() {
+        let destination = output_directory.join(format!("{stem}_{:03}-{:03}页.pdf", start, end));
+        let temporary = destination.with_extension(format!("pdf.{}.tmp", std::process::id()));
+        if temporary.exists() {
+            std::fs::remove_file(&temporary)
+                .map_err(|error| format!("清理 PDF 临时文件失败: {error}"))?;
+        }
+        let mut part = pdfium
+            .create_new_pdf()
+            .map_err(|error| format!("创建拆分 PDF 失败: {error}"))?;
+        part.pages_mut()
+            .copy_page_range_from_document(&source, ((start - 1) as i32)..=(end - 1) as i32, 0)
+            .map_err(|error| format!("复制 PDF 页面 {start}-{end} 失败: {error}"))?;
+        part.save_to_file(&temporary)
+            .map_err(|error| format!("写入拆分 PDF 失败: {error}"))?;
+        if destination.exists() {
+            std::fs::remove_file(&destination)
+                .map_err(|error| format!("替换已有拆分 PDF 失败: {error}"))?;
+        }
+        std::fs::rename(&temporary, &destination)
+            .map_err(|error| format!("提交拆分 PDF 失败: {error}"))?;
+        files.push(json!({
+            "index": index + 1,
+            "path": destination.to_string_lossy(),
+            "startPage": start,
+            "endPage": end,
+            "pageCount": end - start + 1
+        }));
+    }
+    Ok(json!({
+        "sourcePath": path,
+        "outputDirectory": output_directory.to_string_lossy(),
+        "pageCount": page_count,
+        "fileCount": files.len(),
+        "files": files
+    }))
+}
+
 /// Render one PDF page to a PNG for the OCR worker.
 ///
 /// The application ships `pdfium.dll` as a Tauri resource. Development
@@ -150,9 +242,15 @@ pub fn render_page_to_png(
         .pages()
         .get((page_number - 1) as i32)
         .map_err(|error| format!("读取 PDF 第 {page_number} 页失败: {error}"))?;
+    let target_width = (page.width().value * PDF_RENDER_DPI / 72.0)
+        .clamp(PDF_RENDER_MIN_WIDTH, PDF_RENDER_MAX_WIDTH)
+        .round() as i32;
+    let target_height = (page.height().value * PDF_RENDER_DPI / 72.0)
+        .clamp(PDF_RENDER_MIN_HEIGHT, PDF_RENDER_MAX_HEIGHT as f32)
+        .round() as i32;
     let config = pdfium_bundled::pdfium_render::prelude::PdfRenderConfig::new()
-        .set_target_width(PDF_RENDER_WIDTH)
-        .set_maximum_height(2400);
+        .set_target_width(target_width)
+        .set_maximum_height(target_height);
     let image = page
         .render_with_config(&config)
         .map_err(|error| format!("渲染 PDF 第 {page_number} 页失败: {error}"))?

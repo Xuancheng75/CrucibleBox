@@ -450,6 +450,10 @@ pub fn trusted_allowlist(permissions: &[String]) -> Option<Vec<String>> {
             "dist/main.js".to_string(),
             "dist/renderer.js".to_string(),
             "plugin.json".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt".to_string(),
             "assets/models/ppocrv4-mobile-zh-en/manifest.json".to_string(),
             "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".to_string(),
             "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".to_string(),
@@ -803,6 +807,7 @@ fn copy_allowed_files(
 
 fn is_optional_document_engine_asset(path: &str) -> bool {
     path.starts_with("assets/models/ppocrv4-mobile-zh-en/")
+        || path.starts_with("assets/models/ppocrv6-small-det-v5-mobile-rec/")
 }
 
 #[cfg(test)]
@@ -1129,6 +1134,10 @@ mod tests {
                 "dist/main.js".into(),
                 "dist/renderer.js".into(),
                 "plugin.json".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt".into(),
                 "assets/models/ppocrv4-mobile-zh-en/manifest.json".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".into(),

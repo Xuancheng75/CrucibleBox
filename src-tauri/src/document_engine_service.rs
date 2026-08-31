@@ -32,7 +32,8 @@ type Emitter = Arc<dyn Fn(&str, Value) + Send + Sync>;
 static OCR_WORKER: OnceLock<Arc<OcrWorkerManager>> = OnceLock::new();
 static EVENT_EMITTER: OnceLock<Emitter> = OnceLock::new();
 static RETRY_REQUESTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
-const DEFAULT_MODEL_ID: &str = "ppocrv4-mobile-zh-en";
+const DEFAULT_MODEL_ID: &str = "ppocrv6-small-det-v5-mobile-rec";
+const PIPELINE_VERSION: &str = "document-ir-v2-layout-ocr-v2";
 
 fn worker_manager() -> Option<&'static Arc<OcrWorkerManager>> {
     OCR_WORKER.get()
@@ -74,18 +75,64 @@ fn err(code: &str, message: String) -> Value {
 
 /// Curated model choices shown by the Document Engine UI.
 ///
-/// The worker currently requires this exact PP-OCRv4 triplet.  Keep the
-/// catalog static and hash-pinned so a model update is an explicit source
-/// change, not an arbitrary JSON/URL fetched at runtime.
+/// Keep model choices static and hash-pinned.  The default bundle is the
+/// lighter PP-OCRv6-small detector + PP-OCRv5 mobile recognizer profile;
+/// the legacy v4 bundle remains available for existing installations.
 fn model_catalog() -> Value {
     json!([
+        {
+            "id": "ppocrv6-small-det-v5-mobile-rec",
+            "name": "PP-OCRv6 Small + PP-OCRv5 Mobile 轻量模型",
+            "version": "6.0-det+5.0-rec",
+            "description": "内置轻量英文/数学文本 OCR，适合本地 PDF；公式区域由延迟加载的 Formula OCR 适配器处理。",
+            "recommended": true,
+            "default": true,
+            "offline": true,
+            "license": "Apache-2.0",
+            "totalBytes": 17730351u64,
+            "artifacts": [
+                {
+                    "name": "ppocrv6_small_det.onnx",
+                    "purpose": "文字区域检测",
+                    "bytes": 9880512u64,
+                    "sources": [
+                        "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx",
+                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx"
+                    ],
+                    "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx",
+                    "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+                },
+                {
+                    "name": "en_PP-OCRv5_mobile_rec.onnx",
+                    "purpose": "英文/数学文本识别",
+                    "bytes": 7848423u64,
+                    "sources": [
+                        "https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx",
+                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx"
+                    ],
+                    "url": "https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx",
+                    "sha256": "b5f833dfc5d0eb71da397b4efa06ebeee9b431b690a47d6af40d77d8eabc557f"
+                },
+                {
+                    "name": "en_ppocrv5_dict.txt",
+                    "purpose": "CTC 字典",
+                    "bytes": 1416u64,
+                    "sources": [
+                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt",
+                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.4.0/en_ppocrv5_dict.txt"
+                    ],
+                    "url": "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt",
+                    "sha256": "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6"
+                }
+            ]
+        },
         {
             "id": "ppocrv4-mobile-zh-en",
             "name": "PP-OCRv4 中文/英文标准模型",
             "version": "4.0",
             "description": "适用于中文、英文及混合文档的本地 OCR；包含检测模型、识别模型和中文字符字典。",
-            "recommended": true,
-            "default": true,
+            "recommended": false,
+            "default": false,
             "offline": true,
             "license": "Apache-2.0",
             "totalBytes": 15568058u64,
@@ -325,6 +372,7 @@ fn install_model_bundle(
 pub struct DocumentEngineConfig {
     pub model_directory: String,
     pub dictionary_path: String,
+    pub model_profile: String,
     pub cache_directory: String,
     pub output_directory: String,
     pub device: String,
@@ -366,12 +414,13 @@ fn load_config(db: &Db, plugin_id: &str) -> DocumentEngineConfig {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
-            .unwrap_or_else(|| {
-                PathBuf::from(&model_directory)
-                    .join("ppocr_keys_v1.txt")
-                    .to_string_lossy()
-                    .into_owned()
-            }),
+            .unwrap_or_default(),
+        model_profile: parsed
+            .get("modelProfile")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("auto")
+            .to_string(),
         model_directory,
         cache_directory: parsed
             .get("cacheDirectory")
@@ -437,6 +486,42 @@ fn document_stem(path: &str) -> String {
     }
 }
 
+/// Convert Document IR outline entries into inclusive PDF page ranges.  A
+/// chapter split is deliberately conservative: only headings with a valid
+/// page number are considered, and non-increasing/duplicate pages are
+/// discarded so a malformed OCR heading cannot create an invalid PDF.
+fn chapter_ranges_from_document(document: &Value) -> Vec<(usize, usize)> {
+    let page_count = document["metadata"]["pageCount"].as_u64().unwrap_or(0) as usize;
+    if page_count == 0 {
+        return Vec::new();
+    }
+    let mut starts = document["structure"]["outline"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["page"].as_u64().map(|page| page as usize))
+        .filter(|page| (1..=page_count).contains(page))
+        .collect::<Vec<_>>();
+    starts.sort_unstable();
+    starts.dedup();
+    if starts.first().copied() != Some(1) {
+        starts.insert(0, 1);
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            let end = starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(page_count)
+                .saturating_sub(1)
+                .max(*start);
+            (*start, end)
+        })
+        .collect()
+}
+
 fn export_parsed_result(
     mut result: Value,
     path: &str,
@@ -470,8 +555,12 @@ fn parse_document_with_cache(
     let cache_key = crate::document_engine_cache::cache_key(
         &source_hash,
         "document-parser",
-        "native-parser-v3",
-        &json!({ "ocrModel": ocr_model_version(cfg), "pipeline": "layout-ocr-v1" }),
+        "native-parser-v4",
+        &json!({
+            "ocrModel": ocr_model_version(cfg),
+            "pipeline": PIPELINE_VERSION,
+            "renderDpi": crate::pdf_parser::PDF_RENDER_DPI
+        }),
     );
     if let Ok(Some(cached)) =
         crate::document_engine_cache::read_result(Path::new(&cfg.cache_directory), &cache_key)
@@ -493,6 +582,14 @@ fn parse_document_with_cache(
         let manager = manager.ok_or_else(|| "扫描 PDF 需要已配置 OCR Worker".to_string())?;
         parsed = merge_ocr_pages(parsed, path, manager, ctx, plugin_id, cfg, None)?;
     }
+    parsed["document"]["metadata"]["pipeline"] = json!({
+        "version": PIPELINE_VERSION,
+        "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
+        "textDetection": "PP-OCRv6-small-det",
+        "textRecognition": "en_PP-OCRv5-mobile-rec",
+        "formula": "formula-ocr-adapter-v1",
+        "readingOrder": "column-aware-v1"
+    });
     ctx.check_cancelled()?;
     ctx.update_progress("quality", 96, "检查解析质量", None);
     let _ = crate::document_engine_cache::write_result(
@@ -515,10 +612,11 @@ fn classify_ocr_block(content: &str) -> &'static str {
             || lower.starts_with("section ")
             || lower.starts_with("appendix ")
             || trimmed.starts_with("第")
-            || trimmed
+            || (trimmed
                 .chars()
                 .next()
-                .is_some_and(|value| value.is_ascii_digit()))
+                .is_some_and(|value| value.is_ascii_digit())
+                && trimmed.chars().any(|value| value.is_alphabetic())))
     {
         return "heading";
     }
@@ -527,7 +625,27 @@ fn classify_ocr_block(content: &str) -> &'static str {
         .filter(|value| {
             matches!(
                 value,
-                '=' | '＝' | '+' | '-' | '−' | '*' | '×' | '/' | '÷' | '^' | '√'
+                '=' | '＝'
+                    | '+'
+                    | '-'
+                    | '−'
+                    | '*'
+                    | '×'
+                    | '/'
+                    | '÷'
+                    | '^'
+                    | '√'
+                    | '∑'
+                    | '∫'
+                    | '≤'
+                    | '≥'
+                    | '≠'
+                    | '∞'
+                    | '∂'
+                    | '∈'
+                    | '∉'
+                    | '≈'
+                    | '±'
             )
         })
         .count();
@@ -535,20 +653,94 @@ fn classify_ocr_block(content: &str) -> &'static str {
         .chars()
         .filter(|value| value.is_ascii_digit())
         .count();
-    if digits > 0 && operators > 0 && trimmed.chars().count() <= 180 {
+    let symbols = trimmed
+        .chars()
+        .filter(|value| value.is_alphabetic() || "αβγδεζηθλμνξπρστφχω".contains(*value))
+        .count();
+    if operators > 0 && (digits > 0 || symbols > 0) && trimmed.chars().count() <= 180 {
         return "formula";
     }
     "paragraph"
 }
 
-fn normalize_formula(value: &str) -> String {
-    value
-        .replace('＝', "=")
-        .replace('−', "-")
-        .replace('×', "\\times ")
-        .replace('÷', "\\div ")
-        .trim()
-        .to_string()
+fn block_bbox(block: &Value) -> Option<[f32; 4]> {
+    let values = block.get("bbox")?.as_array()?;
+    if values.len() != 4 {
+        return None;
+    }
+    Some([
+        values[0].as_f64()? as f32,
+        values[1].as_f64()? as f32,
+        values[2].as_f64()? as f32,
+        values[3].as_f64()? as f32,
+    ])
+}
+
+/// Restore reading order for OCR blocks.  A large horizontal gap is treated
+/// as a column break; blocks inside each column remain top-to-bottom.  This
+/// deterministic fallback keeps the pipeline useful without requiring a
+/// heavyweight layout model.
+fn restore_reading_order(blocks: &mut [Value], page_width: u32) {
+    let page_width = page_width.max(1) as f32;
+    let mut centers = blocks
+        .iter()
+        .filter_map(block_bbox)
+        .map(|bbox| (bbox[0] + bbox[2]) / 2.0)
+        .collect::<Vec<_>>();
+    centers.sort_by(|left, right| left.total_cmp(right));
+    let split = centers
+        .windows(2)
+        .max_by(|left, right| (left[1] - left[0]).total_cmp(&(right[1] - right[0])));
+    let column_gap = split.map(|pair| pair[1] - pair[0]).unwrap_or(0.0);
+    let column_break = if column_gap > page_width * 0.16 {
+        split.map(|pair| (pair[0] + pair[1]) / 2.0)
+    } else {
+        None
+    };
+    blocks.sort_by(|left, right| {
+        let left_bbox = block_bbox(left).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+        let right_bbox = block_bbox(right).unwrap_or([0.0, 0.0, 0.0, 0.0]);
+        let left_center = (left_bbox[0] + left_bbox[2]) / 2.0;
+        let right_center = (right_bbox[0] + right_bbox[2]) / 2.0;
+        let left_column = column_break
+            .map(|boundary| usize::from(left_center >= boundary))
+            .unwrap_or(0);
+        let right_column = column_break
+            .map(|boundary| usize::from(right_center >= boundary))
+            .unwrap_or(0);
+        left_column
+            .cmp(&right_column)
+            .then_with(|| left_bbox[1].total_cmp(&right_bbox[1]))
+            .then_with(|| left_bbox[0].total_cmp(&right_bbox[0]))
+    });
+}
+
+fn rebuild_document_structure(document: &mut Value) {
+    let mut reading_order = Vec::new();
+    let mut outline = Vec::new();
+    if let Some(pages) = document.get("pages").and_then(Value::as_array) {
+        for page in pages {
+            let page_number = page["number"].as_u64().unwrap_or(1);
+            if let Some(blocks) = page["blocks"].as_array() {
+                for block in blocks {
+                    if let Some(id) = block["id"].as_str() {
+                        reading_order.push(id.to_string());
+                    }
+                    if block["type"] == "heading" {
+                        outline.push(json!({
+                            "id": block["id"],
+                            "title": block["content"],
+                            "level": block["level"].as_u64().unwrap_or(2),
+                            "page": page_number,
+                            "children": []
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    document["structure"]["readingOrder"] = json!(reading_order);
+    document["structure"]["outline"] = json!(outline);
 }
 
 fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
@@ -569,16 +761,29 @@ fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
 
 fn ocr_model_version(cfg: &DocumentEngineConfig) -> String {
     let mut parts = Vec::new();
-    for name in ["ch_PP-OCRv4_det.onnx", "ch_PP-OCRv4_rec.onnx"] {
+    for name in [
+        "ppocrv6_small_det.onnx",
+        "en_PP-OCRv5_mobile_rec.onnx",
+        "ch_PP-OCRv4_det.onnx",
+        "ch_PP-OCRv4_rec.onnx",
+    ] {
         let path = PathBuf::from(&cfg.model_directory).join(name);
         let hash = crate::document_engine_cache::file_hash(&path).unwrap_or_default();
         parts.push(format!("{name}:{hash}"));
     }
-    let dictionary =
-        crate::document_engine_cache::file_hash(PathBuf::from(&cfg.dictionary_path).as_path())
-            .unwrap_or_default();
-    parts.push(format!("dictionary:{dictionary}"));
-    format!("ocr-worker-v1:{}", parts.join("|"))
+    for name in ["en_ppocrv5_dict.txt", "ppocr_keys_v1.txt"] {
+        let path = if cfg.dictionary_path.trim().is_empty() {
+            PathBuf::from(&cfg.model_directory).join(name)
+        } else {
+            PathBuf::from(&cfg.dictionary_path)
+        };
+        let dictionary = crate::document_engine_cache::file_hash(&path).unwrap_or_default();
+        parts.push(format!("dictionary:{name}:{dictionary}"));
+        if !cfg.dictionary_path.trim().is_empty() {
+            break;
+        }
+    }
+    format!("ocr-worker-v2:{}:{}", cfg.model_profile, parts.join("|"))
 }
 
 fn gpu_status() -> Value {
@@ -676,7 +881,8 @@ fn run_ocr_input(
         "language": language,
         "device": device.clone().unwrap_or_else(|| cfg.device.clone()),
         "modelDirectory": cfg.model_directory,
-        "dictionaryPath": cfg.dictionary_path,
+        "dictionaryPath": if cfg.dictionary_path.trim().is_empty() { Value::Null } else { json!(cfg.dictionary_path) },
+        "modelProfile": cfg.model_profile.clone(),
     });
     let key = crate::document_engine_cache::cache_key(
         &source_hash,
@@ -720,7 +926,8 @@ fn run_ocr_input(
         language,
         device.or_else(|| Some(cfg.device.clone())),
         Some(cfg.model_directory.clone()),
-        Some(cfg.dictionary_path.clone()),
+        (!cfg.dictionary_path.trim().is_empty()).then(|| cfg.dictionary_path.clone()),
+        Some(cfg.model_profile.clone()),
     );
     let result = manager.run(&request, ctx.cancel_flag(), &|progress| {
         // A paused task intentionally blocks the worker frame loop here. This
@@ -874,11 +1081,12 @@ fn merge_ocr_pages(
             let page_cache_key = crate::document_engine_cache::cache_key(
                 &source_hash,
                 "ocr-page",
-                "ocr-page-v2",
+                "ocr-page-v3",
                 &json!({
                     "page": page_number,
                     "ocrModel": model_version,
-                    "renderWidth": 1800
+                    "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
+                    "pipeline": PIPELINE_VERSION
                 }),
             );
             if let Ok(Some(cached_page)) = crate::document_engine_cache::read_result(
@@ -947,21 +1155,39 @@ fn merge_ocr_pages(
                     continue;
                 }
                 let block_type = classify_ocr_block(content);
-                let normalized_content = if block_type == "formula" {
-                    normalize_formula(content)
+                let formula_result =
+                    (block_type == "formula").then(|| crate::formula_ocr::recognize_text(content));
+                let normalized_content = formula_result
+                    .as_ref()
+                    .map(|result| result.latex.clone())
+                    .unwrap_or_else(|| content.to_string());
+                let level = if block_type == "heading" {
+                    let lower = content.to_ascii_lowercase();
+                    if lower.starts_with("chapter ") || content.starts_with('第') {
+                        Some(1u8)
+                    } else {
+                        Some(2u8)
+                    }
                 } else {
-                    content.to_string()
+                    None
                 };
                 blocks.push(json!({
                     "id": format!("p{page_number}-b{}", block_index + 1),
                     "type": block_type,
                     "content": normalized_content,
+                    "rawText": content,
+                    "latex": formula_result.as_ref().map(|result| result.latex.clone()),
+                    "formulaEngine": formula_result.as_ref().map(|result| result.engine),
+                    "formulaConfidence": formula_result.as_ref().map(|result| result.confidence),
+                    "level": level,
+                    "region": if block_type == "formula" { "formula" } else if block_type == "heading" { "heading" } else { "text" },
                     "bbox": block.get("bbox").cloned().unwrap_or(Value::Null),
                     "polygon": block.get("polygon").cloned().unwrap_or(Value::Null),
                     "confidence": block.get("confidence").cloned().unwrap_or(Value::Null),
                     "language": if content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) { "zh" } else { "en" },
                 }));
             }
+            restore_reading_order(&mut blocks, dimensions.0);
             let page_value = json!({
                 "number": page_number,
                 "width": dimensions.0,
@@ -994,6 +1220,15 @@ fn merge_ocr_pages(
             warnings.retain(|warning| warning["code"] != "pdf-render-unavailable");
         }
         parsed["document"]["metadata"]["hasOcrText"] = json!(true);
+        parsed["document"]["metadata"]["pipeline"] = json!({
+            "version": PIPELINE_VERSION,
+            "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
+            "textDetection": "PP-OCRv6-small-det",
+            "textRecognition": "en_PP-OCRv5-mobile-rec",
+            "formula": "formula-ocr-adapter-v1",
+            "readingOrder": "column-aware-v1"
+        });
+        rebuild_document_structure(&mut parsed["document"]);
         parsed["document"]["metadata"]["hasFormulas"] = json!(parsed["document"]["pages"]
             .as_array()
             .map(|pages| {
@@ -1079,6 +1314,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         "device": cfg.device,
                         "modelDirectory": cfg.model_directory,
                         "dictionaryPath": cfg.dictionary_path,
+                        "modelProfile": cfg.model_profile,
                         "cacheDirectory": cfg.cache_directory.clone(),
                         "outputDirectory": cfg.output_directory,
                     },
@@ -1089,7 +1325,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     "capabilities": {
                         "parse": ["pdf", "txt", "markdown", "html", "docx", "pptx", "xlsx"],
                         "convert": ["txt", "markdown", "html", "json", "docx", "pdf"],
-                        "chunk": true,
+                        "chunk": ["hybrid", "pages", "chapters", "structure", "semantic"],
+                        "pdfSplit": ["pages", "fixed", "ranges", "chapters", "custom"],
                         "batch": ["ocr", "parse", "convert"]
                     }
                 }
@@ -1296,15 +1533,69 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     ),
                 );
             }
+            let split_mode = options
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("fixed")
+                .to_ascii_lowercase();
+            let explicit_ranges = options
+                .get("ranges")
+                .and_then(Value::as_array)
+                .map(|ranges| {
+                    ranges
+                        .iter()
+                        .filter_map(|range| {
+                            let start = range.get("start").and_then(Value::as_u64)? as usize;
+                            let end = range.get("end").and_then(Value::as_u64)? as usize;
+                            Some((start, end))
+                        })
+                        .collect::<Vec<_>>()
+                });
+            if matches!(split_mode.as_str(), "range" | "ranges" | "custom")
+                && explicit_ranges.as_ref().is_none_or(Vec::is_empty)
+            {
+                return err("invalid-value", "range/custom 模式需要 ranges 数组".into());
+            }
+            let split_cfg = load_config(db, plugin_id);
+            let split_manager = worker_manager().cloned();
+            let split_plugin_id = plugin_id.to_string();
             let task_id = match tasks().start(
                 RESOURCE_SPLIT,
                 Box::new(move |ctx| {
                     ctx.update_progress("split", 5, "读取 PDF 页面", None);
-                    let result = crate::pdf_parser::split_pdf_file(
-                        &path,
-                        &output_directory,
-                        pages_per_file,
-                    )?;
+                    let result = if matches!(split_mode.as_str(), "range" | "ranges" | "custom") {
+                        crate::pdf_parser::split_pdf_file_with_ranges(
+                            &path,
+                            &output_directory,
+                            explicit_ranges.as_deref().unwrap_or_default(),
+                        )?
+                    } else if split_mode == "chapters" {
+                        let parsed = parse_document_with_cache(
+                            &path,
+                            &split_cfg,
+                            split_manager.as_deref(),
+                            ctx,
+                            &split_plugin_id,
+                        )?;
+                        let ranges = chapter_ranges_from_document(&parsed["document"]);
+                        if ranges.is_empty() {
+                            crate::pdf_parser::split_pdf_file(
+                                &path,
+                                &output_directory,
+                                pages_per_file,
+                            )?
+                        } else {
+                            crate::pdf_parser::split_pdf_file_with_ranges(
+                                &path,
+                                &output_directory,
+                                &ranges,
+                            )?
+                        }
+                    } else if split_mode == "pages" {
+                        crate::pdf_parser::split_pdf_file(&path, &output_directory, 1)?
+                    } else {
+                        crate::pdf_parser::split_pdf_file(&path, &output_directory, pages_per_file)?
+                    };
                     ctx.check_cancelled()?;
                     ctx.update_progress(
                         "split",
@@ -1380,13 +1671,30 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         std::fs::create_dir_all(&directory)
                             .map_err(|error| format!("创建切分输出目录失败: {error}"))
                             .and_then(|_| {
-                                let output_path = directory
+                                let manifest_path = directory
                                     .join(format!("document-chunks-{}.json", ctx.task_id()));
-                                result["outputPath"] = json!(output_path.to_string_lossy());
+                                let jsonl_path = directory
+                                    .join(format!("document-chunks-{}.jsonl", ctx.task_id()));
                                 let bytes = serde_json::to_vec_pretty(&result)
                                     .map_err(|error| format!("序列化切分结果失败: {error}"))?;
-                                std::fs::write(&output_path, bytes)
-                                    .map_err(|error| format!("写入切分结果失败: {error}"))?;
+                                std::fs::write(&manifest_path, bytes)
+                                    .map_err(|error| format!("写入切分清单失败: {error}"))?;
+                                let mut jsonl = String::new();
+                                if let Some(chunks) = result["chunks"].as_array() {
+                                    for chunk in chunks {
+                                        let line =
+                                            serde_json::to_string(chunk).map_err(|error| {
+                                                format!("序列化 Chunk 失败: {error}")
+                                            })?;
+                                        jsonl.push_str(&line);
+                                        jsonl.push('\n');
+                                    }
+                                }
+                                std::fs::write(&jsonl_path, jsonl.as_bytes())
+                                    .map_err(|error| format!("写入 Chunk JSONL 失败: {error}"))?;
+                                result["outputPath"] = json!(jsonl_path.to_string_lossy());
+                                result["manifestPath"] = json!(manifest_path.to_string_lossy());
+                                result["outputFormat"] = json!("jsonl");
                                 Ok::<(), String>(())
                             })
                             .unwrap_or_else(|error| {
@@ -2146,12 +2454,12 @@ mod tests {
     fn model_catalog_exposes_worker_compatible_bundle() {
         let catalog = model_catalog();
         let entry = &catalog[0];
-        assert_eq!(entry["id"], "ppocrv4-mobile-zh-en");
+        assert_eq!(entry["id"], DEFAULT_MODEL_ID);
         assert_eq!(entry["recommended"], true);
         assert_eq!(entry["default"], true);
         assert_eq!(entry["offline"], true);
         assert_eq!(entry["artifacts"].as_array().map(Vec::len), Some(3));
-        assert_eq!(entry["totalBytes"].as_u64(), Some(15_568_058));
+        assert_eq!(entry["totalBytes"].as_u64(), Some(17_730_351));
         for artifact in entry["artifacts"].as_array().unwrap() {
             assert_eq!(artifact["sha256"].as_str().map(str::len), Some(64));
             assert!(artifact["url"].as_str().unwrap().starts_with("https://"));
@@ -2168,7 +2476,7 @@ mod tests {
             Some(&json!({ "type": "document.models.catalog" })),
         )
         .unwrap();
-        assert_eq!(response["catalog"][0]["id"], "ppocrv4-mobile-zh-en");
+        assert_eq!(response["catalog"][0]["id"], DEFAULT_MODEL_ID);
     }
 
     #[test]

@@ -155,7 +155,7 @@ SmartScreen warnings.
   `package.json` 的 `1.7.3` 仅属于冻结 Electron 遗留线。
 - 数据库 schema v4（rusqlite bundled WAL）；`%APPDATA%\cruciblebox` 数据路径（L3 已迁移）。
 - 2.0 宿主包含插件市场、任务中心、插件身份视觉体系和扁平化主题表面；市场从 CrucibleBox GitHub Release 的官方目录下载安装，严格校验插件 ID、来源 URL、声明大小和 SHA-256，再复用既有安装确认与可恢复事务；不接入 GitHub Marketplace 或账户系统。
-- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.3.0，支持最多 2000 页 PDF、页面类型判断与 OCR 页面缓存、解析结果 Markdown/TXT/JSON 导出、真实 PDF 物理拆分、AI/RAG 文本分块、可选择输出文件夹、内置 CPU OCR 默认模型并支持镜像回退）、
+- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.4.0，支持最多 2000 页 PDF、240 DPI 页面渲染、区域分流、轻量 PP-OCRv6/v5 OCR、公式 LaTeX、Document IR v2、Markdown/TXT/JSON 导出、真实 PDF 物理拆分、JSONL 文本分块、可选择输出文件夹与内置 CPU OCR 默认模型）、
   Diary、Dice Roller、GIF Editor、Theme Manager、Turntable、UniEnv、JSON/文本工具箱、
   剪贴板管理器、系统信息面板和实时汇率，共 11 个；UniEnv（0.11.0）额外提供 Ruby、Zig、Deno、Bun 及现代 TypeScript/Ruby Web/Zig 原生组合包，并提供 Rust/PHP 多版本选择。第一方插件清单发布者统一为 `CrucibleBox`。
 - 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 按插件激活单飞 / 崩溃 backoff+隔离 / PermissionGuard /

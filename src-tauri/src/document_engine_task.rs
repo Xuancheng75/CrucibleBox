@@ -429,6 +429,8 @@ fn compact_result(result: &Value) -> Value {
                 "count",
                 "target",
                 "outputPath",
+                "manifestPath",
+                "outputFormat",
                 "outputDirectory",
                 "outputs",
                 "sourcePath",

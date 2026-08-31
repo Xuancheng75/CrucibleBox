@@ -327,7 +327,9 @@ fn default_output_path(source_path: &str, target: &str) -> PathBuf {
     parent.join(format!("{stem}.{target}"))
 }
 
-fn document_blocks(document: &Value) -> Vec<(usize, String, String)> {
+type DocumentBlock = (usize, String, String, Option<String>, Option<u8>);
+
+fn document_blocks(document: &Value) -> Vec<DocumentBlock> {
     let mut blocks = Vec::new();
     if let Some(pages) = document.get("pages").and_then(Value::as_array) {
         for page in pages {
@@ -346,6 +348,14 @@ fn document_blocks(document: &Value) -> Vec<(usize, String, String)> {
                                 .unwrap_or("paragraph")
                                 .to_string(),
                             content.trim().to_string(),
+                            block
+                                .get("latex")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned),
+                            block
+                                .get("level")
+                                .and_then(Value::as_u64)
+                                .map(|value| value.clamp(1, 6) as u8),
                         ));
                     }
                 }
@@ -358,32 +368,34 @@ fn document_blocks(document: &Value) -> Vec<(usize, String, String)> {
 fn document_to_text(document: &Value) -> String {
     document_blocks(document)
         .into_iter()
-        .map(|(_, _, content)| content)
+        .map(|(_, _, content, _, _)| content)
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
 fn document_to_markdown(document: &Value) -> String {
     let mut result = String::new();
-    for (_, block_type, content) in document_blocks(document) {
+    for (_, block_type, content, latex, level) in document_blocks(document) {
         match block_type.as_str() {
             "heading" => {
                 // Keep chapter/section hierarchy readable while remaining
                 // compatible with blocks produced by older parser versions.
                 let lower = content.to_ascii_lowercase();
-                let level =
+                let level = level.map(usize::from).unwrap_or_else(|| {
                     if lower.starts_with("chapter ") || content.trim_start().starts_with('第') {
                         1
                     } else {
                         2
-                    };
+                    }
+                });
                 result.push_str(&"#".repeat(level));
                 result.push(' ');
                 result.push_str(&content);
             }
             "formula" => {
                 result.push_str("$$\n");
-                result.push_str(&normalize_formula(&content));
+                let formula = latex.unwrap_or_else(|| normalize_formula(&content));
+                result.push_str(&formula);
                 result.push_str("\n$$");
             }
             _ => result.push_str(&content),
@@ -394,21 +406,26 @@ fn document_to_markdown(document: &Value) -> String {
 }
 
 fn normalize_formula(value: &str) -> String {
-    value
-        .replace('＝', "=")
-        .replace('−', "-")
-        .replace('×', "\\times ")
-        .replace('÷', "\\div ")
-        .trim()
-        .to_string()
+    crate::formula_ocr::recognize_text(value).latex
 }
 
 fn document_to_html(document: &Value) -> String {
     let mut result = String::from(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Document</title></head><body>\n",
     );
-    for (_, block_type, content) in document_blocks(document) {
-        let tag = if block_type == "heading" { "h2" } else { "p" };
+    for (_, block_type, content, _, level) in document_blocks(document) {
+        let tag = if block_type == "heading" {
+            match level.unwrap_or(2) {
+                1 => "h1",
+                2 => "h2",
+                3 => "h3",
+                4 => "h4",
+                5 => "h5",
+                _ => "h6",
+            }
+        } else {
+            "p"
+        };
         result.push('<');
         result.push_str(tag);
         result.push('>');
@@ -453,14 +470,15 @@ fn document_to_docx_xml(document: &Value) -> String {
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
     );
-    for (_, block_type, content) in document_blocks(document) {
+    for (_, block_type, content, _, level) in document_blocks(document) {
         let style = if block_type == "heading" {
-            "<w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
+            let style_name = format!("Heading{}", level.unwrap_or(2));
+            format!("<w:pPr><w:pStyle w:val=\"{style_name}\"/></w:pPr>")
         } else {
-            ""
+            String::new()
         };
         xml.push_str("<w:p>");
-        xml.push_str(style);
+        xml.push_str(&style);
         xml.push_str("<w:r><w:t xml:space=\"preserve\">");
         xml.push_str(&escape_xml(&content));
         xml.push_str("</w:t></w:r></w:p>");

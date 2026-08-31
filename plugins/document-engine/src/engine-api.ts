@@ -37,6 +37,7 @@ export interface EngineStatus {
     device?: string
     modelDirectory?: string
     dictionaryPath?: string
+    modelProfile?: string
     cacheDirectory?: string
     outputDirectory?: string
   }
@@ -61,6 +62,12 @@ export interface ModelCatalogEntry {
   offline?: boolean
   license?: string
   totalBytes?: number
+  profile?: {
+    language?: string
+    detection?: string
+    recognition?: string
+    formula?: string
+  }
   artifacts: ModelCatalogArtifact[]
 }
 
@@ -106,6 +113,7 @@ export interface OcrResult {
     recognitionSha256: string
     dictionarySha256: string
     device: string
+    modelProfile?: string
   }
 }
 
@@ -113,6 +121,11 @@ export interface DocumentBlock {
   id: string
   type: string
   content?: string
+  rawText?: string
+  latex?: string
+  bbox?: [number, number, number, number]
+  confidence?: number
+  parentId?: string
   language?: string
   [key: string]: unknown
 }
@@ -167,6 +180,9 @@ export interface ChunkResult {
   strategy: string
   count: number
   chunks: Array<Record<string, unknown>>
+  outputPath?: string
+  manifestPath?: string
+  outputFormat?: 'jsonl' | string
 }
 
 export interface PdfSplitResult {
@@ -368,7 +384,12 @@ export async function startParse(
 export async function startPdfSplit(
   send: (message: unknown) => Promise<unknown>,
   path: string,
-  options?: { outputDirectory?: string; pagesPerFile?: number }
+  options?: {
+    outputDirectory?: string
+    pagesPerFile?: number
+    mode?: 'pages' | 'fixed' | 'ranges' | 'chapters' | 'custom'
+    ranges?: Array<{ start: number; end: number }>
+  }
 ): Promise<TaskAccepted> {
   const response = (await send(
     omitUndefined({ type: 'document.pdf.split', path, options })

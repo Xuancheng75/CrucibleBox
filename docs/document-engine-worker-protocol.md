@@ -1,4 +1,4 @@
-# Document Engine Worker 通信协议（v1）
+# Document Engine Worker 通信协议（v2 兼容 v1）
 
 > 第一开发批次协议，对应桌面 `OCR.md` 的 Rust OCR Worker 架构。
 > Worker 是独立 Rust 可执行文件；Python/MinerU 行协议属于历史方案，不再是运行时依赖。
@@ -13,6 +13,7 @@ Rust trusted service 通过 stdin/stdout JSON-lines 与 `ocr-worker.exe` 通信�
 - 诊断日志只写 stderr；stdout 只允许协议帧
 
 所有请求和响应都带 `protocolVersion: 1` 与 `requestId`。请求行最大 64 KiB。
+v2 运行时通过 `options.modelProfile` 选择轻量模型方案，协议号保持为 1 以兼容已有 Worker。
 
 ```text
 Rust (document_engine_service)
@@ -37,12 +38,15 @@ Rust (解析为 Document JSON → Task snapshot)
     "language": "ch",
     "device": "cpu",
     "modelDirectory": "C:\\...\\models",
-    "dictionaryPath": "C:\\...\\models\\ppocr_keys_v1.txt"
+    "dictionaryPath": null,
+    "modelProfile": "ppocrv6-small-det-v5-mobile-rec"
   }
 }
 ```
 
-第一批次支持 `task: ocr`，支持 `device: auto|cpu`。GPU、PDF 和批量任务在后续协议扩展中加入，旧 Worker 必须拒绝未知版本和未知任务。
+支持 `task: ocr`，`device: auto|cpu|gpu`，以及两个模型 profile：
+`ppocrv6-small-det-v5-mobile-rec`（默认轻量方案）和 `ppocrv4-mobile-zh-en`（兼容旧模型）。
+`modelProfile: auto` 会按模型目录自动选择；旧 Worker 忽略该可选字段即可继续工作。
 
 ## 3. 响应帧
 

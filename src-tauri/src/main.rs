@@ -21,6 +21,7 @@ mod document_engine_service;
 mod document_engine_task;
 mod document_parser;
 mod envelope_host;
+mod formula_ocr;
 mod install;
 mod journal;
 mod manifest;
