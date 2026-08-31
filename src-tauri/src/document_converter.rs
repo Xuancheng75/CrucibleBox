@@ -97,7 +97,7 @@ pub fn convert_document_with_cache(
         "json" => serde_json::to_vec_pretty(document)
             .map_err(|error| format!("序列化 Document JSON 失败: {error}"))?,
         "docx" => document_to_docx(document)?,
-        "pdf" => document_to_pdf(document),
+        "pdf" => document_to_pdf_with_source(document),
         _ => unreachable!("normalize_target validates target"),
     };
     if bytes.len() > MAX_OUTPUT_BYTES {
@@ -411,9 +411,17 @@ fn normalize_formula(value: &str) -> String {
 
 fn document_to_html(document: &Value) -> String {
     let mut result = String::from(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Document</title></head><body>\n",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Document</title><style>body{max-width:980px;margin:2rem auto;padding:0 2rem;font-family:system-ui,sans-serif;line-height:1.65;color:#202124}.page{break-after:page;position:relative}.formula{font-family:serif;text-align:center;margin:1rem 0;font-size:1.1em}.caption{color:#666;font-size:.9em}</style></head><body>\n",
     );
-    for (_, block_type, content, _, level) in document_blocks(document) {
+    let mut current_page = None;
+    for (page, block_type, content, latex, level) in document_blocks(document) {
+        if current_page != Some(page) {
+            if current_page.is_some() {
+                result.push_str("</section>\n");
+            }
+            result.push_str(&format!("<section class=\"page\" data-page=\"{page}\">\n"));
+            current_page = Some(page);
+        }
         let tag = if block_type == "heading" {
             match level.unwrap_or(2) {
                 1 => "h1",
@@ -423,16 +431,30 @@ fn document_to_html(document: &Value) -> String {
                 5 => "h5",
                 _ => "h6",
             }
+        } else if block_type == "formula" {
+            "div"
         } else {
             "p"
         };
         result.push('<');
         result.push_str(tag);
+        if block_type == "formula" {
+            result.push_str(" class=\"formula\" data-latex=\"");
+            result.push_str(&escape_html(latex.as_deref().unwrap_or(&content)));
+            result.push('"');
+        }
         result.push('>');
-        result.push_str(&escape_html(&content));
+        result.push_str(&escape_html(if block_type == "formula" {
+            latex.as_deref().unwrap_or(&content)
+        } else {
+            &content
+        }));
         result.push_str("</");
         result.push_str(tag);
         result.push_str(">\n");
+    }
+    if current_page.is_some() {
+        result.push_str("</section>\n");
     }
     result.push_str("</body></html>\n");
     result
@@ -446,7 +468,7 @@ fn document_to_docx(document: &Value) -> Result<Vec<u8>, String> {
         .start_file("[Content_Types].xml", options)
         .map_err(|error| format!("创建 DOCX 内容类型失败: {error}"))?;
     writer
-        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#)
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>"#)
         .map_err(|error| error.to_string())?;
     writer
         .start_file("_rels/.rels", options)
@@ -461,6 +483,18 @@ fn document_to_docx(document: &Value) -> Result<Vec<u8>, String> {
         .write_all(document_to_docx_xml(document).as_bytes())
         .map_err(|error| error.to_string())?;
     writer
+        .start_file("word/_rels/document.xml.rels", options)
+        .map_err(|error| format!("创建 DOCX 文档关系失败: {error}"))?;
+    writer
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#)
+        .map_err(|error| error.to_string())?;
+    writer
+        .start_file("word/styles.xml", options)
+        .map_err(|error| format!("创建 DOCX 样式失败: {error}"))?;
+    writer
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Formula"><w:name w:val="Formula"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr><w:rPr><w:i/></w:rPr></w:style></w:styles>"#)
+        .map_err(|error| error.to_string())?;
+    writer
         .finish()
         .map_err(|error| format!("完成 DOCX 写入失败: {error}"))?;
     Ok(buffer)
@@ -470,17 +504,28 @@ fn document_to_docx_xml(document: &Value) -> String {
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
     );
-    for (_, block_type, content, _, level) in document_blocks(document) {
+    let mut previous_page = None;
+    for (page, block_type, content, latex, level) in document_blocks(document) {
+        if previous_page.is_some() && previous_page != Some(page) {
+            xml.push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
+        }
+        previous_page = Some(page);
         let style = if block_type == "heading" {
             let style_name = format!("Heading{}", level.unwrap_or(2));
             format!("<w:pPr><w:pStyle w:val=\"{style_name}\"/></w:pPr>")
+        } else if block_type == "formula" {
+            "<w:pPr><w:pStyle w:val=\"Formula\"/></w:pPr>".to_string()
         } else {
             String::new()
         };
         xml.push_str("<w:p>");
         xml.push_str(&style);
         xml.push_str("<w:r><w:t xml:space=\"preserve\">");
-        xml.push_str(&escape_xml(&content));
+        xml.push_str(&escape_xml(if block_type == "formula" {
+            latex.as_deref().unwrap_or(&content)
+        } else {
+            &content
+        }));
         xml.push_str("</w:t></w:r></w:p>");
     }
     xml.push_str(r#"<w:sectPr/></w:body></w:document>"#);
@@ -536,6 +581,23 @@ fn document_to_pdf(document: &Value) -> Vec<u8> {
         .as_bytes(),
     );
     pdf
+}
+
+fn document_to_pdf_with_source(document: &Value) -> Vec<u8> {
+    let source_path = document["source"]["path"].as_str().unwrap_or("");
+    if Path::new(source_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+    {
+        if let Ok(bytes) = std::fs::read(source_path) {
+            // A native PDF source already contains the authoritative page
+            // geometry, fonts and image resources.  Preserve it for a PDF
+            // target instead of degrading it to a single Helvetica page.
+            return bytes;
+        }
+    }
+    document_to_pdf(document)
 }
 
 fn wrap_ascii(value: &str, width: usize) -> Vec<String> {

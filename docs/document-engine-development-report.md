@@ -1,12 +1,12 @@
 # Document Engine Development Report
 
 日期：2026-08-31
-发布基线：CrucibleBox 2.0.0（Document Engine 0.4.0）
+发布基线：CrucibleBox 2.0.0-beta.3（Document Engine 0.5.0）
 范围：`plugins/document-engine`、Rust trusted service、Rust OCR worker、Tauri Windows 打包链。
 
 ## 结论
 
-Document Engine 0.4.0 将处理链统一为 `PDF → 页面类型判断 → 240 DPI 渲染 → 区域分流 → 轻量 OCR / 公式适配 → 阅读顺序恢复 → Document IR v2`。格式转换、Chunk 切分和 PDF 物理拆分均消费同一份 IR，页面缓存按模型 profile、渲染 DPI 和流水线版本失效，避免重复 OCR。插件已注册到宿主，前端通过 self-contained renderer 构建，所有文档处理请求均经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。当前实现不依赖 Python、pip、Conda、CUDA Toolkit 或 Paddle Python 环境。
+Document Engine 0.5.0 将处理链统一为 `PDF → 页面类型判断 → PDFium 原生文本优先 / 240 DPI 渲染 → 区域分流 → 轻量 OCR / 公式适配 → 阅读顺序恢复 → Document IR v2`。格式转换、Chunk 切分和 PDF 物理拆分均消费同一份 IR，页面缓存按模型 profile、模型 SHA-256、语言、配置版本和渲染 DPI 失效，避免重复 OCR。插件已注册到宿主，前端通过 self-contained renderer 构建，所有文档处理请求均经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。当前实现不依赖 Python、pip、Conda、CUDA Toolkit 或 Paddle Python 环境。
 
 ## 架构
 
@@ -99,7 +99,7 @@ cargo tauri build --debug --config '{"bundle":{"createUpdaterArtifacts":false}}'
 - `plugins/document-engine`: TypeScript typecheck、Vitest **13 passed**、renderer self-contained build 通过。
 - 宿主 Vitest：**274 passed**；供应链 Node tests：**16 passed**；ESLint 与三层宿主 TypeScript typecheck 通过。
 - renderer self-contained 校验：`document-engine` **251,201 bytes**，无 CommonJS/import/eval，runtime mount 标记存在。
-- trusted policy 校验：`document-engine 0.4.0` digest `3b460e146ab63ef2a844124cccc4b944f893284e91e391a8b63bba9336d48ccb`。
+- trusted policy 校验：`document-engine 0.5.0` digest `5a2cf0554e727072b230da056b1df3267a2ba08eaf2d5d82f4758cd69ae5d977`。
 - Tauri 前端 Vite production build：**3063 modules transformed，成功**。
 - Windows x64 NSIS：`src-tauri/target/release/bundle/nsis/CrucibleBox_1.9.21_x64-setup.exe` 生成成功；临时安装验证确认 OCR Worker 与 PDFium 均随包落地。
 
@@ -116,9 +116,9 @@ cargo tauri build --debug --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 ## 已知限制
 
-1. 内置 converter 是可移植的轻量实现：复杂 Office 排版、字体、表格和中文 PDF 字体不会达到 LibreOffice/Pandoc 的排版保真度；输出会在结果中标注 warning。生产环境可在不改变 Document model 的前提下接入已安装的 LibreOffice/Pandoc sidecar。
-2. PDF 文本提取采用受限、确定性的内置解析器；扫描页的渲染与 OCR 已由 PDFium + ONNX worker 实际完成，复杂 PDF 对象/字体编码仍建议使用专门 PDF 引擎增强。
-3. Document Engine 0.4.0 随插件分发约 16.9 MiB 的 CPU 轻量默认模型包，首次激活会校验并复制到配置的模型目录；模型更新仍强制 HTTPS、域名白名单与 SHA-256，并支持 jsDelivr/GitHub Release/上游源顺序回退。公式阶段当前为可替换的本地适配器，不声称提供专用数学大模型。
+1. 内置 converter 是可移植实现：HTML/DOCX 会写入页面、标题、公式和样式结构，复杂 Office 排版、字体、表格和中文 PDF 字体仍可能低于 LibreOffice/Pandoc 的排版保真度；输出会在结果中标注 warning。
+2. PDFium 页面树路径优先提取原生文字并保留 bbox；无文字层的扫描页才由 PDFium 渲染 + ONNX worker OCR，复杂字体编码仍建议使用专门 PDF 引擎增强。
+3. Document Engine 0.5.0 随插件分发约 16.9 MiB 的 CPU 轻量默认模型包，首次激活会校验并复制到配置的模型目录；模型更新仍强制 HTTPS、域名白名单与 SHA-256，并支持 jsDelivr/GitHub Release/上游源顺序回退。公式阶段当前为可替换的本地适配器，不声称提供专用数学大模型。
 4. GPU 路径当前为 Windows DirectML；自动模式在 DirectML 不可用时回退 CPU。Worker 默认单实例，避免并发加载大模型造成显存 OOM。
 
 ## 0.1.2 运行时修复

@@ -17,6 +17,7 @@ const MAX_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 const DETECTION_THRESHOLD: f32 = 0.30;
 const MIN_COMPONENT_AREA: usize = 3;
+const LOW_CONFIDENCE_RETRY: f32 = 0.65;
 
 struct OcrEngine {
     detection: Session,
@@ -25,6 +26,9 @@ struct OcrEngine {
     metadata: ModelMetadata,
     device: &'static str,
     profile: &'static str,
+    detection_path: String,
+    recognition_path: String,
+    dictionary_path: String,
 }
 
 impl OcrEngine {
@@ -71,8 +75,15 @@ impl OcrEngine {
             recognition.outputs().first().map(|v| v.dtype())
         );
         eprintln!(
-            "[ocr-worker] loaded models det={} rec={} dictionary={}",
-            metadata.detection_sha256, metadata.recognition_sha256, metadata.dictionary_sha256
+            "[ocr-worker] loaded profile={} device={} det={} ({}) rec={} ({}) dictionary={} ({})",
+            paths.profile.id(),
+            if use_gpu { "directml" } else { "cpu" },
+            metadata.detection_sha256,
+            paths.detection.display(),
+            metadata.recognition_sha256,
+            paths.recognition.display(),
+            metadata.dictionary_sha256,
+            paths.dictionary.display()
         );
         Ok(Self {
             detection,
@@ -81,6 +92,9 @@ impl OcrEngine {
             metadata,
             device: if use_gpu { "directml" } else { "cpu" },
             profile: paths.profile.id(),
+            detection_path: paths.detection.to_string_lossy().into_owned(),
+            recognition_path: paths.recognition.to_string_lossy().into_owned(),
+            dictionary_path: paths.dictionary.to_string_lossy().into_owned(),
         })
     }
 
@@ -111,8 +125,25 @@ impl OcrEngine {
         let mut blocks = Vec::with_capacity(boxes.len());
         for (index, polygon) in boxes.into_iter().enumerate() {
             let crop = crop_text_region(&image, &polygon);
-            let (text, confidence) =
+            let (mut text, mut confidence) =
                 recognize_text(&mut self.recognition, &self.dictionary, &crop, self.profile)?;
+            // A second, padded pass materially improves small glyphs and
+            // mathematical symbols without loading a larger recognition
+            // model.  Keep the better-confidence result so OCR remains
+            // deterministic and bounded.
+            if confidence < LOW_CONFIDENCE_RETRY {
+                let retry_crop = crop_text_region_padded(&image, &polygon, 1.25);
+                let (retry_text, retry_confidence) = recognize_text(
+                    &mut self.recognition,
+                    &self.dictionary,
+                    &retry_crop,
+                    self.profile,
+                )?;
+                if retry_confidence > confidence {
+                    text = retry_text;
+                    confidence = retry_confidence;
+                }
+            }
             let percent = if box_count == 0 {
                 95
             } else {
@@ -146,6 +177,16 @@ impl OcrEngine {
                 detection_sha256: self.metadata.detection_sha256.clone(),
                 recognition_sha256: self.metadata.recognition_sha256.clone(),
                 dictionary_sha256: self.metadata.dictionary_sha256.clone(),
+                detection_path: self.detection_path.clone(),
+                recognition_path: self.recognition_path.clone(),
+                dictionary_path: self.dictionary_path.clone(),
+                model_version: format!(
+                    "{}:{}:{}:{}",
+                    self.profile,
+                    self.metadata.detection_sha256,
+                    self.metadata.recognition_sha256,
+                    self.metadata.dictionary_sha256
+                ),
                 device: self.device,
                 model_profile: self.profile,
             },
@@ -195,11 +236,16 @@ impl WorkerState {
             "auto" => gpu_available(),
             _ => false,
         };
+        let metadata = paths.metadata()?;
         let key = format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}",
             paths.detection.display(),
             paths.recognition.display(),
             paths.dictionary.display(),
+            paths.profile.id(),
+            metadata.detection_sha256,
+            metadata.recognition_sha256,
+            metadata.dictionary_sha256,
             if use_gpu { "gpu" } else { "cpu" }
         );
         if self.loaded_key.as_deref() != Some(key.as_str()) {
@@ -470,12 +516,20 @@ fn connected_components(
 }
 
 fn crop_text_region(image: &DynamicImage, polygon: &Polygon) -> DynamicImage {
+    crop_text_region_padded(image, polygon, 1.0)
+}
+
+fn crop_text_region_padded(
+    image: &DynamicImage,
+    polygon: &Polygon,
+    padding_scale: f32,
+) -> DynamicImage {
     let [raw_x1, raw_y1, raw_x2, raw_y2] = polygon_bbox(polygon);
     // DB maps are often only a few pixels high on small source images. Give
     // the recognizer a little context around each component; the recognizer
     // will normalize the crop to its 48-pixel text-line canvas.
-    let horizontal_pad = ((raw_x2 - raw_x1).max(1) as f32 * 0.08).ceil() as i32;
-    let vertical_pad = ((raw_y2 - raw_y1).max(1) as f32 * 0.60).ceil() as i32;
+    let horizontal_pad = ((raw_x2 - raw_x1).max(1) as f32 * 0.08 * padding_scale).ceil() as i32;
+    let vertical_pad = ((raw_y2 - raw_y1).max(1) as f32 * 0.60 * padding_scale).ceil() as i32;
     let x1 = raw_x1 - horizontal_pad;
     let y1 = raw_y1 - vertical_pad;
     let x2 = raw_x2 + horizontal_pad;

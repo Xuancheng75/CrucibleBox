@@ -3,9 +3,9 @@
 use serde_json::{json, Value};
 
 const DEFAULT_TARGET_TOKENS: usize = 512;
-const DEFAULT_MAX_TOKENS: usize = 1024;
-const DEFAULT_OVERLAP: usize = 50;
-const DEFAULT_MIN_CHARS: usize = 100;
+const DEFAULT_MAX_TOKENS: usize = 800;
+const DEFAULT_OVERLAP: usize = 80;
+const DEFAULT_MIN_TOKENS: usize = 180;
 
 #[derive(Debug, Clone, Copy)]
 struct ChunkOptions {
@@ -13,7 +13,7 @@ struct ChunkOptions {
     target_tokens: usize,
     max_tokens: usize,
     overlap: usize,
-    min_chunk_size: usize,
+    min_tokens: usize,
     pages_per_chunk: usize,
 }
 
@@ -33,6 +33,7 @@ struct BlockInput {
     block_type: String,
     page: usize,
     section_path: String,
+    parent_id: Option<String>,
 }
 
 /// Chunk a unified document. Token counts are deterministic character-based
@@ -58,13 +59,116 @@ pub fn chunk_document(document: &Value, raw_options: Option<&Value>) -> Result<V
         .unwrap_or("document")
         .to_string();
     let blocks = flatten_blocks(document);
-    let chunks = build_chunks(&blocks, &document_id, &source_file, &source_path, options);
+    let mut chunks = build_chunks(&blocks, &document_id, &source_file, &source_path, options);
+    if options.strategy == Strategy::Hybrid {
+        merge_small_chunks(&mut chunks, options);
+    }
+    for (index, chunk) in chunks.iter_mut().enumerate() {
+        chunk["chunk_index"] = json!(index);
+        chunk["chunk_id"] = json!(format!("{document_id}-c{index}"));
+    }
     Ok(json!({
         "documentId": document_id,
         "strategy": options.strategy.as_str(),
         "chunks": chunks,
-        "count": chunks.len()
+        "count": chunks.len(),
+        "quality": quality_report(&chunks, blocks.len())
     }))
+}
+
+fn merge_small_chunks(chunks: &mut Vec<Value>, options: ChunkOptions) {
+    let mut index = 0usize;
+    while index + 1 < chunks.len() {
+        let current_tokens = chunks[index]["token_count"].as_u64().unwrap_or(0) as usize;
+        let next_tokens = chunks[index + 1]["token_count"].as_u64().unwrap_or(0) as usize;
+        if current_tokens < options.min_tokens
+            && current_tokens.saturating_add(next_tokens) <= options.max_tokens
+        {
+            let current_content = chunks[index]["content"].as_str().unwrap_or("");
+            let next_content = chunks[index + 1]["content"].as_str().unwrap_or("");
+            chunks[index]["content"] = json!(format!("{current_content}\n\n{next_content}"));
+            chunks[index]["token_count"] = json!(estimate_tokens(
+                chunks[index]["content"].as_str().unwrap_or("")
+            ));
+            chunks[index]["character_count"] = json!(chunks[index]["content"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .count());
+            chunks[index]["page_end"] = chunks[index + 1]["page_end"].clone();
+            chunks[index]["type"] = json!("text");
+            if chunks[index]["title"].is_null() {
+                chunks[index]["title"] = chunks[index + 1]["title"].clone();
+            }
+            if chunks[index]["section_path"].is_null() {
+                chunks[index]["section_path"] = chunks[index + 1]["section_path"].clone();
+            }
+            let right_ids = chunks[index + 1]["block_ids"].as_array().cloned();
+            if let (Some(left), Some(right)) = (
+                chunks[index]["block_ids"].as_array_mut(),
+                right_ids.as_deref(),
+            ) {
+                left.extend(right.iter().cloned());
+            }
+            chunks.remove(index + 1);
+        } else {
+            index += 1;
+        }
+    }
+    if chunks.len() > 1 {
+        let last_index = chunks.len() - 1;
+        let last_tokens = chunks[last_index]["token_count"].as_u64().unwrap_or(0) as usize;
+        let previous_tokens = chunks[last_index - 1]["token_count"].as_u64().unwrap_or(0) as usize;
+        if last_tokens < options.min_tokens
+            && previous_tokens.saturating_add(last_tokens) <= options.max_tokens
+        {
+            let tail = chunks.pop().unwrap_or_default();
+            let tail_content = tail["content"].as_str().unwrap_or("");
+            let previous_content = chunks[last_index - 1]["content"].as_str().unwrap_or("");
+            chunks[last_index - 1]["content"] =
+                json!(format!("{previous_content}\n\n{tail_content}"));
+            chunks[last_index - 1]["token_count"] = json!(estimate_tokens(
+                chunks[last_index - 1]["content"].as_str().unwrap_or("")
+            ));
+            chunks[last_index - 1]["character_count"] = json!(chunks[last_index - 1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .count());
+            chunks[last_index - 1]["page_end"] = tail["page_end"].clone();
+            let tail_ids = tail["block_ids"].as_array().cloned().unwrap_or_default();
+            if let Some(ids) = chunks[last_index - 1]["block_ids"].as_array_mut() {
+                ids.extend(tail_ids);
+            }
+        }
+    }
+}
+
+fn quality_report(chunks: &[Value], block_count: usize) -> Value {
+    let mut token_counts = chunks
+        .iter()
+        .filter_map(|chunk| chunk["token_count"].as_u64().map(|value| value as usize))
+        .collect::<Vec<_>>();
+    token_counts.sort_unstable();
+    let total = token_counts.len();
+    let sum = token_counts.iter().sum::<usize>();
+    let tiny = token_counts.iter().filter(|value| **value <= 10).count();
+    let sectioned = chunks
+        .iter()
+        .filter(|chunk| {
+            chunk["section_path"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        })
+        .count();
+    json!({
+        "passed": total == 0 || (block_count < 100 || (tiny * 100 <= total * 35 && sectioned * 100 >= total * 60)),
+        "chunkCount": total,
+        "averageTokens": if total == 0 { 0.0 } else { sum as f64 / total as f64 },
+        "medianTokens": token_counts.get(total / 2).copied().unwrap_or(0),
+        "underTenRatio": if total == 0 { 0.0 } else { tiny as f64 / total as f64 },
+        "sectionPathRatio": if total == 0 { 0.0 } else { sectioned as f64 / total as f64 },
+    })
 }
 
 fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
@@ -91,13 +195,23 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
     let target_tokens = number("targetTokens", DEFAULT_TARGET_TOKENS);
     let max_tokens = number("maxTokens", DEFAULT_MAX_TOKENS);
     let overlap = number("overlap", DEFAULT_OVERLAP);
-    let min_chunk_size = number("minChunkSize", DEFAULT_MIN_CHARS);
+    let min_tokens = object
+        .and_then(|value| value.get("minTokens"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .or_else(|| {
+            object
+                .and_then(|value| value.get("minChunkSize"))
+                .and_then(Value::as_u64)
+                .map(|value| (value as usize / 4).max(1))
+        })
+        .unwrap_or(DEFAULT_MIN_TOKENS);
     let pages_per_chunk = number("pagesPerChunk", 1);
     if !(1..=32_768).contains(&target_tokens)
         || !(1..=65_536).contains(&max_tokens)
         || max_tokens < target_tokens
         || overlap >= max_tokens
-        || min_chunk_size > 1_000_000
+        || min_tokens > 65_536
         || !(1..=100).contains(&pages_per_chunk)
     {
         return Err(
@@ -110,14 +224,14 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
         target_tokens,
         max_tokens,
         overlap,
-        min_chunk_size,
+        min_tokens,
         pages_per_chunk,
     })
 }
 
 fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
     let mut blocks = Vec::new();
-    let mut sections: Vec<(u8, String)> = Vec::new();
+    let mut sections: Vec<(u8, String, String)> = Vec::new();
     let Some(pages) = document.get("pages").and_then(Value::as_array) else {
         return blocks;
     };
@@ -147,17 +261,23 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .unwrap_or_else(|| heading_level(content));
                 while sections
                     .last()
-                    .is_some_and(|(current, _)| *current >= level)
+                    .is_some_and(|(current, _, _)| *current >= level)
                 {
                     sections.pop();
                 }
-                sections.push((level, content.to_string()));
+                let heading_id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("p{page_number}-b{}", index + 1));
+                sections.push((level, content.to_string(), heading_id));
             }
             let section_path = sections
                 .iter()
-                .map(|(_, title)| title.as_str())
+                .map(|(_, title, _)| title.as_str())
                 .collect::<Vec<_>>()
                 .join(" / ");
+            let parent_id = sections.last().map(|(_, _, id)| id.clone());
             blocks.push(BlockInput {
                 id: block
                     .get("id")
@@ -168,6 +288,7 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                 block_type,
                 page: page_number,
                 section_path,
+                parent_id,
             });
         }
     }
@@ -245,7 +366,10 @@ fn build_chunks(
         let should_flush = !current.is_empty()
             && !math_continuation
             && !proof_body_continuation
-            && (starts_structure || current_tokens + block_tokens > options.target_tokens);
+            && ((current_tokens + block_tokens > options.target_tokens)
+                || (starts_structure
+                    && options.strategy != Strategy::Hybrid
+                    && current_tokens >= options.min_tokens));
         if should_flush {
             push_chunk(
                 &mut chunks,
@@ -280,6 +404,7 @@ fn build_chunks(
                     block_type: block.block_type.clone(),
                     page: block.page,
                     section_path: block.section_path.clone(),
+                    parent_id: block.parent_id.clone(),
                 };
                 push_chunk(
                     &mut chunks,
@@ -327,7 +452,8 @@ fn push_chunk(
         .map(|block| block.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let is_small = content.chars().count() < options.min_chunk_size;
+    let token_count = estimate_tokens(&content);
+    let is_small = token_count < options.min_tokens;
     let page_start = blocks.first().map(|block| block.page).unwrap_or(1);
     let page_end = blocks.last().map(|block| block.page).unwrap_or(page_start);
     let block_ids = blocks
@@ -350,7 +476,7 @@ fn push_chunk(
     chunks.push(json!({
         "chunk_id": format!("{document_id}-c{chunk_index}"),
         "document_id": document_id,
-        "parent_id": Value::Null,
+        "parent_id": blocks.iter().find_map(|block| block.parent_id.clone()),
         "chunk_index": *chunk_index,
         "title": blocks.iter().find(|block| block.block_type == "heading").map(|block| block.content.clone()),
         "section_path": section_path,
@@ -360,7 +486,7 @@ fn push_chunk(
         "source_file": source_file,
         "source_path": source_path,
         "block_ids": block_ids,
-        "token_count": estimate_tokens(&content),
+        "token_count": token_count,
         "character_count": content.chars().count(),
         "type": block_type,
         "isSmall": is_small,

@@ -408,6 +408,14 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
                     MAX_PDF_PAGES, page_count
                 ));
             }
+            // Object/xref streams are common in PDFs produced by modern
+            // toolchains.  PDFium can still expose their text layer even
+            // when the lightweight parser cannot see a conventional page
+            // dictionary.  Prefer that native text over sending every page
+            // through OCR (which was the source of the v4 garbage output).
+            if let Some(document) = pdfium_text_document(path, bytes, page_count) {
+                return Ok(document);
+            }
             return Ok(fallback_document(
                 path,
                 bytes,
@@ -519,6 +527,112 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         "warnings": warnings,
         "document": document
     }))
+}
+
+/// Extract native text from a PDFium page tree that is represented by object
+/// streams/xref streams.  Each PDFium text segment becomes a normal text
+/// block with its page-space bounding box, preserving enough layout metadata
+/// for the converter and heading post-processor while avoiding OCR entirely.
+fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<Value> {
+    let pdfium = bind_pdfium().ok()?;
+    let source = pdfium.load_pdf_from_file(path, None).ok()?;
+    let mut pages = Vec::with_capacity(page_count);
+    let mut reading_order = Vec::new();
+    let mut has_text_layer = false;
+    let mut has_formulas = false;
+    for page_index in 0..page_count {
+        let page = source.pages().get(page_index as i32).ok()?;
+        let width = page.width().value;
+        let height = page.height().value;
+        let mut blocks = Vec::new();
+        if let Ok(text) = page.text() {
+            for (segment_index, segment) in text.segments().iter().enumerate() {
+                let content = segment.text().trim().to_string();
+                if content.is_empty() {
+                    continue;
+                }
+                has_text_layer = true;
+                has_formulas |= content.contains("\\(") || content.contains("\\[");
+                let bounds = segment.bounds();
+                let id = format!("p{}-b{}", page_index + 1, segment_index + 1);
+                reading_order.push(id.clone());
+                let block_type = native_block_type(&content);
+                blocks.push(json!({
+                    "id": id,
+                    "type": block_type,
+                    "content": content,
+                    "language": detect_language(&content),
+                    "bbox": [bounds.left().value, bounds.top().value, bounds.right().value, bounds.bottom().value],
+                    "confidence": 1.0
+                }));
+            }
+        }
+        pages.push(json!({
+            "number": page_index + 1,
+            "width": width,
+            "height": height,
+            "blocks": blocks
+        }));
+    }
+    let source_hash = {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    };
+    Some(json!({
+        "route": if has_text_layer { "native" } else { "ocr" },
+        "requiresOcr": !has_text_layer,
+        "ocrPageNumbers": if has_text_layer { json!([]) } else { json!((1..=page_count).collect::<Vec<_>>()) },
+        "warnings": if has_text_layer { json!([]) } else { json!([{ "code": "pdfium-text-empty", "message": "PDFium 未发现原生文字层，页面将交给 OCR。" }]) },
+        "document": {
+            "id": format!("pdf-{source_hash}"),
+            "source": {
+                "path": path,
+                "mime": "application/pdf",
+                "size": bytes.len(),
+                "hash": source_hash,
+                "engine": "pdfium-text",
+                "engineVersion": pdfium_bundled::PDFIUM_VERSION
+            },
+            "metadata": {
+                "pageCount": page_count,
+                "hasTextLayer": has_text_layer,
+                "isScanned": !has_text_layer,
+                "hasTables": false,
+                "hasFormulas": has_formulas,
+                "hasImages": false
+            },
+            "pages": pages,
+            "structure": { "outline": [], "readingOrder": reading_order }
+        }
+    }))
+}
+
+fn native_block_type(text: &str) -> &'static str {
+    let value = text.trim();
+    if value.is_empty()
+        || value
+            .chars()
+            .all(|character| character.is_ascii_digit() || " .-()[]".contains(character))
+    {
+        return "text";
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower == "contents"
+        || lower == "preface"
+        || lower.starts_with("chapter ")
+        || lower.starts_with("appendix ")
+        || value.starts_with('第')
+        || (value.split_whitespace().next().is_some_and(|token| {
+            token
+                .chars()
+                .all(|character| character.is_ascii_digit() || character == '.')
+        }) && value.chars().any(|character| character.is_alphabetic()))
+    {
+        "heading"
+    } else {
+        "text"
+    }
 }
 
 fn pdfium_page_count(path: &str) -> Option<usize> {
@@ -1226,5 +1340,21 @@ mod tests {
     fn rejects_non_pdf() {
         let path = write_pdf(b"not a pdf");
         assert!(parse_file(&path).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_FIXTURE_PDF pointing at the local large PDF"]
+    fn parses_large_fixture_without_forcing_ocr() {
+        let path = std::env::var("DOCUMENT_ENGINE_FIXTURE_PDF").unwrap();
+        let parsed = parse_file(&path).unwrap();
+        let document = parsed.get("document").unwrap();
+        assert_eq!(document["metadata"]["pageCount"], 542);
+        assert!(document["metadata"]["hasTextLayer"]
+            .as_bool()
+            .unwrap_or(false));
+        assert!(!parsed["requiresOcr"].as_bool().unwrap_or(true));
+        let chunks = crate::document_chunker::chunk_document(document, None).unwrap();
+        eprintln!("fixture chunk quality: {}", chunks["quality"]);
+        assert!(chunks["quality"]["passed"].as_bool().unwrap_or(false));
     }
 }

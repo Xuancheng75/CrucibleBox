@@ -54,6 +54,7 @@ for (const plugin of catalog) {
     backend: manifest.backend !== false,
     backendApiVersion: manifest.backend === false ? null : (manifest.backendApiVersion ?? 1),
     rendererApiVersion: manifest.rendererApiVersion ?? 1,
+    ...(manifest.minHostVersion ? { minHostVersion: manifest.minHostVersion } : {}),
     files
   })
   console.log(`[plugins] packaged ${plugin.id} ${manifest.version} sha256=${digest}`)

@@ -34,6 +34,7 @@ static EVENT_EMITTER: OnceLock<Emitter> = OnceLock::new();
 static RETRY_REQUESTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 const DEFAULT_MODEL_ID: &str = "ppocrv6-small-det-v5-mobile-rec";
 const PIPELINE_VERSION: &str = "document-ir-v2-layout-ocr-v2";
+const OCR_CONFIG_VERSION: &str = "ocr-config-v3";
 
 fn worker_manager() -> Option<&'static Arc<OcrWorkerManager>> {
     OCR_WORKER.get()
@@ -582,11 +583,12 @@ fn parse_document_with_cache(
         let manager = manager.ok_or_else(|| "扫描 PDF 需要已配置 OCR Worker".to_string())?;
         parsed = merge_ocr_pages(parsed, path, manager, ctx, plugin_id, cfg, None)?;
     }
+    rebuild_document_structure(&mut parsed["document"]);
     parsed["document"]["metadata"]["pipeline"] = json!({
         "version": PIPELINE_VERSION,
         "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
-        "textDetection": "PP-OCRv6-small-det",
-        "textRecognition": "en_PP-OCRv5-mobile-rec",
+        "textDetection": "ppocrv6_small_det.onnx",
+        "textRecognition": "en_PP-OCRv5_mobile_rec.onnx",
         "formula": "formula-ocr-adapter-v1",
         "readingOrder": "column-aware-v1"
     });
@@ -606,17 +608,25 @@ fn parse_document_with_cache(
 /// as formula blocks so Markdown conversion can preserve display equations.
 fn classify_ocr_block(content: &str) -> &'static str {
     let trimmed = content.trim();
+    // Page numbers, equation labels and isolated numerals are never headings.
+    // The beta2 classifier treated every digit-prefixed line as a section,
+    // which fragmented the downstream chunk stream into thousands of tiny
+    // records.
+    if trimmed.is_empty()
+        || trimmed
+            .chars()
+            .all(|value| value.is_ascii_digit() || " .-()[]".contains(value))
+        || trimmed.chars().count() <= 2
+    {
+        return "paragraph";
+    }
     let lower = trimmed.to_ascii_lowercase();
     if trimmed.chars().count() <= 120
         && (lower.starts_with("chapter ")
             || lower.starts_with("section ")
             || lower.starts_with("appendix ")
             || trimmed.starts_with("第")
-            || (trimmed
-                .chars()
-                .next()
-                .is_some_and(|value| value.is_ascii_digit())
-                && trimmed.chars().any(|value| value.is_alphabetic())))
+            || regex_section_heading(trimmed))
     {
         return "heading";
     }
@@ -661,6 +671,59 @@ fn classify_ocr_block(content: &str) -> &'static str {
         return "formula";
     }
     "paragraph"
+}
+
+fn regex_section_heading(text: &str) -> bool {
+    let mut digits = 0usize;
+    let mut dots = 0usize;
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            digits += 1;
+        } else if character == '.' {
+            dots += 1;
+        } else {
+            break;
+        }
+    }
+    digits > 0
+        && (0..=3).contains(&dots)
+        && text.split_whitespace().count() >= 2
+        && text.chars().any(|value| value.is_alphabetic())
+}
+
+fn classify_block_with_layout(
+    content: &str,
+    bbox: Option<[f32; 4]>,
+    page_height: f32,
+) -> &'static str {
+    let base = classify_ocr_block(content);
+    if base == "formula" {
+        return base;
+    }
+    let trimmed = content.trim();
+    if trimmed
+        .chars()
+        .all(|value| value.is_ascii_digit() || " .-()[]".contains(value))
+    {
+        return "paragraph";
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let explicit = lower.starts_with("chapter ")
+        || lower.starts_with("section ")
+        || lower.starts_with("appendix ")
+        || trimmed.starts_with('第')
+        || regex_section_heading(trimmed);
+    let height_ok = bbox
+        .map(|value| {
+            let block_height = (value[3] - value[1]).abs();
+            block_height >= 10.0 && (page_height <= 0.0 || value[1] < page_height * 0.92)
+        })
+        .unwrap_or(false);
+    if explicit && (height_ok || bbox.is_none()) {
+        "heading"
+    } else {
+        "paragraph"
+    }
 }
 
 fn block_bbox(block: &Value) -> Option<[f32; 4]> {
@@ -718,22 +781,80 @@ fn restore_reading_order(blocks: &mut [Value], page_width: u32) {
 fn rebuild_document_structure(document: &mut Value) {
     let mut reading_order = Vec::new();
     let mut outline = Vec::new();
-    if let Some(pages) = document.get("pages").and_then(Value::as_array) {
+    let mut sections: Vec<(u8, String, String)> = Vec::new();
+    if let Some(pages) = document.get_mut("pages").and_then(Value::as_array_mut) {
         for page in pages {
             let page_number = page["number"].as_u64().unwrap_or(1);
-            if let Some(blocks) = page["blocks"].as_array() {
+            let page_height = page["height"].as_f64().unwrap_or(0.0) as f32;
+            if let Some(blocks) = page.get_mut("blocks").and_then(Value::as_array_mut) {
                 for block in blocks {
-                    if let Some(id) = block["id"].as_str() {
-                        reading_order.push(id.to_string());
+                    let Some(id) = block["id"].as_str().map(ToOwned::to_owned) else {
+                        continue;
+                    };
+                    reading_order.push(id.clone());
+                    let content = block["content"].as_str().unwrap_or("").trim().to_string();
+                    let bbox = block_bbox(block);
+                    let inferred_type = classify_block_with_layout(&content, bbox, page_height);
+                    if block["type"] != "formula" && inferred_type == "heading" {
+                        block["type"] = json!("heading");
+                        block["region"] = json!("heading");
+                        if block["level"].is_null() {
+                            block["level"] =
+                                json!(if content.to_ascii_lowercase().starts_with("chapter ")
+                                    || content.starts_with('第')
+                                {
+                                    1
+                                } else {
+                                    2
+                                });
+                        }
                     }
                     if block["type"] == "heading" {
-                        outline.push(json!({
-                            "id": block["id"],
-                            "title": block["content"],
-                            "level": block["level"].as_u64().unwrap_or(2),
-                            "page": page_number,
-                            "children": []
-                        }));
+                        let level = block["level"]
+                            .as_u64()
+                            .map(|value| value.clamp(1, 6) as u8)
+                            .unwrap_or_else(|| {
+                                if content.to_ascii_lowercase().starts_with("chapter ") {
+                                    1
+                                } else {
+                                    2
+                                }
+                            });
+                        // Do not trust upstream heading labels for numeric
+                        // page/eq numbers; reclassify with content + layout.
+                        if classify_block_with_layout(&content, bbox, page_height) != "heading" {
+                            block["type"] = json!("paragraph");
+                            block["region"] = json!("text");
+                        } else {
+                            while sections
+                                .last()
+                                .is_some_and(|(current, _, _)| *current >= level)
+                            {
+                                sections.pop();
+                            }
+                            let parent_id = sections.last().map(|(_, _, parent)| parent.clone());
+                            sections.push((level, content.clone(), id.clone()));
+                            outline.push(json!({
+                                "id": id,
+                                "title": content,
+                                "level": level,
+                                "page": page_number,
+                                "parentId": parent_id,
+                                "children": []
+                            }));
+                        }
+                    }
+                    let section_path = sections
+                        .iter()
+                        .map(|(_, title, _)| title.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" / ");
+                    if !section_path.is_empty() {
+                        block["sectionPath"] = json!(section_path);
+                        block["parentId"] = sections
+                            .last()
+                            .map(|(_, _, parent)| json!(parent))
+                            .unwrap_or(Value::Null);
                     }
                 }
             }
@@ -783,7 +904,61 @@ fn ocr_model_version(cfg: &DocumentEngineConfig) -> String {
             break;
         }
     }
-    format!("ocr-worker-v2:{}:{}", cfg.model_profile, parts.join("|"))
+    format!(
+        "ocr-worker-v3:{}:{}:{}",
+        cfg.model_profile,
+        OCR_CONFIG_VERSION,
+        parts.join("|")
+    )
+}
+
+fn ocr_model_identity(cfg: &DocumentEngineConfig) -> Value {
+    let directory = PathBuf::from(&cfg.model_directory);
+    let profile =
+        if cfg.model_profile.trim().is_empty() || cfg.model_profile.eq_ignore_ascii_case("auto") {
+            if directory.join("ppocrv6_small_det.onnx").is_file()
+                && directory.join("en_PP-OCRv5_mobile_rec.onnx").is_file()
+            {
+                DEFAULT_MODEL_ID
+            } else {
+                "ppocrv4-mobile-zh-en"
+            }
+        } else {
+            cfg.model_profile.as_str()
+        };
+    let legacy = profile.contains("v4");
+    let paths = [
+        directory.join(if legacy {
+            "ch_PP-OCRv4_det.onnx"
+        } else {
+            "ppocrv6_small_det.onnx"
+        }),
+        directory.join(if legacy {
+            "ch_PP-OCRv4_rec.onnx"
+        } else {
+            "en_PP-OCRv5_mobile_rec.onnx"
+        }),
+        if cfg.dictionary_path.trim().is_empty() {
+            directory.join(if legacy {
+                "ppocr_keys_v1.txt"
+            } else {
+                "en_ppocrv5_dict.txt"
+            })
+        } else {
+            PathBuf::from(&cfg.dictionary_path)
+        },
+    ];
+    json!({
+        "profile": profile,
+        "configVersion": OCR_CONFIG_VERSION,
+        "modelVersion": ocr_model_version(cfg),
+        "detectionPath": paths[0].to_string_lossy(),
+        "recognitionPath": paths[1].to_string_lossy(),
+        "dictionaryPath": paths[2].to_string_lossy(),
+        "detectionSha256": crate::document_engine_cache::file_hash(&paths[0]).unwrap_or_default(),
+        "recognitionSha256": crate::document_engine_cache::file_hash(&paths[1]).unwrap_or_default(),
+        "dictionarySha256": crate::document_engine_cache::file_hash(&paths[2]).unwrap_or_default(),
+    })
 }
 
 fn gpu_status() -> Value {
@@ -928,6 +1103,17 @@ fn run_ocr_input(
         Some(cfg.model_directory.clone()),
         (!cfg.dictionary_path.trim().is_empty()).then(|| cfg.dictionary_path.clone()),
         Some(cfg.model_profile.clone()),
+    );
+    ctx.update_progress(
+        "model",
+        1,
+        "加载 OCR 模型",
+        Some(json!({
+            "cacheHit": false,
+            "ocrEngine": "paddleocr-onnx",
+            "model": ocr_model_identity(cfg),
+            "language": request.options.as_ref().and_then(|options| options.language.clone()),
+        })),
     );
     let result = manager.run(&request, ctx.cancel_flag(), &|progress| {
         // A paused task intentionally blocks the worker frame loop here. This
@@ -1076,6 +1262,7 @@ fn merge_ocr_pages(
         let page_total = page_numbers.len();
         let source_hash = crate::document_engine_cache::file_hash(Path::new(path))?;
         let model_version = ocr_model_version(cfg);
+        let mut actual_model: Option<Value> = None;
         for (page_index, page_number) in page_numbers.iter().enumerate() {
             ctx.wait_if_paused()?;
             let page_cache_key = crate::document_engine_cache::cache_key(
@@ -1093,6 +1280,9 @@ fn merge_ocr_pages(
                 Path::new(&cfg.cache_directory),
                 &page_cache_key,
             ) {
+                if let Some(model) = cached_page.get("model") {
+                    actual_model = Some(model.clone());
+                }
                 if let Some(pages) = parsed["document"]["pages"].as_array_mut() {
                     if let Some(page) = pages
                         .iter_mut()
@@ -1115,7 +1305,8 @@ fn merge_ocr_pages(
                         "pageIndex": page_index,
                         "pageTotal": page_total,
                         "pageNumber": page_number,
-                        "cacheHit": true
+                        "cacheHit": true,
+                        "model": cached_page.get("model").cloned().unwrap_or_else(|| ocr_model_identity(cfg))
                     })),
                 );
                 continue;
@@ -1139,10 +1330,13 @@ fn merge_ocr_pages(
                 plugin_id,
                 cfg,
                 &rendered.to_string_lossy(),
-                None,
+                Some("en".to_string()),
                 None,
                 Some((page_index, page_total)),
             )?;
+            if let Some(model) = ocr.get("model") {
+                actual_model = Some(model.clone());
+            }
             let ocr_blocks = ocr["blocks"].as_array().cloned().unwrap_or_default();
             let mut blocks = Vec::with_capacity(ocr_blocks.len());
             for (block_index, block) in ocr_blocks.iter().enumerate() {
@@ -1154,7 +1348,8 @@ fn merge_ocr_pages(
                 if content.is_empty() {
                     continue;
                 }
-                let block_type = classify_ocr_block(content);
+                let block_type =
+                    classify_block_with_layout(content, block_bbox(block), dimensions.1 as f32);
                 let formula_result =
                     (block_type == "formula").then(|| crate::formula_ocr::recognize_text(content));
                 let normalized_content = formula_result
@@ -1205,7 +1400,7 @@ fn merge_ocr_pages(
             let _ = crate::document_engine_cache::write_result(
                 Path::new(&cfg.cache_directory),
                 &page_cache_key,
-                &json!({ "page": page_value }),
+                &json!({ "page": page_value, "model": ocr.get("model").cloned().unwrap_or_else(|| ocr_model_identity(cfg)) }),
             );
         }
         parsed["requiresOcr"] = json!(false);
@@ -1220,11 +1415,13 @@ fn merge_ocr_pages(
             warnings.retain(|warning| warning["code"] != "pdf-render-unavailable");
         }
         parsed["document"]["metadata"]["hasOcrText"] = json!(true);
+        parsed["document"]["metadata"]["ocrModel"] =
+            actual_model.unwrap_or_else(|| ocr_model_identity(cfg));
         parsed["document"]["metadata"]["pipeline"] = json!({
             "version": PIPELINE_VERSION,
             "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
-            "textDetection": "PP-OCRv6-small-det",
-            "textRecognition": "en_PP-OCRv5-mobile-rec",
+            "textDetection": "ppocrv6_small_det.onnx",
+            "textRecognition": "en_PP-OCRv5_mobile_rec.onnx",
             "formula": "formula-ocr-adapter-v1",
             "readingOrder": "column-aware-v1"
         });

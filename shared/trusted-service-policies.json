@@ -11,12 +11,12 @@
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "permissions": [
       "trusted:document-engine",
       "dialog"
     ],
-    "digest": "3b460e146ab63ef2a844124cccc4b944f893284e91e391a8b63bba9336d48ccb",
+    "digest": "5a2cf0554e727072b230da056b1df3267a2ba08eaf2d5d82f4758cd69ae5d977",
     "files": [
       "dist/main.js",
       "dist/renderer.js",

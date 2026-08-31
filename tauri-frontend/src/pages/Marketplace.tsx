@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Drawer, Empty, Input, Space, Tag, Typography, theme } from 'antd'
 import {
   CheckOutlined,
@@ -16,6 +16,17 @@ import { useTaskStore } from '../store/task.store'
 
 const { Title, Text, Paragraph } = Typography
 
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => value.replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0)
+  const a = parse(left)
+  const b = parse(right)
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
 export default function Marketplace() {
   const { token } = theme.useToken()
   const plugins = usePluginStore((state) => state.plugins)
@@ -26,20 +37,57 @@ export default function Marketplace() {
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<MarketplacePlugin | null>(null)
+  const [remoteCatalog, setRemoteCatalog] = useState<MarketplacePlugin[] | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void tauriApi.plugin.marketplaceCatalog().then((payload) => {
+      if (!active || !payload || typeof payload !== 'object') return
+      const entries = Array.isArray((payload as { plugins?: unknown }).plugins)
+        ? (payload as { plugins: Array<Record<string, unknown>> }).plugins
+        : []
+      const byId = new Map(OFFICIAL_MARKETPLACE_CATALOG.map((plugin) => [plugin.id, plugin]))
+      const merged = entries
+        .map((entry) => {
+          const base = byId.get(String(entry.id))
+          if (!base || typeof entry.version !== 'string') return null
+          return {
+            ...base,
+            version: entry.version,
+            ...(typeof entry.artifact === 'string' ? { artifact: entry.artifact } : {}),
+            ...(typeof entry.sha256 === 'string' ? { sha256: entry.sha256 } : {}),
+            ...(typeof entry.size === 'number' ? { size: entry.size } : {}),
+            ...(typeof entry.url === 'string' ? { url: entry.url } : {}),
+            minHostVersion:
+              typeof entry.minHostVersion === 'string'
+                ? entry.minHostVersion
+                : typeof entry.min_host_version === 'string'
+                  ? entry.min_host_version
+                  : base.minHostVersion
+          } as MarketplacePlugin
+        })
+        .filter((plugin): plugin is MarketplacePlugin => plugin !== null)
+      if (merged.length > 0) setRemoteCatalog(merged)
+    }).catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
 
   const installedById = useMemo(
     () => new Map(plugins.map((plugin) => [plugin.id, plugin])),
     [plugins]
   )
   const catalog = useMemo(() => {
+    const source = remoteCatalog ?? OFFICIAL_MARKETPLACE_CATALOG
     const normalized = query.trim().toLowerCase()
-    if (!normalized) return OFFICIAL_MARKETPLACE_CATALOG
-    return OFFICIAL_MARKETPLACE_CATALOG.filter((plugin) =>
+    if (!normalized) return source
+    return source.filter((plugin) =>
       `${plugin.name} ${plugin.id} ${plugin.category} ${plugin.description}`
         .toLowerCase()
         .includes(normalized)
     )
-  }, [query])
+  }, [query, remoteCatalog])
 
   const openInstalled = (plugin: MarketplacePlugin) => {
     const installed = installedById.get(plugin.id)
@@ -112,6 +160,8 @@ export default function Marketplace() {
           {catalog.map((plugin) => {
             const installed = installedById.get(plugin.id)
             const identity = pluginIdentity(plugin.id)
+            const installedVersion = installed?.version
+            const updateAvailable = Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
             return (
               <article
                 key={plugin.id}
@@ -129,7 +179,7 @@ export default function Marketplace() {
                   <div className="ob-market-card-title">
                     <span>{plugin.name}</span>
                     <span style={{ color: token.colorTextTertiary, fontSize: 11 }}>
-                      v{installed?.version ?? plugin.version}
+                      v{plugin.version}
                     </span>
                   </div>
                   <div style={{ color: token.colorTextTertiary, fontSize: 11, marginTop: 2 }}>
@@ -143,16 +193,16 @@ export default function Marketplace() {
                   </Paragraph>
                 <Button
                     size="small"
-                    type={installed ? 'default' : 'primary'}
+                    type={installed && !updateAvailable ? 'default' : 'primary'}
                     loading={downloadingId === plugin.id}
-                    icon={installed ? <CheckOutlined /> : <DownloadOutlined />}
+                    icon={installed && !updateAvailable ? <CheckOutlined /> : <DownloadOutlined />}
                     onClick={(event) => {
                       event.stopPropagation()
-                      if (installed) openInstalled(plugin)
+                      if (installed && !updateAvailable) openInstalled(plugin)
                       else void requestInstall(plugin)
                     }}
                   >
-                    {installed ? '打开' : '获取'}
+                    {installed && !updateAvailable ? '打开' : installed ? '更新' : '获取'}
                   </Button>
                 </div>
               </article>
@@ -177,6 +227,7 @@ export default function Marketplace() {
                 </Title>
                 <Text type="secondary">
                   {selected.publisher} · v{selected.version}
+                  {installedById.has(selected.id) ? ` · 已安装 v${installedById.get(selected.id)?.version}` : ''}
                 </Text>
               </div>
             </div>
@@ -193,14 +244,14 @@ export default function Marketplace() {
               type="primary"
               block
               loading={downloadingId === selected.id}
-              icon={
-                installedById.has(selected.id) ? <CheckOutlined /> : <DownloadOutlined />
-              }
+              icon={installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0 ? <CheckOutlined /> : <DownloadOutlined />}
               onClick={() =>
-                installedById.has(selected.id) ? openInstalled(selected) : void requestInstall(selected)
+                installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0
+                  ? openInstalled(selected)
+                  : void requestInstall(selected)
               }
             >
-              {installedById.has(selected.id) ? '打开' : '获取'}
+              {installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0 ? '打开' : installedById.has(selected.id) ? '更新' : '获取'}
             </Button>
           </Space>
         )}

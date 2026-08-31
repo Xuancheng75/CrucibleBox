@@ -210,6 +210,7 @@ fn main() {
             commands::plugin_uninstall,
             commands::plugin_install_preview,
             commands::marketplace_download_plugin,
+            commands::marketplace_catalog,
             commands::plugin_install_commit,
             commands::plugin_install_discard,
             commands::plugin_register_import_path,

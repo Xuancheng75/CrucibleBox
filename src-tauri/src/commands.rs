@@ -8,6 +8,7 @@
 
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -454,14 +455,16 @@ pub struct InstallSourceDto {
     pub path: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketplaceCatalog {
     schema_version: u32,
     plugins: Vec<MarketplaceCatalogPlugin>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct MarketplaceCatalogPlugin {
     id: String,
     version: String,
@@ -469,6 +472,14 @@ struct MarketplaceCatalogPlugin {
     sha256: String,
     size: u64,
     url: String,
+    #[serde(default)]
+    min_host_version: Option<String>,
+    #[serde(default)]
+    publisher: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    highlights: Vec<String>,
 }
 
 const MARKETPLACE_MAX_CATALOG_BYTES: u64 = 4 * 1024 * 1024;
@@ -492,31 +503,15 @@ fn marketplace_catalog_urls() -> &'static [&'static str] {
     }
 }
 
-/// Download a first-party plugin bundle from the signed release catalog.
-/// Installation still goes through plugin_install_preview/commit, so this
-/// command only materializes a digest-verified ZIP in a bounded temp folder.
-#[tauri::command(async)]
-pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<String, String> {
-    if !is_main_window(&window) {
-        return Err("unauthorized".into());
-    }
-    if id.is_empty()
-        || id.len() > 100
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-        return Err("invalid plugin id".into());
-    }
-    const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
-    let agent = marketplace_agent(15, 45);
-    let mut catalog: Option<MarketplaceCatalog> = None;
+fn fetch_marketplace_catalog() -> Result<MarketplaceCatalog, String> {
+    let agent = marketplace_agent(8, 20);
     let mut catalog_error = String::from("未找到可用的官方插件目录");
     for catalog_url in marketplace_catalog_urls() {
         for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
             let response = match agent
                 .get(catalog_url)
                 .set("Accept", "application/json")
+                .set("Cache-Control", "no-cache")
                 .set(
                     "User-Agent",
                     concat!("CrucibleBox/", env!("CARGO_PKG_VERSION")),
@@ -543,19 +538,46 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
                 continue;
             }
             match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
-                Ok(value) if value.schema_version == 1 => {
-                    catalog = Some(value);
-                    break;
-                }
+                Ok(value) if value.schema_version == 1 => return Ok(value),
                 Ok(_) => catalog_error = "官方插件目录版本不受支持".into(),
                 Err(error) => catalog_error = format!("解析官方插件目录失败：{error}"),
             }
         }
-        if catalog.is_some() {
-            break;
-        }
     }
-    let catalog = catalog.ok_or(catalog_error)?;
+    Err(catalog_error)
+}
+
+/// Return the remote first-party catalog for the marketplace page.  The
+/// frontend keeps its bundled catalog as a fast/offline fallback; this command
+/// only enriches it with the latest version and artifact metadata.
+#[tauri::command(async)]
+pub fn marketplace_catalog(window: WebviewWindow) -> Result<Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let catalog = fetch_marketplace_catalog()?;
+    serde_json::to_value(catalog).map_err(|error| format!("序列化插件目录失败: {error}"))
+}
+
+/// Download a first-party plugin bundle from the signed release catalog.
+/// Installation still goes through plugin_install_preview/commit, so this
+/// command only materializes a digest-verified ZIP in a bounded temp folder.
+#[tauri::command(async)]
+pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<String, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    if id.is_empty()
+        || id.len() > 100
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err("invalid plugin id".into());
+    }
+    const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
+    let agent = marketplace_agent(15, 45);
+    let catalog = fetch_marketplace_catalog()?;
     if catalog.schema_version != 1 {
         return Err("unsupported marketplace catalog schema".into());
     }

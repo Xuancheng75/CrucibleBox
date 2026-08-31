@@ -178,6 +178,7 @@ export const tauriApi = {
   },
 
   plugin: {
+    marketplaceCatalog: (): Promise<unknown> => invoke<unknown>('marketplace_catalog'),
     marketplaceDownload: (id: string): Promise<string> =>
       invoke<string>('marketplace_download_plugin', { id }),
     list: async (): Promise<PluginMeta[]> => {

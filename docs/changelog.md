@@ -3,6 +3,15 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 2.0.0-beta.3（2026-08）
+
+- Document Engine 0.5.0：PDFium 页面树异常时优先提取原生文字层，避免整本教材误走旧 OCR；OCR 返回实际 profile、模型路径、SHA-256 和配置版本，缓存键包含全部身份字段。
+- OCR 低置信度文本自动进行带 padding 的二次识别；英文 PDF 默认使用 PP-OCRv6-small-det + en_PP-OCRv5_mobile_rec，并在任务进度中显示模型身份与缓存命中状态。
+- Heading 后处理过滤页码、纯数字和公式编号，恢复章节层级与 sectionPath；Hybrid Chunk 先合并结构再按 512/800 token 切分，小块自动合并并输出质量报告。
+- 格式转换区分解析型导出与阅读型转换：HTML 增加页面/公式语义结构，DOCX 写入 Heading/Normal/Formula 样式和分页，PDF 输入转换保留原始页面资源与版式。
+- 插件市场增加远程目录刷新、版本比较和“更新”操作；离线时继续使用内置目录，Document Engine 目录声明最低宿主版本 2.0.0-beta.3。
+- 宿主、插件宿主、前端和 Document Engine 版本同步至 `2.0.0-beta.3` / `0.5.0`。
+
 ## 2.0.0-beta.2（2026-08）
 
 - 清理工作台、插件市场、任务中心、插件日志和设置的重复页头文字及 HUD 装饰，避免不同主题下标题错位或被裁切。
