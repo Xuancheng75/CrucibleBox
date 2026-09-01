@@ -189,7 +189,9 @@ jobs:
       # 导入升级（NSIS 不更新 %APPDATA% 内的插件）。build:plugins 同时重跑
       # renderer 自包含与 trusted digest 校验。
       - name: Package official plugin bundles
+        shell: bash
         run: |
+          set -euo pipefail
           npm run build:plugins
           npm run package:plugins:tauri
           npm run verify:plugins:tauri
