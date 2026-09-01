@@ -46,6 +46,10 @@ for (const plugin of catalog) {
   const digest = createHash('sha256').update(readFileSync(outputPath)).digest('hex')
   artifacts.push({
     id: plugin.id,
+    displayName: manifest.displayName,
+    description: manifest.description ?? '',
+    publisher: manifest.author || 'CrucibleBox',
+    ...(manifest.icon ? { icon: manifest.icon } : {}),
     version: manifest.version,
     artifact: `${plugin.id}-${manifest.version}.zip`,
     sha256: digest,

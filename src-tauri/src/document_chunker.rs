@@ -253,6 +253,7 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                 .and_then(Value::as_str)
                 .unwrap_or("paragraph")
                 .to_string();
+            let mut parent_id = sections.last().map(|(_, _, id)| id.clone());
             if block_type == "heading" {
                 let level = block
                     .get("level")
@@ -270,6 +271,7 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| format!("p{page_number}-b{}", index + 1));
+                parent_id = sections.last().map(|(_, _, id)| id.clone());
                 sections.push((level, content.to_string(), heading_id));
             }
             let section_path = sections
@@ -277,7 +279,6 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                 .map(|(_, title, _)| title.as_str())
                 .collect::<Vec<_>>()
                 .join(" / ");
-            let parent_id = sections.last().map(|(_, _, id)| id.clone());
             blocks.push(BlockInput {
                 id: block
                     .get("id")
@@ -577,6 +578,7 @@ mod tests {
         assert_eq!(output["count"], 1);
         assert_eq!(output["chunks"][0]["title"], "第一章");
         assert_eq!(output["chunks"][0]["block_ids"][0], "b1");
+        assert_eq!(output["chunks"][0]["parent_id"], "b1");
     }
 
     #[test]

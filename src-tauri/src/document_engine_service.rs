@@ -795,6 +795,7 @@ fn rebuild_document_structure(document: &mut Value) {
                     let content = block["content"].as_str().unwrap_or("").trim().to_string();
                     let bbox = block_bbox(block);
                     let inferred_type = classify_block_with_layout(&content, bbox, page_height);
+                    let mut block_parent_id = sections.last().map(|(_, _, parent)| parent.clone());
                     if block["type"] != "formula" && inferred_type == "heading" {
                         block["type"] = json!("heading");
                         block["region"] = json!("heading");
@@ -833,6 +834,7 @@ fn rebuild_document_structure(document: &mut Value) {
                                 sections.pop();
                             }
                             let parent_id = sections.last().map(|(_, _, parent)| parent.clone());
+                            block_parent_id = parent_id.clone();
                             sections.push((level, content.clone(), id.clone()));
                             outline.push(json!({
                                 "id": id,
@@ -851,10 +853,8 @@ fn rebuild_document_structure(document: &mut Value) {
                         .join(" / ");
                     if !section_path.is_empty() {
                         block["sectionPath"] = json!(section_path);
-                        block["parentId"] = sections
-                            .last()
-                            .map(|(_, _, parent)| json!(parent))
-                            .unwrap_or(Value::Null);
+                        block["parentId"] =
+                            block_parent_id.map_or(Value::Null, |parent| json!(parent));
                     }
                 }
             }
@@ -910,6 +910,14 @@ fn ocr_model_version(cfg: &DocumentEngineConfig) -> String {
         OCR_CONFIG_VERSION,
         parts.join("|")
     )
+}
+
+fn ocr_language_for_config(cfg: &DocumentEngineConfig) -> &'static str {
+    if cfg.model_profile.to_ascii_lowercase().contains("v4") {
+        "mix"
+    } else {
+        "en"
+    }
 }
 
 fn ocr_model_identity(cfg: &DocumentEngineConfig) -> Value {
@@ -1330,7 +1338,7 @@ fn merge_ocr_pages(
                 plugin_id,
                 cfg,
                 &rendered.to_string_lossy(),
-                Some("en".to_string()),
+                Some(ocr_language_for_config(cfg).to_string()),
                 None,
                 Some((page_index, page_total)),
             )?;
@@ -1420,8 +1428,8 @@ fn merge_ocr_pages(
         parsed["document"]["metadata"]["pipeline"] = json!({
             "version": PIPELINE_VERSION,
             "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
-            "textDetection": "ppocrv6_small_det.onnx",
-            "textRecognition": "en_PP-OCRv5_mobile_rec.onnx",
+            "ocrLanguage": ocr_language_for_config(cfg),
+            "ocrModel": parsed["document"]["metadata"]["ocrModel"],
             "formula": "formula-ocr-adapter-v1",
             "readingOrder": "column-aware-v1"
         });
@@ -2466,6 +2474,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out["code"], "unknown-type");
+    }
+
+    #[test]
+    fn rebuild_structure_keeps_heading_parent_ids_non_self_referential() {
+        let mut document = json!({
+            "metadata": { "pageCount": 1 },
+            "pages": [{ "number": 1, "height": 800, "blocks": [
+                { "id": "h1", "type": "heading", "content": "Chapter 1", "bbox": [10, 10, 100, 30] },
+                { "id": "p1", "type": "paragraph", "content": "Body", "bbox": [10, 40, 200, 60] },
+                { "id": "h2", "type": "heading", "content": "Section 1.1", "bbox": [10, 70, 120, 90] }
+            ]}],
+            "structure": {}
+        });
+        rebuild_document_structure(&mut document);
+        let blocks = document["pages"][0]["blocks"].as_array().unwrap();
+        assert_eq!(blocks[0]["parentId"], Value::Null);
+        assert_eq!(blocks[1]["parentId"], "h1");
+        assert_eq!(blocks[2]["parentId"], "h1");
+        assert_eq!(document["structure"]["outline"][0]["parentId"], Value::Null);
+        assert_eq!(document["structure"]["outline"][1]["parentId"], "h1");
     }
 
     #[test]

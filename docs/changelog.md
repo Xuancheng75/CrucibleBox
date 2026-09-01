@@ -3,6 +3,15 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 2.0.0-beta.4（2026-09-01）
+
+- 修复插件 Manifest v2 的 `minHostVersion` 未被宿主白名单接收，导入 Document Engine 时会显示真实的版本兼容错误；Document Engine 0.5.0 要求宿主至少为 beta4。
+- 插件市场增加刷新、稳定/测试通道标识、目录进程内缓存、离线回退、未知官方插件动态展示、新增/可更新统计和下载进度；下载支持代理环境、完整包复用及 Range 断点续传。
+- 修复市场下载失败时多次重复拉取目录的问题，聚合目录源错误并保留最后一次可用目录；导入/安装预检失败透传后端详情。
+- Document Engine 增加 OCR 语言选择，按语言选择可用模型方案；修复章节 `parentId` 自指，保持 `title`、`sectionPath` 和章节父子关系有效。
+- PDF 解析、格式转换、文本分块和真实 PDF 拆分继续共用明确分离的 Document IR；本版本未引入 GitHub Marketplace 或账户系统。
+- 宿主、插件宿主和前端版本同步至 `2.0.0-beta.4` / `0.5.0`。
+
 ## 2.0.0-beta.3（2026-08）
 
 - Document Engine 0.5.0：PDFium 页面树异常时优先提取原生文字层，避免整本教材误走旧 OCR；OCR 返回实际 profile、模型路径、SHA-256 和配置版本，缓存键包含全部身份字段。

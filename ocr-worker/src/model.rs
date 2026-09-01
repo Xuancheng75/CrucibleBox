@@ -79,6 +79,7 @@ impl ModelPaths {
         model_directory: Option<&str>,
         dictionary_path: Option<&str>,
         requested_profile: Option<&str>,
+        requested_language: Option<&str>,
     ) -> Result<Self, String> {
         let directory = model_directory
             .filter(|path| !path.trim().is_empty())
@@ -96,6 +97,17 @@ impl ModelPaths {
         {
             ModelProfile::from_id(requested)
                 .ok_or_else(|| format!("unsupported model profile: {requested}"))?
+        } else if requested_language.is_some_and(|language| {
+            matches!(language.to_ascii_lowercase().as_str(), "ch" | "zh" | "mix")
+        }) && [
+            directory.join(LEGACY_DETECTION_MODEL),
+            directory.join(LEGACY_RECOGNITION_MODEL),
+            directory.join(LEGACY_DICTIONARY),
+        ]
+        .iter()
+        .all(|path| path.is_file())
+        {
+            ModelProfile::PpOcrv4MobileZhEn
         } else if [
             directory.join(SMALL_DETECTION_MODEL),
             directory.join(MOBILE_RECOGNITION_MODEL),
@@ -206,5 +218,29 @@ mod tests {
             dictionary: PathBuf::from("m/dict.txt"),
         };
         assert_eq!(paths.directory, PathBuf::from("m"));
+    }
+
+    #[test]
+    fn chinese_language_selects_legacy_profile_when_available() {
+        let directory = std::env::temp_dir().join(format!(
+            "cruciblebox-model-profile-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        for name in [
+            LEGACY_DETECTION_MODEL,
+            LEGACY_RECOGNITION_MODEL,
+            LEGACY_DICTIONARY,
+        ] {
+            fs::write(directory.join(name), b"model").unwrap();
+        }
+        let paths =
+            ModelPaths::resolve(directory.to_str(), None, Some("auto"), Some("zh")).unwrap();
+        assert_eq!(paths.profile, ModelProfile::PpOcrv4MobileZhEn);
+        let _ = fs::remove_dir_all(directory);
     }
 }
