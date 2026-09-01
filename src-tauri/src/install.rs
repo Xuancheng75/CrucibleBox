@@ -13,8 +13,8 @@ use crate::backend_process::BackendProcessManager;
 use crate::db::{Db, PluginRow, VersionFields};
 use crate::journal::{clear_journal, recover_interrupted, write_journal, Journal, JOURNAL_VERSION};
 use crate::manifest::{
-    assert_manifest_installable, assert_upgrade_allowed, read_manifest, validate_entrypoints,
-    Manifest,
+    assert_host_version_compatible, assert_manifest_installable, assert_upgrade_allowed,
+    read_manifest, validate_entrypoints, Manifest,
 };
 use crate::rand_token::random_token_hex;
 use crate::transaction::{
@@ -370,6 +370,7 @@ impl InstallManager {
         let manifest = read_manifest(&root)?;
         validate_entrypoints(&root, &manifest)?;
         assert_manifest_installable(&manifest, self.allow_legacy_full_trust)?;
+        assert_host_version_compatible(&manifest, env!("CARGO_PKG_VERSION"))?;
         if self.is_blocked(&manifest.name) {
             self.recover_blocked_plugin(&manifest.name)?;
         }

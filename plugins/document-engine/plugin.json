@@ -9,7 +9,7 @@
   "manifestVersion": 2,
   "backendApiVersion": 2,
   "rendererApiVersion": 2,
-  "minHostVersion": "2.0.0-beta.3",
+  "minHostVersion": "2.0.0-beta.4",
   "permissions": ["trusted:document-engine", "dialog"],
   "config": {
     "modelDirectory": {

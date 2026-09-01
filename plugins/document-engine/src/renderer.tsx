@@ -297,6 +297,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [loadingStatus, setLoadingStatus] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [ocrPath, setOcrPath] = useState('')
+  const [ocrLanguage, setOcrLanguage] = useState<'auto' | 'zh' | 'en' | 'mix'>('auto')
   const [ocrTaskId, setOcrTaskId] = useState<string | null>(null)
   const [ocrTask, setOcrTask] = useState<DocumentTaskSnapshot | null>(null)
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null)
@@ -686,7 +687,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setOcrProgress(null)
     setOcrTask(null)
     try {
-      const accepted = await startOcr(send, path)
+      const accepted = await startOcr(send, path, { language: ocrLanguage })
       setOcrTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
@@ -704,7 +705,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setOcrBusy(false)
     }
-  }, [api, ocrPath, send])
+  }, [api, ocrLanguage, ocrPath, send])
 
   const stopOcr = useCallback(async () => {
     if (!ocrTaskId) return
@@ -1411,6 +1412,34 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       >
         选择图片
       </button>
+      <label
+        style={{
+          display: 'block',
+          marginTop: 12,
+          fontSize: FONT.sizeSm,
+          color: COLORS.textSecondary
+        }}
+      >
+        识别语言
+        <select
+          value={ocrLanguage}
+          onChange={(event) => setOcrLanguage(event.target.value as typeof ocrLanguage)}
+          style={{
+            display: 'block',
+            marginTop: 6,
+            padding: '8px 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 6,
+            background: COLORS.bgWhite,
+            fontSize: FONT.sizeMd
+          }}
+        >
+          <option value="auto">自动（按当前模型）</option>
+          <option value="zh">中文</option>
+          <option value="en">英文/数学</option>
+          <option value="mix">中英文混合</option>
+        </select>
+      </label>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button
           type="button"

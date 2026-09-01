@@ -104,3 +104,10 @@ Tauri 版本或 channel 推导。
 产物：`CrucibleBox_X.Y.Z_x64-setup.exe(+.sig)`、`latest.json`、双 SBOM、
 **官方插件包 zip（unienv/diary 等）**。已装用户升级宿主后需导入对应插件包以启用
 插件新功能（NSIS 不更新 %APPDATA% 内的插件）。
+
+### beta4 发布前补充检查
+
+- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.4`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
+- Document Engine 0.5.0 的 `minHostVersion` 为 `2.0.0-beta.4`，插件包必须在宿主 beta4 上完成预检、确认、提交和打开链路。
+- `plugins.json` 必须携带插件展示元数据（名称、描述、发布者、图标）以及当前 beta4 tag 的固定下载 URL；滚动 `tauri-beta` 只更新 beta 通道，不得覆盖 `tauri-stable`。
+- 发布前验证市场刷新失败时仍能显示内置/最近缓存目录，网络恢复后强制刷新能反映新增插件和版本更新；下载中断后重试应复用 `.part` 文件并重新完成 SHA-256 校验。

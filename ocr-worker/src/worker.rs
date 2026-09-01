@@ -230,6 +230,7 @@ impl WorkerState {
             options.model_directory.as_deref(),
             options.dictionary_path.as_deref(),
             options.model_profile.as_deref(),
+            options.language.as_deref(),
         )?;
         let use_gpu = match requested_device {
             "gpu" => true,
@@ -268,7 +269,7 @@ impl WorkerState {
 
 fn gpu_available() -> bool {
     static GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *GPU_AVAILABLE.get_or_init(|| gpu_available_uncached())
+    *GPU_AVAILABLE.get_or_init(gpu_available_uncached)
 }
 
 fn gpu_available_uncached() -> bool {

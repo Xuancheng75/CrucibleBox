@@ -12,8 +12,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use tauri::{Manager, State, Webview, WebviewWindow};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::{Emitter, Manager, State, Webview, WebviewWindow};
 use tauri_plugin_updater::UpdaterExt;
 
 /// 渲染进程可写 settings key 白名单（对等 electron/ipc/settings.ipc.ts）
@@ -455,14 +456,24 @@ pub struct InstallSourceDto {
     pub path: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MarketplaceCatalog {
     schema_version: u32,
     plugins: Vec<MarketplaceCatalogPlugin>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MarketplaceCatalogResponse {
+    #[serde(flatten)]
+    catalog: MarketplaceCatalog,
+    source: String,
+    stale: bool,
+    fetched_at: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct MarketplaceCatalogPlugin {
@@ -472,6 +483,12 @@ struct MarketplaceCatalogPlugin {
     sha256: String,
     size: u64,
     url: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
     #[serde(default)]
     min_host_version: Option<String>,
     #[serde(default)]
@@ -484,29 +501,97 @@ struct MarketplaceCatalogPlugin {
 
 const MARKETPLACE_MAX_CATALOG_BYTES: u64 = 4 * 1024 * 1024;
 const MARKETPLACE_DOWNLOAD_ATTEMPTS: usize = 3;
+const MARKETPLACE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct MarketplaceCatalogCache {
+    channel: String,
+    catalog: MarketplaceCatalog,
+    source: String,
+    fetched_at: u64,
+    checked_at: Instant,
+}
+
+static MARKETPLACE_CATALOG_CACHE: OnceLock<Mutex<Option<MarketplaceCatalogCache>>> =
+    OnceLock::new();
+
+fn marketplace_catalog_cache() -> &'static Mutex<Option<MarketplaceCatalogCache>> {
+    MARKETPLACE_CATALOG_CACHE.get_or_init(|| Mutex::new(None))
+}
 
 fn marketplace_agent(connect_secs: u64, read_secs: u64) -> ureq::Agent {
     ureq::AgentBuilder::new()
+        // Respect HTTP(S)_PROXY/NO_PROXY when a user or enterprise network
+        // exposes GitHub through an explicit proxy.  Without this feature the
+        // embedded client always connects directly, unlike the browser.
+        .try_proxy_from_env(true)
         .timeout_connect(std::time::Duration::from_secs(connect_secs))
         .timeout_read(std::time::Duration::from_secs(read_secs))
         .build()
 }
 
-fn marketplace_catalog_urls() -> &'static [&'static str] {
-    if env!("CARGO_PKG_VERSION").contains("-beta.") || env!("CARGO_PKG_VERSION").contains("-rc.") {
-        &[
+fn marketplace_catalog_urls(channel: &str) -> Vec<&'static str> {
+    if channel == "beta" {
+        vec![
             "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-beta/plugins.json",
             "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json",
         ]
     } else {
-        &["https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json"]
+        vec!["https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json"]
     }
 }
 
-fn fetch_marketplace_catalog() -> Result<MarketplaceCatalog, String> {
+fn marketplace_channel(requested: Option<&str>) -> Result<String, String> {
+    match requested {
+        Some("stable") => Ok("stable".into()),
+        Some("beta") => Ok("beta".into()),
+        Some(_) => Err("unsupported marketplace channel".into()),
+        None if env!("CARGO_PKG_VERSION").contains("-beta.")
+            || env!("CARGO_PKG_VERSION").contains("-rc.") =>
+        {
+            Ok("beta".into())
+        }
+        None => Ok("stable".into()),
+    }
+}
+
+fn marketplace_catalog_response(
+    catalog: MarketplaceCatalog,
+    source: String,
+    stale: bool,
+    fetched_at: u64,
+) -> MarketplaceCatalogResponse {
+    MarketplaceCatalogResponse {
+        catalog,
+        source,
+        stale,
+        fetched_at,
+    }
+}
+
+fn fetch_marketplace_catalog(
+    force_refresh: bool,
+    requested_channel: Option<&str>,
+) -> Result<MarketplaceCatalogResponse, String> {
+    let channel = marketplace_channel(requested_channel)?;
+    if !force_refresh {
+        let cache = marketplace_catalog_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cache.as_ref().filter(|cached| {
+            cached.channel == channel && cached.checked_at.elapsed() < MARKETPLACE_CATALOG_CACHE_TTL
+        }) {
+            return Ok(marketplace_catalog_response(
+                cached.catalog.clone(),
+                cached.source.clone(),
+                false,
+                cached.fetched_at,
+            ));
+        }
+    }
+
     let agent = marketplace_agent(8, 20);
-    let mut catalog_error = String::from("未找到可用的官方插件目录");
-    for catalog_url in marketplace_catalog_urls() {
+    let mut catalog_errors = Vec::new();
+    for catalog_url in marketplace_catalog_urls(&channel) {
         for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
             let response = match agent
                 .get(catalog_url)
@@ -520,7 +605,7 @@ fn fetch_marketplace_catalog() -> Result<MarketplaceCatalog, String> {
             {
                 Ok(response) => response,
                 Err(error) => {
-                    catalog_error = format!("读取官方插件目录失败（第 {attempt} 次）：{error}");
+                    catalog_errors.push(format!("{catalog_url}（第 {attempt} 次）：{error}"));
                     continue;
                 }
             };
@@ -530,32 +615,72 @@ fn fetch_marketplace_catalog() -> Result<MarketplaceCatalog, String> {
                 .take(MARKETPLACE_MAX_CATALOG_BYTES + 1)
                 .read_to_string(&mut catalog_text)
             {
-                catalog_error = format!("读取官方插件目录失败（第 {attempt} 次）：{error}");
+                catalog_errors.push(format!("{catalog_url}（第 {attempt} 次）：{error}"));
                 continue;
             }
             if catalog_text.len() as u64 > MARKETPLACE_MAX_CATALOG_BYTES {
-                catalog_error = "官方插件目录超过安全大小限制".into();
+                catalog_errors.push(format!("{catalog_url}：官方插件目录超过安全大小限制"));
                 continue;
             }
             match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
-                Ok(value) if value.schema_version == 1 => return Ok(value),
-                Ok(_) => catalog_error = "官方插件目录版本不受支持".into(),
-                Err(error) => catalog_error = format!("解析官方插件目录失败：{error}"),
+                Ok(value) if value.schema_version == 1 => {
+                    let fetched_at = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or_default();
+                    marketplace_catalog_cache()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .replace(MarketplaceCatalogCache {
+                            channel: channel.clone(),
+                            catalog: value.clone(),
+                            source: catalog_url.to_string(),
+                            fetched_at,
+                            checked_at: Instant::now(),
+                        });
+                    return Ok(marketplace_catalog_response(
+                        value,
+                        catalog_url.to_string(),
+                        false,
+                        fetched_at,
+                    ));
+                }
+                Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
+                Err(error) => catalog_errors.push(format!("{catalog_url}：解析失败：{error}")),
             }
         }
     }
-    Err(catalog_error)
+
+    let cache = marketplace_catalog_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = cache.as_ref().filter(|cached| cached.channel == channel) {
+        return Ok(marketplace_catalog_response(
+            cached.catalog.clone(),
+            cached.source.clone(),
+            true,
+            cached.fetched_at,
+        ));
+    }
+    Err(format!(
+        "读取官方插件目录失败：{}",
+        catalog_errors.join("；")
+    ))
 }
 
 /// Return the remote first-party catalog for the marketplace page.  The
 /// frontend keeps its bundled catalog as a fast/offline fallback; this command
 /// only enriches it with the latest version and artifact metadata.
 #[tauri::command(async)]
-pub fn marketplace_catalog(window: WebviewWindow) -> Result<Value, String> {
+pub fn marketplace_catalog(
+    window: WebviewWindow,
+    force_refresh: Option<bool>,
+    channel: Option<String>,
+) -> Result<Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let catalog = fetch_marketplace_catalog()?;
+    let catalog = fetch_marketplace_catalog(force_refresh.unwrap_or(false), channel.as_deref())?;
     serde_json::to_value(catalog).map_err(|error| format!("序列化插件目录失败: {error}"))
 }
 
@@ -563,7 +688,11 @@ pub fn marketplace_catalog(window: WebviewWindow) -> Result<Value, String> {
 /// Installation still goes through plugin_install_preview/commit, so this
 /// command only materializes a digest-verified ZIP in a bounded temp folder.
 #[tauri::command(async)]
-pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<String, String> {
+pub fn marketplace_download_plugin(
+    window: WebviewWindow,
+    id: String,
+    channel: Option<String>,
+) -> Result<String, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
@@ -577,7 +706,7 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
     }
     const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
     let agent = marketplace_agent(15, 45);
-    let catalog = fetch_marketplace_catalog()?;
+    let catalog = fetch_marketplace_catalog(false, channel.as_deref())?.catalog;
     if catalog.schema_version != 1 {
         return Err("unsupported marketplace catalog schema".into());
     }
@@ -601,10 +730,56 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let target = root.join(&plugin.artifact);
     let partial = root.join(format!(".{}.part", plugin.artifact));
+
+    if let Ok((size, digest)) = sha256_file(&target) {
+        if size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256) {
+            emit_marketplace_progress(
+                &window,
+                &plugin.artifact,
+                plugin.size,
+                plugin.size,
+                "cached",
+            );
+            return Ok(target.to_string_lossy().into_owned());
+        }
+    }
+    if let Ok((size, digest)) = sha256_file(&partial) {
+        if size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256) {
+            if target.exists() {
+                let _ = std::fs::remove_file(&target);
+            }
+            std::fs::rename(&partial, &target)
+                .map_err(|error| format!("无法复用已完成的插件包：{error}"))?;
+            emit_marketplace_progress(
+                &window,
+                &plugin.artifact,
+                plugin.size,
+                plugin.size,
+                "cached",
+            );
+            return Ok(target.to_string_lossy().into_owned());
+        }
+    }
+
     let mut last_download_error = String::from("下载插件失败");
+    let mut download_completed = false;
     for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
-        let response = match agent
-            .get(&plugin.url)
+        let partial_size = std::fs::metadata(&partial)
+            .ok()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        if partial_size > plugin.size {
+            let _ = std::fs::remove_file(&partial);
+        }
+        let partial_size = std::fs::metadata(&partial)
+            .ok()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        let mut request = agent.get(&plugin.url);
+        if partial_size > 0 {
+            request = request.set("Range", &format!("bytes={partial_size}-"));
+        }
+        let response = match request
             .set("Accept", "application/octet-stream")
             .set(
                 "User-Agent",
@@ -622,22 +797,55 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
             last_download_error = "下载响应不是 HTTPS 地址".into();
             continue;
         }
+        let resumed = partial_size > 0
+            && response.status() == 206
+            && response
+                .header("Content-Range")
+                .is_some_and(|value| value.starts_with(&format!("bytes {partial_size}-")));
+        let offset = if resumed { partial_size } else { 0 };
+        if partial_size > 0 && !resumed {
+            let _ = std::fs::remove_file(&partial);
+        }
         if response
             .header("Content-Length")
             .and_then(|value| value.parse::<u64>().ok())
-            .is_some_and(|size| size > plugin.size || size > MAX_PLUGIN_BYTES)
+            .is_some_and(|size| {
+                size > plugin.size.saturating_sub(offset) || size > MAX_PLUGIN_BYTES
+            })
         {
             last_download_error = "下载响应超过目录声明大小".into();
             continue;
         }
-        let _ = std::fs::remove_file(&partial);
         let mut reader = response.into_reader();
-        let mut file = match std::fs::File::create(&partial) {
+        let mut file = match if resumed {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&partial)
+        } else {
+            std::fs::File::create(&partial)
+        } {
             Ok(file) => file,
             Err(error) => return Err(format!("无法创建下载临时文件：{error}")),
         };
         let mut hasher = Sha256::new();
-        let mut total = 0_u64;
+        let mut total = offset;
+        if resumed {
+            let mut existing = match std::fs::File::open(&partial) {
+                Ok(file) => file,
+                Err(error) => return Err(format!("无法读取断点文件：{error}")),
+            };
+            let mut existing_buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = existing
+                    .read(&mut existing_buffer)
+                    .map_err(|error| format!("无法读取断点文件：{error}"))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&existing_buffer[..read]);
+            }
+        }
         let mut buffer = [0_u8; 64 * 1024];
         let mut read_error = None;
         loop {
@@ -661,15 +869,14 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
                 read_error = Some(error.to_string());
                 break;
             }
+            emit_marketplace_progress(&window, &plugin.artifact, total, plugin.size, "downloading");
         }
         if let Some(error) = read_error {
             last_download_error = format!("下载插件失败（第 {attempt} 次）：{error}");
-            let _ = std::fs::remove_file(&partial);
             continue;
         }
         if let Err(error) = file.sync_all() {
             last_download_error = format!("保存插件包失败：{error}");
-            let _ = std::fs::remove_file(&partial);
             continue;
         }
         if total != plugin.size
@@ -679,9 +886,10 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
             let _ = std::fs::remove_file(&partial);
             continue;
         }
+        download_completed = true;
         break;
     }
-    if !partial.exists() {
+    if !download_completed {
         return Err(last_download_error);
     }
     if target.exists() {
@@ -689,6 +897,40 @@ pub fn marketplace_download_plugin(window: WebviewWindow, id: String) -> Result<
     }
     std::fs::rename(&partial, &target).map_err(|error| error.to_string())?;
     Ok(target.to_string_lossy().into_owned())
+}
+
+fn sha256_file(path: &std::path::Path) -> Result<(u64, String), String> {
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((total, format!("{:x}", hasher.finalize())))
+}
+
+fn emit_marketplace_progress(
+    window: &WebviewWindow,
+    artifact: &str,
+    downloaded: u64,
+    total: u64,
+    stage: &str,
+) {
+    let _ = window.emit(
+        "marketplace:progress",
+        serde_json::json!({
+            "artifact": artifact,
+            "downloaded": downloaded,
+            "total": total,
+            "stage": stage
+        }),
+    );
 }
 
 /// 安装预览：校验来源 + manifest + 升级策略，返回 installToken（对等 previewInstall）。

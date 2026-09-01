@@ -27,8 +27,8 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
     err instanceof Error ? err.message : typeof err === 'string' ? err : String(err)
 
   const showInstallError = () => {
-    // 错误详情由全局确认弹窗的安装结果与 message 提示呈现；此处兜底提示
-    message.error('插件导入失败，请检查包内容后重试')
+    const detail = usePluginStore.getState().error
+    message.error(detail ? `插件导入失败：${detail}` : '插件导入失败，请检查包内容后重试')
   }
 
   const installZipPath = async (path: string): Promise<boolean> => {
