@@ -15,7 +15,7 @@ export interface MarketplacePlugin {
 }
 
 export const OFFICIAL_MARKETPLACE_CATALOG: MarketplacePlugin[] = [
-  { id: 'document-engine', name: 'Document Engine', version: '0.6.0', publisher: 'CrucibleBox', category: '文档与 AI', description: '本地 PDF、轻量 OCR、版面分流、公式 LaTeX、结构化解析、格式转换和 RAG 数据准备。', highlights: ['文本清洗与章节树', 'Markdown/LaTeX 输出', 'Chunk 与真实 PDF 拆分'], minHostVersion: '2.0.0-beta.5' },
+  { id: 'document-engine', name: 'Document Engine', version: '0.7.0', publisher: 'CrucibleBox', category: '文档与 AI', description: '本地 PDF、轻量 OCR、版面分流、公式 LaTeX、结构化解析、格式转换和 RAG 数据准备。', highlights: ['文本清洗与章节树', 'Markdown/LaTeX 输出', 'Chunk 与真实 PDF 拆分'], minHostVersion: '2.0.0-beta.6' },
   { id: 'unienv', name: 'UniEnv', version: '0.11.0', publisher: 'CrucibleBox', category: '开发环境', description: '多语言开发环境检测、安装、切换和项目配置。', highlights: ['11 种工具链', 'Rust/PHP 多版本', '镜像与组合包'] },
   { id: 'diary', name: '日记', version: '0.5.0', publisher: 'CrucibleBox', category: '记录与写作', description: '支持 Markdown、LaTeX、日历与结构化整理的本地日记。', highlights: ['Markdown/LaTeX', '日历视图', '本地存储'] },
   { id: 'gif-editor', name: 'GIF 编辑器', version: '0.5.0', publisher: 'CrucibleBox', category: '图像与媒体', description: '时间轴式 GIF 拆帧、编辑、优化和导出工具。', highlights: ['逐帧编辑', '批量删除', '重新合成'] },

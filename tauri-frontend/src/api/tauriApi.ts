@@ -217,8 +217,12 @@ export const tauriApi = {
         forceRefresh,
         channel
       }),
-    marketplaceDownload: (id: string, channel?: 'stable' | 'beta'): Promise<string> =>
-      invoke<string>('marketplace_download_plugin', { id, channel }),
+    marketplaceDownload: (
+      id: string,
+      channel?: 'stable' | 'beta',
+      priority: 'foreground' | 'normal' = 'foreground'
+    ): Promise<string> =>
+      invoke<string>('marketplace_download_plugin', { id, channel, priority }),
     list: async (): Promise<PluginMeta[]> => {
       const dtos = await invoke<PluginMetaDto[]>('plugin_list')
       return dtos.map(toPluginMeta)

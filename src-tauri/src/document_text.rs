@@ -53,15 +53,7 @@ pub fn sanitize_document(document: &mut Value) -> SanitizationStats {
             Value::String(text)
                 if matches!(
                     key,
-                    Some(
-                        "content"
-                            | "rawText"
-                            | "plainText"
-                            | "latex"
-                            | "title"
-                            | "sectionPath"
-                            | "caption"
-                    )
+                    Some("content" | "plainText" | "latex" | "title" | "sectionPath" | "caption")
                 ) =>
             {
                 let (normalized, current) = normalize_text(text);

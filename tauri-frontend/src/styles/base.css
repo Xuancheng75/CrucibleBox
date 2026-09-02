@@ -102,8 +102,9 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  min-height: 154px;
+  height: 154px;
   padding: 16px;
+  overflow: hidden;
   box-shadow: none !important;
   cursor: pointer;
   transition: border-color 0.16s ease, transform 0.16s ease;
@@ -112,6 +113,61 @@ body {
 .ob-market-card:hover {
   border-color: var(--ob-color-primary, #1677ff) !important;
   transform: translateY(-1px);
+}
+
+.ob-market-download-dock {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 45;
+  width: min(360px, calc(100vw - 48px));
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--ob-color-primary, #1677ff) 35%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ob-color-bg-container, #fff) 94%, transparent);
+  box-shadow: 0 10px 28px rgb(35 24 16 / 14%);
+  backdrop-filter: blur(12px);
+}
+
+.ob-market-download-dock-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ob-color-text-secondary, #666);
+  font-size: 12px;
+}
+
+.ob-market-download-dock-name {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--ob-color-text, #333);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ob-market-download-dock-track {
+  height: 6px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ob-color-primary, #1677ff) 12%, transparent);
+}
+
+.ob-market-download-dock-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ob-color-primary, #1677ff);
+  transition: width 0.2s ease;
+}
+
+.ob-market-download-dock-percent {
+  display: block;
+  margin-top: 4px;
+  color: var(--ob-color-text-tertiary, #888);
+  font-size: 11px;
+  text-align: right;
 }
 
 .ob-market-card-title {

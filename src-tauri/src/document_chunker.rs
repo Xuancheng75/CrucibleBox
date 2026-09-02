@@ -33,6 +33,7 @@ struct BlockInput {
     block_type: String,
     page: usize,
     section_path: String,
+    section_path_confidence: f64,
     section_id: Option<String>,
     parent_id: Option<String>,
 }
@@ -254,7 +255,17 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                 .and_then(Value::as_str)
                 .unwrap_or("paragraph")
                 .to_string();
-            if block_type == "toc_entry" || block_type == "toc" {
+            if block_type == "toc_entry"
+                || block_type == "toc"
+                || matches!(
+                    block_type.as_str(),
+                    "header" | "footer" | "page_number" | "production_mark"
+                )
+                || block
+                    .get("excludedFromRag")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
                 continue;
             }
             let mut parent_id = sections.last().map(|(_, _, id)| id.clone());
@@ -297,6 +308,10 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned)
                     .unwrap_or(section_path),
+                section_path_confidence: block
+                    .get("sectionPathConfidence")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.9),
                 section_id: block
                     .get("sectionId")
                     .and_then(Value::as_str)
@@ -423,6 +438,7 @@ fn build_chunks(
                     section_path: block.section_path.clone(),
                     section_id: block.section_id.clone(),
                     parent_id: block.parent_id.clone(),
+                    section_path_confidence: block.section_path_confidence,
                 };
                 push_chunk(
                     &mut chunks,
@@ -478,6 +494,35 @@ fn push_chunk(
         .iter()
         .map(|block| block.id.clone())
         .collect::<Vec<_>>();
+    let mut quality_flags = Vec::new();
+    let rag_eligible = blocks.iter().all(|block| {
+        let eligible = !block
+            .content
+            .chars()
+            .any(|character| !crate::document_text::is_xml_10_char(character));
+        if !eligible {
+            quality_flags.push("invalid_xml_character");
+        }
+        if block.block_type == "formula" {
+            quality_flags.push("contains_formula");
+        }
+        if block.block_type == "table" {
+            quality_flags.push("contains_table");
+        }
+        eligible
+    });
+    quality_flags.sort_unstable();
+    quality_flags.dedup();
+    let section_path_confidence = blocks
+        .iter()
+        .map(|block| {
+            if block.section_path.is_empty() {
+                0.0
+            } else {
+                block.section_path_confidence
+            }
+        })
+        .fold(1.0_f64, f64::min);
     let block_type = blocks
         .iter()
         .find(|block| block.block_type == "heading")
@@ -500,6 +545,7 @@ fn push_chunk(
         "chunk_index": *chunk_index,
         "title": blocks.iter().find(|block| block.block_type == "heading").map(|block| block.content.clone()),
         "section_path": section_path,
+        "section_path_confidence": section_path_confidence,
         "content": content,
         "page_start": page_start,
         "page_end": page_end,
@@ -509,6 +555,8 @@ fn push_chunk(
         "token_count": token_count,
         "character_count": content.chars().count(),
         "type": block_type,
+        "quality_flags": quality_flags,
+        "ragEligible": rag_eligible,
         "isSmall": is_small,
     }));
     *chunk_index += 1;

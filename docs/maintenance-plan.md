@@ -1,8 +1,8 @@
 # CrucibleBox 维护复杂度优化方案（整合版）
 
-> 状态：维护规范（2.0.0-beta.5 工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。
-> 基线：CrucibleBox 2.0.0-beta.5（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
-> 唯一可编辑源码：`E:\CrucibleBox_Sourses`（git 仓库；beta5 发布提交以实际发布 tag 为准）。
+> 状态：维护规范（2.0.0-beta.6 工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。
+> 基线：CrucibleBox 2.0.0-beta.6（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
+> 唯一可编辑源码：`E:\CrucibleBox_Sourses`（git 仓库；beta6 发布提交以实际发布 tag 为准）。
 > `E:\CrucibleBox_Plugins` 为只读镜像 / 发布备份，不参与构建。
 
 ## 0. 目标与约束
@@ -20,7 +20,22 @@
   9. 不维护第二套可编辑插件源码；
   10. 不再增加阶段性 milestone 文档。
 
-## 0.1 beta5 工作包与验收范围
+## 0.1 beta6 工作包与验收范围
+
+beta6 在 beta5 的稳定基础上，收敛 Windows 代理下的市场可用性，并完成 Document Engine 结构正确性、数学文档和格式转换可靠性验收；不调整 Hybrid Chunk 的目标长度、min/max token 或基本 merge 逻辑。
+
+| 优先级 | 范围                 | 验收标准                                                                                                                                                       |
+| ------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0     | 市场目录与下载       | Windows WinHTTP 自动代理/WPAD 获取目录；BITS 优先处理新包，ureq/Range 回退；官方 GitHub 单一来源、HTTPS、大小、SHA-256 校验不变；批量下载/全部更新复用任务队列 |
+| P0     | 市场布局与交互       | 进度移到固定下载任务栏；卡片高度和左侧布局稳定；常态无复选框，右键或顶部多选进入选择态；刷新固定在顶部右侧                                                     |
+| P0     | IPC 稳定性           | 任务快照按节点数和深度限流，完整结果走输出文件；图片类 PDF 不因 IPC payload 预算失败                                                                           |
+| P1     | Document Engine 结构 | 原生文本质量标记、XML-safe 清洗、TOC 隔离、重复页眉页脚过滤、标题候选评分与章节树一致性指标；正确生成 parentId/sectionId/sectionPath                           |
+| P1     | 数学与区域           | 公式块保留 LaTeX/plainText/bbox/page/confidence/source；表格、图片、实验性 figure/vector 区域独立记录，不被 Text Layer 短路                                    |
+| P1     | 输出与回归           | 解析型 JSON/MD/TXT/Chunk 与 DOCX/HTML/PDF 阅读型转换分离；Thomas 1348 页原生文本回归、扫描 PDF 全 OCR 回归、DOCX XML 门禁和 Hybrid Chunk 指标全绿              |
+
+beta6 不包含下载镜像、GitHub Marketplace、账户系统、Windows Authenticode 证书，也不把插件 backend 改造成不可信代码沙箱。
+
+## 0.2 beta5 工作包与验收范围
 
 本工作包不推翻现有 Tauri、插件独立构建或 Document Engine 架构，重点收敛 beta3 暴露的市场与导入故障，并把 Document Engine 的结构契约落实到可验证行为：
 

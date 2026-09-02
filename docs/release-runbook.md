@@ -105,6 +105,15 @@ Tauri 版本或 channel 推导。
 **官方插件包 zip（unienv/diary 等）**。已装用户升级宿主后需导入对应插件包以启用
 插件新功能（NSIS 不更新 %APPDATA% 内的插件）。
 
+### beta6 发布前补充检查
+
+- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.6`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
+- Document Engine 0.7.0 的 `minHostVersion` 为 `2.0.0-beta.6`；插件包必须完成预检、确认、提交、打开和升级链路。
+- 市场目录请求在 Windows 优先走 WinHTTP 自动代理/WPAD，插件包新传输优先走 BITS；ureq/Range 路径只作兼容回退。禁止加入镜像源或绕过 HTTPS、大小、SHA-256 校验。
+- 发布前验证市场刷新失败时仍能显示内置/最近缓存目录；网络恢复后强制刷新能反映新增插件和插件更新；多选、批量下载、全部更新不能改变卡片高度、左侧布局或进度布局。
+- Document Engine 解析验收必须记录 `invalidControlChars=0`、`invalidXmlChars=0`、native/OCR 质量、TOC/heading/section sample、formula/image/table block 计数，以及 350–600 token Hybrid Chunk 回归指标；扫描 PDF 必须跑完整 OCR 回归。
+- IPC 任务快照必须通过节点数/深度预算；完整解析结果只能从输出路径读取，不能因预览快照触发 `PAYLOAD_TOO_COMPLEX`。
+
 ### beta5 发布前补充检查
 
 - Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.5`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。

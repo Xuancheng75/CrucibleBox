@@ -584,6 +584,8 @@ fn parse_document_with_cache(
         parsed = merge_ocr_pages(parsed, path, manager, ctx, plugin_id, cfg, None)?;
     }
     let sanitization = crate::document_text::sanitize_document(&mut parsed["document"]);
+    let native_quality =
+        crate::document_quality::annotate_native_text_quality(&mut parsed["document"]);
     enrich_formula_blocks(&mut parsed["document"]);
     rebuild_document_structure(&mut parsed["document"]);
     parsed["document"]["metadata"]["pipeline"] = json!({
@@ -598,6 +600,7 @@ fn parse_document_with_cache(
         &parsed["document"],
         sanitization.invalid_control_chars_removed,
     );
+    parsed["document"]["metadata"]["nativeTextQuality"] = native_quality;
     ctx.check_cancelled()?;
     ctx.update_progress("quality", 96, "检查解析质量", None);
     let _ = crate::document_engine_cache::write_result(
@@ -2473,6 +2476,71 @@ mod tests {
             "Hi"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_SCAN_FIXTURE_PDF and local OCR models"]
+    fn parses_scanned_pdf_through_full_ocr_pipeline() {
+        let path = std::env::var("DOCUMENT_ENGINE_SCAN_FIXTURE_PDF").unwrap_or_else(|_| {
+            "C:\\Users\\hjc\\Desktop\\fogharbor_botanical_field_notes_scanned.pdf".into()
+        });
+        let worker_path = std::env::var("OCR_WORKER_EXE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from("E:\\CrucibleBox_Sourses\\ocr-worker\\target\\debug\\ocr-worker.exe")
+            });
+        let root = std::env::temp_dir().join(format!("cb-de-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let manager = Arc::new(OcrWorkerManager::new(
+            worker_path,
+            std::time::Duration::from_secs(180),
+        ));
+        let config = DocumentEngineConfig {
+            model_directory: "E:\\OCR\\Models".into(),
+            dictionary_path: "E:\\OCR\\Models\\ppocr_keys_v1.txt".into(),
+            model_profile: "ppocrv4-mobile-zh-en".into(),
+            cache_directory: root.join("cache").to_string_lossy().into_owned(),
+            output_directory: root.join("output").to_string_lossy().into_owned(),
+            device: "cpu".into(),
+        };
+        let task_id = tasks()
+            .start(
+                RESOURCE_PARSE,
+                Box::new(move |ctx| {
+                    parse_document_with_cache(
+                        &path,
+                        &config,
+                        Some(&manager),
+                        ctx,
+                        "document-engine",
+                    )
+                }),
+            )
+            .unwrap();
+        let mut snapshot = Value::Null;
+        for _ in 0..720 {
+            snapshot = tasks().get(&task_id).unwrap();
+            if matches!(
+                snapshot["status"].as_str(),
+                Some("succeeded") | Some("failed")
+            ) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        assert_eq!(snapshot["status"], "succeeded", "{snapshot}");
+        assert!(matches!(
+            snapshot["result"]["route"].as_str(),
+            Some("ocr") | Some("mixed")
+        ));
+        assert!(
+            snapshot["result"]["document"]["metadata"]["pageCount"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0
+        );
+        assert!(snapshot["result"]["document"]["metadata"]["quality"]["invalidControlChars"] == 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

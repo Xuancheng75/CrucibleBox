@@ -28,6 +28,8 @@ mod formula_ocr;
 mod install;
 mod journal;
 mod manifest;
+mod marketplace_download;
+mod marketplace_transport;
 mod ocr_worker;
 mod pdf_parser;
 mod permissions;

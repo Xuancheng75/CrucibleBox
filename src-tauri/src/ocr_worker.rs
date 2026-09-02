@@ -357,6 +357,12 @@ impl OcrWorkerManager {
                     let mut reader = std::io::BufReader::new(stderr);
                     let mut sink = Vec::new();
                     let _ = reader.read_to_end(&mut sink);
+                    if !sink.is_empty() {
+                        eprintln!(
+                            "[ocr-worker] stderr: {}",
+                            String::from_utf8_lossy(&sink).trim()
+                        );
+                    }
                 })
                 .map_err(|error| format!("spawn OCR worker stderr thread failed: {error}"))?;
         }

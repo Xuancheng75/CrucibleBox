@@ -1,12 +1,12 @@
 # Document Engine Development Report
 
 日期：2026-09-02
-发布基线：CrucibleBox 2.0.0-beta.5（Document Engine 0.6.0）
+发布基线：CrucibleBox 2.0.0-beta.6（Document Engine 0.7.0）
 范围：`plugins/document-engine`、Rust trusted service、Rust OCR worker、Tauri Windows 打包链。
 
 ## 结论
 
-Document Engine 0.6.0 在保留既有 Tauri trusted service、PDFium、PP-OCR worker 和 Hybrid Chunk 长度策略的前提下，将处理链收敛为 `PDF → Layout Analysis → Native/OCR 来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式/表格/图片元数据 → Document IR v3`。解析型 JSON/Markdown/TXT/Chunk 与阅读型 DOCX/HTML/PDF 继续分离；原生文字层只决定普通文字来源，不再决定公式、表格、图片和标题流程是否运行。所有文档处理请求仍经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。
+Document Engine 0.7.0 在保留既有 Tauri trusted service、PDFium、PP-OCR worker 和 Hybrid Chunk 长度策略的前提下，将处理链收敛为 `PDF → Layout Analysis → Native/OCR 来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式/表格/图片元数据 → Document IR v3`。解析型 JSON/Markdown/TXT/Chunk 与阅读型 DOCX/HTML/PDF 继续分离；原生文字层只决定普通文字来源，不再决定公式、表格、图片和标题流程是否运行。所有文档处理请求仍经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。
 
 本版本的重点是结构正确性和输出可靠性，不重新设计已稳定的 Chunk 长度算法：文本进入 IR 前统一 NFC/XML-safe 清洗并修复字体控制字符断词；TOC entry 不进入正文 heading stack；章节标题、编号段落、习题编号和正文使用不同语义类型；Formula Block 保留 `latex`、`plainText`、bbox、page、confidence 和 source；DOCX 生成前后解析 XML parts，并写入 Heading/List/Table/Caption/OMML、页眉、页脚和页码结构。
 
@@ -101,9 +101,9 @@ cargo tauri build --debug --config '{"bundle":{"createUpdaterArtifacts":false}}'
 - `plugins/document-engine`: TypeScript typecheck、Vitest **13 passed**、renderer self-contained build 通过。
 - 宿主 Vitest：**274 passed**；供应链 Node tests：**16 passed**；ESLint 与三层宿主 TypeScript typecheck 通过。
 - renderer self-contained 校验：`document-engine` **251,904 bytes**，无 CommonJS/import/eval，runtime mount 标记存在。
-- trusted policy 校验：beta5 发布前由 `npm run update:trusted-policy` / `npm run verify:trusted-services` 重新计算并验证 `document-engine 0.6.0` digest。
+- trusted policy 校验：beta6 发布前由 `npm run update:trusted-policy` / `npm run verify:trusted-services` 重新计算并验证 `document-engine 0.7.0` digest。
 - Tauri 前端 Vite production build：**3063 modules transformed，成功**。
-- Windows x64 NSIS：由 beta5 GitHub Actions 发布工作流生成并执行安装器、签名、图标、sidecar 和资源 smoke；本地仅完成 Rust/前端/插件门禁，未伪报签名安装结果。
+- Windows x64 NSIS：由 beta6 GitHub Actions 发布工作流生成并执行安装器、签名、图标、sidecar 和资源 smoke；本地仅完成 Rust/前端/插件门禁，未伪报签名安装结果。
 
 ## 性能冒烟数据
 
@@ -122,7 +122,7 @@ cargo tauri build --debug --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 1. 内置 converter 是可移植实现：HTML/DOCX 会写入页面、标题、公式和样式结构，复杂 Office 排版、字体、表格和中文 PDF 字体仍可能低于 LibreOffice/Pandoc 的排版保真度；输出会在结果中标注 warning。
 2. PDFium 页面树路径优先提取原生文字并保留 bbox；无文字层的扫描页才由 PDFium 渲染 + ONNX worker OCR，复杂字体编码仍建议使用专门 PDF 引擎增强。
-3. Document Engine 0.6.0 随插件分发约 16.9 MiB 的 CPU 轻量默认模型包，首次激活会校验并复制到配置的模型目录；模型更新仍强制 HTTPS、域名白名单与 SHA-256，公式阶段当前为可替换的本地适配器，不声称提供专用数学大模型。
+3. Document Engine 0.7.0 随插件分发约 16.9 MiB 的 CPU 轻量默认模型包，首次激活会校验并复制到配置的模型目录；模型更新仍强制 HTTPS、域名白名单与 SHA-256，公式阶段当前为可替换的本地适配器，不声称提供专用数学大模型。
 4. GPU 路径当前为 Windows DirectML；自动模式在 DirectML 不可用时回退 CPU。Worker 默认单实例，避免并发加载大模型造成显存 OOM。
 
 ## 0.1.2 运行时修复

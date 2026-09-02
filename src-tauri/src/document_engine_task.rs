@@ -20,6 +20,10 @@ const MAX_RETAINED_TASKS: usize = 100;
 /// available in the on-disk cache, while the task view receives a useful
 /// preview and byte/count metadata.
 const MAX_RESULT_PREVIEW_BYTES: usize = 192 * 1024;
+/// The renderer also enforces a node/depth budget. A result can be below the
+/// byte limit and still exceed that budget when it contains many short fields.
+const MAX_RESULT_PREVIEW_NODES: usize = 3072;
+const MAX_RESULT_PREVIEW_DEPTH: usize = 12;
 
 pub struct TaskContext {
     cancelled: Arc<AtomicBool>,
@@ -403,7 +407,11 @@ fn compact_snapshot(snapshot: &Value) -> Value {
     let Some(encoded) = encoded else {
         return snapshot.clone();
     };
-    if encoded.len() <= MAX_RESULT_PREVIEW_BYTES {
+    let shape = JsonShape::measure(&snapshot["result"]);
+    if encoded.len() <= MAX_RESULT_PREVIEW_BYTES
+        && shape.nodes <= MAX_RESULT_PREVIEW_NODES
+        && shape.max_depth <= MAX_RESULT_PREVIEW_DEPTH
+    {
         return snapshot.clone();
     }
 
@@ -411,11 +419,56 @@ fn compact_snapshot(snapshot: &Value) -> Value {
     let result = snapshot.get("result").cloned().unwrap_or(Value::Null);
     compact["resultBytes"] = json!(encoded.len());
     compact["resultTruncated"] = json!(true);
-    compact["result"] = compact_result(&result);
+    compact["result"] = compact_result(&result, &mut CompactBudget::default());
     compact
 }
 
-fn compact_result(result: &Value) -> Value {
+#[derive(Debug, Default)]
+struct CompactBudget {
+    nodes: usize,
+}
+
+impl CompactBudget {
+    fn take(&mut self) -> bool {
+        if self.nodes >= MAX_RESULT_PREVIEW_NODES {
+            return false;
+        }
+        self.nodes += 1;
+        true
+    }
+}
+
+#[derive(Debug, Default)]
+struct JsonShape {
+    nodes: usize,
+    max_depth: usize,
+}
+
+impl JsonShape {
+    fn measure(value: &Value) -> Self {
+        fn visit(value: &Value, depth: usize, result: &mut JsonShape) {
+            result.nodes = result.nodes.saturating_add(1);
+            result.max_depth = result.max_depth.max(depth);
+            match value {
+                Value::Array(values) => values
+                    .iter()
+                    .for_each(|value| visit(value, depth.saturating_add(1), result)),
+                Value::Object(values) => values
+                    .values()
+                    .for_each(|value| visit(value, depth.saturating_add(1), result)),
+                _ => {}
+            }
+        }
+        let mut result = Self::default();
+        visit(value, 0, &mut result);
+        result
+    }
+}
+
+fn compact_result(result: &Value, budget: &mut CompactBudget) -> Value {
+    if !budget.take() {
+        return Value::Null;
+    }
     match result {
         Value::Object(object) => {
             let mut out = serde_json::Map::new();
@@ -449,7 +502,7 @@ fn compact_result(result: &Value) -> Value {
                 let mut doc = serde_json::Map::new();
                 for key in ["id", "source", "metadata", "structure"] {
                     if let Some(value) = document.get(key) {
-                        doc.insert(key.to_string(), compact_nested(value, 16));
+                        doc.insert(key.to_string(), compact_nested(value, 16, budget));
                     }
                 }
                 if let Some(pages) = document.get("pages").and_then(Value::as_array) {
@@ -459,7 +512,7 @@ fn compact_result(result: &Value) -> Value {
                             pages
                                 .iter()
                                 .take(3)
-                                .map(|page| compact_nested(page, 16))
+                                .map(|page| compact_nested(page, 16, budget))
                                 .collect(),
                         ),
                     );
@@ -484,7 +537,7 @@ fn compact_result(result: &Value) -> Value {
                             values
                                 .iter()
                                 .take(32)
-                                .map(|v| compact_nested(v, 16))
+                                .map(|v| compact_nested(v, 16, budget))
                                 .collect(),
                         ),
                     );
@@ -497,14 +550,17 @@ fn compact_result(result: &Value) -> Value {
             values
                 .iter()
                 .take(32)
-                .map(|v| compact_nested(v, 16))
+                .map(|v| compact_nested(v, 16, budget))
                 .collect(),
         ),
         _ => result.clone(),
     }
 }
 
-fn compact_nested(value: &Value, max_chars: usize) -> Value {
+fn compact_nested(value: &Value, max_chars: usize, budget: &mut CompactBudget) -> Value {
+    if !budget.take() {
+        return Value::Null;
+    }
     match value {
         Value::String(text) if text.len() > max_chars => Value::String(format!(
             "{}…",
@@ -514,14 +570,14 @@ fn compact_nested(value: &Value, max_chars: usize) -> Value {
             object
                 .iter()
                 .take(32)
-                .map(|(key, value)| (key.clone(), compact_nested(value, max_chars)))
+                .map(|(key, value)| (key.clone(), compact_nested(value, max_chars, budget)))
                 .collect(),
         ),
         Value::Array(values) => Value::Array(
             values
                 .iter()
                 .take(32)
-                .map(|value| compact_nested(value, max_chars))
+                .map(|value| compact_nested(value, max_chars, budget))
                 .collect(),
         ),
         _ => value.clone(),
@@ -627,5 +683,28 @@ mod tests {
         assert!(mgr.resume(&id));
         assert_eq!(mgr.get(&id).unwrap()["status"], "running");
         assert!(mgr.cancel(&id));
+    }
+
+    #[test]
+    fn compacts_node_heavy_result_even_when_bytes_are_small() {
+        let result = json!({
+            "route": "native",
+            "document": {
+                "metadata": { "pageCount": 1 },
+                "pages": [{
+                    "number": 1,
+                    "blocks": (0..5000).map(|index| json!({
+                        "id": format!("b{index}"),
+                        "content": "x"
+                    })).collect::<Vec<_>>()
+                }]
+            }
+        });
+        let snapshot = json!({ "status": "succeeded", "result": result });
+        let compact = compact_snapshot(&snapshot);
+        assert_eq!(compact["resultTruncated"], true);
+        assert!(JsonShape::measure(&compact["result"]).nodes <= MAX_RESULT_PREVIEW_NODES);
+        assert!(serde_json::to_vec(&compact).unwrap().len() < MAX_RESULT_PREVIEW_BYTES);
+        assert_eq!(compact["result"]["route"], "native");
     }
 }

@@ -58,6 +58,7 @@ pub fn recognize_text(value: &str) -> FormulaResult {
 }
 
 fn normalize(value: &str) -> String {
+    let value = expand_unicode_math(value);
     let mut output = String::with_capacity(value.len() + 8);
     let mut chars = value.trim().chars().peekable();
     while let Some(character) = chars.next() {
@@ -111,6 +112,49 @@ fn normalize(value: &str) -> String {
     normalized
 }
 
+/// PDF text extraction often returns superscript/subscript glyphs as separate
+/// Unicode characters. Convert the common mathematical ranges into the same
+/// brace form used by the formula adapter so Markdown and OMML receive a
+/// stable structured expression rather than a character fragment stream.
+fn expand_unicode_math(value: &str) -> String {
+    let mut result = String::with_capacity(value.len() + 8);
+    for character in value.chars() {
+        let mapped = match character {
+            '⁰' => Some("^0"),
+            '¹' => Some("^1"),
+            '²' => Some("^2"),
+            '³' => Some("^3"),
+            '⁴' => Some("^4"),
+            '⁵' => Some("^5"),
+            '⁶' => Some("^6"),
+            '⁷' => Some("^7"),
+            '⁸' => Some("^8"),
+            '⁹' => Some("^9"),
+            '⁺' => Some("^+"),
+            '⁻' => Some("^-"),
+            '⁽' => Some("^("),
+            '⁾' => Some("^)"),
+            '₀' => Some("_0"),
+            '₁' => Some("_1"),
+            '₂' => Some("_2"),
+            '₃' => Some("_3"),
+            '₄' => Some("_4"),
+            '₅' => Some("_5"),
+            '₆' => Some("_6"),
+            '₇' => Some("_7"),
+            '₈' => Some("_8"),
+            '₉' => Some("_9"),
+            _ => None,
+        };
+        if let Some(mapped) = mapped {
+            result.push_str(mapped);
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,7 +162,7 @@ mod tests {
     #[test]
     fn converts_common_math_symbols_to_latex() {
         let result = recognize_text("x² ＋ y² ＝ z²");
-        assert_eq!(result.latex, "x² + y² = z²");
+        assert_eq!(result.latex, "x^{2} + y^{2} = z^{2}");
         assert!(result.confidence > 0.8);
     }
 

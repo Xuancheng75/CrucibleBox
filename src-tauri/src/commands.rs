@@ -590,8 +590,42 @@ fn fetch_marketplace_catalog(
         }
     }
 
-    let agent = marketplace_agent(8, 20);
     let mut catalog_errors = Vec::new();
+
+    #[cfg(windows)]
+    for catalog_url in marketplace_catalog_urls(&channel) {
+        match crate::marketplace_transport::get_text(catalog_url, MARKETPLACE_MAX_CATALOG_BYTES) {
+            Ok(catalog_text) => match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
+                Ok(value) if value.schema_version == 1 => {
+                    let fetched_at = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or_default();
+                    marketplace_catalog_cache()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .replace(MarketplaceCatalogCache {
+                            channel: channel.clone(),
+                            catalog: value.clone(),
+                            source: catalog_url.to_string(),
+                            fetched_at,
+                            checked_at: Instant::now(),
+                        });
+                    return Ok(marketplace_catalog_response(
+                        value,
+                        catalog_url.to_string(),
+                        false,
+                        fetched_at,
+                    ));
+                }
+                Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
+                Err(error) => catalog_errors.push(format!("{catalog_url}：解析失败：{error}")),
+            },
+            Err(error) => catalog_errors.push(format!("{catalog_url}（WinHTTP）：{error}")),
+        }
+    }
+
+    let agent = marketplace_agent(8, 20);
     for catalog_url in marketplace_catalog_urls(&channel) {
         for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
             let response = match agent
@@ -696,6 +730,7 @@ pub fn marketplace_download_plugin(
     window: WebviewWindow,
     id: String,
     channel: Option<String>,
+    priority: Option<String>,
 ) -> Result<String, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
@@ -779,6 +814,42 @@ pub fn marketplace_download_plugin(
             .ok()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
+
+        // Prefer Windows BITS for a fresh transfer. It uses the system's
+        // proxy/WPAD configuration and owns transport retry/resume, which is
+        // the same path that makes browser downloads reliable on restricted
+        // networks. Existing partial files stay on the compatibility path so
+        // the old byte-range verifier remains available for recovery.
+        if partial_size == 0 {
+            let bits_result = crate::marketplace_download::download_with_bits(
+                &plugin.url,
+                &partial,
+                &plugin.artifact,
+                plugin.size,
+                priority.as_deref() != Some("normal"),
+                |downloaded, total| {
+                    emit_marketplace_progress(
+                        &window,
+                        &plugin.artifact,
+                        downloaded,
+                        total,
+                        "downloading",
+                    );
+                },
+            );
+            if bits_result.is_ok() {
+                let verified = sha256_file(&partial).ok().is_some_and(|(size, digest)| {
+                    size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256)
+                });
+                if verified {
+                    download_completed = true;
+                    break;
+                }
+                let _ = std::fs::remove_file(&partial);
+                last_download_error = "BITS 下载完成但插件包完整性校验失败".into();
+                continue;
+            }
+        }
         let mut request = agent.get(&plugin.url);
         if partial_size > 0 {
             request = request.set("Range", &format!("bytes={partial_size}-"));

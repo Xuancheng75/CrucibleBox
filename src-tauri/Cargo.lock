@@ -507,7 +507,7 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "cruciblebox"
-version = "2.0.0-beta.5"
+version = "2.0.0-beta.6"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -528,6 +528,7 @@ dependencies = [
  "tauri-plugin-updater",
  "unicode-normalization",
  "ureq 2.12.1",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
  "zip 2.4.2",
 ]

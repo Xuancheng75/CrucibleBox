@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Checkbox, Drawer, Empty, Input, Progress, Space, Tag, Typography, theme } from 'antd'
+import { Alert, Button, Checkbox, Drawer, Dropdown, Empty, Input, Space, Tag, Typography, theme } from 'antd'
 import {
   CheckOutlined,
   DownloadOutlined,
+  MoreOutlined,
   ReloadOutlined,
   SearchOutlined,
   SafetyCertificateOutlined
@@ -69,6 +70,7 @@ export default function Marketplace() {
   const [updateCount, setUpdateCount] = useState(0)
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selectionMode, setSelectionMode] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchResult, setBatchResult] = useState<string | null>(null)
   const activeDownloadTaskRef = useRef<string | null>(null)
@@ -224,7 +226,7 @@ export default function Marketplace() {
     setDownloadingId(plugin.id)
     useTaskStore.getState().upsertTask({ id: taskId, title: `下载 ${plugin.name}`, source: 'marketplace', status: 'running', progress: 10 })
     try {
-      const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel)
+      const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'foreground')
       useTaskStore.getState().patchTask(taskId, { title: `校验 ${plugin.name}`, progress: 70 })
       const prepared = await installPlugin('zip', path)
       const installError = usePluginStore.getState().error
@@ -264,6 +266,11 @@ export default function Marketplace() {
     })
   }
 
+  const exitSelectionMode = () => {
+    setSelectionMode(false)
+    setSelectedIds(new Set())
+  }
+
   const downloadBatch = async (items: MarketplacePlugin[], action: 'download' | 'update') => {
     if (items.length === 0 || batchBusy) return
     setBatchBusy(true)
@@ -284,7 +291,7 @@ export default function Marketplace() {
         progress: 10
       })
       try {
-        const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel)
+        const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'normal')
         paths.push(path)
         useTaskStore.getState().patchTask(taskId, {
           title: `校验 ${plugin.name}`,
@@ -336,37 +343,48 @@ export default function Marketplace() {
                 ? 'CrucibleBox 测试版目录'
                 : 'CrucibleBox 官方目录'}
           </Tag>
+          {selectionMode ? (
+            <>
+              <Checkbox
+                checked={allVisibleSelected}
+                indeterminate={!allVisibleSelected && someVisibleSelected}
+                disabled={batchBusy || catalog.length === 0}
+                onChange={(event) => toggleAllVisible(event.target.checked)}
+              >
+                全选当前结果
+              </Checkbox>
+              <Button
+                disabled={batchBusy || selectedPlugins.length === 0}
+                loading={batchBusy}
+                icon={<DownloadOutlined />}
+                onClick={() => void downloadBatch(selectedPlugins, 'download')}
+              >
+                批量下载 ({selectedPlugins.length})
+              </Button>
+              <Button
+                disabled={batchBusy || updatePlugins.length === 0}
+                loading={batchBusy}
+                type={updatePlugins.length > 0 ? 'primary' : 'default'}
+                icon={<DownloadOutlined />}
+                onClick={() => void downloadBatch(updatePlugins, 'update')}
+              >
+                全部更新 ({updatePlugins.length})
+              </Button>
+              <Button disabled={batchBusy} onClick={exitSelectionMode}>
+                完成
+              </Button>
+            </>
+          ) : (
+            <Button icon={<MoreOutlined />} onClick={() => setSelectionMode(true)}>
+              多选
+            </Button>
+          )}
           <Button
             icon={<ReloadOutlined />}
             loading={refreshing}
             onClick={() => void loadCatalog(true)}
           >
             刷新
-          </Button>
-          <Checkbox
-            checked={allVisibleSelected}
-            indeterminate={!allVisibleSelected && someVisibleSelected}
-            disabled={batchBusy || catalog.length === 0}
-            onChange={(event) => toggleAllVisible(event.target.checked)}
-          >
-            全选当前结果
-          </Checkbox>
-          <Button
-            disabled={batchBusy || selectedPlugins.length === 0}
-            loading={batchBusy}
-            icon={<DownloadOutlined />}
-            onClick={() => void downloadBatch(selectedPlugins, 'download')}
-          >
-            批量下载 ({selectedPlugins.length})
-          </Button>
-          <Button
-            disabled={batchBusy || updatePlugins.length === 0}
-            loading={batchBusy}
-            type={updatePlugins.length > 0 ? 'primary' : 'default'}
-            icon={<DownloadOutlined />}
-            onClick={() => void downloadBatch(updatePlugins, 'update')}
-          >
-            全部更新 ({updatePlugins.length})
           </Button>
         </Space>
       </div>
@@ -427,26 +445,41 @@ export default function Marketplace() {
             const identity = pluginIdentity(plugin.id)
             const installedVersion = installed?.version
             const updateAvailable = Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
-            const progress = downloadProgress[plugin.id]
             return (
-              <article
+              <Dropdown
                 key={plugin.id}
-                role="listitem"
-                className="ob-market-card ob-surface-card"
-                onClick={() => setSelected(plugin)}
-                style={{
-                  border: `1px solid ${token.colorBorder}`,
-                  borderRadius: token.borderRadius,
-                  background: token.colorBgContainer
+                trigger={['contextMenu']}
+                menu={{
+                  items: [{
+                    key: 'select',
+                    label: selectionMode ? '已进入多选模式' : '进入多选并选择此插件',
+                    disabled: selectionMode,
+                    onClick: () => {
+                      setSelectionMode(true)
+                      toggleSelected(plugin.id, true)
+                    }
+                  }]
                 }}
               >
-                <Checkbox
-                  checked={selectedIds.has(plugin.id)}
-                  disabled={batchBusy}
-                  aria-label={`选择 ${plugin.name}`}
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => toggleSelected(plugin.id, event.target.checked)}
-                />
+                <article
+                  role="listitem"
+                  className="ob-market-card ob-surface-card"
+                  onClick={() => setSelected(plugin)}
+                  style={{
+                    border: `1px solid ${token.colorBorder}`,
+                    borderRadius: token.borderRadius,
+                    background: token.colorBgContainer
+                  }}
+                >
+                  {selectionMode && (
+                    <Checkbox
+                      checked={selectedIds.has(plugin.id)}
+                      disabled={batchBusy}
+                      aria-label={`选择 ${plugin.name}`}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => toggleSelected(plugin.id, event.target.checked)}
+                    />
+                  )}
                 <PluginGlyph pluginId={plugin.id} name={plugin.name} size={52} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="ob-market-card-title">
@@ -483,13 +516,31 @@ export default function Marketplace() {
                   >
                     {installed && !updateAvailable ? '打开' : installed ? '更新' : '获取'}
                   </Button>
-                  {downloadingId === plugin.id && typeof progress === 'number' && (
-                    <Progress percent={progress} size="small" showInfo style={{ marginTop: 8 }} />
-                  )}
                 </div>
-              </article>
+                </article>
+              </Dropdown>
             )
           })}
+        </div>
+      )}
+
+      {downloadingId && (
+        <div className="ob-market-download-dock" role="status" aria-live="polite">
+          <div className="ob-market-download-dock-title">
+            <span>{batchBusy ? '正在处理插件队列' : '正在处理插件'}</span>
+            <Button type="link" size="small" onClick={() => setCurrentPage('tasks')}>
+              查看任务
+            </Button>
+          </div>
+          <div className="ob-market-download-dock-name">
+            {marketplaceItems.find((item) => item.id === downloadingId)?.name ?? downloadingId}
+          </div>
+          <div className="ob-market-download-dock-track">
+            <span style={{ width: `${downloadProgress[downloadingId] ?? 0}%` }} />
+          </div>
+          <span className="ob-market-download-dock-percent">
+            {downloadProgress[downloadingId] ?? 0}%
+          </span>
         </div>
       )}
 

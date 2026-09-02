@@ -39,6 +39,7 @@ struct OutlineRecord {
 }
 
 pub fn rebuild(document: &mut Value) {
+    mark_repeated_regions(document);
     let mut reading_order = Vec::new();
     let mut records = Vec::new();
     let mut stack: Vec<(u8, String, String)> = Vec::new();
@@ -76,7 +77,15 @@ pub fn rebuild(document: &mut Value) {
             .iter()
             .filter(|block| has_single_number_prefix(block["content"].as_str().unwrap_or_default()))
             .count();
-        let exercise_page = exercise_markers > 0 || numbered_items >= 2;
+        let answer_page = blocks.iter().any(|block| {
+            let lower = block["content"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            lower.contains("answers to") || lower.starts_with("answer key")
+        });
+        let exercise_page = exercise_markers > 0 || numbered_items >= 2 || answer_page;
 
         for block in blocks {
             let Some(id) = block["id"].as_str().map(ToOwned::to_owned) else {
@@ -89,6 +98,15 @@ pub fn rebuild(document: &mut Value) {
                 .trim()
                 .to_string();
             if content.is_empty() {
+                continue;
+            }
+            if matches!(
+                block["region"].as_str(),
+                Some("header" | "footer" | "page_number" | "production_mark")
+            ) {
+                block["parentId"] = Value::Null;
+                block["sectionId"] = Value::Null;
+                block["sectionPath"] = Value::Null;
                 continue;
             }
             if toc_page && is_toc_title(&content) {
@@ -109,6 +127,35 @@ pub fn rebuild(document: &mut Value) {
                 block["sectionPath"] = Value::Null;
                 continue;
             }
+            if content.eq_ignore_ascii_case("index") {
+                block["type"] = json!("index");
+                block["region"] = json!("index");
+                block["semanticType"] = json!("index");
+                block["parentId"] = Value::Null;
+                block["sectionId"] = Value::Null;
+                block["sectionPath"] = Value::Null;
+                block["excludedFromRag"] = json!(true);
+                continue;
+            }
+
+            // Captions are structural regions, not prose to be merged into
+            // the surrounding paragraph. Keep them in the IR so exporters
+            // can attach the next table/figure without affecting the section
+            // stack.
+            if is_table_caption(&content) {
+                block["type"] = json!("table");
+                block["region"] = json!("table");
+                block["semanticType"] = json!("table_caption");
+                attach_section(block, &stack);
+                continue;
+            }
+            if is_figure_caption(&content) {
+                block["type"] = json!("figure");
+                block["region"] = json!("figure");
+                block["semanticType"] = json!("figure_caption");
+                attach_section(block, &stack);
+                continue;
+            }
 
             let kind = classify(
                 &content,
@@ -118,6 +165,24 @@ pub fn rebuild(document: &mut Value) {
                 exercise_page,
                 &toc_section_candidates,
             );
+            let original_heading = block["type"] == "heading";
+            let heading_candidate =
+                original_heading || matches!(kind, HeadingKind::Chapter | HeadingKind::Section(_));
+            block["headingCandidate"] = json!(heading_candidate);
+            block["headingConfidence"] = json!(heading_confidence(
+                &content,
+                block,
+                page_height,
+                median_height,
+                &kind,
+            ));
+            block["headingSignals"] = json!(heading_signals(
+                &content,
+                block,
+                page_height,
+                median_height,
+                &kind,
+            ));
             block["semanticType"] = json!(kind.name());
             match kind {
                 HeadingKind::Chapter | HeadingKind::Section(_) => {
@@ -140,6 +205,7 @@ pub fn rebuild(document: &mut Value) {
                     block["sectionId"] = json!(id.clone());
                     stack.push((level, content.clone(), id.clone()));
                     block["sectionPath"] = json!(section_path(&stack));
+                    block["sectionPathConfidence"] = json!(0.95);
                     records.push(OutlineRecord {
                         id,
                         parent_id,
@@ -184,6 +250,87 @@ fn attach_section(block: &mut Value, stack: &[(u8, String, String)]) {
     } else {
         json!(section_path(stack))
     };
+    block["sectionPathConfidence"] = json!(if stack.is_empty() { 0.0 } else { 0.95 });
+}
+
+/// Identify repeated page furniture before heading classification. A running
+/// header/footer must remain visible in JSON for diagnostics, but it must not
+/// enter the body section stack or RAG chunks.
+fn mark_repeated_regions(document: &mut Value) {
+    let Some(pages) = document["pages"].as_array() else {
+        return;
+    };
+    let page_count = pages.len();
+    if page_count < 2 {
+        return;
+    }
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for page in pages {
+        let height = page["height"].as_f64().unwrap_or_default() as f32;
+        let Some(blocks) = page["blocks"].as_array() else {
+            continue;
+        };
+        let mut seen_page = std::collections::HashSet::new();
+        for (index, block) in blocks.iter().enumerate() {
+            let positional_edge = index < 3 || index + 3 >= blocks.len();
+            let content = block["content"].as_str().unwrap_or_default().trim();
+            if content.chars().count() < 4 || content.chars().count() > 120 {
+                continue;
+            }
+            let is_edge = block_bbox(block).map_or(positional_edge, |bbox| {
+                height <= 0.0 || bbox[1] < height * 0.12 || bbox[3] > height * 0.88
+            });
+            if is_edge {
+                let key = normalize_title_word(content);
+                if seen_page.insert(key.clone()) {
+                    *counts.entry(key).or_default() += 1;
+                }
+            }
+        }
+    }
+    let repeated = counts
+        .into_iter()
+        .filter(|(_, count)| *count >= 3 || (page_count < 10 && *count >= 2))
+        .map(|(content, _)| content)
+        .collect::<std::collections::HashSet<_>>();
+    if repeated.is_empty() {
+        return;
+    }
+    let Some(pages) = document.get_mut("pages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for page in pages {
+        let height = page["height"].as_f64().unwrap_or_default() as f32;
+        if let Some(blocks) = page.get_mut("blocks").and_then(Value::as_array_mut) {
+            let block_count = blocks.len();
+            for (index, block) in blocks.iter_mut().enumerate() {
+                let content = block["content"].as_str().unwrap_or_default().trim();
+                let key = normalize_title_word(content);
+                let edge = block_bbox(block)
+                    .map_or(index < 3 || index + 3 >= block_count, |bbox| {
+                        height <= 0.0 || bbox[1] < height * 0.12 || bbox[3] > height * 0.88
+                    });
+                if !edge || !repeated.contains(&key) {
+                    continue;
+                }
+                let numeric = content
+                    .chars()
+                    .all(|character| character.is_ascii_digit() || ".- ".contains(character));
+                let region = if numeric {
+                    "page_number"
+                } else if block_bbox(block).is_none_or(|bbox| bbox[1] < height * 0.5) {
+                    "header"
+                } else {
+                    "footer"
+                };
+                block["region"] = json!(region);
+                block["type"] = json!(region);
+                block["semanticType"] = json!(region);
+                block["excludedFromRag"] = json!(true);
+                block["qualityReason"] = json!("repeated_page_furniture");
+            }
+        }
+    }
 }
 
 fn section_path(stack: &[(u8, String, String)]) -> String {
@@ -203,6 +350,18 @@ fn classify(
     toc_section_candidates: &HashMap<String, String>,
 ) -> HeadingKind {
     let lower = content.to_ascii_lowercase();
+    if exercise_page && (lower.contains("answers to") || lower.starts_with("answer key")) {
+        return HeadingKind::Exercise;
+    }
+    if lower.starts_with("chapter ")
+        && content.split_whitespace().count() == 2
+        && content == content.to_ascii_uppercase()
+    {
+        // PDFium exposes the running page furniture "CHAPTER N" as a text
+        // segment. A real chapter heading normally includes its title; the
+        // bare uppercase form must not reset the section stack.
+        return HeadingKind::None;
+    }
     if matches!(lower.as_str(), "preface" | "contents" | "index") {
         return HeadingKind::Chapter;
     }
@@ -212,6 +371,8 @@ fn classify(
     if lower.starts_with("chapter ")
         && title_like_after_prefix(content, 2)
         && content.split_whitespace().count() <= 12
+        && !is_discursive_reference(content)
+        && clean_number_token(content.split_whitespace().nth(1))
     {
         return HeadingKind::Chapter;
     }
@@ -227,6 +388,7 @@ fn classify(
     if lower.starts_with("appendix ")
         && title_like_after_prefix(content, 1)
         && content.split_whitespace().count() <= 12
+        && clean_appendix_token(content.split_whitespace().nth(1))
     {
         return HeadingKind::Chapter;
     }
@@ -251,7 +413,13 @@ fn classify(
             return HeadingKind::Section(depth);
         }
     }
-    if lower.starts_with("section ") {
+    if lower.starts_with("section ")
+        && !is_discursive_reference(content)
+        && (title_like_after_prefix(content, 2)
+            || (content.split_whitespace().count() == 2
+                && clean_section_number_token(content.split_whitespace().nth(1))))
+        && clean_section_number_token(content.split_whitespace().nth(1))
+    {
         if let Some(depth) = content
             .split_whitespace()
             .nth(1)
@@ -261,13 +429,6 @@ fn classify(
         }
     }
     if has_single_number_prefix(content) {
-        let prefix = content.split_whitespace().next().unwrap_or_default();
-        if prefix.chars().all(|value| value.is_ascii_digit())
-            && content.split_whitespace().count() <= 10
-            && !content.ends_with('.')
-        {
-            return HeadingKind::Chapter;
-        }
         return if exercise_page {
             HeadingKind::Exercise
         } else {
@@ -293,6 +454,111 @@ fn classify(
         return HeadingKind::Section(explicit_level.unwrap_or(2).saturating_sub(1) as u8);
     }
     HeadingKind::None
+}
+
+fn is_discursive_reference(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    let prefix = if lower.starts_with("chapter ") {
+        "chapter "
+    } else if lower.starts_with("section ") {
+        "section "
+    } else {
+        return false;
+    };
+    let remainder = lower.strip_prefix(prefix).unwrap_or_default();
+    let mut words = remainder.split_whitespace();
+    let Some(number) = words.next() else {
+        return false;
+    };
+    let rest = words.collect::<Vec<_>>().join(" ");
+    let first = rest.split_whitespace().next().unwrap_or_default();
+    // A numbered title such as "Chapter 1 Matrices" is accepted, while
+    // sentence-like references such as "Chapter 8. Finding ..." and
+    // "Section 8.3 we will ..." are rejected.
+    let sentence_starter = matches!(
+        first.trim_matches(|character: char| !character.is_alphabetic()),
+        "a" | "an"
+            | "and"
+            | "are"
+            | "as"
+            | "can"
+            | "does"
+            | "finding"
+            | "gives"
+            | "how"
+            | "is"
+            | "our"
+            | "the"
+            | "this"
+            | "we"
+            | "will"
+            | "you"
+    );
+    let punctuated_number = number.ends_with(['.', ':']) || number.contains('.');
+    punctuated_number && sentence_starter
+}
+
+fn heading_confidence(
+    content: &str,
+    block: &Value,
+    page_height: f32,
+    median_height: f32,
+    kind: &HeadingKind,
+) -> f32 {
+    let mut score: f32 = match kind {
+        HeadingKind::Chapter => 0.92,
+        HeadingKind::Section(_) => 0.84,
+        _ => 0.18,
+    };
+    let height = block_height(block).unwrap_or_default();
+    if median_height > 0.0 && height >= median_height * 1.2 {
+        score += 0.06;
+    }
+    if block_bbox(block).is_some_and(|bbox| page_height <= 0.0 || bbox[1] < page_height * 0.88) {
+        score += 0.02;
+    }
+    if content.len() > 100 || content.ends_with(['.', ';', ':']) {
+        score -= 0.18;
+    }
+    score.clamp(0.0, 1.0)
+}
+
+fn heading_signals(
+    content: &str,
+    block: &Value,
+    page_height: f32,
+    median_height: f32,
+    kind: &HeadingKind,
+) -> Vec<&'static str> {
+    let mut signals = Vec::new();
+    if matches!(kind, HeadingKind::Chapter | HeadingKind::Section(_)) {
+        signals.push("numbering_pattern");
+    }
+    if median_height > 0.0 && block_height(block).unwrap_or_default() >= median_height * 1.2 {
+        signals.push("font_or_height");
+    }
+    if block_bbox(block).is_some_and(|bbox| page_height <= 0.0 || bbox[1] < page_height * 0.88) {
+        signals.push("page_position");
+    }
+    if content.split_whitespace().count() <= 14 && !content.ends_with('.') {
+        signals.push("short_title");
+    }
+    if is_discursive_reference(content) {
+        signals.push("sentence_like_reference");
+    }
+    signals
+}
+
+fn is_table_caption(content: &str) -> bool {
+    let lower = content.trim().to_ascii_lowercase();
+    (lower.starts_with("table ") || lower.starts_with("таблица "))
+        && content.split_whitespace().count() <= 12
+}
+
+fn is_figure_caption(content: &str) -> bool {
+    let lower = content.trim().to_ascii_lowercase();
+    (lower.starts_with("figure ") || lower.starts_with("fig. "))
+        && content.split_whitespace().count() <= 18
 }
 
 fn dotted_section_depth(content: &str) -> Option<u8> {
@@ -339,6 +605,37 @@ fn title_like_after_prefix(content: &str, prefix_words: usize) -> bool {
         return false;
     };
     (first_letter.is_uppercase() || !first_letter.is_ascii()) && !content.ends_with(['.', ';', ':'])
+}
+
+fn clean_number_token(token: Option<&str>) -> bool {
+    token.is_some_and(|value| {
+        value
+            .trim_end_matches(['.', ':'])
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    })
+}
+
+fn clean_section_number_token(token: Option<&str>) -> bool {
+    token.is_some_and(|value| {
+        let trimmed = value.trim_end_matches(['.', ':']);
+        let parts = trimmed.split('.').collect::<Vec<_>>();
+        parts.len() >= 2
+            && parts.iter().all(|part| {
+                !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+            })
+    })
+}
+
+fn clean_appendix_token(token: Option<&str>) -> bool {
+    token.is_some_and(|value| {
+        let trimmed = value.trim_end_matches(['.', ':', ')', ']']);
+        trimmed.len() == 1
+            && trimmed
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_uppercase())
+    })
 }
 
 fn is_exercise_like(content: &str, prefix_words: usize) -> bool {
@@ -466,7 +763,7 @@ fn is_toc_page(blocks: &[Value]) -> bool {
             trailing_page && content.matches('.').count() >= 3
         })
         .count();
-    has_title || (entries >= 3 && leader_entries >= 2)
+    has_title || (entries >= 3 && (leader_entries >= 2 || entries >= 5))
 }
 
 fn is_toc_title(content: &str) -> bool {
@@ -838,5 +1135,30 @@ mod tests {
             rebuild(&mut document);
             assert_ne!(document["pages"][0]["blocks"][2]["type"], "heading");
         }
+    }
+
+    #[test]
+    fn prose_references_to_chapters_and_sections_do_not_poison_tree() {
+        let mut document = json!({
+            "pages": [{ "number": 1, "height": 792, "blocks": [
+                { "id": "chapter", "content": "Chapter 1 Matrices", "bbox": [10, 10, 300, 30] },
+                { "id": "section", "content": "1.1 Introduction", "bbox": [10, 40, 300, 55] },
+                { "id": "chapter-ref", "type": "heading", "content": "Chapter 8. Finding an antiderivative is discussed below.", "bbox": [10, 70, 500, 82] },
+                { "id": "section-ref", "type": "heading", "content": "Section 8.3 we will see this later.", "bbox": [10, 90, 500, 102] },
+                { "id": "section-ref-2", "type": "heading", "content": "Section 3.8 and our knowledge is incomplete.", "bbox": [10, 110, 500, 122] },
+                { "id": "body", "content": "As discussed in Chapter 6, this follows from the definition.", "bbox": [10, 130, 500, 142] }
+            ] }],
+            "structure": {}
+        });
+        rebuild(&mut document);
+        let blocks = document["pages"][0]["blocks"].as_array().unwrap();
+        for id in ["chapter-ref", "section-ref", "section-ref-2", "body"] {
+            let block = blocks.iter().find(|block| block["id"] == id).unwrap();
+            assert_ne!(block["type"], "heading", "{id} was misclassified");
+        }
+        assert_eq!(
+            blocks[1]["sectionPath"],
+            "Chapter 1 Matrices > 1.1 Introduction"
+        );
     }
 }
