@@ -1,6 +1,6 @@
 # 开发、构建与验证
 
-> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.0-beta.4**。
+> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.0-beta.5**。
 > 根目录 Electron 1.7.3 仅为冻结参照，不接受功能性改动。
 
 ## 环境
@@ -46,11 +46,14 @@ cargo test --workspace --locked
 - 插件卡片身份由 `plugin-identity.ts` 维护。第一方插件发布者统一为 `CrucibleBox`，不得再用单字母作为唯一辨识。
 - 工作台和设置卡片使用主题边框、圆角和切角，不添加宿主默认阴影；主题可覆盖几何风格，但不能露出底层矩形轮廓。
 
-## Document Engine 0.5.0
+## Document Engine 0.6.0
 
-- 统一流水线为页面类型判断 → 240 DPI 渲染 → 区域分流 → PP-OCRv6-small-det / PP-OCRv5-mobile-rec → 公式 LaTeX 适配 → 阅读顺序恢复 → Document IR v2。
+- 统一流水线为 Layout Analysis → Native/OCR 文字来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式块与布局元数据 → Document IR v3。
 - 格式转换和 Chunk 切分只消费 IR，不得再次触发 OCR；PDF 物理拆分直接操作原始页并输出真实 PDF。
+- 文本进入 IR 前必须清除 XML 1.0 非法控制字符并修复字体编码断词；DOCX 输出前后均做 XML 解析检查，`invalidControlChars` 与 `invalidXmlChars` 必须为 0。
+- 章节识别必须区分 chapter/section、编号段落、习题编号和正文；TOC entry 只能作为候选信息，不能进入正文 heading stack。Formula/Table/Image 区域不因存在 Text Layer 而跳过。
 - Chunk 任务输出逐行 JSONL 与 manifest JSON；任务快照只返回受限元数据，完整结果通过输出路径读取，避免 IPC payload 超限。
+- Hybrid Chunk 继续使用现有约 450–500 token 目标及既有 `target=512/min=180/max=800` 配置；本版本只修正 section/title、非法字符及公式/表格/图片元数据，不调整长度算法。
 - 默认模型随插件离线分发，`ppocrv4-mobile-zh-en` 作为兼容 profile 保留；新增模型或流水线字段时必须同步缓存版本、协议文档、插件目录和 trusted policy。
 
 ## 插件市场开发约定
@@ -59,7 +62,7 @@ cargo test --workspace --locked
 - 市场数据与安装执行分离：目录只描述插件，安装仍复用既有预检、权限确认、staging、journal 和原子替换流程。
 - 市场主页保持双栏布局，必须显示图标、名称、版本、发布者、简介及“获取/打开”状态；详情页展示权限和长描述。
 - 测试版从 `tauri-beta/plugins.json` 获取目录，正式版从 `tauri-stable/plugins.json` 获取目录；下载必须支持重试、重定向校验、临时文件和 SHA-256 校验。
-- beta4 起市场支持手动刷新、目录进程内缓存、离线使用最近一次可用目录、未知官方插件动态展示，以及下载临时文件的 Range 断点续传；宿主会透传导入/预检失败的后端详情。
+- beta5 起市场在官方 GitHub Release 单一来源上支持手动刷新、目录进程内缓存、离线使用最近一次可用目录、未知官方插件动态展示、下载临时文件的 Range 断点续传、批量下载和全部更新；宿主会透传导入/预检失败的后端详情。下载仍不使用镜像源。
 - 在线获取仅接受 CrucibleBox 仓库的 HTTPS Release 地址，限制目录/包体大小并校验 SHA-256；不能直接执行仓库源代码。后续若引入第三方远程目录，必须再增加目录级签名和密钥轮换机制。
 
 ## 稳定版与测试版

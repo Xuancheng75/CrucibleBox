@@ -459,10 +459,21 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
                 }
                 let id = format!("p{page_number}-b{}", block_index + 1);
                 reading_order.push(id.clone());
+                let normalized = crate::document_text::normalize_text(content).0;
+                let block_type = if content.contains('|') {
+                    "table"
+                } else if looks_like_formula(content) {
+                    "formula"
+                } else {
+                    "text"
+                };
                 blocks.push(json!({
                     "id": id,
-                    "type": "text",
-                    "content": content,
+                    "type": block_type,
+                    "content": normalized,
+                    "rawText": content,
+                    "source": "native/pdf",
+                    "region": if block_type == "formula" { "formula" } else if block_type == "table" { "table" } else { "text" },
                     "language": detect_language(content),
                 }));
             }
@@ -470,7 +481,9 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         // Table/formula classification is deliberately conservative. A later
         // layout parser may enrich these blocks without changing this schema.
         has_tables |= page_text.contains('|');
-        has_formulas |= page_text.contains("\\(") || page_text.contains("\\[");
+        has_formulas |= page_text.contains("\\(")
+            || page_text.contains("\\[")
+            || page_text.lines().any(looks_like_formula);
         pages.push(json!({
             "number": page_number,
             "width": dimensions.0,
@@ -547,12 +560,15 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
         let mut blocks = Vec::new();
         if let Ok(text) = page.text() {
             for (segment_index, segment) in text.segments().iter().enumerate() {
-                let content = segment.text().trim().to_string();
-                if content.is_empty() {
+                let raw_content = segment.text().trim().to_string();
+                if raw_content.is_empty() {
                     continue;
                 }
+                let content = crate::document_text::normalize_text(&raw_content).0;
                 has_text_layer = true;
-                has_formulas |= content.contains("\\(") || content.contains("\\[");
+                has_formulas |= content.contains("\\(")
+                    || content.contains("\\[")
+                    || looks_like_formula(&content);
                 let bounds = segment.bounds();
                 let id = format!("p{}-b{}", page_index + 1, segment_index + 1);
                 reading_order.push(id.clone());
@@ -561,6 +577,9 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
                     "id": id,
                     "type": block_type,
                     "content": content,
+                    "rawText": raw_content,
+                    "source": "native/pdf",
+                    "region": if block_type == "formula" { "formula" } else if block_type == "heading" { "heading" } else { "text" },
                     "language": detect_language(&content),
                     "bbox": [bounds.left().value, bounds.top().value, bounds.right().value, bounds.bottom().value],
                     "confidence": 1.0
@@ -600,7 +619,8 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
                 "isScanned": !has_text_layer,
                 "hasTables": false,
                 "hasFormulas": has_formulas,
-                "hasImages": false
+                "hasImages": bytes.windows(15).any(|window| window == b"/Subtype /Image")
+                    || bytes.windows(14).any(|window| window == b"/Subtype/Image")
             },
             "pages": pages,
             "structure": { "outline": [], "readingOrder": reading_order }
@@ -616,6 +636,9 @@ fn native_block_type(text: &str) -> &'static str {
             .all(|character| character.is_ascii_digit() || " .-()[]".contains(character))
     {
         return "text";
+    }
+    if looks_like_formula(value) {
+        return "formula";
     }
     let lower = value.to_ascii_lowercase();
     if lower == "contents"
@@ -633,6 +656,45 @@ fn native_block_type(text: &str) -> &'static str {
     } else {
         "text"
     }
+}
+
+fn looks_like_formula(text: &str) -> bool {
+    let operators = text
+        .chars()
+        .filter(|character| {
+            matches!(
+                character,
+                '=' | '+'
+                    | '−'
+                    | '-'
+                    | '×'
+                    | '÷'
+                    | '/'
+                    | '^'
+                    | '√'
+                    | '∑'
+                    | '∫'
+                    | '≤'
+                    | '≥'
+                    | '≠'
+                    | '∞'
+                    | '∂'
+                    | '∈'
+                    | '±'
+            )
+        })
+        .count();
+    let math_symbols = text
+        .chars()
+        .filter(|character| "αβγδεζηθλμνξπρστφχω∑∫√≤≥≠∞∂∈±".contains(*character))
+        .count();
+    let compact = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    operators > 0
+        && compact <= 180
+        && (math_symbols > 0 || text.chars().any(|c| c.is_ascii_digit()))
 }
 
 fn pdfium_page_count(path: &str) -> Option<usize> {
@@ -1353,7 +1415,17 @@ mod tests {
             .as_bool()
             .unwrap_or(false));
         assert!(!parsed["requiresOcr"].as_bool().unwrap_or(true));
-        let chunks = crate::document_chunker::chunk_document(document, None).unwrap();
+        let mut normalized = document.clone();
+        let sanitization = crate::document_text::sanitize_document(&mut normalized);
+        crate::document_structure::rebuild(&mut normalized);
+        let quality = crate::document_quality::report(
+            &normalized,
+            sanitization.invalid_control_chars_removed,
+        );
+        eprintln!("fixture document quality: {quality}");
+        assert_eq!(quality["invalidControlChars"], 0);
+        assert_eq!(quality["invalidXmlChars"], 0);
+        let chunks = crate::document_chunker::chunk_document(&normalized, None).unwrap();
         eprintln!("fixture chunk quality: {}", chunks["quality"]);
         assert!(chunks["quality"]["passed"].as_bool().unwrap_or(false));
     }

@@ -33,7 +33,7 @@ static OCR_WORKER: OnceLock<Arc<OcrWorkerManager>> = OnceLock::new();
 static EVENT_EMITTER: OnceLock<Emitter> = OnceLock::new();
 static RETRY_REQUESTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 const DEFAULT_MODEL_ID: &str = "ppocrv6-small-det-v5-mobile-rec";
-const PIPELINE_VERSION: &str = "document-ir-v2-layout-ocr-v2";
+const PIPELINE_VERSION: &str = "document-ir-v3-normalized-structure-v1";
 const OCR_CONFIG_VERSION: &str = "ocr-config-v3";
 
 fn worker_manager() -> Option<&'static Arc<OcrWorkerManager>> {
@@ -583,15 +583,21 @@ fn parse_document_with_cache(
         let manager = manager.ok_or_else(|| "扫描 PDF 需要已配置 OCR Worker".to_string())?;
         parsed = merge_ocr_pages(parsed, path, manager, ctx, plugin_id, cfg, None)?;
     }
+    let sanitization = crate::document_text::sanitize_document(&mut parsed["document"]);
+    enrich_formula_blocks(&mut parsed["document"]);
     rebuild_document_structure(&mut parsed["document"]);
     parsed["document"]["metadata"]["pipeline"] = json!({
         "version": PIPELINE_VERSION,
         "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
         "textDetection": "ppocrv6_small_det.onnx",
         "textRecognition": "en_PP-OCRv5_mobile_rec.onnx",
-        "formula": "formula-ocr-adapter-v1",
+        "formula": "formula-block-v1",
         "readingOrder": "column-aware-v1"
     });
+    parsed["document"]["metadata"]["quality"] = crate::document_quality::report(
+        &parsed["document"],
+        sanitization.invalid_control_chars_removed,
+    );
     ctx.check_cancelled()?;
     ctx.update_progress("quality", 96, "检查解析质量", None);
     let _ = crate::document_engine_cache::write_result(
@@ -612,23 +618,8 @@ fn classify_ocr_block(content: &str) -> &'static str {
     // The beta2 classifier treated every digit-prefixed line as a section,
     // which fragmented the downstream chunk stream into thousands of tiny
     // records.
-    if trimmed.is_empty()
-        || trimmed
-            .chars()
-            .all(|value| value.is_ascii_digit() || " .-()[]".contains(value))
-        || trimmed.chars().count() <= 2
-    {
+    if trimmed.is_empty() || trimmed.chars().count() <= 2 {
         return "paragraph";
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if trimmed.chars().count() <= 120
-        && (lower.starts_with("chapter ")
-            || lower.starts_with("section ")
-            || lower.starts_with("appendix ")
-            || trimmed.starts_with("第")
-            || regex_section_heading(trimmed))
-    {
-        return "heading";
     }
     let operators = trimmed
         .chars()
@@ -673,57 +664,13 @@ fn classify_ocr_block(content: &str) -> &'static str {
     "paragraph"
 }
 
-fn regex_section_heading(text: &str) -> bool {
-    let mut digits = 0usize;
-    let mut dots = 0usize;
-    for character in text.chars() {
-        if character.is_ascii_digit() {
-            digits += 1;
-        } else if character == '.' {
-            dots += 1;
-        } else {
-            break;
-        }
-    }
-    digits > 0
-        && (0..=3).contains(&dots)
-        && text.split_whitespace().count() >= 2
-        && text.chars().any(|value| value.is_alphabetic())
-}
-
 fn classify_block_with_layout(
     content: &str,
     bbox: Option<[f32; 4]>,
     page_height: f32,
 ) -> &'static str {
-    let base = classify_ocr_block(content);
-    if base == "formula" {
-        return base;
-    }
-    let trimmed = content.trim();
-    if trimmed
-        .chars()
-        .all(|value| value.is_ascii_digit() || " .-()[]".contains(value))
-    {
-        return "paragraph";
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    let explicit = lower.starts_with("chapter ")
-        || lower.starts_with("section ")
-        || lower.starts_with("appendix ")
-        || trimmed.starts_with('第')
-        || regex_section_heading(trimmed);
-    let height_ok = bbox
-        .map(|value| {
-            let block_height = (value[3] - value[1]).abs();
-            block_height >= 10.0 && (page_height <= 0.0 || value[1] < page_height * 0.92)
-        })
-        .unwrap_or(false);
-    if explicit && (height_ok || bbox.is_none()) {
-        "heading"
-    } else {
-        "paragraph"
-    }
+    let _ = (bbox, page_height);
+    classify_ocr_block(content)
 }
 
 fn block_bbox(block: &Value) -> Option<[f32; 4]> {
@@ -779,89 +726,38 @@ fn restore_reading_order(blocks: &mut [Value], page_width: u32) {
 }
 
 fn rebuild_document_structure(document: &mut Value) {
-    let mut reading_order = Vec::new();
-    let mut outline = Vec::new();
-    let mut sections: Vec<(u8, String, String)> = Vec::new();
+    crate::document_structure::rebuild(document);
+}
+
+fn enrich_formula_blocks(document: &mut Value) {
     if let Some(pages) = document.get_mut("pages").and_then(Value::as_array_mut) {
         for page in pages {
             let page_number = page["number"].as_u64().unwrap_or(1);
-            let page_height = page["height"].as_f64().unwrap_or(0.0) as f32;
             if let Some(blocks) = page.get_mut("blocks").and_then(Value::as_array_mut) {
                 for block in blocks {
-                    let Some(id) = block["id"].as_str().map(ToOwned::to_owned) else {
+                    if block["type"] != "formula" {
                         continue;
-                    };
-                    reading_order.push(id.clone());
-                    let content = block["content"].as_str().unwrap_or("").trim().to_string();
-                    let bbox = block_bbox(block);
-                    let inferred_type = classify_block_with_layout(&content, bbox, page_height);
-                    let mut block_parent_id = sections.last().map(|(_, _, parent)| parent.clone());
-                    if block["type"] != "formula" && inferred_type == "heading" {
-                        block["type"] = json!("heading");
-                        block["region"] = json!("heading");
-                        if block["level"].is_null() {
-                            block["level"] =
-                                json!(if content.to_ascii_lowercase().starts_with("chapter ")
-                                    || content.starts_with('第')
-                                {
-                                    1
-                                } else {
-                                    2
-                                });
-                        }
                     }
-                    if block["type"] == "heading" {
-                        let level = block["level"]
-                            .as_u64()
-                            .map(|value| value.clamp(1, 6) as u8)
-                            .unwrap_or_else(|| {
-                                if content.to_ascii_lowercase().starts_with("chapter ") {
-                                    1
-                                } else {
-                                    2
-                                }
-                            });
-                        // Do not trust upstream heading labels for numeric
-                        // page/eq numbers; reclassify with content + layout.
-                        if classify_block_with_layout(&content, bbox, page_height) != "heading" {
-                            block["type"] = json!("paragraph");
-                            block["region"] = json!("text");
-                        } else {
-                            while sections
-                                .last()
-                                .is_some_and(|(current, _, _)| *current >= level)
-                            {
-                                sections.pop();
-                            }
-                            let parent_id = sections.last().map(|(_, _, parent)| parent.clone());
-                            block_parent_id = parent_id.clone();
-                            sections.push((level, content.clone(), id.clone()));
-                            outline.push(json!({
-                                "id": id,
-                                "title": content,
-                                "level": level,
-                                "page": page_number,
-                                "parentId": parent_id,
-                                "children": []
-                            }));
-                        }
-                    }
-                    let section_path = sections
-                        .iter()
-                        .map(|(_, title, _)| title.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" / ");
-                    if !section_path.is_empty() {
-                        block["sectionPath"] = json!(section_path);
-                        block["parentId"] =
-                            block_parent_id.map_or(Value::Null, |parent| json!(parent));
-                    }
+                    let plain_text = block["plainText"]
+                        .as_str()
+                        .or_else(|| block["rawText"].as_str())
+                        .or_else(|| block["content"].as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let result = crate::formula_ocr::recognize_text(&plain_text);
+                    block["plainText"] = json!(plain_text);
+                    block["content"] = json!(result.latex.clone());
+                    block["latex"] = json!(result.latex);
+                    block["formulaEngine"] = json!(result.engine);
+                    block["formulaConfidence"] = json!(result.confidence);
+                    block["source"] = block["source"]
+                        .as_str()
+                        .map_or_else(|| json!("native/pdf/formula_ocr"), |source| json!(source));
+                    block["page"] = json!(page_number);
                 }
             }
         }
     }
-    document["structure"]["readingOrder"] = json!(reading_order);
-    document["structure"]["outline"] = json!(outline);
 }
 
 fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
@@ -1384,6 +1280,7 @@ fn merge_ocr_pages(
                     "formulaConfidence": formula_result.as_ref().map(|result| result.confidence),
                     "level": level,
                     "region": if block_type == "formula" { "formula" } else if block_type == "heading" { "heading" } else { "text" },
+                    "source": if block_type == "formula" { "ocr/formula_ocr" } else { "ocr" },
                     "bbox": block.get("bbox").cloned().unwrap_or(Value::Null),
                     "polygon": block.get("polygon").cloned().unwrap_or(Value::Null),
                     "confidence": block.get("confidence").cloned().unwrap_or(Value::Null),
@@ -2493,7 +2390,10 @@ mod tests {
         assert_eq!(blocks[1]["parentId"], "h1");
         assert_eq!(blocks[2]["parentId"], "h1");
         assert_eq!(document["structure"]["outline"][0]["parentId"], Value::Null);
-        assert_eq!(document["structure"]["outline"][1]["parentId"], "h1");
+        assert_eq!(
+            document["structure"]["outline"][0]["children"][0]["parentId"],
+            "h1"
+        );
     }
 
     #[test]

@@ -501,6 +501,7 @@ struct MarketplaceCatalogPlugin {
 
 const MARKETPLACE_MAX_CATALOG_BYTES: u64 = 4 * 1024 * 1024;
 const MARKETPLACE_DOWNLOAD_ATTEMPTS: usize = 3;
+const MARKETPLACE_RETRY_BASE_DELAY: Duration = Duration::from_millis(750);
 const MARKETPLACE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 struct MarketplaceCatalogCache {
@@ -606,6 +607,9 @@ fn fetch_marketplace_catalog(
                 Ok(response) => response,
                 Err(error) => {
                     catalog_errors.push(format!("{catalog_url}（第 {attempt} 次）：{error}"));
+                    if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
+                        std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
+                    }
                     continue;
                 }
             };
@@ -781,6 +785,8 @@ pub fn marketplace_download_plugin(
         }
         let response = match request
             .set("Accept", "application/octet-stream")
+            .set("Accept-Encoding", "identity")
+            .set("Connection", "keep-alive")
             .set(
                 "User-Agent",
                 concat!("CrucibleBox/", env!("CARGO_PKG_VERSION")),
@@ -790,6 +796,9 @@ pub fn marketplace_download_plugin(
             Ok(response) => response,
             Err(error) => {
                 last_download_error = format!("下载插件失败（第 {attempt} 次）：{error}");
+                if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
+                    std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
+                }
                 continue;
             }
         };
@@ -848,6 +857,8 @@ pub fn marketplace_download_plugin(
         }
         let mut buffer = [0_u8; 64 * 1024];
         let mut read_error = None;
+        let mut last_progress_bytes = total;
+        let mut last_progress_at = Instant::now();
         loop {
             let read = match reader.read(&mut buffer) {
                 Ok(read) => read,
@@ -869,10 +880,26 @@ pub fn marketplace_download_plugin(
                 read_error = Some(error.to_string());
                 break;
             }
-            emit_marketplace_progress(&window, &plugin.artifact, total, plugin.size, "downloading");
+            if total.saturating_sub(last_progress_bytes) >= 256 * 1024
+                || last_progress_at.elapsed() >= Duration::from_millis(250)
+                || total == plugin.size
+            {
+                emit_marketplace_progress(
+                    &window,
+                    &plugin.artifact,
+                    total,
+                    plugin.size,
+                    "downloading",
+                );
+                last_progress_bytes = total;
+                last_progress_at = Instant::now();
+            }
         }
         if let Some(error) = read_error {
             last_download_error = format!("下载插件失败（第 {attempt} 次）：{error}");
+            if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
+                std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
+            }
             continue;
         }
         if let Err(error) = file.sync_all() {

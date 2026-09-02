@@ -33,6 +33,7 @@ struct BlockInput {
     block_type: String,
     page: usize,
     section_path: String,
+    section_id: Option<String>,
     parent_id: Option<String>,
 }
 
@@ -253,6 +254,9 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                 .and_then(Value::as_str)
                 .unwrap_or("paragraph")
                 .to_string();
+            if block_type == "toc_entry" || block_type == "toc" {
+                continue;
+            }
             let mut parent_id = sections.last().map(|(_, _, id)| id.clone());
             if block_type == "heading" {
                 let level = block
@@ -288,8 +292,20 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                 content: content.to_string(),
                 block_type,
                 page: page_number,
-                section_path,
-                parent_id,
+                section_path: block
+                    .get("sectionPath")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or(section_path),
+                section_id: block
+                    .get("sectionId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                parent_id: block
+                    .get("parentId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .or(parent_id),
             });
         }
     }
@@ -405,6 +421,7 @@ fn build_chunks(
                     block_type: block.block_type.clone(),
                     page: block.page,
                     section_path: block.section_path.clone(),
+                    section_id: block.section_id.clone(),
                     parent_id: block.parent_id.clone(),
                 };
                 push_chunk(
@@ -474,10 +491,12 @@ fn push_chunk(
     let section_path = blocks
         .iter()
         .find_map(|block| (!block.section_path.is_empty()).then_some(block.section_path.clone()));
+    let section_id = blocks.iter().find_map(|block| block.section_id.clone());
     chunks.push(json!({
         "chunk_id": format!("{document_id}-c{chunk_index}"),
         "document_id": document_id,
         "parent_id": blocks.iter().find_map(|block| block.parent_id.clone()),
+        "section_id": section_id,
         "chunk_index": *chunk_index,
         "title": blocks.iter().find(|block| block.block_type == "heading").map(|block| block.content.clone()),
         "section_path": section_path,

@@ -3,6 +3,15 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 2.0.0-beta.5（2026-09-02）
+
+- 插件市场增加“全选当前结果”、批量下载和全部更新；全部更新不受搜索筛选影响，批量结果逐项进入任务中心并复用现有安装预检、确认和事务队列。
+- 下载继续只使用 CrucibleBox 官方 GitHub Release；优化官方目录重试、Range 断点续传、连接复用请求头、流式进度事件频率和失败退避，减少工具箱与浏览器下载体验差异，并保留 SHA-256/大小/HTTPS 校验。
+- Document Engine 0.6.0 增加统一 Unicode/XML-safe 文本清洗、PDF 字体断词修复、TOC 隔离、章节/小节树和编号段落/习题区分，正确写入 `parentId`、`sectionId`、`sectionPath`。
+- PDF 原生文本与 OCR 进入统一 IR；公式块独立保存 `latex`、`plainText`、来源、页码和置信度，解析型输出与阅读型格式转换继续分离；Hybrid Chunk 长度参数保持不变。
+- DOCX 输出增加 Normal/Heading/List/Table/Caption/Equation、页眉/页脚、页码和 XML part 校验；非法 XML 字符清洗指标为强制门禁。
+- 宿主、插件宿主和前端版本同步至 `2.0.0-beta.5`；Document Engine 同步至 `0.6.0`。
+
 ## 2.0.0-beta.4（2026-09-01）
 
 - 修复插件 Manifest v2 的 `minHostVersion` 未被宿主白名单接收，导入 Document Engine 时会显示真实的版本兼容错误；Document Engine 0.5.0 要求宿主至少为 beta4。

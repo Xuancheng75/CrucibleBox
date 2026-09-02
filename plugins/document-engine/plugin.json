@@ -1,6 +1,6 @@
 {
   "name": "document-engine",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "displayName": "Document Engine",
   "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的 OCR、解析结果导出、真实 PDF 拆分、AI/RAG 文本分块、格式转换、批量任务、缓存和模型管理",
   "author": "CrucibleBox",
@@ -9,7 +9,7 @@
   "manifestVersion": 2,
   "backendApiVersion": 2,
   "rendererApiVersion": 2,
-  "minHostVersion": "2.0.0-beta.4",
+  "minHostVersion": "2.0.0-beta.5",
   "permissions": ["trusted:document-engine", "dialog"],
   "config": {
     "modelDirectory": {

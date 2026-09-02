@@ -110,6 +110,15 @@ pub fn convert_document_with_cache(
         "bytes": bytes.len(),
         "cacheKey": cache_key,
         "documentId": document.get("id").cloned().unwrap_or(Value::Null),
+        "quality": if target == "docx" {
+            json!({
+                "invalidXmlChars": 0,
+                "docxXmlParse": "passed",
+                "docxOpenTest": "not_run"
+            })
+        } else {
+            Value::Null
+        },
         "warnings": if target == "pdf" { json!(["PDF 输出使用内置文本布局，复杂布局可能降级"]) } else { json!([]) }
     });
     if let Some(cache_directory) = cache_directory {
@@ -461,6 +470,10 @@ fn document_to_html(document: &Value) -> String {
 }
 
 fn document_to_docx(document: &Value) -> Result<Vec<u8>, String> {
+    let mut sanitized = document.clone();
+    let _sanitization = crate::document_text::sanitize_document(&mut sanitized);
+    let document_xml = document_to_docx_xml(&sanitized);
+    validate_xml(&document_xml)?;
     let mut buffer = Vec::new();
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
     let options = zip::write::SimpleFileOptions::default();
@@ -468,7 +481,7 @@ fn document_to_docx(document: &Value) -> Result<Vec<u8>, String> {
         .start_file("[Content_Types].xml", options)
         .map_err(|error| format!("创建 DOCX 内容类型失败: {error}"))?;
     writer
-        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>"#)
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>"#)
         .map_err(|error| error.to_string())?;
     writer
         .start_file("_rels/.rels", options)
@@ -480,19 +493,37 @@ fn document_to_docx(document: &Value) -> Result<Vec<u8>, String> {
         .start_file("word/document.xml", options)
         .map_err(|error| format!("创建 DOCX 文档失败: {error}"))?;
     writer
-        .write_all(document_to_docx_xml(document).as_bytes())
+        .write_all(document_xml.as_bytes())
         .map_err(|error| error.to_string())?;
     writer
         .start_file("word/_rels/document.xml.rels", options)
         .map_err(|error| format!("创建 DOCX 文档关系失败: {error}"))?;
     writer
-        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#)
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/><Relationship Id="rIdHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rIdFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>"#)
         .map_err(|error| error.to_string())?;
     writer
         .start_file("word/styles.xml", options)
         .map_err(|error| format!("创建 DOCX 样式失败: {error}"))?;
     writer
-        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Formula"><w:name w:val="Formula"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr><w:rPr><w:i/></w:rPr></w:style></w:styles>"#)
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="25"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="720"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:rPr><w:i/><w:color w:val="666666"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Formula"><w:name w:val="Formula"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr></w:style></w:styles>"#)
+        .map_err(|error| error.to_string())?;
+    writer
+        .start_file("word/numbering.xml", options)
+        .map_err(|error| format!("创建 DOCX 编号失败: {error}"))?;
+    writer
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:start w:val="1"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>"#)
+        .map_err(|error| error.to_string())?;
+    writer
+        .start_file("word/header1.xml", options)
+        .map_err(|error| format!("创建 DOCX 页眉失败: {error}"))?;
+    writer
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>CrucibleBox Document Engine</w:t></w:r></w:p></w:hdr>"#)
+        .map_err(|error| error.to_string())?;
+    writer
+        .start_file("word/footer1.xml", options)
+        .map_err(|error| format!("创建 DOCX 页脚失败: {error}"))?;
+    writer
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:fldChar w:fldCharType="begin"/><w:instrText xml:space="preserve"> PAGE </w:instrText><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>"#)
         .map_err(|error| error.to_string())?;
     writer
         .finish()
@@ -502,7 +533,7 @@ fn document_to_docx(document: &Value) -> Result<Vec<u8>, String> {
 
 fn document_to_docx_xml(document: &Value) -> String {
     let mut xml = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>"#,
     );
     let mut previous_page = None;
     for (page, block_type, content, latex, level) in document_blocks(document) {
@@ -513,23 +544,79 @@ fn document_to_docx_xml(document: &Value) -> String {
         let style = if block_type == "heading" {
             let style_name = format!("Heading{}", level.unwrap_or(2));
             format!("<w:pPr><w:pStyle w:val=\"{style_name}\"/></w:pPr>")
+        } else if block_type == "list" {
+            "<w:pPr><w:pStyle w:val=\"ListParagraph\"/><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr>".to_string()
+        } else if block_type == "caption" {
+            "<w:pPr><w:pStyle w:val=\"Caption\"/></w:pPr>".to_string()
         } else if block_type == "formula" {
             "<w:pPr><w:pStyle w:val=\"Formula\"/></w:pPr>".to_string()
         } else {
             String::new()
         };
+        if block_type == "table" {
+            xml.push_str(&table_to_docx_xml(&content));
+            continue;
+        }
         xml.push_str("<w:p>");
         xml.push_str(&style);
-        xml.push_str("<w:r><w:t xml:space=\"preserve\">");
-        xml.push_str(&escape_xml(if block_type == "formula" {
-            latex.as_deref().unwrap_or(&content)
+        if block_type == "formula" {
+            xml.push_str(&formula_to_omml(latex.as_deref().unwrap_or(&content)));
         } else {
-            &content
-        }));
-        xml.push_str("</w:t></w:r></w:p>");
+            xml.push_str("<w:r><w:t xml:space=\"preserve\">");
+            xml.push_str(&escape_xml(&content));
+            xml.push_str("</w:t></w:r>");
+        }
+        xml.push_str("</w:p>");
     }
-    xml.push_str(r#"<w:sectPr/></w:body></w:document>"#);
+    xml.push_str(r#"<w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>"#);
     xml
+}
+
+fn table_to_docx_xml(content: &str) -> String {
+    let rows = content
+        .lines()
+        .filter(|line| line.contains('|'))
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return format!("<w:p><w:r><w:t>{}</w:t></w:r></w:p>", escape_xml(content));
+    }
+    let mut xml =
+        String::from(r#"<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/></w:tblPr><w:tblGrid>"#);
+    let columns = rows.first().map(|row| row.split('|').count()).unwrap_or(1);
+    for _ in 0..columns {
+        xml.push_str(r#"<w:gridCol w:w="1800"/>"#);
+    }
+    xml.push_str("</w:tblGrid>");
+    for row in rows {
+        xml.push_str("<w:tr>");
+        for cell in row.split('|') {
+            xml.push_str("<w:tc><w:p><w:r><w:t>");
+            xml.push_str(&escape_xml(cell.trim()));
+            xml.push_str("</w:t></w:r></w:p></w:tc>");
+        }
+        xml.push_str("</w:tr>");
+    }
+    xml.push_str("</w:tbl>");
+    xml
+}
+
+fn formula_to_omml(value: &str) -> String {
+    format!(
+        r#"<m:oMathPara><m:oMath><m:r><m:t xml:space="preserve">{}</m:t></m:r></m:oMath></m:oMathPara>"#,
+        escape_xml(value)
+    )
+}
+
+fn validate_xml(value: &str) -> Result<(), String> {
+    let mut reader = quick_xml::Reader::from_str(value);
+    reader.config_mut().trim_text(false);
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Eof) => return Ok(()),
+            Ok(_) => {}
+            Err(error) => return Err(format!("生成的 XML 无法解析: {error}")),
+        }
+    }
 }
 
 fn document_to_pdf(document: &Value) -> Vec<u8> {
@@ -638,6 +725,7 @@ fn escape_html(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{Cursor, Read};
 
     fn document() -> Value {
         json!({
@@ -662,5 +750,43 @@ mod tests {
         let docx = document_to_docx(&document()).unwrap();
         assert_eq!(&docx[..2], b"PK");
         assert!(document_to_pdf(&document()).starts_with(b"%PDF-1.4"));
+    }
+
+    #[test]
+    fn generated_docx_parts_are_well_formed_and_structured() {
+        let document = json!({
+            "id": "doc-quality",
+            "source": { "path": "C:/input.pdf" },
+            "pages": [{ "number": 1, "blocks": [
+                { "id": "h1", "type": "heading", "level": 1, "content": "Chapter 1" },
+                { "id": "p1", "type": "paragraph", "content": "determi\u{0002}nants" },
+                { "id": "f1", "type": "formula", "latex": "A^T A x = A^T b", "content": "A^T A x = A^T b" },
+                { "id": "l1", "type": "list", "content": "first item" },
+                { "id": "t1", "type": "table", "content": "a|b\nc|d" }
+            ]}]
+        });
+        let bytes = document_to_docx(&document).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut document_xml = String::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            if entry.name().ends_with(".xml") || entry.name().ends_with(".rels") {
+                let mut xml = String::new();
+                entry.read_to_string(&mut xml).unwrap();
+                validate_xml(&xml)
+                    .unwrap_or_else(|error| panic!("{} is invalid: {error}", entry.name()));
+                if entry.name() == "word/document.xml" {
+                    document_xml = xml;
+                }
+            }
+        }
+        assert!(document_xml.contains("Heading1"));
+        assert!(document_xml.contains("m:oMath"));
+        assert!(document_xml.contains("w:numPr"));
+        assert!(document_xml.contains("w:tbl"));
+        assert!(!document_xml.chars().any(|character| {
+            let code = character as u32;
+            (code < 0x20 && !matches!(character, '\n' | '\r' | '\t')) || code == 0x7f
+        }));
     }
 }

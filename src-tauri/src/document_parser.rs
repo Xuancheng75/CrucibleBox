@@ -91,7 +91,8 @@ fn build_result(
         let mut paragraph_index = 0usize;
         for paragraph in split_paragraphs(&page.text) {
             paragraph_index += 1;
-            let (mut block_type, mut content, level) = markdown_heading(&paragraph);
+            let (normalized_paragraph, _) = crate::document_text::normalize_text(&paragraph);
+            let (mut block_type, mut content, level) = markdown_heading(&normalized_paragraph);
             if block_type == "paragraph" && is_formula_block(&content) {
                 block_type = "formula";
                 content = strip_formula_delimiters(&content);
@@ -107,8 +108,10 @@ fn build_result(
                 "id": id,
                 "type": block_type,
                 "content": content,
-                "rawText": paragraph.clone(),
-                "language": detect_language(&paragraph),
+                "rawText": normalized_paragraph.clone(),
+                "source": "native",
+                "region": if block_type == "formula" { "formula" } else { "text" },
+                "language": detect_language(&normalized_paragraph),
             });
             if block_type == "formula" {
                 block["latex"] = json!(

@@ -105,9 +105,11 @@ Tauri 版本或 channel 推导。
 **官方插件包 zip（unienv/diary 等）**。已装用户升级宿主后需导入对应插件包以启用
 插件新功能（NSIS 不更新 %APPDATA% 内的插件）。
 
-### beta4 发布前补充检查
+### beta5 发布前补充检查
 
-- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.4`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
-- Document Engine 0.5.0 的 `minHostVersion` 为 `2.0.0-beta.4`，插件包必须在宿主 beta4 上完成预检、确认、提交和打开链路。
-- `plugins.json` 必须携带插件展示元数据（名称、描述、发布者、图标）以及当前 beta4 tag 的固定下载 URL；滚动 `tauri-beta` 只更新 beta 通道，不得覆盖 `tauri-stable`。
-- 发布前验证市场刷新失败时仍能显示内置/最近缓存目录，网络恢复后强制刷新能反映新增插件和版本更新；下载中断后重试应复用 `.part` 文件并重新完成 SHA-256 校验。
+- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.5`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
+- Document Engine 0.6.0 的 `minHostVersion` 为 `2.0.0-beta.5`，插件包必须在宿主 beta5 上完成预检、确认、提交和打开链路。
+- `plugins.json` 必须携带插件展示元数据（名称、描述、发布者、图标）以及当前 beta5 tag 的固定 GitHub Release 下载 URL；滚动 `tauri-beta` 只更新 beta 通道，不得覆盖 `tauri-stable`，不配置镜像地址。
+- 发布前验证市场刷新失败时仍能显示内置/最近缓存目录，网络恢复后强制刷新能反映新增插件和插件更新；下载中断后重试应复用 `.part` 文件并重新完成 SHA-256 校验。
+- Document Engine 解析验收必须记录 `invalidControlChars=0`、`invalidXmlChars=0`、TOC/heading/section sample、formula/image/table/native/OCR block 计数，以及 350–600 token Hybrid Chunk 回归指标。
+- DOCX 验收必须逐个解析 `[Content_Types].xml`、relationships、document、styles、numbering、header/footer XML；再在 Windows 上执行 Word/LibreOffice 打开和 DOCX→PDF 冒烟。

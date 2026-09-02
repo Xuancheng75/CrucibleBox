@@ -1,8 +1,8 @@
 # CrucibleBox 维护复杂度优化方案（整合版）
 
-> 状态：维护规范（2.0.0-beta.4 工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。
-> 基线：CrucibleBox 2.0.0-beta.4（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
-> 唯一可编辑源码：`E:\CrucibleBox_Sourses`（git 仓库，HEAD `c22609b`）。
+> 状态：维护规范（2.0.0-beta.5 工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。
+> 基线：CrucibleBox 2.0.0-beta.5（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
+> 唯一可编辑源码：`E:\CrucibleBox_Sourses`（git 仓库；beta5 发布提交以实际发布 tag 为准）。
 > `E:\CrucibleBox_Plugins` 为只读镜像 / 发布备份，不参与构建。
 
 ## 0. 目标与约束
@@ -20,7 +20,7 @@
   9. 不维护第二套可编辑插件源码；
   10. 不再增加阶段性 milestone 文档。
 
-## 0.1 beta4 工作包与验收范围
+## 0.1 beta5 工作包与验收范围
 
 本工作包不推翻现有 Tauri、插件独立构建或 Document Engine 架构，重点收敛 beta3 暴露的市场与导入故障，并把 Document Engine 的结构契约落实到可验证行为：
 
@@ -32,7 +32,7 @@
 | P1     | Document Engine    | OCR 语言选择参与模型方案；缓存 key 含源 PDF hash、engine、det/rec/dictionary 身份和配置版本；heading/page number/公式编号过滤；parentId、title、sectionPath 不自指；解析导出与阅读型转换、真实 PDF 拆分保持分离 |
 | P1     | 发布链和文档       | 11 个插件独立构建并打包，Tauri 版本七点对齐，前端/Rust/插件门禁全绿，更新 README、开发指南、发布 runbook 和变更记录                                                                                             |
 
-beta4 不包含 GitHub Marketplace、账户系统、Windows Authenticode 证书，也不把插件 backend 改造成不可信代码沙箱。网络无法访问 GitHub 时，离线缓存只保证继续查看最近目录；首次下载仍依赖用户网络、代理或企业出口配置。
+beta5 不包含下载镜像、GitHub Marketplace、账户系统、Windows Authenticode 证书，也不把插件 backend 改造成不可信代码沙箱。网络无法访问 GitHub 时，离线缓存只保证继续查看最近目录；首次下载仍依赖用户网络、代理或企业出口配置。
 
 ## 1. 复杂度热点（审计确认）
 

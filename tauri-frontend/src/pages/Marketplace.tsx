@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Drawer, Empty, Input, Progress, Space, Tag, Typography, theme } from 'antd'
+import { Alert, Button, Checkbox, Drawer, Empty, Input, Progress, Space, Tag, Typography, theme } from 'antd'
 import {
   CheckOutlined,
   DownloadOutlined,
@@ -68,6 +68,9 @@ export default function Marketplace() {
   const [newPluginCount, setNewPluginCount] = useState(0)
   const [updateCount, setUpdateCount] = useState(0)
   const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchResult, setBatchResult] = useState<string | null>(null)
   const activeDownloadTaskRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -182,16 +185,29 @@ export default function Marketplace() {
     () => new Map(plugins.map((plugin) => [plugin.id, plugin])),
     [plugins]
   )
+  const marketplaceItems = remoteCatalog ?? OFFICIAL_MARKETPLACE_CATALOG
   const catalog = useMemo(() => {
-    const source = remoteCatalog ?? OFFICIAL_MARKETPLACE_CATALOG
     const normalized = query.trim().toLowerCase()
-    if (!normalized) return source
-    return source.filter((plugin) =>
+    if (!normalized) return marketplaceItems
+    return marketplaceItems.filter((plugin) =>
       `${plugin.name} ${plugin.id} ${plugin.category} ${plugin.description}`
         .toLowerCase()
         .includes(normalized)
     )
-  }, [query, remoteCatalog])
+  }, [marketplaceItems, query])
+
+  const updatePlugins = useMemo(
+    () => marketplaceItems.filter((plugin) => {
+      const installedVersion = installedById.get(plugin.id)?.version
+      return Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
+    }),
+    [installedById, marketplaceItems]
+  )
+
+  const selectedPlugins = useMemo(
+    () => catalog.filter((plugin) => selectedIds.has(plugin.id)),
+    [catalog, selectedIds]
+  )
 
   const openInstalled = (plugin: MarketplacePlugin) => {
     const installed = installedById.get(plugin.id)
@@ -226,6 +242,77 @@ export default function Marketplace() {
     }
   }
 
+  const toggleSelected = (pluginId: string, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(pluginId)
+      else next.delete(pluginId)
+      return next
+    })
+  }
+
+  const allVisibleSelected = catalog.length > 0 && catalog.every((plugin) => selectedIds.has(plugin.id))
+  const someVisibleSelected = catalog.some((plugin) => selectedIds.has(plugin.id))
+  const toggleAllVisible = (checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      for (const plugin of catalog) {
+        if (checked) next.add(plugin.id)
+        else next.delete(plugin.id)
+      }
+      return next
+    })
+  }
+
+  const downloadBatch = async (items: MarketplacePlugin[], action: 'download' | 'update') => {
+    if (items.length === 0 || batchBusy) return
+    setBatchBusy(true)
+    setBatchResult(null)
+    setDownloadError(null)
+    const paths: string[] = []
+    const failures: string[] = []
+    for (const plugin of items) {
+      const taskId = `marketplace-${action}-${plugin.id}-${Date.now()}`
+      activeDownloadTaskRef.current = taskId
+      setDownloadingId(plugin.id)
+      setDownloadProgress((current) => ({ ...current, [plugin.id]: 0 }))
+      useTaskStore.getState().upsertTask({
+        id: taskId,
+        title: `${action === 'update' ? '更新' : '下载'} ${plugin.name}`,
+        source: 'marketplace',
+        status: 'running',
+        progress: 10
+      })
+      try {
+        const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel)
+        paths.push(path)
+        useTaskStore.getState().patchTask(taskId, {
+          title: `校验 ${plugin.name}`,
+          status: 'completed',
+          progress: 100,
+          detail: '下载和校验完成，等待安装确认'
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push(`${plugin.name}: ${message}`)
+        useTaskStore.getState().patchTask(taskId, { status: 'failed', error: message })
+      }
+    }
+    setDownloadingId(null)
+    activeDownloadTaskRef.current = null
+    if (paths.length > 0) {
+      usePluginStore.getState().enqueueInstalls(paths.map((path) => ({ source: 'zip' as const, path })))
+    }
+    if (failures.length > 0) {
+      setBatchResult(`已下载 ${paths.length}/${items.length} 个；失败 ${failures.length} 个。失败项可在任务中心重试。`)
+      setDownloadError(failures.join('\n'))
+    } else {
+      setBatchResult(`已下载并校验 ${paths.length} 个插件，正在逐个等待安装确认。`)
+    }
+    setSelectedIds(new Set())
+    setBatchBusy(false)
+  }
+
   return (
     <div className="ob-marketplace-page">
       <div className="ob-page-heading">
@@ -255,6 +342,31 @@ export default function Marketplace() {
             onClick={() => void loadCatalog(true)}
           >
             刷新
+          </Button>
+          <Checkbox
+            checked={allVisibleSelected}
+            indeterminate={!allVisibleSelected && someVisibleSelected}
+            disabled={batchBusy || catalog.length === 0}
+            onChange={(event) => toggleAllVisible(event.target.checked)}
+          >
+            全选当前结果
+          </Checkbox>
+          <Button
+            disabled={batchBusy || selectedPlugins.length === 0}
+            loading={batchBusy}
+            icon={<DownloadOutlined />}
+            onClick={() => void downloadBatch(selectedPlugins, 'download')}
+          >
+            批量下载 ({selectedPlugins.length})
+          </Button>
+          <Button
+            disabled={batchBusy || updatePlugins.length === 0}
+            loading={batchBusy}
+            type={updatePlugins.length > 0 ? 'primary' : 'default'}
+            icon={<DownloadOutlined />}
+            onClick={() => void downloadBatch(updatePlugins, 'update')}
+          >
+            全部更新 ({updatePlugins.length})
           </Button>
         </Space>
       </div>
@@ -294,6 +406,18 @@ export default function Marketplace() {
         />
       )}
 
+      {batchResult && (
+        <Alert
+          type="info"
+          showIcon
+          closable
+          message="批量任务"
+          description={batchResult}
+          onClose={() => setBatchResult(null)}
+          style={{ marginBottom: 20 }}
+        />
+      )}
+
       {catalog.length === 0 ? (
         <Empty description="没有找到匹配的插件" />
       ) : (
@@ -316,6 +440,13 @@ export default function Marketplace() {
                   background: token.colorBgContainer
                 }}
               >
+                <Checkbox
+                  checked={selectedIds.has(plugin.id)}
+                  disabled={batchBusy}
+                  aria-label={`选择 ${plugin.name}`}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => toggleSelected(plugin.id, event.target.checked)}
+                />
                 <PluginGlyph pluginId={plugin.id} name={plugin.name} size={52} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="ob-market-card-title">
@@ -338,10 +469,11 @@ export default function Marketplace() {
                   >
                     {plugin.description}
                   </Paragraph>
-                <Button
+                  <Button
                     size="small"
                     type={installed && !updateAvailable ? 'default' : 'primary'}
                     loading={downloadingId === plugin.id}
+                    disabled={batchBusy}
                     icon={installed && !updateAvailable ? <CheckOutlined /> : <DownloadOutlined />}
                     onClick={(event) => {
                       event.stopPropagation()
@@ -394,6 +526,7 @@ export default function Marketplace() {
               type="primary"
               block
               loading={downloadingId === selected.id}
+              disabled={batchBusy}
               icon={installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0 ? <CheckOutlined /> : <DownloadOutlined />}
               onClick={() =>
                 installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0
