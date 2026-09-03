@@ -2,6 +2,30 @@
 
 use serde_json::{json, Value};
 
+/// Mark OCR fragments that are more likely to be detector noise than usable
+/// text. A low confidence score alone is deliberately insufficient: small
+/// Chinese glyphs can be low confidence while still being valid content.
+pub fn is_ocr_noise_candidate(
+    content: &str,
+    confidence: f32,
+    region: &str,
+    bbox: Option<[f32; 4]>,
+    page_height: f32,
+) -> bool {
+    if !matches!(region, "text" | "paragraph") || confidence >= 0.45 || content.chars().count() > 3
+    {
+        return false;
+    }
+    let Some([x1, y1, x2, y2]) = bbox else {
+        return false;
+    };
+    let width = (x2 - x1).max(0.0);
+    let height = (y2 - y1).max(0.0);
+    let isolated = width <= page_height.max(1.0) * 0.14 && height <= page_height.max(1.0) * 0.08;
+    let in_margin = y1 / page_height.max(1.0) < 0.08 || y2 / page_height.max(1.0) > 0.92;
+    isolated && !in_margin
+}
+
 /// Evaluate the quality of native text without changing the source payload.
 /// `rawText` remains available for diagnostics; normalized `content` is the
 /// only text consumed by RAG and renderers.
@@ -131,6 +155,11 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
     let mut parent_ids = Vec::new();
     let mut invalid_xml_chars = 0usize;
     let mut section_samples = Vec::new();
+    let mut ocr_confidence_sum = 0.0_f64;
+    let mut ocr_confidence_count = 0usize;
+    let mut ocr_noise_count = 0usize;
+    let mut ocr_content_chars = 0usize;
+    let mut low_confidence_formula_count = 0usize;
 
     if let Some(pages) = document["pages"].as_array() {
         for page in pages {
@@ -167,7 +196,15 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
                             suspected_false_heading_count += 1;
                         }
                         "toc_entry" => toc_entry_count += 1,
-                        "formula" => formula_block_count += 1,
+                        "formula" => {
+                            formula_block_count += 1;
+                            if block["formulaConfidence"]
+                                .as_f64()
+                                .is_some_and(|confidence| confidence < 0.60)
+                            {
+                                low_confidence_formula_count += 1;
+                            }
+                        }
                         "image" => image_block_count += 1,
                         "table" => table_block_count += 1,
                         "figure" => figure_block_count += 1,
@@ -206,13 +243,47 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
                     }
                     match block["source"].as_str() {
                         Some("native") | Some("native/pdf") => native_text_block_count += 1,
-                        Some("ocr") => ocr_text_block_count += 1,
+                        Some("ocr") | Some("ocr/formula_ocr") => {
+                            ocr_text_block_count += 1;
+                            if let Some(confidence) = block["confidence"].as_f64() {
+                                ocr_confidence_sum += confidence;
+                                ocr_confidence_count += 1;
+                            }
+                            ocr_content_chars += content.chars().count();
+                            if block["ocrNoiseCandidate"].as_bool().unwrap_or(false) {
+                                ocr_noise_count += 1;
+                            }
+                        }
                         _ => {}
                     }
                 }
             }
         }
     }
+    let ocr_confidence_average = if ocr_confidence_count == 0 {
+        1.0
+    } else {
+        ocr_confidence_sum / ocr_confidence_count as f64
+    };
+    let ocr_noise_ratio = if ocr_text_block_count == 0 {
+        0.0
+    } else {
+        ocr_noise_count as f64 / ocr_text_block_count as f64
+    };
+    let missing_structure = ocr_text_block_count > 0 && heading_count == 0 && path_blocks == 0;
+    let low_ocr_confidence = ocr_text_block_count > 0 && ocr_confidence_average < 0.55;
+    let suspected_ocr_gibberish = ocr_text_block_count > 0
+        && (ocr_noise_ratio >= 0.20
+            || (low_ocr_confidence && ocr_content_chars > 0 && ocr_noise_ratio >= 0.05));
+    let formula_recognition_low_confidence = low_confidence_formula_count > 0;
+    let rag_quality = if suspected_ocr_gibberish {
+        "rejected"
+    } else if low_ocr_confidence || missing_structure || invalid_xml_chars > 0 {
+        "degraded"
+    } else {
+        "good"
+    };
+    let quality_passed = invalid_xml_chars == 0 && !suspected_ocr_gibberish && !missing_structure;
     for parent_id in parent_ids {
         if !section_ids.contains(&parent_id) {
             orphan_section_count += 1;
@@ -240,10 +311,25 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
         }
     }
     let native_quality = annotate_native_quality_from_document(document);
+    let quality_flags = [
+        low_ocr_confidence.then_some("low_ocr_confidence"),
+        (ocr_noise_ratio >= 0.05).then_some("mixed_script_noise"),
+        suspected_ocr_gibberish.then_some("suspected_ocr_gibberish"),
+        missing_structure.then_some("missing_structure"),
+        formula_recognition_low_confidence.then_some("formula_recognition_low_confidence"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
     json!({
         "invalidControlChars": 0,
         "invalidXmlChars": invalid_xml_chars,
         "removedInvalidControlChars": removed_control_chars,
+        "passed": quality_passed,
+        "ragQuality": rag_quality,
+        "qualityFlags": quality_flags,
+        "ocrConfidenceAverage": ocr_confidence_average,
+        "ocrNoiseRatio": ocr_noise_ratio,
         "docxOpenTest": "not_run",
         "docxXmlParse": "not_run",
         "headingCount": heading_count,
@@ -255,6 +341,7 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
         "tocEntryCount": toc_entry_count,
         "sectionPathAccuracySample": section_samples,
         "formulaBlockCount": formula_block_count,
+        "formulaRecognitionLowConfidenceCount": low_confidence_formula_count,
         "imageBlockCount": image_block_count,
         "tableBlockCount": table_block_count,
         "nativeTextBlockCount": native_text_block_count,
@@ -323,5 +410,29 @@ mod tests {
             1
         );
         assert_eq!(stats["nativeTextGoodPages"], 1);
+    }
+
+    #[test]
+    fn missing_ocr_structure_fails_document_gate() {
+        let document = json!({
+            "pages": [{
+                "number": 1,
+                "blocks": [{
+                    "type": "paragraph",
+                    "region": "text",
+                    "source": "ocr",
+                    "content": "扫描正文",
+                    "confidence": 0.9
+                }]
+            }]
+        });
+        let quality = report(&document, 0);
+        assert_eq!(quality["passed"], false);
+        assert_eq!(quality["ragQuality"], "degraded");
+        assert!(quality["qualityFlags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|flag| flag == "missing_structure"));
     }
 }

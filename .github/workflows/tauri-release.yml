@@ -98,6 +98,20 @@ jobs:
           cp ocr-worker/target/release/ocr-worker.exe \
             src-tauri/binaries/ocr-worker-x86_64-pc-windows-msvc.exe
 
+      - name: Stage ONNX Runtime sidecar dependencies
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'onnxruntime-win-x64-1.28.1.zip'
+          $url = 'https://sourceforge.net/projects/onnx-runtime.mirror/files/v1.28.1/onnxruntime-win-x64-1.28.1.zip/download?use_mirror=master'
+          curl.exe --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 --max-time 900 --output $archive $url
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'e46ac7652def5da0e5223372be21185ffff553e0419459f66e0114d460c38162') { throw "ONNX Runtime archive SHA-256 mismatch: $hash" }
+          $extract = Join-Path $env:RUNNER_TEMP 'onnxruntime-1.28.1'
+          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+          New-Item -ItemType Directory -Path 'src-tauri/binaries' -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $extract 'onnxruntime-win-x64-1.28.1/lib/onnxruntime.dll') -Destination 'src-tauri/binaries/onnxruntime.dll' -Force
+          Copy-Item -LiteralPath (Join-Path $extract 'onnxruntime-win-x64-1.28.1/lib/onnxruntime_providers_shared.dll') -Destination 'src-tauri/binaries/onnxruntime_providers_shared.dll' -Force
+
       - name: Verify Tauri runtime assets
         run: node scripts/verify-tauri-runtime-assets.mjs --staged .
 

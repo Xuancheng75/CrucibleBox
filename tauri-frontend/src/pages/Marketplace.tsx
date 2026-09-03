@@ -170,7 +170,7 @@ export default function Marketplace() {
       setDownloadProgress((current) => ({ ...current, [plugin.id]: percent }))
       if (activeDownloadTaskRef.current) {
         useTaskStore.getState().patchTask(activeDownloadTaskRef.current, {
-          progress: Math.max(10, Math.min(95, percent))
+          progress: Math.max(0, Math.min(95, percent))
         })
       }
     }).then((stop) => {
@@ -224,7 +224,7 @@ export default function Marketplace() {
     activeDownloadTaskRef.current = taskId
     setDownloadProgress((current) => ({ ...current, [plugin.id]: 0 }))
     setDownloadingId(plugin.id)
-    useTaskStore.getState().upsertTask({ id: taskId, title: `下载 ${plugin.name}`, source: 'marketplace', status: 'running', progress: 10 })
+    useTaskStore.getState().upsertTask({ id: taskId, title: `下载 ${plugin.name}`, detail: `直连官方 Release · 通道 ${channel}`, source: 'marketplace', status: 'running', progress: 0 })
     try {
       const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'foreground')
       useTaskStore.getState().patchTask(taskId, { title: `校验 ${plugin.name}`, progress: 70 })
@@ -288,7 +288,7 @@ export default function Marketplace() {
         title: `${action === 'update' ? '更新' : '下载'} ${plugin.name}`,
         source: 'marketplace',
         status: 'running',
-        progress: 10
+        progress: 0
       })
       try {
         const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'normal')

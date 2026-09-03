@@ -9,12 +9,15 @@ pub const LEGACY_DETECTION_MODEL: &str = "ch_PP-OCRv4_det.onnx";
 pub const LEGACY_RECOGNITION_MODEL: &str = "ch_PP-OCRv4_rec.onnx";
 pub const LEGACY_DICTIONARY: &str = "ppocr_keys_v1.txt";
 pub const SMALL_DETECTION_MODEL: &str = "ppocrv6_small_det.onnx";
-pub const MOBILE_RECOGNITION_MODEL: &str = "en_PP-OCRv5_mobile_rec.onnx";
-pub const MOBILE_DICTIONARY: &str = "en_ppocrv5_dict.txt";
+pub const MOBILE_RECOGNITION_MODEL: &str = "PP-OCRv5_mobile_rec.onnx";
+pub const MOBILE_DICTIONARY: &str = "ppocrv5_dict.txt";
+pub const ENGLISH_RECOGNITION_MODEL: &str = "en_PP-OCRv5_mobile_rec.onnx";
+pub const ENGLISH_DICTIONARY: &str = "en_ppocrv5_dict.txt";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelProfile {
     PpOcrv6SmallDetV5MobileRec,
+    PpOcrv6SmallDetV5EnglishRec,
     PpOcrv4MobileZhEn,
 }
 
@@ -22,6 +25,7 @@ impl ModelProfile {
     pub fn id(self) -> &'static str {
         match self {
             Self::PpOcrv6SmallDetV5MobileRec => "ppocrv6-small-det-v5-mobile-rec",
+            Self::PpOcrv6SmallDetV5EnglishRec => "ppocrv6-small-det-v5-en-rec",
             Self::PpOcrv4MobileZhEn => "ppocrv4-mobile-zh-en",
         }
     }
@@ -31,6 +35,9 @@ impl ModelProfile {
             "ppocrv6-small-det-v5-mobile-rec" | "ppocrv6" | "default" | "auto" => {
                 Some(Self::PpOcrv6SmallDetV5MobileRec)
             }
+            "ppocrv6-small-det-v5-en-rec" | "ppocrv6-en" | "english" | "en" => {
+                Some(Self::PpOcrv6SmallDetV5EnglishRec)
+            }
             "ppocrv4-mobile-zh-en" | "ppocrv4" | "legacy" => Some(Self::PpOcrv4MobileZhEn),
             _ => None,
         }
@@ -39,6 +46,7 @@ impl ModelProfile {
     pub fn detection_name(self) -> &'static str {
         match self {
             Self::PpOcrv6SmallDetV5MobileRec => SMALL_DETECTION_MODEL,
+            Self::PpOcrv6SmallDetV5EnglishRec => SMALL_DETECTION_MODEL,
             Self::PpOcrv4MobileZhEn => LEGACY_DETECTION_MODEL,
         }
     }
@@ -46,6 +54,7 @@ impl ModelProfile {
     pub fn recognition_name(self) -> &'static str {
         match self {
             Self::PpOcrv6SmallDetV5MobileRec => MOBILE_RECOGNITION_MODEL,
+            Self::PpOcrv6SmallDetV5EnglishRec => ENGLISH_RECOGNITION_MODEL,
             Self::PpOcrv4MobileZhEn => LEGACY_RECOGNITION_MODEL,
         }
     }
@@ -53,6 +62,7 @@ impl ModelProfile {
     pub fn dictionary_name(self) -> &'static str {
         match self {
             Self::PpOcrv6SmallDetV5MobileRec => MOBILE_DICTIONARY,
+            Self::PpOcrv6SmallDetV5EnglishRec => ENGLISH_DICTIONARY,
             Self::PpOcrv4MobileZhEn => LEGACY_DICTIONARY,
         }
     }
@@ -97,17 +107,6 @@ impl ModelPaths {
         {
             ModelProfile::from_id(requested)
                 .ok_or_else(|| format!("unsupported model profile: {requested}"))?
-        } else if requested_language.is_some_and(|language| {
-            matches!(language.to_ascii_lowercase().as_str(), "ch" | "zh" | "mix")
-        }) && [
-            directory.join(LEGACY_DETECTION_MODEL),
-            directory.join(LEGACY_RECOGNITION_MODEL),
-            directory.join(LEGACY_DICTIONARY),
-        ]
-        .iter()
-        .all(|path| path.is_file())
-        {
-            ModelProfile::PpOcrv4MobileZhEn
         } else if [
             directory.join(SMALL_DETECTION_MODEL),
             directory.join(MOBILE_RECOGNITION_MODEL),
@@ -117,8 +116,30 @@ impl ModelPaths {
         .all(|path| path.is_file())
         {
             ModelProfile::PpOcrv6SmallDetV5MobileRec
-        } else {
+        } else if [
+            directory.join(SMALL_DETECTION_MODEL),
+            directory.join(ENGLISH_RECOGNITION_MODEL),
+            directory.join(ENGLISH_DICTIONARY),
+        ]
+        .iter()
+        .all(|path| path.is_file())
+            && requested_language.is_some_and(|language| language.eq_ignore_ascii_case("en"))
+        {
+            ModelProfile::PpOcrv6SmallDetV5EnglishRec
+        } else if [
+            directory.join(LEGACY_DETECTION_MODEL),
+            directory.join(LEGACY_RECOGNITION_MODEL),
+            directory.join(LEGACY_DICTIONARY),
+        ]
+        .iter()
+        .all(|path| path.is_file())
+        {
             ModelProfile::PpOcrv4MobileZhEn
+        } else {
+            return Err(format!(
+                "通用 PP-OCRv5 模型未安装：需要 {}、{} 和 {}；英文优化模式请显式选择 english",
+                MOBILE_RECOGNITION_MODEL, MOBILE_DICTIONARY, SMALL_DETECTION_MODEL
+            ));
         };
         let dictionary = dictionary_path
             .filter(|path| !path.trim().is_empty())
@@ -241,6 +262,36 @@ mod tests {
         let paths =
             ModelPaths::resolve(directory.to_str(), None, Some("auto"), Some("zh")).unwrap();
         assert_eq!(paths.profile, ModelProfile::PpOcrv4MobileZhEn);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn auto_prefers_generic_v5_over_english_and_legacy_profiles() {
+        let directory = std::env::temp_dir().join(format!(
+            "cruciblebox-model-profile-generic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        for name in [
+            SMALL_DETECTION_MODEL,
+            MOBILE_RECOGNITION_MODEL,
+            MOBILE_DICTIONARY,
+            ENGLISH_RECOGNITION_MODEL,
+            ENGLISH_DICTIONARY,
+        ] {
+            fs::write(directory.join(name), b"model").unwrap();
+        }
+        let paths =
+            ModelPaths::resolve(directory.to_str(), None, Some("auto"), Some("mix")).unwrap();
+        assert_eq!(paths.profile, ModelProfile::PpOcrv6SmallDetV5MobileRec);
+        assert_eq!(
+            paths.recognition.file_name().unwrap(),
+            MOBILE_RECOGNITION_MODEL
+        );
         let _ = fs::remove_dir_all(directory);
     }
 }

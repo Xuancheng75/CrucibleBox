@@ -5,23 +5,23 @@
   "license": "Apache-2.0",
   "offline": true,
   "profile": {
-    "language": "en",
+    "language": "mix",
     "detection": "PP-OCRv6-small-det",
-    "recognition": "en_PP-OCRv5_mobile-rec",
+    "recognition": "PP-OCRv5_mobile-rec",
     "formula": "lazy-adapter"
   },
   "artifacts": [
     {
       "name": "ppocrv6_small_det.onnx",
-      "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+      "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"
     },
     {
-      "name": "en_PP-OCRv5_mobile_rec.onnx",
-      "sha256": "b5f833dfc5d0eb71da397b4efa06ebeee9b431b690a47d6af40d77d8eabc557f"
+      "name": "PP-OCRv5_mobile_rec.onnx",
+      "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5"
     },
     {
-      "name": "en_ppocrv5_dict.txt",
-      "sha256": "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6"
+      "name": "ppocrv5_dict.txt",
+      "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b"
     }
   ]
 }

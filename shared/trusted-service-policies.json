@@ -3,19 +3,28 @@
     "name": "unienv",
     "version": "0.11.0",
     "digest": "75d84102ff8db835e60021d76d611a0a995ebdbb0e14cfdc28c71f21ccca3c92",
-    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
+    "files": [
+      "dist/main.js",
+      "dist/renderer.js",
+      "plugin.json"
+    ]
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.7.0",
-    "permissions": ["trusted:document-engine", "dialog"],
-    "digest": "7f019307d70ee1e2f1b66b44e4bfe5e1ee98356d415a0b22de5c1956b1405636",
+    "version": "0.8.0",
+    "permissions": [
+      "trusted:document-engine",
+      "dialog"
+    ],
+    "digest": "ead3900eb64dafc3368e246fab6c6cbda6c27cb11e8473190af74f610e8b6373",
     "files": [
       "dist/main.js",
       "dist/renderer.js",
       "plugin.json",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
     ]

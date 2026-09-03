@@ -1,10 +1,7 @@
 //! Native transport used by the marketplace catalog request.
 //!
-//! The browser inherits the Windows user's proxy/PAC/WPAD configuration.  A
-//! Rust HTTP client does not necessarily see that configuration, so the
-//! catalog gets a Windows WinHTTP path first.  The caller keeps its existing
-//! ureq path as a compatibility fallback and still validates the catalog
-//! schema before using it.
+//! The marketplace uses direct HTTPS to the first-party GitHub release
+//! address. It does not inherit a shell proxy or a mirror endpoint.
 
 #[cfg(windows)]
 pub fn get_text(url: &str, max_bytes: u64) -> Result<String, String> {
@@ -13,9 +10,8 @@ pub fn get_text(url: &str, max_bytes: u64) -> Result<String, String> {
     use windows_sys::Win32::Networking::WinHttp::{
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
         WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-        WinHttpSendRequest, WinHttpSetTimeouts, HTTP_STATUS_OK,
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_QUERY_STATUS_CODE,
+        WinHttpSendRequest, WinHttpSetTimeouts, HTTP_STATUS_OK, WINHTTP_ACCESS_TYPE_NO_PROXY,
+        WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
     };
 
     fn wide(value: &str) -> Vec<u16> {
@@ -55,7 +51,7 @@ pub fn get_text(url: &str, max_bytes: u64) -> Result<String, String> {
     unsafe {
         let session = WinHttpOpen(
             agent.as_ptr(),
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            WINHTTP_ACCESS_TYPE_NO_PROXY,
             std::ptr::null(),
             std::ptr::null(),
             0,

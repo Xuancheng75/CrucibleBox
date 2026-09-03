@@ -33,6 +33,7 @@ struct OcrEngine {
 
 impl OcrEngine {
     fn load(paths: &ModelPaths, use_gpu: bool) -> Result<Self, String> {
+        initialize_ort()?;
         let mut metadata = paths.metadata()?;
         let dictionary = Dictionary::load(&paths.dictionary)?;
         metadata.dictionary_sha256 = dictionary.sha256.clone();
@@ -192,6 +193,34 @@ impl OcrEngine {
             },
         })
     }
+}
+
+fn initialize_ort() -> Result<(), String> {
+    static INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
+    INITIALIZED
+        .get_or_init(|| {
+            let configured = std::env::var_os("ORT_DYLIB_PATH").map(std::path::PathBuf::from);
+            let candidate = configured.or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.parent().map(|parent| parent.join("onnxruntime.dll")))
+            });
+            let path = candidate.ok_or_else(|| {
+                "ONNX Runtime DLL path could not be resolved; set ORT_DYLIB_PATH or place onnxruntime.dll beside ocr-worker".to_string()
+            })?;
+            if !path.is_file() {
+                return Err(format!(
+                    "ONNX Runtime DLL not found at {}; set ORT_DYLIB_PATH or place onnxruntime.dll beside ocr-worker",
+                    path.display()
+                ));
+            }
+            ort::init_from(&path)
+                .map_err(|error| format!("ONNX Runtime DLL load failed at {}: {error}", path.display()))?
+                .commit();
+            eprintln!("[ocr-worker] loaded ONNX Runtime from {}", path.display());
+            Ok(())
+        })
+        .clone()
 }
 
 struct WorkerState {

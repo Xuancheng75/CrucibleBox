@@ -3,6 +3,12 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 2.0.0-beta.7（2026-09-03）
+
+- Document Engine 0.8.0 默认使用 ModelScope 固定镜像中的 PP-OCRv5 通用识别模型；模型下载校验域名收紧，禁止回落到 Hugging Face。
+- 修复扫描 PDF OCR 任务大结果被有界任务预览截断后回归误判的问题；Hybrid Chunk 在缺少可靠章节树时按页回退，避免多页扫描文档合并为单个 chunk。
+- OCR Worker 显式加载随应用部署的 ONNX Runtime 1.28.1，避免错误加载系统旧版 DLL 导致 stdout 提前关闭。
+
 ## 2.0.0-beta.6（2026-09-02）
 
 - 插件市场目录优先使用 Windows WinHTTP 自动代理/WPAD，插件包优先使用 BITS，保留官方 GitHub Release、断点续传、重试、大小与 SHA-256 校验；不加入镜像源。

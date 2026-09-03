@@ -47,6 +47,8 @@
       "dist/renderer.js",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
     ]

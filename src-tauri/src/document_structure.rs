@@ -442,9 +442,19 @@ fn classify(
     let explicit_level = block["level"].as_u64();
     let height = block_height(block).unwrap_or_default();
     let visually_prominent = median_height > 0.0 && height >= median_height * 1.25;
+    let layout_heading = block["region"] == "heading";
     let away_from_footer = block_bbox(block)
         .map(|bbox| page_height <= 0.0 || bbox[1] < page_height * 0.9)
         .unwrap_or(true);
+    if layout_heading
+        && explicit_level.is_some()
+        && visually_prominent
+        && away_from_footer
+        && content.split_whitespace().count() <= 14
+        && !content.ends_with('.')
+    {
+        return HeadingKind::Section(explicit_level.unwrap_or(2).saturating_sub(1) as u8);
+    }
     if explicit_level.is_some()
         && visually_prominent
         && away_from_footer
@@ -1030,7 +1040,9 @@ fn median(values: &[f32]) -> f32 {
     }
     let mut sorted = values.to_vec();
     sorted.sort_by(f32::total_cmp);
-    sorted[sorted.len() / 2]
+    // Use the lower middle for even-sized pages so a single large title does
+    // not become the baseline that hides its own visual prominence.
+    sorted[(sorted.len() - 1) / 2]
 }
 
 fn build_outline(records: &[OutlineRecord], parent_id: Option<&str>) -> Vec<Value> {
@@ -1160,5 +1172,24 @@ mod tests {
             blocks[1]["sectionPath"],
             "Chapter 1 Matrices > 1.1 Introduction"
         );
+    }
+
+    #[test]
+    fn visual_ocr_heading_survives_without_numbering() {
+        let mut document = json!({
+            "pages": [{ "number": 1, "height": 1000, "blocks": [
+                { "id": "title", "type": "heading", "region": "heading", "level": 1,
+                  "content": "潮汐灯笼花", "bbox": [80, 80, 520, 130] },
+                { "id": "body", "type": "text", "region": "text",
+                  "content": "LANTERNA TIDALIS grows near the water.", "bbox": [80, 170, 520, 188] }
+            ] }],
+            "structure": {}
+        });
+        rebuild(&mut document);
+        let blocks = document["pages"][0]["blocks"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "heading");
+        assert_eq!(blocks[0]["semanticType"], "section_heading");
+        assert_eq!(blocks[1]["parentId"], "title");
+        assert_eq!(blocks[1]["sectionPath"], "潮汐灯笼花");
     }
 }

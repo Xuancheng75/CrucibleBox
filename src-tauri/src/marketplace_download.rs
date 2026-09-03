@@ -1,6 +1,7 @@
 //! Windows-native marketplace transport.
 //!
-//! BITS owns the network transfer, proxy negotiation and retry/resume policy;
+//! BITS owns the network transfer and retry/resume policy, while the job is
+//! explicitly configured for direct HTTPS without a proxy;
 //! the host still owns the destination, size/digest verification and plugin
 //! installation. The existing ureq path remains the compatibility fallback
 //! for systems where the BITS service is unavailable.
@@ -22,9 +23,9 @@ pub fn download_with_bits(
     use windows::core::{GUID, HSTRING};
     use windows::Win32::Networking::BackgroundIntelligentTransferService::{
         BackgroundCopyManager, IBackgroundCopyJob, BG_JOB_PRIORITY_FOREGROUND,
-        BG_JOB_PRIORITY_NORMAL, BG_JOB_PROGRESS, BG_JOB_STATE_ACKNOWLEDGED, BG_JOB_STATE_CANCELLED,
-        BG_JOB_STATE_ERROR, BG_JOB_STATE_TRANSFERRED, BG_JOB_STATE_TRANSIENT_ERROR,
-        BG_JOB_TYPE_DOWNLOAD,
+        BG_JOB_PRIORITY_NORMAL, BG_JOB_PROGRESS, BG_JOB_PROXY_USAGE_NO_PROXY,
+        BG_JOB_STATE_ACKNOWLEDGED, BG_JOB_STATE_CANCELLED, BG_JOB_STATE_ERROR,
+        BG_JOB_STATE_TRANSFERRED, BG_JOB_STATE_TRANSIENT_ERROR, BG_JOB_TYPE_DOWNLOAD,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED,
@@ -66,6 +67,12 @@ pub fn download_with_bits(
             let local = HSTRING::from(partial.to_string_lossy().as_ref());
             job.AddFile(&remote, &local)
                 .map_err(|error| format!("加入 BITS 下载文件失败：{error}"))?;
+            job.SetProxySettings(
+                BG_JOB_PROXY_USAGE_NO_PROXY,
+                windows::core::PCWSTR::null(),
+                windows::core::PCWSTR::null(),
+            )
+            .map_err(|error| format!("设置 BITS 直连失败：{error}"))?;
             job.SetPriority(if priority_foreground {
                 BG_JOB_PRIORITY_FOREGROUND
             } else {
