@@ -2445,7 +2445,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         >
           <div style={{ fontWeight: 600, fontSize: FONT.sizeLg }}>推荐模型</div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-            首次使用推荐内置 PP-OCRv6-small-det + PP-OCRv5-mobile-rec 轻量方案；公式区域按需进入 Formula OCR。
+            首次使用推荐 PP-OCRv6-small-det + 通用 PP-OCRv5-mobile-rec 轻量方案；公式区域按需进入独立 Formula Recognizer。
           </div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
             下载地址已固定并逐文件校验 SHA-256，安装完成后即可用于本地 OCR。
@@ -2498,7 +2498,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                           ? `缺少 ${bundle.missing.length} 个文件`
                           : entry.offline
                             ? '插件内置，可离线安装'
-                            : '支持镜像回退下载'}
+                            : '按官方地址下载并校验 SHA-256'}
                     </div>
                   </div>
                   <button

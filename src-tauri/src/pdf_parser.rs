@@ -388,6 +388,7 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         .filter(|object| is_page_dictionary(&object.dictionary))
         .collect::<Vec<_>>();
     page_objects.sort_by_key(|object| object.id);
+    let page_count = page_tree_count_hint(bytes).or_else(|| pdfium_page_count(path));
 
     // Some generated PDFs omit a conventional page dictionary while still
     // containing `/Type /Page` in raw bytes. Prefer PDFium's page tree for
@@ -401,7 +402,7 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
                 MAX_PDF_PAGES, fallback_count
             ));
         }
-        if let Some(page_count) = pdfium_page_count(path) {
+        if let Some(page_count) = page_count {
             if page_count > MAX_PDF_PAGES {
                 return Err(format!(
                     "PDF 页数超过上限（最多 {} 页，检测到 {} 页）",
@@ -441,7 +442,7 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
     // concatenating glyphs, running headers and footer text into false
     // paragraphs. The object parser remains the deterministic fallback for
     // PDFs PDFium cannot open or expose text for.
-    if let Some(page_count) = pdfium_page_count(path) {
+    if let Some(page_count) = page_count {
         if page_count <= MAX_PDF_PAGES {
             if let Some(document) = pdfium_text_document(path, bytes, page_count) {
                 return Ok(document);
@@ -567,7 +568,21 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
     let mut has_text_layer = false;
     let mut has_formulas = false;
     for page_index in 0..page_count {
-        let page = source.pages().get(page_index as i32).ok()?;
+        let page = match source.pages().get(page_index as i32) {
+            Ok(page) => page,
+            Err(_) => {
+                // A damaged page object must not truncate the document. Keep
+                // the authoritative page count and let the OCR stage attempt
+                // rendering; this also preserves stable page/chunk metadata.
+                pages.push(json!({
+                    "number": page_index + 1,
+                    "width": 612.0,
+                    "height": 792.0,
+                    "blocks": []
+                }));
+                continue;
+            }
+        };
         let width = page.width().value;
         let height = page.height().value;
         let mut blocks = Vec::new();
@@ -599,6 +614,10 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
                 }));
             }
         }
+        coalesce_native_formula_fragments(&mut blocks);
+        has_formulas |= blocks
+            .iter()
+            .any(|block| block["type"].as_str() == Some("formula"));
         pages.push(json!({
             "number": page_index + 1,
             "width": width,
@@ -672,60 +691,101 @@ fn native_block_type(text: &str) -> &'static str {
 }
 
 fn looks_like_formula(text: &str) -> bool {
-    let operators = text
-        .chars()
-        .filter(|character| {
-            matches!(
-                character,
-                '=' | '+'
-                    | '−'
-                    | '-'
-                    | '×'
-                    | '÷'
-                    | '/'
-                    | '^'
-                    | '√'
-                    | '∑'
-                    | '∫'
-                    | '≤'
-                    | '≥'
-                    | '≠'
-                    | '∞'
-                    | '∂'
-                    | '∈'
-                    | '±'
-            )
-        })
-        .count();
-    let math_symbols = text
-        .chars()
-        .filter(|character| "αβγδεζηθλμνξπρστφχω∑∫√≤≥≠∞∂∈±".contains(*character))
-        .count();
-    let compact = text
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .count();
-    let word_count = text.split_whitespace().count();
-    let long_word_count = text
-        .split_whitespace()
-        .filter(|word| {
-            word.chars()
-                .filter(|character| character.is_alphabetic())
-                .count()
-                >= 2
-        })
-        .count();
-    let has_math_symbol = math_symbols > 0
-        || text
-            .chars()
-            .any(|character| matches!(character, '^' | '_' | '∑' | '∫' | '√' | '≤' | '≥' | '≠'));
-    // A hyphenated English sentence with a year/page number is not a formula.
-    // Prefer precision here: a missed formula can remain plain text, while a
-    // false formula destroys reading order and section context.
-    if !has_math_symbol && (word_count > 7 || long_word_count > 3) {
-        return false;
+    crate::document_layout::is_strict_formula_candidate(text)
+}
+
+/// PDFium may expose one mathematical line as many short text objects. Join
+/// only adjacent glyph-like objects on the same visual line, and only commit
+/// the merge when the complete line passes the strict formula policy. This
+/// avoids treating an isolated `A` or `T` as a formula while recovering the
+/// common `A T A x = A T b` shape into one IR block.
+fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
+    let mut index = 0usize;
+    while index < blocks.len() {
+        if !is_formula_fragment(&blocks[index]) {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        while end < blocks.len()
+            && is_formula_fragment(&blocks[end])
+            && same_formula_line(&blocks[end - 1], &blocks[end])
+        {
+            end += 1;
+        }
+        if end.saturating_sub(index) < 3 {
+            index += 1;
+            continue;
+        }
+        let candidate = blocks[index..end]
+            .iter()
+            .filter_map(|block| block["content"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !looks_like_formula(&candidate) {
+            index += 1;
+            continue;
+        }
+        let mut merged = blocks[index].clone();
+        merged["type"] = json!("formula");
+        merged["region"] = json!("formula");
+        merged["source"] = json!("native/pdf/formula");
+        merged["content"] = json!(candidate.clone());
+        merged["rawText"] = json!(candidate);
+        if let Some(bbox) = merged_bbox_values(&blocks[index..end]) {
+            merged["bbox"] = json!(bbox);
+        }
+        blocks[index] = merged;
+        for remove_index in (index + 1..end).rev() {
+            blocks.remove(remove_index);
+        }
     }
-    operators > 0 && compact <= 180 && (has_math_symbol || text.chars().any(|c| c.is_ascii_digit()))
+}
+
+fn is_formula_fragment(block: &Value) -> bool {
+    let text = block["content"].as_str().unwrap_or_default().trim();
+    !text.is_empty()
+        && text.chars().count() <= 4
+        && text.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || "αβγδεζηθλμνξπρστφχω=+-−×÷^_()[]{}".contains(character)
+        })
+        && matches!(block["type"].as_str(), Some("text" | "formula"))
+}
+
+fn block_bbox(block: &Value) -> Option<[f32; 4]> {
+    let values = block.get("bbox")?.as_array()?;
+    (values.len() == 4).then_some([
+        values[0].as_f64()? as f32,
+        values[1].as_f64()? as f32,
+        values[2].as_f64()? as f32,
+        values[3].as_f64()? as f32,
+    ])
+}
+
+fn same_formula_line(left: &Value, right: &Value) -> bool {
+    let (Some(left_bbox), Some(right_bbox)) = (block_bbox(left), block_bbox(right)) else {
+        return false;
+    };
+    let left_height = (left_bbox[3] - left_bbox[1]).abs().max(1.0);
+    let right_height = (right_bbox[3] - right_bbox[1]).abs().max(1.0);
+    let left_center = (left_bbox[1] + left_bbox[3]) / 2.0;
+    let right_center = (right_bbox[1] + right_bbox[3]) / 2.0;
+    let horizontal_gap = right_bbox[0] - left_bbox[2];
+    (left_center - right_center).abs() <= left_height.max(right_height) * 1.8
+        && horizontal_gap >= -left_height
+        && horizontal_gap <= left_height.max(right_height) * 14.0
+}
+
+fn merged_bbox_values(blocks: &[Value]) -> Option<[f32; 4]> {
+    blocks.iter().filter_map(block_bbox).reduce(|left, right| {
+        [
+            left[0].min(right[0]),
+            left[1].min(right[1]),
+            left[2].max(right[2]),
+            left[3].max(right[3]),
+        ]
+    })
 }
 
 fn pdfium_page_count(path: &str) -> Option<usize> {
@@ -1222,6 +1282,45 @@ fn count_page_markers(bytes: &[u8]) -> usize {
     count
 }
 
+/// Read the total page count from the PDF page tree when available. Some
+/// scanned PDFs use compressed page objects that older PDFium builds expose
+/// incompletely; the page-tree `/Count` keeps OCR from silently truncating
+/// the document in that case.
+fn page_tree_count_hint(bytes: &[u8]) -> Option<usize> {
+    let mut cursor = 0usize;
+    let mut best: Option<usize> = None;
+    while let Some(relative) = find_token(&bytes[cursor..], b"/Type") {
+        let position = cursor + relative;
+        let value = skip_ws(bytes, position + 5);
+        if bytes.get(value..value + 6) != Some(b"/Pages") {
+            cursor = position + 5;
+            continue;
+        }
+        let search_end = (value + 4096).min(bytes.len());
+        let Some(relative_count) = find_token(&bytes[value..search_end], b"/Count") else {
+            cursor = value + 6;
+            continue;
+        };
+        let count_start = skip_ws(bytes, value + relative_count + 6);
+        let mut count_end = count_start;
+        while count_end < search_end && bytes[count_end].is_ascii_digit() {
+            count_end += 1;
+        }
+        if count_end > count_start {
+            if let Some(count) = std::str::from_utf8(&bytes[count_start..count_end])
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                if (1..=MAX_PDF_PAGES).contains(&count) {
+                    best = Some(best.map_or(count, |current| current.max(count)));
+                }
+            }
+        }
+        cursor = value + 6;
+    }
+    best
+}
+
 fn detect_language(text: &str) -> &'static str {
     if text
         .chars()
@@ -1304,6 +1403,23 @@ mod tests {
             output["document"]["pages"][0]["blocks"][0]["content"],
             "Hello"
         );
+    }
+
+    #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_SCAN_FIXTURE_PDF"]
+    fn scan_fixture_preserves_page_tree_count() {
+        let path = std::env::var("DOCUMENT_ENGINE_SCAN_FIXTURE_PDF").unwrap();
+        let output = parse_file(&path).unwrap();
+        let page_count = output["document"]["metadata"]["pageCount"]
+            .as_u64()
+            .unwrap_or_default();
+        let page_array_count = output["document"]["pages"].as_array().map_or(0, Vec::len);
+        eprintln!(
+            "scan fixture page count: metadata={} pages={} ocrPageNumbers={}",
+            page_count, page_array_count, output["ocrPageNumbers"]
+        );
+        assert_eq!(page_count, page_array_count as u64);
+        assert_eq!(page_count, 10);
     }
 
     #[test]
@@ -1434,6 +1550,24 @@ mod tests {
             .as_bytes(),
         );
         pdf
+    }
+
+    #[test]
+    fn coalesces_same_line_math_fragments_but_not_document_labels() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"text","content":"A","bbox":[10,100,18,112]}),
+            json!({"id":"t","type":"text","content":"T","bbox":[22,100,30,112]}),
+            json!({"id":"ax","type":"text","content":"A","bbox":[34,100,42,112]}),
+            json!({"id":"x","type":"text","content":"x","bbox":[46,100,54,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[60,100,68,112]}),
+            json!({"id":"b","type":"text","content":"b","bbox":[74,100,82,112]}),
+            json!({"id":"label","type":"text","content":"FIELD ARCHIVE / FOGHARBOR","bbox":[10,20,220,32]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks[0]["type"], "formula");
+        assert_eq!(blocks[0]["content"], "A T A x = b");
+        assert_eq!(blocks[1]["content"], "FIELD ARCHIVE / FOGHARBOR");
+        assert_eq!(blocks.len(), 2);
     }
 
     #[test]

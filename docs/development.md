@@ -1,6 +1,6 @@
 # 开发、构建与验证
 
-> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.0-beta.6**。
+> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.0-beta.7**。
 > 根目录 Electron 1.7.3 仅为冻结参照，不接受功能性改动。
 
 ## 环境
@@ -46,7 +46,7 @@ cargo test --workspace --locked
 - 插件卡片身份由 `plugin-identity.ts` 维护。第一方插件发布者统一为 `CrucibleBox`，不得再用单字母作为唯一辨识。
 - 工作台和设置卡片使用主题边框、圆角和切角，不添加宿主默认阴影；主题可覆盖几何风格，但不能露出底层矩形轮廓。
 
-## Document Engine 0.7.0
+## Document Engine 0.8.0
 
 - 统一流水线为 Layout Analysis → Native/OCR 文字来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式块与布局元数据 → Document IR v3。
 - 格式转换和 Chunk 切分只消费 IR，不得再次触发 OCR；PDF 物理拆分直接操作原始页并输出真实 PDF。

@@ -1,4 +1,4 @@
-// Document Engine trusted host service（Phase 3：OCR Worker 接口整合）
+// Document Engine trusted host service（beta7：文字来源与模型方案收敛）
 // 运行在宿主 Rust 进程：sidecar 内插件经 api.invokeTrustedService('document-engine', ...)
 // → __hostRequest "trusted.invoke"（service="document-engine"）→ envelope_host 路由 → 本模块。
 //
@@ -33,8 +33,10 @@ static OCR_WORKER: OnceLock<Arc<OcrWorkerManager>> = OnceLock::new();
 static EVENT_EMITTER: OnceLock<Emitter> = OnceLock::new();
 static RETRY_REQUESTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 const DEFAULT_MODEL_ID: &str = "ppocrv6-small-det-v5-mobile-rec";
-const PIPELINE_VERSION: &str = "document-ir-v3-normalized-structure-v1";
-const OCR_CONFIG_VERSION: &str = "ocr-config-v3";
+const PIPELINE_VERSION: &str = "document-ir-v4-layout-formula-structure-v1";
+const OCR_CONFIG_VERSION: &str = "ocr-config-v4-language-profile";
+const LAYOUT_MODEL_VERSION: &str = "ppdoclayout-m-v1";
+const FORMULA_DETECTION_VERSION: &str = "layout-formula-region-v1";
 
 fn worker_manager() -> Option<&'static Arc<OcrWorkerManager>> {
     OCR_WORKER.get()
@@ -85,45 +87,36 @@ fn model_catalog() -> Value {
             "id": "ppocrv6-small-det-v5-mobile-rec",
             "name": "PP-OCRv6 Small + PP-OCRv5 Mobile 轻量模型",
             "version": "6.0-det+5.0-rec",
-            "description": "内置轻量英文/数学文本 OCR，适合本地 PDF；公式区域由延迟加载的 Formula OCR 适配器处理。",
+            "description": "内置中英混排文字 OCR；公式区域由独立的版面检测与 Formula Recognizer 处理。",
             "recommended": true,
             "default": true,
             "offline": true,
             "license": "Apache-2.0",
-            "totalBytes": 17730351u64,
+            "totalBytes": 26634912u64,
             "artifacts": [
                 {
                     "name": "ppocrv6_small_det.onnx",
                     "purpose": "文字区域检测",
-                    "bytes": 9880512u64,
-                    "sources": [
-                        "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx",
-                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx"
-                    ],
-                    "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx",
-                    "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+                    "bytes": 9929594u64,
+                    "sources": ["https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx"],
+                    "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
+                    "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"
                 },
                 {
-                    "name": "en_PP-OCRv5_mobile_rec.onnx",
-                    "purpose": "英文/数学文本识别",
-                    "bytes": 7848423u64,
-                    "sources": [
-                        "https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx",
-                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx"
-                    ],
-                    "url": "https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx",
-                    "sha256": "b5f833dfc5d0eb71da397b4efa06ebeee9b431b690a47d6af40d77d8eabc557f"
+                    "name": "PP-OCRv5_mobile_rec.onnx",
+                    "purpose": "中文/英文/日文混排文字识别",
+                    "bytes": 16631306u64,
+                    "sources": ["https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx"],
+                    "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
+                    "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5"
                 },
                 {
-                    "name": "en_ppocrv5_dict.txt",
-                    "purpose": "CTC 字典",
-                    "bytes": 1416u64,
-                    "sources": [
-                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt",
-                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.4.0/en_ppocrv5_dict.txt"
-                    ],
-                    "url": "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt",
-                    "sha256": "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6"
+                    "name": "ppocrv5_dict.txt",
+                    "purpose": "中英混排 CTC 字典",
+                    "bytes": 74012u64,
+                    "sources": ["https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt"],
+                    "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt",
+                    "sha256": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b"
                 }
             ]
         },
@@ -142,36 +135,24 @@ fn model_catalog() -> Value {
                     "name": "ch_PP-OCRv4_det.onnx",
                     "purpose": "文本检测",
                     "bytes": 4729474u64,
-                    "sources": [
-                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx",
-                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_det.onnx",
-                        "https://huggingface.co/anyforge/anyocr/resolve/645af1fbf520b16a1212124d432eac1f4929a561/anyocr/models/anyocr_det_ch_v4_lite.onnx"
-                    ],
-                    "url": "https://huggingface.co/anyforge/anyocr/resolve/645af1fbf520b16a1212124d432eac1f4929a561/anyocr/models/anyocr_det_ch_v4_lite.onnx",
+                    "sources": ["https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_det.onnx"],
+                    "url": "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_det.onnx",
                     "sha256": "69ce850fec741a2a4568c7c924bb025c9d4f1129e5f96ab428c799ccc5ef2275"
                 },
                 {
                     "name": "ch_PP-OCRv4_rec.onnx",
                     "purpose": "文本识别",
                     "bytes": 10812334u64,
-                    "sources": [
-                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx",
-                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_rec.onnx",
-                        "https://huggingface.co/cycloneboy/ch_PP-OCRv4_rec_infer/resolve/5f3c64a6e7a01c45e92c9284318b961bbe51d308/model.onnx"
-                    ],
-                    "url": "https://huggingface.co/cycloneboy/ch_PP-OCRv4_rec_infer/resolve/5f3c64a6e7a01c45e92c9284318b961bbe51d308/model.onnx",
+                    "sources": ["https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_rec.onnx"],
+                    "url": "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ch_PP-OCRv4_rec.onnx",
                     "sha256": "ad7dd55f6759fa02333bff6eb179a4f51be5b89cbe6f710249c95f47d0211350"
                 },
                 {
                     "name": "ppocr_keys_v1.txt",
                     "purpose": "CTC 字典",
                     "bytes": 26250u64,
-                    "sources": [
-                        "https://cdn.jsdelivr.net/gh/Xuancheng75/CrucibleBox@main/plugins/document-engine/assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt",
-                        "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ppocr_keys_v1.txt",
-                        "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt"
-                    ],
-                    "url": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
+                    "sources": ["https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ppocr_keys_v1.txt"],
+                    "url": "https://github.com/Xuancheng75/CrucibleBox/releases/download/document-engine-models-v0.1.2/ppocr_keys_v1.txt",
                     "sha256": "a1c84d9bdb9ab29043c58896224d32941783eb821629618416dcb08f12886492"
                 }
             ]
@@ -374,6 +355,7 @@ pub struct DocumentEngineConfig {
     pub model_directory: String,
     pub dictionary_path: String,
     pub model_profile: String,
+    pub text_recognition_mode: String,
     pub cache_directory: String,
     pub output_directory: String,
     pub device: String,
@@ -418,6 +400,12 @@ fn load_config(db: &Db, plugin_id: &str) -> DocumentEngineConfig {
             .unwrap_or_default(),
         model_profile: parsed
             .get("modelProfile")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("auto")
+            .to_string(),
+        text_recognition_mode: parsed
+            .get("textRecognitionMode")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .unwrap_or("auto")
@@ -592,8 +580,10 @@ fn parse_document_with_cache(
         "version": PIPELINE_VERSION,
         "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
         "textDetection": "ppocrv6_small_det.onnx",
-        "textRecognition": "en_PP-OCRv5_mobile_rec.onnx",
-        "formula": "formula-block-v1",
+        "textRecognition": ocr_worker_profile(cfg),
+        "layout": LAYOUT_MODEL_VERSION,
+        "formulaDetection": FORMULA_DETECTION_VERSION,
+        "formula": "layout-gated/text-adapter-v1",
         "readingOrder": "column-aware-v1"
     });
     parsed["document"]["metadata"]["quality"] = crate::document_quality::report(
@@ -609,71 +599,6 @@ fn parse_document_with_cache(
         &parsed,
     );
     Ok(parsed)
-}
-
-/// Conservative OCR block classification used by the local pipeline.  It is
-/// intentionally deterministic and does not pretend to be a full vision model:
-/// short chapter/section labels become headings and math-heavy lines are kept
-/// as formula blocks so Markdown conversion can preserve display equations.
-fn classify_ocr_block(content: &str) -> &'static str {
-    let trimmed = content.trim();
-    // Page numbers, equation labels and isolated numerals are never headings.
-    // The beta2 classifier treated every digit-prefixed line as a section,
-    // which fragmented the downstream chunk stream into thousands of tiny
-    // records.
-    if trimmed.is_empty() || trimmed.chars().count() <= 2 {
-        return "paragraph";
-    }
-    let operators = trimmed
-        .chars()
-        .filter(|value| {
-            matches!(
-                value,
-                '=' | '＝'
-                    | '+'
-                    | '-'
-                    | '−'
-                    | '*'
-                    | '×'
-                    | '/'
-                    | '÷'
-                    | '^'
-                    | '√'
-                    | '∑'
-                    | '∫'
-                    | '≤'
-                    | '≥'
-                    | '≠'
-                    | '∞'
-                    | '∂'
-                    | '∈'
-                    | '∉'
-                    | '≈'
-                    | '±'
-            )
-        })
-        .count();
-    let digits = trimmed
-        .chars()
-        .filter(|value| value.is_ascii_digit())
-        .count();
-    let symbols = trimmed
-        .chars()
-        .filter(|value| value.is_alphabetic() || "αβγδεζηθλμνξπρστφχω".contains(*value))
-        .count();
-    if operators > 0 && (digits > 0 || symbols > 0) && trimmed.chars().count() <= 180 {
-        return "formula";
-    }
-    "paragraph"
-}
-
-fn classify_block_with_layout(
-    content: &str,
-    bbox: Option<[f32; 4]>,
-    page_height: f32,
-) -> &'static str {
-    let _ = (bbox, page_height);
-    classify_ocr_block(content)
 }
 
 fn block_bbox(block: &Value) -> Option<[f32; 4]> {
@@ -751,8 +676,13 @@ fn enrich_formula_blocks(document: &mut Value) {
                     block["plainText"] = json!(plain_text);
                     block["content"] = json!(result.latex.clone());
                     block["latex"] = json!(result.latex);
+                    block["rawLatex"] = json!(result.raw_latex);
+                    block["normalizedLatex"] = json!(result.normalized_latex);
                     block["formulaEngine"] = json!(result.engine);
+                    block["formulaModelVersion"] = json!(result.model_version);
                     block["formulaConfidence"] = json!(result.confidence);
+                    block["displayOrInline"] = json!(result.display_or_inline);
+                    block["region"] = json!("formula");
                     block["source"] = block["source"]
                         .as_str()
                         .map_or_else(|| json!("native/pdf/formula_ocr"), |source| json!(source));
@@ -780,60 +710,91 @@ fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
 }
 
 fn ocr_model_version(cfg: &DocumentEngineConfig) -> String {
-    let mut parts = Vec::new();
-    for name in [
-        "ppocrv6_small_det.onnx",
-        "en_PP-OCRv5_mobile_rec.onnx",
-        "ch_PP-OCRv4_det.onnx",
-        "ch_PP-OCRv4_rec.onnx",
-    ] {
-        let path = PathBuf::from(&cfg.model_directory).join(name);
-        let hash = crate::document_engine_cache::file_hash(&path).unwrap_or_default();
-        parts.push(format!("{name}:{hash}"));
-    }
-    for name in ["en_ppocrv5_dict.txt", "ppocr_keys_v1.txt"] {
-        let path = if cfg.dictionary_path.trim().is_empty() {
-            PathBuf::from(&cfg.model_directory).join(name)
-        } else {
-            PathBuf::from(&cfg.dictionary_path)
-        };
-        let dictionary = crate::document_engine_cache::file_hash(&path).unwrap_or_default();
-        parts.push(format!("dictionary:{name}:{dictionary}"));
-        if !cfg.dictionary_path.trim().is_empty() {
-            break;
-        }
-    }
+    let directory = PathBuf::from(&cfg.model_directory);
+    let profile = ocr_worker_profile(cfg);
+    let legacy = profile.contains("v4");
+    let english = profile.contains("en-rec");
+    let detection_name = if legacy {
+        "ch_PP-OCRv4_det.onnx"
+    } else {
+        "ppocrv6_small_det.onnx"
+    };
+    let recognition_name = if legacy {
+        "ch_PP-OCRv4_rec.onnx"
+    } else if english {
+        "en_PP-OCRv5_mobile_rec.onnx"
+    } else {
+        "PP-OCRv5_mobile_rec.onnx"
+    };
+    let dictionary_name = if legacy {
+        "ppocr_keys_v1.txt"
+    } else if english {
+        "en_ppocrv5_dict.txt"
+    } else {
+        "ppocrv5_dict.txt"
+    };
+    let artifacts = [
+        (detection_name, directory.join(detection_name)),
+        (recognition_name, directory.join(recognition_name)),
+        (
+            dictionary_name,
+            if cfg.dictionary_path.trim().is_empty() {
+                directory.join(dictionary_name)
+            } else {
+                PathBuf::from(&cfg.dictionary_path)
+            },
+        ),
+    ];
+    let parts = artifacts
+        .iter()
+        .map(|(name, path)| {
+            format!(
+                "{name}:{}",
+                crate::document_engine_cache::file_hash(path).unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
     format!(
-        "ocr-worker-v3:{}:{}:{}",
-        cfg.model_profile,
+        "ocr-worker-v4:{}:{}:{}:{}:{}:{}",
+        ocr_worker_profile(cfg),
+        cfg.text_recognition_mode,
+        LAYOUT_MODEL_VERSION,
+        FORMULA_DETECTION_VERSION,
         OCR_CONFIG_VERSION,
         parts.join("|")
     )
 }
 
 fn ocr_language_for_config(cfg: &DocumentEngineConfig) -> &'static str {
-    if cfg.model_profile.to_ascii_lowercase().contains("v4") {
-        "mix"
-    } else {
+    if cfg.text_recognition_mode.eq_ignore_ascii_case("english")
+        || cfg.model_profile.to_ascii_lowercase().contains("en-rec")
+    {
         "en"
+    } else {
+        "mix"
+    }
+}
+
+fn ocr_worker_profile(cfg: &DocumentEngineConfig) -> String {
+    let configured = cfg.model_profile.trim();
+    if !configured.is_empty() && !configured.eq_ignore_ascii_case("auto") {
+        if configured.eq_ignore_ascii_case("english") || configured.eq_ignore_ascii_case("en") {
+            return "ppocrv6-small-det-v5-en-rec".into();
+        }
+        return configured.into();
+    }
+    if cfg.text_recognition_mode.eq_ignore_ascii_case("english") {
+        "ppocrv6-small-det-v5-en-rec".into()
+    } else {
+        DEFAULT_MODEL_ID.into()
     }
 }
 
 fn ocr_model_identity(cfg: &DocumentEngineConfig) -> Value {
     let directory = PathBuf::from(&cfg.model_directory);
-    let profile =
-        if cfg.model_profile.trim().is_empty() || cfg.model_profile.eq_ignore_ascii_case("auto") {
-            if directory.join("ppocrv6_small_det.onnx").is_file()
-                && directory.join("en_PP-OCRv5_mobile_rec.onnx").is_file()
-            {
-                DEFAULT_MODEL_ID
-            } else {
-                "ppocrv4-mobile-zh-en"
-            }
-        } else {
-            cfg.model_profile.as_str()
-        };
+    let profile = ocr_worker_profile(cfg);
     let legacy = profile.contains("v4");
+    let english = profile.contains("en-rec");
     let paths = [
         directory.join(if legacy {
             "ch_PP-OCRv4_det.onnx"
@@ -842,14 +803,18 @@ fn ocr_model_identity(cfg: &DocumentEngineConfig) -> Value {
         }),
         directory.join(if legacy {
             "ch_PP-OCRv4_rec.onnx"
-        } else {
+        } else if english {
             "en_PP-OCRv5_mobile_rec.onnx"
+        } else {
+            "PP-OCRv5_mobile_rec.onnx"
         }),
         if cfg.dictionary_path.trim().is_empty() {
             directory.join(if legacy {
                 "ppocr_keys_v1.txt"
-            } else {
+            } else if english {
                 "en_ppocrv5_dict.txt"
+            } else {
+                "ppocrv5_dict.txt"
             })
         } else {
             PathBuf::from(&cfg.dictionary_path)
@@ -964,7 +929,7 @@ fn run_ocr_input(
         "device": device.clone().unwrap_or_else(|| cfg.device.clone()),
         "modelDirectory": cfg.model_directory,
         "dictionaryPath": if cfg.dictionary_path.trim().is_empty() { Value::Null } else { json!(cfg.dictionary_path) },
-        "modelProfile": cfg.model_profile.clone(),
+        "modelProfile": ocr_worker_profile(cfg),
     });
     let key = crate::document_engine_cache::cache_key(
         &source_hash,
@@ -1009,7 +974,7 @@ fn run_ocr_input(
         device.or_else(|| Some(cfg.device.clone())),
         Some(cfg.model_directory.clone()),
         (!cfg.dictionary_path.trim().is_empty()).then(|| cfg.dictionary_path.clone()),
-        Some(cfg.model_profile.clone()),
+        Some(ocr_worker_profile(cfg)),
     );
     ctx.update_progress(
         "model",
@@ -1255,13 +1220,23 @@ fn merge_ocr_pages(
                 if content.is_empty() {
                     continue;
                 }
-                let block_type =
-                    classify_block_with_layout(content, block_bbox(block), dimensions.1 as f32);
-                let formula_result =
-                    (block_type == "formula").then(|| crate::formula_ocr::recognize_text(content));
+                let region_kind = crate::document_layout::classify_fallback(
+                    content,
+                    block_bbox(block),
+                    dimensions.1 as f32,
+                );
+                let block_type = region_kind.as_str();
+                let formula_result = (block_type == "formula").then(|| {
+                    crate::formula_ocr::recognize_region(&crate::document_layout::FormulaRegion {
+                        page: *page_number as usize,
+                        bbox: block_bbox(block),
+                        text: content.to_string(),
+                        display: true,
+                    })
+                });
                 let normalized_content = formula_result
                     .as_ref()
-                    .map(|result| result.latex.clone())
+                    .map(|result| result.normalized_latex.clone())
                     .unwrap_or_else(|| content.to_string());
                 let level = if block_type == "heading" {
                     let lower = content.to_ascii_lowercase();
@@ -1278,12 +1253,26 @@ fn merge_ocr_pages(
                     "type": block_type,
                     "content": normalized_content,
                     "rawText": content,
-                    "latex": formula_result.as_ref().map(|result| result.latex.clone()),
-                    "formulaEngine": formula_result.as_ref().map(|result| result.engine),
+                    "latex": formula_result.as_ref().map(|result| result.normalized_latex.clone()),
+                    "rawLatex": formula_result.as_ref().map(|result| result.raw_latex.clone()),
+                    "normalizedLatex": formula_result.as_ref().map(|result| result.normalized_latex.clone()),
+                    "plainText": formula_result.as_ref().map(|result| result.plain_text.clone()),
+                    "formulaEngine": formula_result.as_ref().map(|result| result.engine.clone()),
+                    "formulaModelVersion": formula_result.as_ref().map(|result| result.model_version.clone()),
                     "formulaConfidence": formula_result.as_ref().map(|result| result.confidence),
+                    "displayOrInline": formula_result.as_ref().map(|result| result.display_or_inline),
                     "level": level,
-                    "region": if block_type == "formula" { "formula" } else if block_type == "heading" { "heading" } else { "text" },
+                    "semanticType": if block_type == "heading" { json!("section_heading") } else { Value::Null },
+                    "region": block_type,
                     "source": if block_type == "formula" { "ocr/formula_ocr" } else { "ocr" },
+                    "excludedFromRag": region_kind.excluded_from_rag(),
+                    "ocrNoiseCandidate": crate::document_quality::is_ocr_noise_candidate(
+                        content,
+                        block.get("confidence").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                        block_type,
+                        block_bbox(block),
+                        dimensions.1 as f32,
+                    ),
                     "bbox": block.get("bbox").cloned().unwrap_or(Value::Null),
                     "polygon": block.get("polygon").cloned().unwrap_or(Value::Null),
                     "confidence": block.get("confidence").cloned().unwrap_or(Value::Null),
@@ -1330,7 +1319,9 @@ fn merge_ocr_pages(
             "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
             "ocrLanguage": ocr_language_for_config(cfg),
             "ocrModel": parsed["document"]["metadata"]["ocrModel"],
-            "formula": "formula-ocr-adapter-v1",
+            "layout": LAYOUT_MODEL_VERSION,
+            "formulaDetection": FORMULA_DETECTION_VERSION,
+            "formula": "layout-gated/text-adapter-v1",
             "readingOrder": "column-aware-v1"
         });
         rebuild_document_structure(&mut parsed["document"]);
@@ -1420,6 +1411,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         "modelDirectory": cfg.model_directory,
                         "dictionaryPath": cfg.dictionary_path,
                         "modelProfile": cfg.model_profile,
+                        "textRecognitionMode": cfg.text_recognition_mode,
                         "cacheDirectory": cfg.cache_directory.clone(),
                         "outputDirectory": cfg.output_directory,
                     },
@@ -2271,7 +2263,7 @@ pub fn dispatch(
         // 初始化任务表；Worker 仍按需启动，避免仅激活插件就加载模型。
         let _ = tasks();
         // 内置模型只做本地校验和复制，不在激活阶段主动阻塞网络下载。
-        // 没有内置资源时由模型页的 installBundle 触发镜像回退。
+        // 没有内置资源时由模型页的 installBundle 触发官方直连下载。
         let cfg = load_config(db, plugin_id);
         let _ = ensure_default_model(db, plugin_id, Path::new(&cfg.model_directory));
         return Ok(Value::Null);
@@ -2489,16 +2481,27 @@ mod tests {
             .unwrap_or_else(|_| {
                 PathBuf::from("E:\\CrucibleBox_Sourses\\ocr-worker\\target\\debug\\ocr-worker.exe")
             });
-        let root = std::env::temp_dir().join(format!("cb-de-scan-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "cb-de-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let manager = Arc::new(OcrWorkerManager::new(
             worker_path,
             std::time::Duration::from_secs(180),
         ));
         let config = DocumentEngineConfig {
-            model_directory: "E:\\OCR\\Models".into(),
-            dictionary_path: "E:\\OCR\\Models\\ppocr_keys_v1.txt".into(),
-            model_profile: "ppocrv4-mobile-zh-en".into(),
+            model_directory: std::env::var("DOCUMENT_ENGINE_MODEL_DIRECTORY")
+                .unwrap_or_else(|_| "E:\\OCR\\Models".into()),
+            dictionary_path: std::env::var("DOCUMENT_ENGINE_DICTIONARY_PATH").unwrap_or_default(),
+            model_profile: std::env::var("DOCUMENT_ENGINE_MODEL_PROFILE")
+                .unwrap_or_else(|_| "auto".into()),
+            text_recognition_mode: std::env::var("DOCUMENT_ENGINE_TEXT_RECOGNITION_MODE")
+                .unwrap_or_else(|_| "mixed".into()),
             cache_directory: root.join("cache").to_string_lossy().into_owned(),
             output_directory: root.join("output").to_string_lossy().into_owned(),
             device: "cpu".into(),
@@ -2540,6 +2543,84 @@ mod tests {
                 > 0
         );
         assert!(snapshot["result"]["document"]["metadata"]["quality"]["invalidControlChars"] == 0);
+        // TaskManager intentionally returns a bounded preview for large
+        // documents. Regression assertions must use the authoritative cache
+        // result, otherwise a multi-page scan can be mistaken for a short
+        // document when the preview budget is reached.
+        let full_result = std::fs::read_dir(root.join("cache"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .find_map(|entry| {
+                entry["result"]["document"]
+                    .is_object()
+                    .then(|| entry["result"].clone())
+            })
+            .expect("full document result should be available in the cache");
+        let document = &full_result["document"];
+        let quality = &document["metadata"]["quality"];
+        let pages = document["pages"].as_array().cloned().unwrap_or_default();
+        let blocks = pages
+            .iter()
+            .flat_map(|page| page["blocks"].as_array().cloned().unwrap_or_default())
+            .collect::<Vec<_>>();
+        let all_text = blocks
+            .iter()
+            .filter_map(|block| block["content"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let chunks = crate::document_chunker::chunk_document(document, None).unwrap();
+        eprintln!(
+            "fogharbor regression: pages={} blocks={} quality={} chunks={}",
+            pages.len(),
+            blocks.len(),
+            json!({
+                "headingCount": quality["headingCount"],
+                "formulaBlockCount": quality["formulaBlockCount"],
+                "nativeTextBlockCount": quality["nativeTextBlockCount"],
+                "ocrTextBlockCount": quality["ocrTextBlockCount"],
+                "ragQuality": quality["ragQuality"],
+                "qualityFlags": quality["qualityFlags"]
+            }),
+            chunks["count"]
+        );
+        assert_eq!(quality["nativeTextBlockCount"], 0);
+        assert!(quality["ocrTextBlockCount"].as_u64().unwrap_or(0) > 0);
+        assert!(quality["headingCount"].as_u64().unwrap_or(0) > 0);
+        assert!(chunks["count"].as_u64().unwrap_or(0) > 1);
+        for forbidden_formula_text in [
+            "FIELD ARCHIVE / FOGHARBOR",
+            "SCANNED FIELD-EDITION",
+            "TIDE / WIND / MEMORY",
+            "03/10",
+            "08:05",
+            "09:40",
+        ] {
+            assert!(
+                !blocks.iter().any(|block| {
+                    block["type"] == "formula"
+                        && block["content"]
+                            .as_str()
+                            .is_some_and(|content| content.contains(forbidden_formula_text))
+                }),
+                "forbidden formula candidate accepted: {forbidden_formula_text}"
+            );
+        }
+        for expected_text in [
+            "潮汐灯笼花",
+            "玻璃苔",
+            "月盐藤",
+            "雨声蕨",
+            "灯塔果",
+            "纸鸢藻",
+        ] {
+            assert!(
+                all_text.contains(expected_text),
+                "expected OCR text missing: {expected_text}"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2652,13 +2733,13 @@ mod tests {
         assert_eq!(entry["default"], true);
         assert_eq!(entry["offline"], true);
         assert_eq!(entry["artifacts"].as_array().map(Vec::len), Some(3));
-        assert_eq!(entry["totalBytes"].as_u64(), Some(17_730_351));
+        assert_eq!(entry["totalBytes"].as_u64(), Some(26_634_912));
         for artifact in entry["artifacts"].as_array().unwrap() {
             assert_eq!(artifact["sha256"].as_str().map(str::len), Some(64));
             assert!(artifact["url"].as_str().unwrap().starts_with("https://"));
             assert!(artifact["sources"]
                 .as_array()
-                .is_some_and(|sources| sources.len() >= 2));
+                .is_some_and(|sources| sources.len() == 1));
         }
 
         let t = TempDb::new("model-catalog");

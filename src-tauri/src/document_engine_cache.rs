@@ -212,8 +212,7 @@ fn validate_model_url(url: &str) -> Result<(), String> {
         "raw.githubusercontent.com",
         "cdn.jsdelivr.net",
         "fastly.jsdelivr.net",
-        "huggingface.co",
-        "cdn-lfs.huggingface.co",
+        "modelscope.cn",
         "paddle-model-ecology.bj.bcebos.com",
     ];
     if !allowed
@@ -249,6 +248,7 @@ pub fn install_remote(
     let part = root.join(format!(".{name}.download"));
     let _ = std::fs::remove_file(&part);
     let agent = ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
         .timeout_connect(Duration::from_secs(15))
         .timeout_read(Duration::from_secs(60))
         .build();
@@ -452,8 +452,9 @@ mod tests {
     #[test]
     fn remote_model_url_is_allowlisted() {
         assert!(validate_model_url("https://github.com/example/model.onnx").is_ok());
-        assert!(validate_model_url("https://huggingface.co/example/model.onnx").is_ok());
+        assert!(validate_model_url("https://www.modelscope.cn/example/model.onnx").is_ok());
         assert!(validate_model_url("https://cdn.jsdelivr.net/gh/example/model.onnx").is_ok());
+        assert!(validate_model_url("https://huggingface.co/example/model.onnx").is_err());
         assert!(validate_model_url("http://github.com/example/model.onnx").is_err());
         assert!(validate_model_url("https://example.invalid/model.onnx").is_err());
         assert!(validate_model_name("../model.onnx").is_err());

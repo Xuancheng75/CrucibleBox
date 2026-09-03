@@ -601,10 +601,128 @@ fn table_to_docx_xml(content: &str) -> String {
 }
 
 fn formula_to_omml(value: &str) -> String {
+    let expression = formula_expression_to_omml(value);
     format!(
-        r#"<m:oMathPara><m:oMath><m:r><m:t xml:space="preserve">{}</m:t></m:r></m:oMath></m:oMathPara>"#,
-        escape_xml(value)
+        r#"<m:oMathPara><m:oMath>{}</m:oMath></m:oMathPara>"#,
+        expression
     )
+}
+
+/// Emit a small deterministic OMML subset for the structures most commonly
+/// recovered from a PDF text layer. Unknown LaTeX is retained as escaped text
+/// in a normal math run; it is never interpreted by guessing.
+fn formula_expression_to_omml(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some((numerator, denominator)) = parse_frac(trimmed) {
+        return format!(
+            r#"<m:f><m:fPr/><m:num>{}</m:num><m:den>{}</m:den></m:f>"#,
+            formula_expression_to_omml(numerator),
+            formula_expression_to_omml(denominator)
+        );
+    }
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    let mut result = String::new();
+    let mut plain = String::new();
+    let mut index = 0usize;
+    let flush_plain = |result: &mut String, plain: &mut String| {
+        if !plain.is_empty() {
+            result.push_str("<m:r><m:t xml:space=\"preserve\">");
+            result.push_str(&escape_xml(plain));
+            result.push_str("</m:t></m:r>");
+            plain.clear();
+        }
+    };
+    while index < chars.len() {
+        if matches!(chars[index], '^' | '_') {
+            let marker = chars[index];
+            let Some(base) = plain.pop() else {
+                plain.push(marker);
+                index += 1;
+                continue;
+            };
+            let (argument, next_index) = formula_argument(&chars, index + 1);
+            if argument.is_empty() {
+                plain.push(base);
+                plain.push(marker);
+                index += 1;
+                continue;
+            }
+            flush_plain(&mut result, &mut plain);
+            let base_xml = format!("<m:r><m:t>{}</m:t></m:r>", escape_xml(&base.to_string()));
+            let argument_xml = formula_expression_to_omml(&argument);
+            if marker == '^' {
+                result.push_str(&format!(
+                    "<m:sSup><m:e>{base_xml}</m:e><m:sup>{argument_xml}</m:sup></m:sSup>"
+                ));
+            } else {
+                result.push_str(&format!(
+                    "<m:sSub><m:e>{base_xml}</m:e><m:sub>{argument_xml}</m:sub></m:sSub>"
+                ));
+            }
+            index = next_index;
+            continue;
+        }
+        plain.push(chars[index]);
+        index += 1;
+    }
+    flush_plain(&mut result, &mut plain);
+    result
+}
+
+fn formula_argument(chars: &[char], start: usize) -> (String, usize) {
+    if chars.get(start) == Some(&'{') {
+        let mut depth = 1usize;
+        let mut index = start + 1;
+        let mut value = String::new();
+        while index < chars.len() {
+            match chars[index] {
+                '{' => {
+                    depth += 1;
+                    value.push('{');
+                }
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return (value, index + 1);
+                    }
+                    value.push('}');
+                }
+                character => value.push(character),
+            }
+            index += 1;
+        }
+        (String::new(), start)
+    } else {
+        chars
+            .get(start)
+            .map(|character| (character.to_string(), start + 1))
+            .unwrap_or_default()
+    }
+}
+
+fn parse_frac(value: &str) -> Option<(&str, &str)> {
+    let remainder = value.strip_prefix(r"\frac{")?;
+    let (numerator, next) = brace_group(remainder)?;
+    let remainder = remainder.get(next..)?.strip_prefix('{')?;
+    let (denominator, end) = brace_group(remainder)?;
+    (end == remainder.len()).then_some((numerator, denominator))
+}
+
+fn brace_group(value: &str) -> Option<(&str, usize)> {
+    let mut depth = 1usize;
+    for (offset, character) in value.char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some((&value[..offset], offset + character.len_utf8()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn validate_xml(value: &str) -> Result<(), String> {
@@ -782,6 +900,7 @@ mod tests {
         }
         assert!(document_xml.contains("Heading1"));
         assert!(document_xml.contains("m:oMath"));
+        assert!(document_xml.contains("m:sSup"));
         assert!(document_xml.contains("w:numPr"));
         assert!(document_xml.contains("w:tbl"));
         assert!(!document_xml.chars().any(|character| {

@@ -521,10 +521,10 @@ fn marketplace_catalog_cache() -> &'static Mutex<Option<MarketplaceCatalogCache>
 
 fn marketplace_agent(connect_secs: u64, read_secs: u64) -> ureq::Agent {
     ureq::AgentBuilder::new()
-        // Respect HTTP(S)_PROXY/NO_PROXY when a user or enterprise network
-        // exposes GitHub through an explicit proxy.  Without this feature the
-        // embedded client always connects directly, unlike the browser.
-        .try_proxy_from_env(true)
+        // Marketplace URLs are already pinned to the first-party GitHub
+        // release catalog. Do not silently inherit a stale HTTP(S)_PROXY
+        // environment variable from a shell or developer machine.
+        .try_proxy_from_env(false)
         .timeout_connect(std::time::Duration::from_secs(connect_secs))
         .timeout_read(std::time::Duration::from_secs(read_secs))
         .build()
@@ -815,11 +815,10 @@ pub fn marketplace_download_plugin(
             .map(|metadata| metadata.len())
             .unwrap_or_default();
 
-        // Prefer Windows BITS for a fresh transfer. It uses the system's
-        // proxy/WPAD configuration and owns transport retry/resume, which is
-        // the same path that makes browser downloads reliable on restricted
-        // networks. Existing partial files stay on the compatibility path so
-        // the old byte-range verifier remains available for recovery.
+        // Prefer Windows BITS for a fresh transfer. The BITS job is explicitly
+        // direct and owns transport retry/resume. Existing partial files stay
+        // on the compatibility path so the byte-range verifier remains
+        // available for recovery.
         if partial_size == 0 {
             let bits_result = crate::marketplace_download::download_with_bits(
                 &plugin.url,
@@ -837,17 +836,22 @@ pub fn marketplace_download_plugin(
                     );
                 },
             );
-            if bits_result.is_ok() {
-                let verified = sha256_file(&partial).ok().is_some_and(|(size, digest)| {
-                    size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256)
-                });
-                if verified {
-                    download_completed = true;
-                    break;
+            match bits_result {
+                Ok(()) => {
+                    let verified = sha256_file(&partial).ok().is_some_and(|(size, digest)| {
+                        size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256)
+                    });
+                    if verified {
+                        download_completed = true;
+                        break;
+                    }
+                    let _ = std::fs::remove_file(&partial);
+                    last_download_error = "BITS 下载完成但插件包完整性校验失败".into();
+                    continue;
                 }
-                let _ = std::fs::remove_file(&partial);
-                last_download_error = "BITS 下载完成但插件包完整性校验失败".into();
-                continue;
+                Err(error) => {
+                    last_download_error = format!("BITS 直连下载不可用，将切换分块直连：{error}");
+                }
             }
         }
         let mut request = agent.get(&plugin.url);
@@ -866,7 +870,8 @@ pub fn marketplace_download_plugin(
         {
             Ok(response) => response,
             Err(error) => {
-                last_download_error = format!("下载插件失败（第 {attempt} 次）：{error}");
+                last_download_error =
+                    format!("官方 Release 直连下载失败（不使用代理，第 {attempt} 次）：{error}");
                 if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
                     std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
                 }
