@@ -225,6 +225,7 @@ pub fn rebuild(document: &mut Value) {
                 }
                 HeadingKind::None => {
                     if block["type"] != "formula"
+                        && block["type"] != "matrix"
                         && block["type"] != "table"
                         && block["type"] != "image"
                         && block["type"] != "caption"
@@ -310,13 +311,11 @@ fn mark_repeated_regions(document: &mut Value) {
                     .map_or(index < 3 || index + 3 >= block_count, |bbox| {
                         height <= 0.0 || bbox[1] < height * 0.12 || bbox[3] > height * 0.88
                     });
-                if !edge || !repeated.contains(&key) {
+                let positional_page_number = edge && is_standalone_page_number(content);
+                if !edge || (!repeated.contains(&key) && !positional_page_number) {
                     continue;
                 }
-                let numeric = content
-                    .chars()
-                    .all(|character| character.is_ascii_digit() || ".- ".contains(character));
-                let region = if numeric {
+                let region = if positional_page_number {
                     "page_number"
                 } else if block_bbox(block).is_none_or(|bbox| bbox[1] < height * 0.5) {
                     "header"
@@ -331,6 +330,23 @@ fn mark_repeated_regions(document: &mut Value) {
             }
         }
     }
+}
+
+fn is_standalone_page_number(value: &str) -> bool {
+    let compact = value.trim();
+    if compact.is_empty() || compact.chars().count() > 8 {
+        return false;
+    }
+    let normalized = compact
+        .chars()
+        .filter(|character| !character.is_whitespace() && !matches!(character, '-' | '–' | '—'))
+        .collect::<String>();
+    let trimmed = normalized.as_str();
+    trimmed.chars().all(|character| character.is_ascii_digit())
+        || (trimmed.chars().count() <= 6
+            && trimmed
+                .chars()
+                .all(|character| "ivxlcdmIVXLCDM".contains(character)))
 }
 
 fn section_path(stack: &[(u8, String, String)]) -> String {
@@ -1191,5 +1207,35 @@ mod tests {
         assert_eq!(blocks[0]["semanticType"], "section_heading");
         assert_eq!(blocks[1]["parentId"], "title");
         assert_eq!(blocks[1]["sectionPath"], "潮汐灯笼花");
+    }
+
+    #[test]
+    fn repeated_headers_and_sequential_page_numbers_stay_out_of_body() {
+        let pages = (100..=102)
+            .map(|page| json!({
+                "number": page,
+                "height": 1000,
+                "blocks": [
+                    {"id": format!("h{page}"), "content":"Chapter 3 Orthogonality", "bbox":[20,20,400,38]},
+                    {"id": format!("b{page}"), "content":"Body text remains available.", "bbox":[20,100,500,120]},
+                    {"id": format!("n{page}"), "content":page.to_string(), "bbox":[290,970,320,985]}
+                ]
+            }))
+            .collect::<Vec<_>>();
+        let mut document = json!({"pages":pages,"structure":{}});
+        rebuild(&mut document);
+        for page in document["pages"].as_array().unwrap() {
+            assert_eq!(page["blocks"][0]["type"], "header");
+            assert_eq!(page["blocks"][0]["excludedFromRag"], true);
+            assert_eq!(page["blocks"][2]["type"], "page_number");
+            assert_eq!(page["blocks"][2]["excludedFromRag"], true);
+        }
+    }
+
+    #[test]
+    fn roman_page_numbers_are_supported() {
+        assert!(is_standalone_page_number("vii"));
+        assert!(is_standalone_page_number("- XII -"));
+        assert!(!is_standalone_page_number("MATRIX"));
     }
 }

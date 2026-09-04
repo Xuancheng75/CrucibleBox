@@ -1,17 +1,18 @@
 //! Native transport used by the marketplace catalog request.
 //!
-//! The marketplace uses direct HTTPS to the first-party GitHub release
-//! address. It does not inherit a shell proxy or a mirror endpoint.
+//! The marketplace keeps the first-party GitHub release as its trusted source
+//! while allowing Windows automatic proxy discovery for the transport route.
 
 #[cfg(windows)]
-pub fn get_text(url: &str, max_bytes: u64) -> Result<String, String> {
+pub fn get_text(url: &str, max_bytes: u64, use_system_proxy: bool) -> Result<String, String> {
     use std::ffi::c_void;
     use std::ptr::null_mut;
     use windows_sys::Win32::Networking::WinHttp::{
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
         WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-        WinHttpSendRequest, WinHttpSetTimeouts, HTTP_STATUS_OK, WINHTTP_ACCESS_TYPE_NO_PROXY,
-        WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+        WinHttpSendRequest, WinHttpSetTimeouts, HTTP_STATUS_OK,
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_FLAG_SECURE,
+        WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
     };
 
     fn wide(value: &str) -> Vec<u16> {
@@ -51,7 +52,11 @@ pub fn get_text(url: &str, max_bytes: u64) -> Result<String, String> {
     unsafe {
         let session = WinHttpOpen(
             agent.as_ptr(),
-            WINHTTP_ACCESS_TYPE_NO_PROXY,
+            if use_system_proxy {
+                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+            } else {
+                WINHTTP_ACCESS_TYPE_NO_PROXY
+            },
             std::ptr::null(),
             std::ptr::null(),
             0,
@@ -156,6 +161,6 @@ pub fn get_text(url: &str, max_bytes: u64) -> Result<String, String> {
 }
 
 #[cfg(not(windows))]
-pub fn get_text(_url: &str, _max_bytes: u64) -> Result<String, String> {
+pub fn get_text(_url: &str, _max_bytes: u64, _use_system_proxy: bool) -> Result<String, String> {
     Err("WinHTTP 仅支持 Windows".into())
 }

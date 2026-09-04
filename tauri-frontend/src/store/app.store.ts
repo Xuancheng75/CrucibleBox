@@ -9,6 +9,9 @@ interface AppState {
   currentPage: AppPage
   setCurrentPage: (page: AppPage) => void
 
+  activityTab: 'tasks' | 'logs'
+  setActivityTab: (tab: 'tasks' | 'logs') => void
+
   activePluginId: string | null
   setActivePluginId: (id: string | null) => void
 
@@ -29,6 +32,9 @@ export const useAppStore = create<AppState>((set) => ({
 
   currentPage: 'home',
   setCurrentPage: (page) => set({ currentPage: page }),
+
+  activityTab: 'tasks',
+  setActivityTab: (tab) => set({ activityTab: tab }),
 
   activePluginId: null,
   setActivePluginId: (id) => set({ activePluginId: id }),

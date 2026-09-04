@@ -1,7 +1,7 @@
 //! Windows-native marketplace transport.
 //!
 //! BITS owns the network transfer and retry/resume policy, while the job is
-//! explicitly configured for direct HTTPS without a proxy;
+//! configured to use the current Windows proxy policy;
 //! the host still owns the destination, size/digest verification and plugin
 //! installation. The existing ureq path remains the compatibility fallback
 //! for systems where the BITS service is unavailable.
@@ -16,16 +16,18 @@ pub fn download_with_bits(
     artifact: &str,
     expected_size: u64,
     priority_foreground: bool,
+    use_system_proxy: bool,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<(), String> {
     use std::thread;
     use std::time::Duration;
     use windows::core::{GUID, HSTRING};
     use windows::Win32::Networking::BackgroundIntelligentTransferService::{
-        BackgroundCopyManager, IBackgroundCopyJob, BG_JOB_PRIORITY_FOREGROUND,
-        BG_JOB_PRIORITY_NORMAL, BG_JOB_PROGRESS, BG_JOB_PROXY_USAGE_NO_PROXY,
-        BG_JOB_STATE_ACKNOWLEDGED, BG_JOB_STATE_CANCELLED, BG_JOB_STATE_ERROR,
-        BG_JOB_STATE_TRANSFERRED, BG_JOB_STATE_TRANSIENT_ERROR, BG_JOB_TYPE_DOWNLOAD,
+        BackgroundCopyManager, IBackgroundCopyJob, BG_ERROR_CONTEXT_NONE,
+        BG_JOB_PRIORITY_FOREGROUND, BG_JOB_PRIORITY_NORMAL, BG_JOB_PROGRESS,
+        BG_JOB_PROXY_USAGE_PRECONFIG, BG_JOB_STATE_ACKNOWLEDGED, BG_JOB_STATE_CANCELLED,
+        BG_JOB_STATE_ERROR, BG_JOB_STATE_TRANSFERRED, BG_JOB_STATE_TRANSIENT_ERROR,
+        BG_JOB_TYPE_DOWNLOAD,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED,
@@ -68,18 +70,22 @@ pub fn download_with_bits(
             job.AddFile(&remote, &local)
                 .map_err(|error| format!("加入 BITS 下载文件失败：{error}"))?;
             job.SetProxySettings(
-                BG_JOB_PROXY_USAGE_NO_PROXY,
+                if use_system_proxy {
+                    BG_JOB_PROXY_USAGE_PRECONFIG
+                } else {
+                    windows::Win32::Networking::BackgroundIntelligentTransferService::BG_JOB_PROXY_USAGE_NO_PROXY
+                },
                 windows::core::PCWSTR::null(),
                 windows::core::PCWSTR::null(),
             )
-            .map_err(|error| format!("设置 BITS 直连失败：{error}"))?;
+            .map_err(|error| format!("设置 BITS 系统代理失败：{error}"))?;
             job.SetPriority(if priority_foreground {
                 BG_JOB_PRIORITY_FOREGROUND
             } else {
                 BG_JOB_PRIORITY_NORMAL
             })
             .map_err(|error| format!("设置 BITS 下载优先级失败：{error}"))?;
-            job.SetNoProgressTimeout(120)
+            job.SetNoProgressTimeout(300)
                 .map_err(|error| format!("设置 BITS 超时失败：{error}"))?;
             job.Resume()
                 .map_err(|error| format!("启动 BITS 下载失败：{error}"))?;
@@ -103,9 +109,26 @@ pub fn download_with_bits(
                     on_progress(expected_size, expected_size);
                     return Ok(());
                 }
-                if state == BG_JOB_STATE_ERROR || state == BG_JOB_STATE_TRANSIENT_ERROR {
+                if state == BG_JOB_STATE_ERROR {
+                    let detail = job
+                        .GetError()
+                        .and_then(|error| {
+                            let mut context = BG_ERROR_CONTEXT_NONE;
+                            let mut code = windows::core::HRESULT(0);
+                            error.GetError(&mut context, &mut code)?;
+                            Ok(format!("context={} HRESULT={:#010x}", context.0, code.0))
+                        })
+                        .unwrap_or_else(|error| format!("detail unavailable: {error}"));
                     let _ = job.Cancel();
-                    return Err("BITS 下载失败".into());
+                    return Err(format!("BITS 下载失败：{detail}"));
+                }
+                if state == BG_JOB_STATE_TRANSIENT_ERROR {
+                    // BITS owns its transient retry schedule. Cancelling here
+                    // discarded the resumable transfer at the first network
+                    // wobble, which made failures around 10% deterministic on
+                    // unstable GitHub routes.
+                    thread::sleep(Duration::from_millis(750));
+                    continue;
                 }
                 if state == BG_JOB_STATE_CANCELLED {
                     return Err("BITS 下载已取消".into());
@@ -125,6 +148,7 @@ pub fn download_with_bits(
     _artifact: &str,
     _expected_size: u64,
     _priority_foreground: bool,
+    _use_system_proxy: bool,
     _on_progress: impl FnMut(u64, u64),
 ) -> Result<(), String> {
     Err("BITS 仅支持 Windows".into())

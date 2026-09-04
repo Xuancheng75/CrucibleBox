@@ -30,21 +30,24 @@ const workerCandidates = staged
 const pdfiumCandidates = staged
   ? [join(target, 'src-tauri', 'resources', 'pdfium.dll')]
   : [join(target, 'pdfium.dll'), join(target, 'resources', 'pdfium.dll')]
-const ortCandidates = staged
-  ? [
-      join(target, 'src-tauri', 'binaries', 'onnxruntime.dll'),
-      join(target, 'src-tauri', 'binaries', 'onnxruntime_providers_shared.dll')
-    ]
-  : [
-      join(target, 'onnxruntime.dll'),
-      join(target, 'resources', 'onnxruntime.dll'),
-      join(target, 'binaries', 'onnxruntime.dll')
-    ]
+const ortDirectories = staged
+  ? [join(target, 'src-tauri', 'binaries')]
+  : [target, join(target, 'resources'), join(target, 'binaries')]
 
 const worker = firstFile(workerCandidates)
 const pdfium = firstFile(pdfiumCandidates)
-const ort = ortCandidates.map((candidate) => firstFile([candidate]))
-if (!worker || !pdfium || ort.some((candidate) => !candidate)) {
+const ortDirectory = ortDirectories.find(
+  (directory) =>
+    firstFile([join(directory, 'onnxruntime.dll')]) &&
+    firstFile([join(directory, 'onnxruntime_providers_shared.dll')])
+)
+const ort = ortDirectory
+  ? [
+      join(ortDirectory, 'onnxruntime.dll'),
+      join(ortDirectory, 'onnxruntime_providers_shared.dll')
+    ]
+  : [undefined, undefined]
+if (!worker || !pdfium || !ortDirectory) {
   const missing = [
     !worker && 'ocr-worker.exe',
     !pdfium && 'pdfium.dll',
@@ -58,7 +61,7 @@ if (!worker || !pdfium || ort.some((candidate) => !candidate)) {
       `checked root: ${target}\n` +
       `worker candidates: ${workerCandidates.join(', ')}\n` +
       `pdfium candidates: ${pdfiumCandidates.join(', ')}\n` +
-      `ONNX Runtime candidates: ${ortCandidates.join(', ')}`
+      `ONNX Runtime directories: ${ortDirectories.join(', ')}`
   )
 }
 

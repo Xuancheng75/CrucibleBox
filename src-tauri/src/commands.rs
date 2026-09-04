@@ -18,7 +18,12 @@ use tauri::{Emitter, Manager, State, Webview, WebviewWindow};
 use tauri_plugin_updater::UpdaterExt;
 
 /// 渲染进程可写 settings key 白名单（对等 electron/ipc/settings.ipc.ts）
-const ALLOWED_SETTINGS_KEYS: &[&str] = &["theme", "updateChannel"];
+const ALLOWED_SETTINGS_KEYS: &[&str] = &[
+    "theme",
+    "updateChannel",
+    "downloadProxyMode",
+    "downloadProxyUrl",
+];
 
 fn lock<'a>(db: &'a Arc<Mutex<Db>>) -> std::sync::MutexGuard<'a, Db> {
     db.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -140,6 +145,7 @@ pub struct AppUpdateMetadata {
 #[tauri::command]
 pub async fn app_check_update(
     webview: Webview,
+    db: State<'_, Arc<Mutex<Db>>>,
     channel: String,
     timeout_ms: Option<u64>,
 ) -> Result<Option<AppUpdateMetadata>, String> {
@@ -160,6 +166,18 @@ pub async fn app_check_update(
         .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|error| error.to_string())?;
+    let network_policy = marketplace_network_policy(&db);
+    if network_policy.mode == "direct" {
+        builder = builder.no_proxy();
+    } else if let Some(proxy_url) = network_policy
+        .proxy_url
+        .as_deref()
+        .filter(|_| network_policy.mode == "manual" || network_policy.mode == "auto")
+    {
+        let proxy =
+            tauri::Url::parse(proxy_url).map_err(|error| format!("手动代理地址无效：{error}"))?;
+        builder = builder.proxy(proxy);
+    }
     if let Some(timeout_ms) = timeout_ms {
         builder = builder.timeout(std::time::Duration::from_millis(timeout_ms));
     }
@@ -506,6 +524,7 @@ const MARKETPLACE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 struct MarketplaceCatalogCache {
     channel: String,
+    network_route: String,
     catalog: MarketplaceCatalog,
     source: String,
     fetched_at: u64,
@@ -519,15 +538,69 @@ fn marketplace_catalog_cache() -> &'static Mutex<Option<MarketplaceCatalogCache>
     MARKETPLACE_CATALOG_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-fn marketplace_agent(connect_secs: u64, read_secs: u64) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        // Marketplace URLs are already pinned to the first-party GitHub
-        // release catalog. Do not silently inherit a stale HTTP(S)_PROXY
-        // environment variable from a shell or developer machine.
-        .try_proxy_from_env(false)
+#[derive(Clone)]
+struct MarketplaceNetworkPolicy {
+    mode: String,
+    proxy_url: Option<String>,
+}
+
+impl MarketplaceNetworkPolicy {
+    fn cache_key(&self) -> String {
+        match &self.proxy_url {
+            Some(proxy) => format!("{}:{proxy}", self.mode),
+            None => self.mode.clone(),
+        }
+    }
+
+    fn use_native_transport(&self) -> bool {
+        self.mode != "manual"
+    }
+
+    fn use_system_proxy(&self) -> bool {
+        self.mode != "direct"
+    }
+}
+
+fn marketplace_network_policy(db: &Arc<Mutex<Db>>) -> MarketplaceNetworkPolicy {
+    let db = lock(db);
+    let guard = db.conn().lock().unwrap();
+    let read = |key: &str| -> Option<String> {
+        guard
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .ok()
+    };
+    let mode = read("downloadProxyMode")
+        .filter(|mode| matches!(mode.as_str(), "auto" | "system" | "manual" | "direct"))
+        .unwrap_or_else(|| "auto".into());
+    let proxy_url =
+        read("downloadProxyUrl").filter(|url| !url.trim().is_empty() && url.len() <= 2048);
+    MarketplaceNetworkPolicy { mode, proxy_url }
+}
+
+fn marketplace_agent(
+    connect_secs: u64,
+    read_secs: u64,
+    policy: &MarketplaceNetworkPolicy,
+) -> Result<ureq::Agent, String> {
+    let mut builder = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(connect_secs))
-        .timeout_read(std::time::Duration::from_secs(read_secs))
-        .build()
+        .timeout_read(std::time::Duration::from_secs(read_secs));
+    if policy.mode == "direct" {
+        builder = builder.try_proxy_from_env(false);
+    } else if let Some(proxy_url) = policy
+        .proxy_url
+        .as_deref()
+        .filter(|_| policy.mode == "manual" || policy.mode == "auto")
+    {
+        let proxy =
+            ureq::Proxy::new(proxy_url).map_err(|error| format!("手动代理地址无效：{error}"))?;
+        builder = builder.try_proxy_from_env(false).proxy(proxy);
+    } else {
+        builder = builder.try_proxy_from_env(true);
+    }
+    Ok(builder.build())
 }
 
 fn marketplace_catalog_urls(channel: &str) -> Vec<&'static str> {
@@ -572,6 +645,7 @@ fn marketplace_catalog_response(
 fn fetch_marketplace_catalog(
     force_refresh: bool,
     requested_channel: Option<&str>,
+    policy: &MarketplaceNetworkPolicy,
 ) -> Result<MarketplaceCatalogResponse, String> {
     let channel = marketplace_channel(requested_channel)?;
     if !force_refresh {
@@ -579,7 +653,9 @@ fn fetch_marketplace_catalog(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(cached) = cache.as_ref().filter(|cached| {
-            cached.channel == channel && cached.checked_at.elapsed() < MARKETPLACE_CATALOG_CACHE_TTL
+            cached.channel == channel
+                && cached.network_route == policy.cache_key()
+                && cached.checked_at.elapsed() < MARKETPLACE_CATALOG_CACHE_TTL
         }) {
             return Ok(marketplace_catalog_response(
                 cached.catalog.clone(),
@@ -593,39 +669,47 @@ fn fetch_marketplace_catalog(
     let mut catalog_errors = Vec::new();
 
     #[cfg(windows)]
-    for catalog_url in marketplace_catalog_urls(&channel) {
-        match crate::marketplace_transport::get_text(catalog_url, MARKETPLACE_MAX_CATALOG_BYTES) {
-            Ok(catalog_text) => match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
-                Ok(value) if value.schema_version == 1 => {
-                    let fetched_at = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|duration| duration.as_secs())
-                        .unwrap_or_default();
-                    marketplace_catalog_cache()
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .replace(MarketplaceCatalogCache {
-                            channel: channel.clone(),
-                            catalog: value.clone(),
-                            source: catalog_url.to_string(),
+    if policy.use_native_transport() {
+        for catalog_url in marketplace_catalog_urls(&channel) {
+            match crate::marketplace_transport::get_text(
+                catalog_url,
+                MARKETPLACE_MAX_CATALOG_BYTES,
+                policy.use_system_proxy(),
+            ) {
+                Ok(catalog_text) => match serde_json::from_str::<MarketplaceCatalog>(&catalog_text)
+                {
+                    Ok(value) if value.schema_version == 1 => {
+                        let fetched_at = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|duration| duration.as_secs())
+                            .unwrap_or_default();
+                        marketplace_catalog_cache()
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .replace(MarketplaceCatalogCache {
+                                channel: channel.clone(),
+                                network_route: policy.cache_key(),
+                                catalog: value.clone(),
+                                source: catalog_url.to_string(),
+                                fetched_at,
+                                checked_at: Instant::now(),
+                            });
+                        return Ok(marketplace_catalog_response(
+                            value,
+                            catalog_url.to_string(),
+                            false,
                             fetched_at,
-                            checked_at: Instant::now(),
-                        });
-                    return Ok(marketplace_catalog_response(
-                        value,
-                        catalog_url.to_string(),
-                        false,
-                        fetched_at,
-                    ));
-                }
-                Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
-                Err(error) => catalog_errors.push(format!("{catalog_url}：解析失败：{error}")),
-            },
-            Err(error) => catalog_errors.push(format!("{catalog_url}（WinHTTP）：{error}")),
+                        ));
+                    }
+                    Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
+                    Err(error) => catalog_errors.push(format!("{catalog_url}：解析失败：{error}")),
+                },
+                Err(error) => catalog_errors.push(format!("{catalog_url}（WinHTTP）：{error}")),
+            }
         }
     }
 
-    let agent = marketplace_agent(8, 20);
+    let agent = marketplace_agent(8, 30, policy)?;
     for catalog_url in marketplace_catalog_urls(&channel) {
         for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
             let response = match agent
@@ -671,6 +755,7 @@ fn fetch_marketplace_catalog(
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .replace(MarketplaceCatalogCache {
                             channel: channel.clone(),
+                            network_route: policy.cache_key(),
                             catalog: value.clone(),
                             source: catalog_url.to_string(),
                             fetched_at,
@@ -712,13 +797,16 @@ fn fetch_marketplace_catalog(
 #[tauri::command(async)]
 pub fn marketplace_catalog(
     window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
     force_refresh: Option<bool>,
     channel: Option<String>,
 ) -> Result<Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let catalog = fetch_marketplace_catalog(force_refresh.unwrap_or(false), channel.as_deref())?;
+    let policy = marketplace_network_policy(&db);
+    let catalog =
+        fetch_marketplace_catalog(force_refresh.unwrap_or(false), channel.as_deref(), &policy)?;
     serde_json::to_value(catalog).map_err(|error| format!("序列化插件目录失败: {error}"))
 }
 
@@ -728,6 +816,7 @@ pub fn marketplace_catalog(
 #[tauri::command(async)]
 pub fn marketplace_download_plugin(
     window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
     id: String,
     channel: Option<String>,
     priority: Option<String>,
@@ -744,8 +833,9 @@ pub fn marketplace_download_plugin(
         return Err("invalid plugin id".into());
     }
     const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
-    let agent = marketplace_agent(15, 45);
-    let catalog = fetch_marketplace_catalog(false, channel.as_deref())?.catalog;
+    let policy = marketplace_network_policy(&db);
+    let agent = marketplace_agent(15, 90, &policy)?;
+    let catalog = fetch_marketplace_catalog(false, channel.as_deref(), &policy)?.catalog;
     if catalog.schema_version != 1 {
         return Err("unsupported marketplace catalog schema".into());
     }
@@ -819,13 +909,14 @@ pub fn marketplace_download_plugin(
         // direct and owns transport retry/resume. Existing partial files stay
         // on the compatibility path so the byte-range verifier remains
         // available for recovery.
-        if partial_size == 0 {
+        if partial_size == 0 && policy.mode != "manual" {
             let bits_result = crate::marketplace_download::download_with_bits(
                 &plugin.url,
                 &partial,
                 &plugin.artifact,
                 plugin.size,
                 priority.as_deref() != Some("normal"),
+                policy.use_system_proxy(),
                 |downloaded, total| {
                     emit_marketplace_progress(
                         &window,
@@ -850,7 +941,7 @@ pub fn marketplace_download_plugin(
                     continue;
                 }
                 Err(error) => {
-                    last_download_error = format!("BITS 直连下载不可用，将切换分块直连：{error}");
+                    last_download_error = format!("BITS 下载不可用，将切换 Range 下载：{error}");
                 }
             }
         }
@@ -871,7 +962,7 @@ pub fn marketplace_download_plugin(
             Ok(response) => response,
             Err(error) => {
                 last_download_error =
-                    format!("官方 Release 直连下载失败（不使用代理，第 {attempt} 次）：{error}");
+                    format!("官方 Release 下载失败（自动代理，第 {attempt} 次）：{error}");
                 if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
                     std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
                 }

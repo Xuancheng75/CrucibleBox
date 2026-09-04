@@ -2,7 +2,6 @@ import { Tooltip, theme } from 'antd'
 import {
   AppstoreOutlined,
   ClockCircleOutlined,
-  FileTextOutlined,
   SettingOutlined,
   ShopOutlined
 } from '@ant-design/icons'
@@ -13,7 +12,6 @@ const NAV_ITEMS: Array<{ key: AppPage; icon: React.ReactNode; label: string }> =
   { key: 'home', icon: <AppstoreOutlined />, label: '工作台' },
   { key: 'marketplace', icon: <ShopOutlined />, label: '插件市场' },
   { key: 'tasks', icon: <ClockCircleOutlined />, label: '任务中心' },
-  { key: 'logs', icon: <FileTextOutlined />, label: '插件日志' },
   { key: 'settings', icon: <SettingOutlined />, label: '设置' }
 ]
 

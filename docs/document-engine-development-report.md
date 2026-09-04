@@ -1,7 +1,7 @@
 # Document Engine Development Report
 
 日期：2026-09-02
-发布基线：CrucibleBox 2.0.0-beta.7（Document Engine 0.8.0）
+发布基线：CrucibleBox 2.0.0-beta.8（Document Engine 0.9.0）
 范围：`plugins/document-engine`、Rust trusted service、Rust OCR worker、Tauri Windows 打包链。
 
 ## 结论

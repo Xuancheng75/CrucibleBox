@@ -428,14 +428,14 @@ export async function startConvert(
   send: (message: unknown) => Promise<unknown>,
   path: string,
   target: string,
-  outputPath?: string
+  outputDirectory?: string
 ): Promise<TaskAccepted> {
   const response = (await send(
     omitUndefined({
       type: 'document.convert',
       path,
       target,
-      outputPath
+      outputDirectory
     })
   )) as Partial<TaskAccepted> & {
     error?: string

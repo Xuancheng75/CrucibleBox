@@ -615,6 +615,7 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
             }
         }
         coalesce_native_formula_fragments(&mut blocks);
+        coalesce_native_multiline_math(&mut blocks);
         has_formulas |= blocks
             .iter()
             .any(|block| block["type"].as_str() == Some("formula"));
@@ -717,7 +718,8 @@ fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
             index += 1;
             continue;
         }
-        let candidate = blocks[index..end]
+        let fragments = deduplicated_formula_fragments(&blocks[index..end]);
+        let candidate = fragments
             .iter()
             .filter_map(|block| block["content"].as_str())
             .collect::<Vec<_>>()
@@ -732,6 +734,38 @@ fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
         merged["source"] = json!("native/pdf/formula");
         merged["content"] = json!(candidate.clone());
         merged["rawText"] = json!(candidate);
+        merged["originalTokens"] = Value::Array(
+            fragments
+                .iter()
+                .map(|block| {
+                    let bbox = block.get("bbox").cloned().unwrap_or(Value::Null);
+                    let values = bbox.as_array();
+                    let center_x = values.and_then(|items| {
+                        Some((items.first()?.as_f64()? + items.get(2)?.as_f64()?) / 2.0)
+                    });
+                    let center_y = values.and_then(|items| {
+                        Some((items.get(1)?.as_f64()? + items.get(3)?.as_f64()?) / 2.0)
+                    });
+                    let height = values.and_then(|items| {
+                        Some((items.get(3)?.as_f64()? - items.get(1)?.as_f64()?).abs())
+                    });
+                    let baseline = values
+                        .and_then(|items| items.get(3))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    json!({
+                        "blockId": block["id"],
+                        "originalText": block["content"],
+                        "bbox": bbox,
+                        "centerX": center_x,
+                        "centerY": center_y,
+                        "baseline": baseline,
+                        "estimatedFontHeight": height,
+                        "confidence": block.get("confidence").cloned().unwrap_or(json!(1.0)),
+                    })
+                })
+                .collect(),
+        );
         if let Some(bbox) = merged_bbox_values(&blocks[index..end]) {
             merged["bbox"] = json!(bbox);
         }
@@ -740,6 +774,112 @@ fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
             blocks.remove(remove_index);
         }
     }
+}
+
+fn deduplicated_formula_fragments(blocks: &[Value]) -> Vec<&Value> {
+    let mut kept: Vec<&Value> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let duplicate_overlay = kept.iter().any(|previous| {
+            previous["content"] == block["content"]
+                && match (block_bbox(previous), block_bbox(block)) {
+                    (Some(left), Some(right)) => {
+                        let overlap_x = (left[2].min(right[2]) - left[0].max(right[0])).max(0.0);
+                        let overlap_y = (left[3].min(right[3]) - left[1].max(right[1])).max(0.0);
+                        let left_area =
+                            ((left[2] - left[0]).abs() * (left[3] - left[1]).abs()).max(1.0);
+                        let right_area =
+                            ((right[2] - right[0]).abs() * (right[3] - right[1]).abs()).max(1.0);
+                        overlap_x * overlap_y >= left_area.min(right_area) * 0.80
+                    }
+                    _ => false,
+                }
+        });
+        if !duplicate_overlay {
+            kept.push(block);
+        }
+    }
+    kept
+}
+
+/// Recover vertically stacked matrix rows and aligned equation systems after
+/// horizontal glyph coalescing. This remains deliberately conservative: every
+/// row must already be a formula, geometry must overlap, and the group must
+/// carry either matrix delimiters or complete relations.
+fn coalesce_native_multiline_math(blocks: &mut Vec<Value>) {
+    let mut index = 0usize;
+    while index < blocks.len() {
+        if blocks[index]["type"] != "formula" {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        while end < blocks.len()
+            && end - index < 12
+            && blocks[end]["type"] == "formula"
+            && vertically_adjacent_math(&blocks[end - 1], &blocks[end])
+        {
+            end += 1;
+        }
+        if end - index < 2 {
+            index += 1;
+            continue;
+        }
+        let rows = blocks[index..end]
+            .iter()
+            .filter_map(|block| block["content"].as_str())
+            .collect::<Vec<_>>();
+        let has_matrix_delimiter = rows.iter().any(|row| {
+            row.chars()
+                .any(|character| "[]()".contains(character))
+        });
+        let equation_system = rows.iter().all(|row| {
+            row.find(['=', '＝']).is_some_and(|separator| {
+                let separator_len = row[separator..]
+                    .chars()
+                    .next()
+                    .map(char::len_utf8)
+                    .unwrap_or(1);
+                row[..separator].chars().any(char::is_alphanumeric)
+                    && row[separator + separator_len..]
+                        .chars()
+                        .any(char::is_alphanumeric)
+            })
+        });
+        if !has_matrix_delimiter && !equation_system {
+            index += 1;
+            continue;
+        }
+        let mut merged = blocks[index].clone();
+        let content = rows.join("\n");
+        merged["content"] = json!(content.clone());
+        merged["rawText"] = json!(content);
+        merged["displayOrInline"] = json!("display");
+        merged["atomicBlock"] = json!(true);
+        merged["originalRows"] = Value::Array(blocks[index..end].to_vec());
+        if let Some(bbox) = merged_bbox_values(&blocks[index..end]) {
+            merged["bbox"] = json!(bbox);
+        }
+        blocks[index] = merged;
+        blocks.drain(index + 1..end);
+        index += 1;
+    }
+}
+
+fn vertically_adjacent_math(upper: &Value, lower: &Value) -> bool {
+    let (Some(a), Some(b)) = (block_bbox(upper), block_bbox(lower)) else {
+        return false;
+    };
+    let (a_top, a_bottom) = (a[1].min(a[3]), a[1].max(a[3]));
+    let (b_top, b_bottom) = (b[1].min(b[3]), b[1].max(b[3]));
+    let height = (a_bottom - a_top).max(b_bottom - b_top).max(1.0);
+    let center_delta = (((a_top + a_bottom) - (b_top + b_bottom)) / 2.0).abs();
+    let overlap_x =
+        (a[2].max(a[0]).min(b[2].max(b[0])) - a[0].min(a[2]).max(b[0].min(b[2]))).max(0.0);
+    let min_width = (a[2] - a[0]).abs().min((b[2] - b[0]).abs()).max(1.0);
+    let left_aligned = (a[0].min(a[2]) - b[0].min(b[2])).abs() <= height * 1.5;
+    center_delta >= height * 0.45
+        && center_delta <= height * 3.2
+        && (overlap_x / min_width >= 0.35 || left_aligned)
 }
 
 fn is_formula_fragment(block: &Value) -> bool {
@@ -1571,6 +1711,40 @@ mod tests {
     }
 
     #[test]
+    fn coalescing_removes_only_geometrically_overlapping_duplicate_glyphs() {
+        let mut blocks = vec![
+            json!({"id":"x1","type":"text","content":"x","bbox":[10,100,18,112]}),
+            json!({"id":"x-overlay","type":"text","content":"x","bbox":[10.2,100,18.2,112]}),
+            json!({"id":"plus","type":"text","content":"+","bbox":[24,100,32,112]}),
+            json!({"id":"x2","type":"text","content":"x","bbox":[38,100,46,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[52,100,60,112]}),
+            json!({"id":"two","type":"text","content":"2","bbox":[66,100,74,112]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "x + x = 2");
+        assert_eq!(blocks[0]["originalTokens"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn coalesces_aligned_equations_but_not_unrelated_formula_lines() {
+        let mut equations = vec![
+            json!({"id":"r1","type":"formula","content":"x + y = 2","bbox":[20,100,100,112]}),
+            json!({"id":"r2","type":"formula","content":"x - y = 0","bbox":[20,116,100,128]}),
+        ];
+        coalesce_native_multiline_math(&mut equations);
+        assert_eq!(equations.len(), 1);
+        assert_eq!(equations[0]["content"], "x + y = 2\nx - y = 0");
+
+        let mut unrelated = vec![
+            json!({"id":"a","type":"formula","content":"x + y","bbox":[20,100,100,112]}),
+            json!({"id":"b","type":"formula","content":"a - b","bbox":[20,116,100,128]}),
+        ];
+        coalesce_native_multiline_math(&mut unrelated);
+        assert_eq!(unrelated.len(), 2);
+    }
+
+    #[test]
     fn rejects_non_pdf() {
         let path = write_pdf(b"not a pdf");
         assert!(parse_file(&path).is_err());
@@ -1595,15 +1769,58 @@ mod tests {
         let sanitization = crate::document_text::sanitize_document(&mut normalized);
         crate::document_quality::annotate_native_text_quality(&mut normalized);
         crate::document_structure::rebuild(&mut normalized);
+        crate::document_engine_service::enrich_formula_blocks(&mut normalized);
         let quality = crate::document_quality::report(
             &normalized,
             sanitization.invalid_control_chars_removed,
         );
         eprintln!("fixture document quality: {quality}");
+        let formula_samples = normalized["pages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|page| page["blocks"].as_array().into_iter().flatten())
+            .filter(|block| block["type"] == "formula")
+            .filter_map(|block| block["content"].as_str())
+            .take(40)
+            .collect::<Vec<_>>();
+        eprintln!("fixture formula samples: {formula_samples:?}");
         assert_eq!(quality["invalidControlChars"], 0);
         assert_eq!(quality["invalidXmlChars"], 0);
+        assert!(
+            quality["matrixBlockCount"].as_u64().unwrap_or(0) > 0,
+            "math textbook should recover at least one structured matrix"
+        );
         let chunks = crate::document_chunker::chunk_document(&normalized, None).unwrap();
         eprintln!("fixture chunk quality: {}", chunks["quality"]);
         assert!(chunks["quality"]["passed"].as_bool().unwrap_or(false));
+        let output_root = std::env::temp_dir().join(format!(
+            "cruciblebox-math-export-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&output_root).unwrap();
+        let markdown_path = output_root.join("document.md");
+        let docx_path = output_root.join("document.docx");
+        let markdown =
+            crate::document_converter::convert_document(&normalized, "md", markdown_path.to_str())
+                .unwrap();
+        let docx =
+            crate::document_converter::convert_document(&normalized, "docx", docx_path.to_str())
+                .unwrap();
+        let markdown_text = std::fs::read_to_string(&markdown_path).unwrap();
+        assert!(markdown_text.contains("$$") || markdown_text.contains('$'));
+        assert_eq!(docx["quality"]["docxXmlParse"], "passed");
+        assert_eq!(docx["quality"]["invalidXmlChars"], 0);
+        assert!(markdown["bytes"].as_u64().unwrap_or(0) > 0);
+        assert!(docx["bytes"].as_u64().unwrap_or(0) > 0);
+        eprintln!(
+            "fixture exports: matrixBlocks={} markdownBytes={} docxBytes={} docxQuality={}",
+            quality["matrixBlockCount"], markdown["bytes"], docx["bytes"], docx["quality"]
+        );
+        let _ = std::fs::remove_dir_all(output_root);
     }
 }

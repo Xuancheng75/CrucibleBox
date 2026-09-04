@@ -199,23 +199,44 @@ fn initialize_ort() -> Result<(), String> {
     static INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
     INITIALIZED
         .get_or_init(|| {
-            let configured = std::env::var_os("ORT_DYLIB_PATH").map(std::path::PathBuf::from);
-            let candidate = configured.or_else(|| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|path| path.parent().map(|parent| parent.join("onnxruntime.dll")))
-            });
-            let path = candidate.ok_or_else(|| {
-                "ONNX Runtime DLL path could not be resolved; set ORT_DYLIB_PATH or place onnxruntime.dll beside ocr-worker".to_string()
-            })?;
-            if !path.is_file() {
-                return Err(format!(
-                    "ONNX Runtime DLL not found at {}; set ORT_DYLIB_PATH or place onnxruntime.dll beside ocr-worker",
-                    path.display()
-                ));
+            let mut candidates = Vec::new();
+            if let Some(configured) = std::env::var_os("ORT_DYLIB_PATH") {
+                candidates.push(std::path::PathBuf::from(configured));
             }
+            if let Some(directory) = std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(std::path::PathBuf::from))
+            {
+                candidates.push(directory.join("onnxruntime.dll"));
+                candidates.push(directory.join("binaries").join("onnxruntime.dll"));
+                candidates.push(directory.join("resources").join("onnxruntime.dll"));
+            }
+            let path = candidates
+                .iter()
+                .find(|candidate| {
+                    candidate.is_file()
+                        && candidate.parent().is_some_and(|parent| {
+                            parent.join("onnxruntime_providers_shared.dll").is_file()
+                        })
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "ONNX Runtime DLL pair not found; checked: {}",
+                        candidates
+                            .iter()
+                            .map(|candidate| candidate.to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                })?;
             ort::init_from(&path)
-                .map_err(|error| format!("ONNX Runtime DLL load failed at {}: {error}", path.display()))?
+                .map_err(|error| {
+                    format!(
+                        "ONNX Runtime DLL load failed at {}: {error}",
+                        path.display()
+                    )
+                })?
                 .commit();
             eprintln!("[ocr-worker] loaded ONNX Runtime from {}", path.display());
             Ok(())

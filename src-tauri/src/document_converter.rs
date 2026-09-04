@@ -336,7 +336,37 @@ fn default_output_path(source_path: &str, target: &str) -> PathBuf {
     parent.join(format!("{stem}.{target}"))
 }
 
-type DocumentBlock = (usize, String, String, Option<String>, Option<u8>);
+pub fn output_path_in_directory(
+    source_path: &str,
+    target: &str,
+    output_directory: &str,
+) -> Result<PathBuf, String> {
+    let target = normalize_target(target)?;
+    let source = Path::new(source_path);
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document");
+    let same_format = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(target));
+    let file_name = if same_format {
+        format!("{stem}-converted.{target}")
+    } else {
+        format!("{stem}.{target}")
+    };
+    Ok(Path::new(output_directory).join(file_name))
+}
+
+type DocumentBlock = (
+    usize,
+    String,
+    String,
+    Option<String>,
+    Option<u8>,
+    Option<String>,
+);
 
 fn document_blocks(document: &Value) -> Vec<DocumentBlock> {
     let mut blocks = Vec::new();
@@ -357,14 +387,20 @@ fn document_blocks(document: &Value) -> Vec<DocumentBlock> {
                                 .unwrap_or("paragraph")
                                 .to_string(),
                             content.trim().to_string(),
-                            block
-                                .get("latex")
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
+                            crate::document_math::latex_from_block(block).or_else(|| {
+                                block
+                                    .get("latex")
+                                    .and_then(Value::as_str)
+                                    .map(ToOwned::to_owned)
+                            }),
                             block
                                 .get("level")
                                 .and_then(Value::as_u64)
                                 .map(|value| value.clamp(1, 6) as u8),
+                            block
+                                .get("displayOrInline")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned),
                         ));
                     }
                 }
@@ -377,14 +413,14 @@ fn document_blocks(document: &Value) -> Vec<DocumentBlock> {
 fn document_to_text(document: &Value) -> String {
     document_blocks(document)
         .into_iter()
-        .map(|(_, _, content, _, _)| content)
+        .map(|(_, _, content, _, _, _)| content)
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
 fn document_to_markdown(document: &Value) -> String {
     let mut result = String::new();
-    for (_, block_type, content, latex, level) in document_blocks(document) {
+    for (_, block_type, content, latex, level, display) in document_blocks(document) {
         match block_type.as_str() {
             "heading" => {
                 // Keep chapter/section hierarchy readable while remaining
@@ -401,11 +437,17 @@ fn document_to_markdown(document: &Value) -> String {
                 result.push(' ');
                 result.push_str(&content);
             }
-            "formula" => {
-                result.push_str("$$\n");
+            "formula" | "matrix" => {
                 let formula = latex.unwrap_or_else(|| normalize_formula(&content));
-                result.push_str(&formula);
-                result.push_str("\n$$");
+                if display.as_deref() == Some("inline") && block_type == "formula" {
+                    result.push('$');
+                    result.push_str(&formula);
+                    result.push('$');
+                } else {
+                    result.push_str("$$\n");
+                    result.push_str(&formula);
+                    result.push_str("\n$$");
+                }
             }
             _ => result.push_str(&content),
         }
@@ -423,7 +465,7 @@ fn document_to_html(document: &Value) -> String {
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Document</title><style>body{max-width:980px;margin:2rem auto;padding:0 2rem;font-family:system-ui,sans-serif;line-height:1.65;color:#202124}.page{break-after:page;position:relative}.formula{font-family:serif;text-align:center;margin:1rem 0;font-size:1.1em}.caption{color:#666;font-size:.9em}</style></head><body>\n",
     );
     let mut current_page = None;
-    for (page, block_type, content, latex, level) in document_blocks(document) {
+    for (page, block_type, content, latex, level, _) in document_blocks(document) {
         if current_page != Some(page) {
             if current_page.is_some() {
                 result.push_str("</section>\n");
@@ -440,24 +482,26 @@ fn document_to_html(document: &Value) -> String {
                 5 => "h5",
                 _ => "h6",
             }
-        } else if block_type == "formula" {
+        } else if matches!(block_type.as_str(), "formula" | "matrix") {
             "div"
         } else {
             "p"
         };
         result.push('<');
         result.push_str(tag);
-        if block_type == "formula" {
+        if matches!(block_type.as_str(), "formula" | "matrix") {
             result.push_str(" class=\"formula\" data-latex=\"");
             result.push_str(&escape_html(latex.as_deref().unwrap_or(&content)));
             result.push('"');
         }
         result.push('>');
-        result.push_str(&escape_html(if block_type == "formula" {
-            latex.as_deref().unwrap_or(&content)
-        } else {
-            &content
-        }));
+        result.push_str(&escape_html(
+            if matches!(block_type.as_str(), "formula" | "matrix") {
+                latex.as_deref().unwrap_or(&content)
+            } else {
+                &content
+            },
+        ));
         result.push_str("</");
         result.push_str(tag);
         result.push_str(">\n");
@@ -536,7 +580,7 @@ fn document_to_docx_xml(document: &Value) -> String {
         r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>"#,
     );
     let mut previous_page = None;
-    for (page, block_type, content, latex, level) in document_blocks(document) {
+    for (page, block_type, content, latex, level, _) in document_blocks(document) {
         if previous_page.is_some() && previous_page != Some(page) {
             xml.push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
         }
@@ -548,7 +592,7 @@ fn document_to_docx_xml(document: &Value) -> String {
             "<w:pPr><w:pStyle w:val=\"ListParagraph\"/><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr>".to_string()
         } else if block_type == "caption" {
             "<w:pPr><w:pStyle w:val=\"Caption\"/></w:pPr>".to_string()
-        } else if block_type == "formula" {
+        } else if matches!(block_type.as_str(), "formula" | "matrix") {
             "<w:pPr><w:pStyle w:val=\"Formula\"/></w:pPr>".to_string()
         } else {
             String::new()
@@ -559,7 +603,7 @@ fn document_to_docx_xml(document: &Value) -> String {
         }
         xml.push_str("<w:p>");
         xml.push_str(&style);
-        if block_type == "formula" {
+        if matches!(block_type.as_str(), "formula" | "matrix") {
             xml.push_str(&formula_to_omml(latex.as_deref().unwrap_or(&content)));
         } else {
             xml.push_str("<w:r><w:t xml:space=\"preserve\">");
@@ -613,6 +657,31 @@ fn formula_to_omml(value: &str) -> String {
 /// in a normal math run; it is never interpreted by guessing.
 fn formula_expression_to_omml(value: &str) -> String {
     let trimmed = value.trim();
+    if let Some(rows) = parse_latex_matrix(trimmed) {
+        let mut xml = String::from(
+            "<m:d><m:dPr><m:begChr m:val=\"[\"/><m:endChr m:val=\"]\"/></m:dPr><m:e><m:m>",
+        );
+        for row in rows {
+            xml.push_str("<m:mr>");
+            for cell in row {
+                xml.push_str("<m:e>");
+                xml.push_str(&formula_expression_to_omml(cell));
+                xml.push_str("</m:e>");
+            }
+            xml.push_str("</m:mr>");
+        }
+        xml.push_str("</m:m></m:e></m:d>");
+        return xml;
+    }
+    if let Some(radicand) = trimmed
+        .strip_prefix(r"\sqrt{")
+        .and_then(|value| value.strip_suffix('}'))
+    {
+        return format!(
+            "<m:rad><m:radPr/><m:deg/><m:e>{}</m:e></m:rad>",
+            formula_expression_to_omml(radicand)
+        );
+    }
     if let Some((numerator, denominator)) = parse_frac(trimmed) {
         return format!(
             r#"<m:f><m:fPr/><m:num>{}</m:num><m:den>{}</m:den></m:f>"#,
@@ -667,6 +736,19 @@ fn formula_expression_to_omml(value: &str) -> String {
     }
     flush_plain(&mut result, &mut plain);
     result
+}
+
+fn parse_latex_matrix(value: &str) -> Option<Vec<Vec<&str>>> {
+    let body = value
+        .strip_prefix(r"\begin{bmatrix}")?
+        .strip_suffix(r"\end{bmatrix}")?;
+    let rows = body
+        .split(r"\\")
+        .map(|row| row.split('&').map(str::trim).collect::<Vec<_>>())
+        .filter(|row| !row.is_empty())
+        .collect::<Vec<_>>();
+    let columns = rows.first()?.len();
+    (columns > 0 && rows.iter().all(|row| row.len() == columns)).then_some(rows)
 }
 
 fn formula_argument(chars: &[char], start: usize) -> (String, usize) {
@@ -864,6 +946,29 @@ mod tests {
     }
 
     #[test]
+    fn markdown_distinguishes_inline_and_display_math() {
+        let document = json!({"pages":[{"number":1,"blocks":[
+            {"type":"formula","content":"x_1","latex":"x_{1}","displayOrInline":"inline"},
+            {"type":"matrix","content":"matrix","latex":"\\begin{bmatrix}1&0\\\\0&1\\end{bmatrix}","displayOrInline":"display"}
+        ]}]});
+        let markdown = document_to_markdown(&document);
+        assert!(markdown.contains("$x_{1}$"));
+        assert!(markdown.contains("$$\n\\begin{bmatrix}"));
+    }
+
+    #[test]
+    fn output_directory_builds_a_file_name_and_never_overwrites_same_format_source() {
+        assert_eq!(
+            output_path_in_directory("C:/input/report.pdf", "docx", "D:/exports").unwrap(),
+            Path::new("D:/exports").join("report.docx")
+        );
+        assert_eq!(
+            output_path_in_directory("C:/input/report.pdf", "pdf", "D:/exports").unwrap(),
+            Path::new("D:/exports").join("report-converted.pdf")
+        );
+    }
+
+    #[test]
     fn emits_docx_and_pdf_signatures() {
         let docx = document_to_docx(&document()).unwrap();
         assert_eq!(&docx[..2], b"PK");
@@ -879,6 +984,7 @@ mod tests {
                 { "id": "h1", "type": "heading", "level": 1, "content": "Chapter 1" },
                 { "id": "p1", "type": "paragraph", "content": "determi\u{0002}nants" },
                 { "id": "f1", "type": "formula", "latex": "A^T A x = A^T b", "content": "A^T A x = A^T b" },
+                { "id": "m1", "type": "matrix", "latex": "\\begin{bmatrix}1 & 1 \\\\ 2 & 3 \\\\ 3 & 4\\end{bmatrix}", "content": "matrix" },
                 { "id": "l1", "type": "list", "content": "first item" },
                 { "id": "t1", "type": "table", "content": "a|b\nc|d" }
             ]}]
@@ -901,6 +1007,8 @@ mod tests {
         assert!(document_xml.contains("Heading1"));
         assert!(document_xml.contains("m:oMath"));
         assert!(document_xml.contains("m:sSup"));
+        assert!(document_xml.contains("<m:m>"));
+        assert_eq!(document_xml.matches("<m:mr>").count(), 3);
         assert!(document_xml.contains("w:numPr"));
         assert!(document_xml.contains("w:tbl"));
         assert!(!document_xml.chars().any(|character| {

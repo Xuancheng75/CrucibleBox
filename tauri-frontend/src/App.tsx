@@ -51,8 +51,11 @@ function PageLoading() {
 
 export default function App() {
   const [appVersion, setAppVersion] = useState('')
+  const [mountedPages, setMountedPages] = useState<AppPage[]>(['home'])
   const currentPage = useAppStore((s) => s.currentPage)
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
+  const activePluginId = useAppStore((s) => s.activePluginId)
+  const setActivityTab = useAppStore((s) => s.setActivityTab)
   const setPluginImportOpen = useAppStore((s) => s.setPluginImportOpen)
   // 全窗口拖拽导入（插件 zip/目录或 Document Engine 文档）+ 全局安装确认弹窗
   const { dragActive, dragTarget } = useGlobalPluginDrop()
@@ -60,6 +63,17 @@ export default function App() {
   useEffect(() => {
     void tauriApi.app.getVersion().then(setAppVersion).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    if (currentPage !== 'logs') return
+    setActivityTab('logs')
+    setCurrentPage('tasks')
+  }, [currentPage, setActivityTab, setCurrentPage])
+
+  useEffect(() => {
+    if (currentPage === 'pluginView' || currentPage === 'logs') return
+    setMountedPages((pages) => (pages.includes(currentPage) ? pages : [...pages, currentPage]))
+  }, [currentPage])
 
   // 菜单「导入插件」事件（Tauri 2 菜单点击经 tauri://menu 事件下发，payload 为菜单项 id）。
   // 后端菜单尚未定义（1.9.3 后端 lane 并行处理），此处按契约订阅，payload 匹配
@@ -131,15 +145,36 @@ export default function App() {
     return () => unlisten?.()
   }, [])
 
-  const Page = PAGE_COMPONENTS[currentPage]
+  const PluginPage = PAGE_COMPONENTS.pluginView
 
   return (
     <ThemeProvider>
       <MainLayout>
         <Suspense fallback={<PageLoading />}>
-          <PageErrorBoundary key={currentPage} pageName={PAGE_NAMES[currentPage]}>
-            <Page />
-          </PageErrorBoundary>
+          {mountedPages.map((page) => {
+            const MountedPage = PAGE_COMPONENTS[page]
+            return (
+              <div
+                key={page}
+                aria-hidden={currentPage !== page}
+                style={{ display: currentPage === page ? 'block' : 'none' }}
+              >
+                <PageErrorBoundary pageName={PAGE_NAMES[page]}>
+                  <MountedPage />
+                </PageErrorBoundary>
+              </div>
+            )
+          })}
+          {activePluginId && (
+            <div
+              aria-hidden={currentPage !== 'pluginView'}
+              style={{ display: currentPage === 'pluginView' ? 'block' : 'none' }}
+            >
+              <PageErrorBoundary key={activePluginId} pageName={PAGE_NAMES.pluginView}>
+                <PluginPage />
+              </PageErrorBoundary>
+            </div>
+          )}
         </Suspense>
       </MainLayout>
       <PluginDropOverlay active={dragActive} target={dragTarget} />

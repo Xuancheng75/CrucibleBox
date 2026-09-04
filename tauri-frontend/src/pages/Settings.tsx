@@ -7,6 +7,7 @@ import {
   theme as antdTheme,
   Button,
   Select,
+  Input,
   Space,
   Alert,
   Progress
@@ -15,10 +16,12 @@ import { SettingOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { tauriApi } from '../api/tauriApi'
 import { formatUpdateError, retryUpdateCheck, retryUpdateDownload } from '../utils/update-check'
+import { useTaskStore } from '../store/task.store'
 
 const { Title, Text } = Typography
 
 type AppUpdateChannel = 'stable' | 'beta'
+type DownloadProxyMode = 'auto' | 'system' | 'manual' | 'direct'
 
 type UpdatePhase =
   'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
@@ -35,6 +38,7 @@ const UPDATE_CHECK_TIMEOUT_MS = 30_000
 const UPDATE_CHECK_ATTEMPTS = 3
 const UPDATE_CHECK_RETRY_DELAY_MS = 1_000
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 5 * 60_000
+const UPDATE_TASK_ID = 'app-update-download'
 
 function loadChannel(): AppUpdateChannel {
   try {
@@ -56,11 +60,15 @@ export default function Settings() {
     message: null
   })
   const [channel, setChannel] = useState<AppUpdateChannel>(loadChannel)
+  const [proxyMode, setProxyMode] = useState<DownloadProxyMode>('auto')
+  const [proxyUrl, setProxyUrl] = useState('')
   const [checking, setChecking] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const updateRef = useRef<Update | null>(null)
   const checkInFlightRef = useRef(false)
   const downloadProgressRef = useRef(0)
+  const upsertTask = useTaskStore((state) => state.upsertTask)
+  const patchTask = useTaskStore((state) => state.patchTask)
 
   const descriptionStyles = {
     label: {
@@ -101,6 +109,20 @@ export default function Settings() {
         if (saved === 'beta' || saved === 'stable') setChannel(saved)
       })
       .catch(() => {})
+    void Promise.all([
+      tauriApi.settings.get('downloadProxyMode'),
+      tauriApi.settings.get('downloadProxyUrl')
+    ]).then(([savedMode, savedUrl]) => {
+      if (
+        savedMode === 'auto' ||
+        savedMode === 'system' ||
+        savedMode === 'manual' ||
+        savedMode === 'direct'
+      ) {
+        setProxyMode(savedMode)
+      }
+      setProxyUrl(savedUrl ?? '')
+    })
   }, [])
 
   useEffect(() => {
@@ -169,6 +191,14 @@ export default function Settings() {
     const update = updateRef.current
     if (!update || downloading) return
     setDownloading(true)
+    upsertTask({
+      id: UPDATE_TASK_ID,
+      title: '下载 CrucibleBox 更新',
+      detail: `更新通道：${channel === 'beta' ? '测试版' : '稳定版'}`,
+      source: 'update',
+      status: 'running',
+      progress: 0
+    })
     downloadProgressRef.current = 0
     let activeUpdate = update
     setUpdateState((current) => ({
@@ -213,6 +243,10 @@ export default function Settings() {
                     : null
                 if (percent !== null) {
                   downloadProgressRef.current = Math.max(downloadProgressRef.current, percent)
+                  patchTask(UPDATE_TASK_ID, {
+                    progress: downloadProgressRef.current,
+                    detail: `已下载 ${downloadProgressRef.current}%`
+                  })
                 }
                 setUpdateState((current) => ({
                   ...current,
@@ -242,16 +276,19 @@ export default function Settings() {
         progressPercent: 100,
         message: null
       }))
+      patchTask(UPDATE_TASK_ID, { status: 'completed', progress: 100, detail: '下载完成' })
     } catch (e) {
+      const message = formatUpdateError(e)
       setUpdateState((current) => ({
         ...current,
         phase: 'error',
-        message: formatUpdateError(e)
+        message
       }))
+      patchTask(UPDATE_TASK_ID, { status: 'failed', error: message, detail: '下载失败' })
     } finally {
       setDownloading(false)
     }
-  }, [channel, downloading])
+  }, [channel, downloading, patchTask, upsertTask])
 
   const handleInstall = useCallback(async () => {
     const update = updateRef.current
@@ -309,6 +346,50 @@ export default function Settings() {
           </Text>
         </div>
       </div>
+
+      <Card
+        className="ob-surface-card ob-settings-card"
+        title="下载网络"
+        style={{
+          marginTop: 16,
+          border: `1px solid ${token.colorBorder}`,
+          borderRadius: token.borderRadius,
+          boxShadow: 'none'
+        }}
+        styles={{ body: { padding: 24 } }}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Text type="secondary">
+            此设置统一用于工具箱更新和插件市场。自动模式优先采用手动地址，否则跟随系统代理。
+          </Text>
+          <Space wrap align="start">
+            <Select<DownloadProxyMode>
+              aria-label="下载代理模式"
+              value={proxyMode}
+              style={{ width: 180 }}
+              options={[
+                { value: 'auto', label: '自动（推荐）' },
+                { value: 'system', label: '系统代理' },
+                { value: 'manual', label: '手动代理' },
+                { value: 'direct', label: '直连' }
+              ]}
+              onChange={(next) => {
+                setProxyMode(next)
+                void tauriApi.settings.set('downloadProxyMode', next)
+              }}
+            />
+            <Input
+              aria-label="手动代理地址"
+              value={proxyUrl}
+              disabled={proxyMode !== 'manual' && proxyMode !== 'auto'}
+              placeholder="例如 http://127.0.0.1:7890"
+              style={{ width: 320 }}
+              onChange={(event) => setProxyUrl(event.target.value)}
+              onBlur={() => void tauriApi.settings.set('downloadProxyUrl', proxyUrl.trim())}
+            />
+          </Space>
+        </Space>
+      </Card>
 
       <Card
         className="ob-surface-card ob-settings-card"

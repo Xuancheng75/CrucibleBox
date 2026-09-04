@@ -20,6 +20,7 @@ mod document_engine_cache;
 mod document_engine_service;
 mod document_engine_task;
 mod document_layout;
+mod document_math;
 mod document_parser;
 mod document_quality;
 mod document_structure;

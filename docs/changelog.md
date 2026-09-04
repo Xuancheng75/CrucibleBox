@@ -3,6 +3,15 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 2.0.0-beta.8（2026-09-04）
+
+- 插件下载链路增强：支持断点续传、系统代理策略、连接失败重试、临时文件恢复和完整性校验，下载任务切换页面后继续运行。
+- 插件市场与任务中心统一任务状态、具体失败原因和可重试入口；市场刷新、批量下载和全部更新保持页面状态稳定。
+- 工作台与插件详情导航保持挂载，侧边栏状态与返回工作台行为统一，下载进度不再改变卡片和侧栏布局。
+- Document Engine 0.9.0：默认使用 ModelScope 来源的 PP-OCRv5 混合识别模型；统一文本清洗、目录与章节树恢复、页眉页脚排除、公式区域约束和扫描 PDF 分块回退。
+- Document Engine 增加二维公式候选合并、矩阵/联立方程 Math AST、Markdown LaTeX 与 DOCX OMML 输出，修复截断上标导致的无限内存增长。
+- DOCX/XML 输出增加非法字符与结构解析门禁；保留 Electron 1.7.3 冻结线，不接入 Hugging Face、GitHub Marketplace 或账户系统。
+
 ## 2.0.0-beta.7（2026-09-03）
 
 - Document Engine 0.8.0 默认使用 ModelScope 固定镜像中的 PP-OCRv5 通用识别模型；模型下载校验域名收紧，禁止回落到 Hugging Face。

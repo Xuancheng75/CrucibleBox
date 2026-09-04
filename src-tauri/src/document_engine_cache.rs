@@ -248,7 +248,7 @@ pub fn install_remote(
     let part = root.join(format!(".{name}.download"));
     let _ = std::fs::remove_file(&part);
     let agent = ureq::AgentBuilder::new()
-        .try_proxy_from_env(false)
+        .try_proxy_from_env(true)
         .timeout_connect(Duration::from_secs(15))
         .timeout_read(Duration::from_secs(60))
         .build();

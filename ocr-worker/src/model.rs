@@ -181,8 +181,23 @@ impl ModelPaths {
             recognition_sha256: sha256_file(&self.recognition)?,
             dictionary_sha256: sha256_file(&self.dictionary)?,
         };
-        let manifest_path = self.directory.join("model-manifest.json");
-        if manifest_path.is_file() {
+        let profile_manifest_path = self
+            .directory
+            .join(format!("model-manifest-{}.json", self.profile.id()));
+        let legacy_manifest_path = self.directory.join("model-manifest.json");
+        // The original manifest filename predates model profiles and therefore
+        // describes only the legacy v4 triplet. A directory may legitimately
+        // contain several profiles; do not compare that legacy manifest with a
+        // newly selected v5/v6 profile.
+        let manifest_path = if profile_manifest_path.is_file() {
+            Some(profile_manifest_path)
+        } else if self.profile == ModelProfile::PpOcrv4MobileZhEn && legacy_manifest_path.is_file()
+        {
+            Some(legacy_manifest_path)
+        } else {
+            None
+        };
+        if let Some(manifest_path) = manifest_path {
             let bytes =
                 fs::read(&manifest_path).map_err(|e| format!("model manifest read failed: {e}"))?;
             let manifest: ModelManifest = serde_json::from_slice(&bytes)
@@ -292,6 +307,72 @@ mod tests {
             paths.recognition.file_name().unwrap(),
             MOBILE_RECOGNITION_MODEL
         );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn legacy_unscoped_manifest_does_not_reject_another_installed_profile() {
+        let directory = std::env::temp_dir().join(format!(
+            "cruciblebox-model-manifest-profiles-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        for name in [
+            SMALL_DETECTION_MODEL,
+            MOBILE_RECOGNITION_MODEL,
+            MOBILE_DICTIONARY,
+        ] {
+            fs::write(directory.join(name), b"current-model").unwrap();
+        }
+        fs::write(
+            directory.join("model-manifest.json"),
+            r#"{"detectionSha256":"old","recognitionSha256":"old","dictionarySha256":"old"}"#,
+        )
+        .unwrap();
+
+        let paths =
+            ModelPaths::resolve(directory.to_str(), None, Some("auto"), Some("mix")).unwrap();
+        assert!(paths.metadata().is_ok());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn profile_scoped_manifest_remains_fail_closed() {
+        let directory = std::env::temp_dir().join(format!(
+            "cruciblebox-profile-manifest-integrity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        for name in [
+            SMALL_DETECTION_MODEL,
+            MOBILE_RECOGNITION_MODEL,
+            MOBILE_DICTIONARY,
+        ] {
+            fs::write(directory.join(name), b"current-model").unwrap();
+        }
+        fs::write(
+            directory.join(format!(
+                "model-manifest-{}.json",
+                ModelProfile::PpOcrv6SmallDetV5MobileRec.id()
+            )),
+            format!(
+                r#"{{"profile":"{}","detectionSha256":"bad","recognitionSha256":"bad","dictionarySha256":"bad"}}"#,
+                ModelProfile::PpOcrv6SmallDetV5MobileRec.id()
+            ),
+        )
+        .unwrap();
+
+        let paths =
+            ModelPaths::resolve(directory.to_str(), None, Some("auto"), Some("mix")).unwrap();
+        assert!(paths.metadata().unwrap_err().contains("SHA-256"));
         let _ = fs::remove_dir_all(directory);
     }
 }

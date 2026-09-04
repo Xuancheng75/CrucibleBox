@@ -481,28 +481,33 @@ export default function Marketplace() {
                     />
                   )}
                 <PluginGlyph pluginId={plugin.id} name={plugin.name} size={52} />
-                <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="ob-market-card-content">
                   <div className="ob-market-card-title">
                     <span>{plugin.name}</span>
                     <span style={{ color: token.colorTextTertiary, fontSize: 11 }}>
                       v{plugin.version}
                     </span>
                   </div>
-                  {(updateAvailable || (!installed && newPluginCount > 0 && !OFFICIAL_MARKETPLACE_CATALOG.some((item) => item.id === plugin.id))) && (
-                    <Tag color={updateAvailable ? 'orange' : 'green'} style={{ marginTop: 4 }}>
-                      {updateAvailable ? '可更新' : '新增'}
-                    </Tag>
-                  )}
+                  <div className="ob-market-card-status">
+                    {(updateAvailable || (!installed && newPluginCount > 0 && !OFFICIAL_MARKETPLACE_CATALOG.some((item) => item.id === plugin.id))) && (
+                      <Tag color={updateAvailable ? 'orange' : 'green'}>
+                        {updateAvailable ? '可更新' : '新增'}
+                      </Tag>
+                    )}
+                  </div>
                   <div style={{ color: token.colorTextTertiary, fontSize: 11, marginTop: 2 }}>
                     {plugin.publisher} · {identity.category}
                   </div>
                   <Paragraph
+                    className="ob-market-card-description"
                     ellipsis={{ rows: 2 }}
-                    style={{ color: token.colorTextSecondary, fontSize: 12, margin: '8px 0 10px' }}
+                    title={plugin.description}
+                    style={{ color: token.colorTextSecondary, fontSize: 12, margin: 0 }}
                   >
                     {plugin.description}
                   </Paragraph>
                   <Button
+                    className="ob-market-card-action"
                     size="small"
                     type={installed && !updateAvailable ? 'default' : 'primary'}
                     loading={downloadingId === plugin.id}
@@ -521,26 +526,6 @@ export default function Marketplace() {
               </Dropdown>
             )
           })}
-        </div>
-      )}
-
-      {downloadingId && (
-        <div className="ob-market-download-dock" role="status" aria-live="polite">
-          <div className="ob-market-download-dock-title">
-            <span>{batchBusy ? '正在处理插件队列' : '正在处理插件'}</span>
-            <Button type="link" size="small" onClick={() => setCurrentPage('tasks')}>
-              查看任务
-            </Button>
-          </div>
-          <div className="ob-market-download-dock-name">
-            {marketplaceItems.find((item) => item.id === downloadingId)?.name ?? downloadingId}
-          </div>
-          <div className="ob-market-download-dock-track">
-            <span style={{ width: `${downloadProgress[downloadingId] ?? 0}%` }} />
-          </div>
-          <span className="ob-market-download-dock-percent">
-            {downloadProgress[downloadingId] ?? 0}%
-          </span>
         </div>
       )}
 

@@ -3,6 +3,7 @@ import IconRail from '../components/IconRail'
 import CommandPalette from '../components/CommandPalette'
 import { useAppStore } from '../store/app.store'
 import { useThemeStore } from '../store/theme.store'
+import GlobalTaskDock from '../components/GlobalTaskDock'
 
 const { Header, Sider, Content } = Layout
 
@@ -25,6 +26,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const themeName = useThemeStore((s) => s.theme.name)
   const pageMeta = PAGE_META[currentPage] ?? PAGE_META.home
+  const selectedNavigationPage = currentPage === 'pluginView' ? 'home' : currentPage
 
   return (
     <Layout
@@ -55,7 +57,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
           alignSelf: 'flex-start'
         }}
       >
-        <IconRail selectedKey={currentPage} onChange={setCurrentPage} />
+        <IconRail selectedKey={selectedNavigationPage} onChange={setCurrentPage} />
       </Sider>
       <Layout
         className="ob-app-main-layout"
@@ -130,6 +132,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
           <div className="ob-main-surface">{children}</div>
         </Content>
       </Layout>
+      <GlobalTaskDock />
       <CommandPalette />
     </Layout>
   )

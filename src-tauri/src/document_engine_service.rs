@@ -33,7 +33,7 @@ static OCR_WORKER: OnceLock<Arc<OcrWorkerManager>> = OnceLock::new();
 static EVENT_EMITTER: OnceLock<Emitter> = OnceLock::new();
 static RETRY_REQUESTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 const DEFAULT_MODEL_ID: &str = "ppocrv6-small-det-v5-mobile-rec";
-const PIPELINE_VERSION: &str = "document-ir-v4-layout-formula-structure-v1";
+const PIPELINE_VERSION: &str = "document-ir-v4-layout-math-structure-v2";
 const OCR_CONFIG_VERSION: &str = "ocr-config-v4-language-profile";
 const LAYOUT_MODEL_VERSION: &str = "ppdoclayout-m-v1";
 const FORMULA_DETECTION_VERSION: &str = "layout-formula-region-v1";
@@ -574,8 +574,10 @@ fn parse_document_with_cache(
     let sanitization = crate::document_text::sanitize_document(&mut parsed["document"]);
     let native_quality =
         crate::document_quality::annotate_native_text_quality(&mut parsed["document"]);
-    enrich_formula_blocks(&mut parsed["document"]);
     rebuild_document_structure(&mut parsed["document"]);
+    let dehyphenation = crate::document_text::repair_body_dehyphenation(&mut parsed["document"]);
+    enrich_formula_blocks(&mut parsed["document"]);
+    refresh_semantic_metadata(&mut parsed["document"]);
     parsed["document"]["metadata"]["pipeline"] = json!({
         "version": PIPELINE_VERSION,
         "renderDpi": crate::pdf_parser::PDF_RENDER_DPI,
@@ -591,6 +593,11 @@ fn parse_document_with_cache(
         sanitization.invalid_control_chars_removed,
     );
     parsed["document"]["metadata"]["nativeTextQuality"] = native_quality;
+    parsed["document"]["metadata"]["dehyphenation"] = json!({
+        "count": dehyphenation.merged_count,
+        "explicitHyphenCount": dehyphenation.explicit_hyphen_count,
+        "inferredSplitCount": dehyphenation.inferred_split_count,
+    });
     ctx.check_cancelled()?;
     ctx.update_progress("quality", 96, "检查解析质量", None);
     let _ = crate::document_engine_cache::write_result(
@@ -657,7 +664,7 @@ fn rebuild_document_structure(document: &mut Value) {
     crate::document_structure::rebuild(document);
 }
 
-fn enrich_formula_blocks(document: &mut Value) {
+pub(crate) fn enrich_formula_blocks(document: &mut Value) {
     if let Some(pages) = document.get_mut("pages").and_then(Value::as_array_mut) {
         for page in pages {
             let page_number = page["number"].as_u64().unwrap_or(1);
@@ -687,10 +694,45 @@ fn enrich_formula_blocks(document: &mut Value) {
                         .as_str()
                         .map_or_else(|| json!("native/pdf/formula_ocr"), |source| json!(source));
                     block["page"] = json!(page_number);
+                    crate::document_math::enrich_block(block);
                 }
             }
         }
     }
+}
+
+fn refresh_semantic_metadata(document: &mut Value) {
+    let existing_has_images = document["metadata"]["hasImages"].as_bool().unwrap_or(false);
+    let existing_has_tables = document["metadata"]["hasTables"].as_bool().unwrap_or(false);
+    let mut formula_count = 0usize;
+    let mut matrix_count = 0usize;
+    let mut image_count = 0usize;
+    let mut table_count = 0usize;
+    if let Some(pages) = document["pages"].as_array() {
+        for block in pages
+            .iter()
+            .filter_map(|page| page["blocks"].as_array())
+            .flatten()
+        {
+            match block["type"].as_str().unwrap_or_default() {
+                "formula" => formula_count += 1,
+                "matrix" => {
+                    formula_count += 1;
+                    matrix_count += 1;
+                }
+                "image" | "figure" => image_count += 1,
+                "table" => table_count += 1,
+                _ => {}
+            }
+        }
+    }
+    document["metadata"]["hasFormulas"] = json!(formula_count > 0);
+    document["metadata"]["hasImages"] = json!(existing_has_images || image_count > 0);
+    document["metadata"]["hasTables"] = json!(existing_has_tables || table_count > 0);
+    document["metadata"]["formulaBlockCount"] = json!(formula_count);
+    document["metadata"]["matrixBlockCount"] = json!(matrix_count);
+    document["metadata"]["imageBlockCount"] = json!(image_count);
+    document["metadata"]["tableBlockCount"] = json!(table_count);
 }
 
 fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
@@ -1834,7 +1876,13 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(value) => value.map(ToOwned::to_owned),
                 Err(error) => return error,
             };
+            let output_directory = match str_field(request, "outputDirectory", 32 * 1024) {
+                Ok(value) => value.map(ToOwned::to_owned),
+                Err(error) => return error,
+            };
             let convert_cfg = load_config(db, plugin_id);
+            let convert_output_directory =
+                output_directory.unwrap_or_else(|| convert_cfg.output_directory.clone());
             let convert_manager = worker_manager().cloned();
             let convert_plugin_id = plugin_id.to_string();
             let task_id = match tasks().start(
@@ -1848,10 +1896,19 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         ctx,
                         &convert_plugin_id,
                     )?;
+                    let resolved_output_path = match output_path.as_deref() {
+                        Some(path) => PathBuf::from(path),
+                        None => crate::document_converter::output_path_in_directory(
+                            &path,
+                            &target,
+                            &convert_output_directory,
+                        )?,
+                    };
+                    let resolved_output_path = resolved_output_path.to_string_lossy().into_owned();
                     let result = crate::document_converter::convert_document_with_cache(
                         &parsed["document"],
                         &target,
-                        output_path.as_deref(),
+                        Some(&resolved_output_path),
                         Some(&convert_cfg.cache_directory),
                     )?;
                     ctx.check_cancelled()?;
@@ -2389,6 +2446,25 @@ mod tests {
             document["structure"]["outline"][0]["children"][0]["parentId"],
             "h1"
         );
+    }
+
+    #[test]
+    fn semantic_metadata_is_recomputed_from_structured_blocks() {
+        let mut document = json!({
+            "metadata":{"hasImages":true,"hasFormulas":false,"hasTables":false},
+            "pages":[{"blocks":[
+                {"type":"formula"},
+                {"type":"matrix"},
+                {"type":"figure"},
+                {"type":"table"}
+            ]}]
+        });
+        refresh_semantic_metadata(&mut document);
+        assert_eq!(document["metadata"]["hasFormulas"], true);
+        assert_eq!(document["metadata"]["formulaBlockCount"], 2);
+        assert_eq!(document["metadata"]["matrixBlockCount"], 1);
+        assert_eq!(document["metadata"]["hasImages"], true);
+        assert_eq!(document["metadata"]["hasTables"], true);
     }
 
     #[test]

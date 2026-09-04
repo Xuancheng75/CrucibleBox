@@ -23,6 +23,7 @@ export default function CommandPalette() {
   const setOpen = useAppStore((s) => s.setCommandOpen)
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const setActivePluginId = useAppStore((s) => s.setActivePluginId)
+  const setActivityTab = useAppStore((s) => s.setActivityTab)
   const plugins = usePluginStore((s) => s.plugins)
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -65,13 +66,19 @@ export default function CommandPalette() {
         key: 'tasks',
         label: '任务中心',
         icon: <ClockCircleOutlined />,
-        action: () => setCurrentPage('tasks')
+        action: () => {
+          setActivityTab('tasks')
+          setCurrentPage('tasks')
+        }
       },
       {
         key: 'logs',
         label: '插件日志',
         icon: <FileTextOutlined />,
-        action: () => setCurrentPage('logs')
+        action: () => {
+          setActivityTab('logs')
+          setCurrentPage('tasks')
+        }
       },
       {
         key: 'settings',
@@ -116,7 +123,7 @@ export default function CommandPalette() {
         }))
     )
     return groups
-  }, [query, plugins, setActivePluginId, setCurrentPage])
+  }, [query, plugins, setActivePluginId, setActivityTab, setCurrentPage])
 
   if (!open) return null
 

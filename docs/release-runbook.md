@@ -107,8 +107,8 @@ Tauri 版本或 channel 推导。
 
 ### beta7 发布前补充检查
 
-- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.7`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
-- Document Engine 0.8.0 的 `minHostVersion` 为 `2.0.0-beta.7`；默认中英混排 OCR 模型从固定 ModelScope 镜像获取，逐文件执行 SHA-256 校验；不访问 Hugging Face。
+- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.8`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
+- Document Engine 0.9.0 的 `minHostVersion` 为 `2.0.0-beta.8`；默认中英混排 OCR 模型从固定 ModelScope 镜像获取，逐文件执行 SHA-256 校验；不访问 Hugging Face。
 - 市场目录、插件包和更新清单仍使用 GitHub Release 直连；模型源与插件下载链路分离，禁止把模型镜像当作插件下载代理。
 - 发布前验证市场刷新失败时仍能显示内置/最近缓存目录；网络恢复后强制刷新能反映新增插件和插件更新；多选、批量下载、全部更新不能改变卡片高度、左侧布局或进度布局。
 - Document Engine 解析验收必须记录 `invalidControlChars=0`、`invalidXmlChars=0`、native/OCR 质量、TOC/heading/section sample、formula/image/table block 计数，以及 350–600 token Hybrid Chunk 回归指标；扫描 PDF 必须跑完整 OCR 回归。

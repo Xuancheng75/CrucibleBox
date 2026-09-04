@@ -325,7 +325,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [splitRanges, setSplitRanges] = useState('1-10\n11-20')
   const [convertPath, setConvertPath] = useState('')
   const [convertTarget, setConvertTarget] = useState('md')
-  const [convertOutput, setConvertOutput] = useState('')
+  const [convertOutputDirectory, setConvertOutputDirectory] = useState('')
   const [convertTaskId, setConvertTaskId] = useState<string | null>(null)
   const [convertTask, setConvertTask] = useState<DocumentTaskSnapshot | null>(null)
   const [convertProgress, setConvertProgress] = useState<OcrProgress | null>(null)
@@ -827,7 +827,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         send,
         path,
         convertTarget,
-        convertOutput.trim() || undefined
+        convertOutputDirectory.trim() || undefined
       )
       setConvertTaskId(accepted.taskId)
       setRecentTasks((previous) =>
@@ -846,7 +846,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setConvertBusy(false)
     }
-  }, [api, convertOutput, convertPath, convertTarget, send])
+  }, [api, convertOutputDirectory, convertPath, convertTarget, send])
 
   const runBatch = useCallback(async () => {
     const paths = batchPaths
@@ -2047,17 +2047,35 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           <option value="pdf">PDF</option>
         </select>
         <input
-          value={convertOutput}
-          onChange={(event) => setConvertOutput(event.target.value)}
-          placeholder="输出路径（可选）"
+          value={displayPath(convertOutputDirectory)}
+          readOnly
+          title={convertOutputDirectory || undefined}
+          placeholder="转换结果目录（默认使用 Document Engine/output）"
           style={{
             flex: 1,
+            minWidth: 0,
             padding: '9px 10px',
             border: `1px solid ${COLORS.border}`,
             borderRadius: 6,
             fontSize: FONT.sizeMd
           }}
         />
+        <button
+          type="button"
+          onClick={async () => {
+            const [path] = await selectPaths({ type: 'folder' })
+            if (path) setConvertOutputDirectory(path)
+          }}
+          style={{
+            padding: '6px 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 5,
+            background: COLORS.bgWhite,
+            whiteSpace: 'nowrap'
+          }}
+        >
+          选择输出目录
+        </button>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button

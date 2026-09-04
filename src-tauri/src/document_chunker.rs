@@ -39,6 +39,11 @@ struct BlockInput {
     language: Option<String>,
     ocr_confidence: Option<f32>,
     ocr_noise_candidate: bool,
+    formula_confidence: Option<f64>,
+    formula_display: Option<String>,
+    image_type: Option<String>,
+    dehyphenation_count: usize,
+    atomic_block: bool,
 }
 
 /// Chunk a unified document. Token counts are deterministic character-based
@@ -212,6 +217,23 @@ fn merge_chunk_metadata(left: &mut Value, right: &Value) {
         left["contains_formula"].as_bool().unwrap_or(false)
             || right["contains_formula"].as_bool().unwrap_or(false)
     );
+    left["contains_inline_formula"] = json!(
+        left["contains_inline_formula"].as_bool().unwrap_or(false)
+            || right["contains_inline_formula"].as_bool().unwrap_or(false)
+    );
+    left["contains_display_formula"] = json!(
+        left["contains_display_formula"].as_bool().unwrap_or(false)
+            || right["contains_display_formula"].as_bool().unwrap_or(false)
+    );
+    left["contains_matrix"] = json!(
+        left["contains_matrix"].as_bool().unwrap_or(false)
+            || right["contains_matrix"].as_bool().unwrap_or(false)
+    );
+    for field in ["formula_count", "image_count", "dehyphenation_count"] {
+        left[field] = json!(
+            left[field].as_u64().unwrap_or_default() + right[field].as_u64().unwrap_or_default()
+        );
+    }
     left["contains_table"] = json!(
         left["contains_table"].as_bool().unwrap_or(false)
             || right["contains_table"].as_bool().unwrap_or(false)
@@ -414,7 +436,7 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| format!("p{page_number}-b{}", index + 1)),
                 content: content.to_string(),
-                block_type,
+                block_type: block_type.clone(),
                 page: page_number,
                 section_path: block
                     .get("sectionPath")
@@ -446,6 +468,23 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .get("ocrNoiseCandidate")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                formula_confidence: block.get("formulaConfidence").and_then(Value::as_f64),
+                formula_display: block
+                    .get("displayOrInline")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                image_type: block
+                    .get("imageType")
+                    .or_else(|| block.get("semanticType"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                dehyphenation_count: block
+                    .get("dehyphenationCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as usize,
+                atomic_block: block.get("atomicBlock").and_then(Value::as_bool).unwrap_or(
+                    matches!(block_type.as_str(), "formula" | "matrix" | "image"),
+                ),
             });
         }
     }
@@ -552,7 +591,7 @@ fn build_chunks(
             current.clear();
             current_tokens = 0;
         }
-        if block_tokens > options.max_tokens {
+        if block_tokens > options.max_tokens && !block.atomic_block {
             if !current.is_empty() {
                 push_chunk(
                     &mut chunks,
@@ -579,6 +618,11 @@ fn build_chunks(
                     section_path_confidence: block.section_path_confidence,
                     ocr_confidence: block.ocr_confidence,
                     ocr_noise_candidate: block.ocr_noise_candidate,
+                    formula_confidence: block.formula_confidence,
+                    formula_display: block.formula_display.clone(),
+                    image_type: block.image_type.clone(),
+                    dehyphenation_count: block.dehyphenation_count,
+                    atomic_block: block.atomic_block,
                 };
                 push_chunk(
                     &mut chunks,
@@ -664,7 +708,7 @@ fn push_chunk(
         if !eligible {
             quality_flags.push("invalid_xml_character");
         }
-        if block.block_type == "formula" {
+        if matches!(block.block_type.as_str(), "formula" | "matrix") {
             quality_flags.push("contains_formula");
         }
         if block.block_type == "table" {
@@ -727,6 +771,33 @@ fn push_chunk(
     } else {
         "native_or_unknown"
     };
+    let formula_blocks = blocks
+        .iter()
+        .filter(|block| matches!(block.block_type.as_str(), "formula" | "matrix"))
+        .collect::<Vec<_>>();
+    let formula_count = formula_blocks.len();
+    let contains_inline_formula = formula_blocks
+        .iter()
+        .any(|block| block.formula_display.as_deref() == Some("inline"));
+    let contains_display_formula = formula_blocks
+        .iter()
+        .any(|block| block.formula_display.as_deref() != Some("inline"));
+    let contains_matrix = blocks.iter().any(|block| block.block_type == "matrix");
+    let math_confidence = formula_blocks
+        .iter()
+        .filter_map(|block| block.formula_confidence)
+        .reduce(f64::min);
+    let math_quality = math_confidence
+        .map(crate::document_math::math_quality)
+        .unwrap_or("none");
+    let image_blocks = blocks
+        .iter()
+        .filter(|block| matches!(block.block_type.as_str(), "image" | "figure"))
+        .collect::<Vec<_>>();
+    let image_types = image_blocks
+        .iter()
+        .filter_map(|block| block.image_type.clone())
+        .collect::<std::collections::HashSet<_>>();
     chunks.push(json!({
         "chunk_id": format!("{document_id}-c{chunk_index}"),
         "document_id": document_id,
@@ -749,9 +820,21 @@ fn push_chunk(
         "type": block_type,
         "quality_flags": quality_flags,
         "ragEligible": rag_eligible,
-        "contains_formula": blocks.iter().any(|block| block.block_type == "formula"),
+        "contains_formula": formula_count > 0,
+        "contains_inline_formula": contains_inline_formula,
+        "contains_display_formula": contains_display_formula,
+        "contains_matrix": contains_matrix,
+        "formula_count": formula_count,
+        "math_quality": math_quality,
+        "layout_quality": if section_path_confidence >= 0.8 { "good" } else { "review" },
         "contains_table": blocks.iter().any(|block| block.block_type == "table"),
-        "contains_image": blocks.iter().any(|block| block.block_type == "image"),
+        "contains_image": !image_blocks.is_empty(),
+        "image_count": image_blocks.len(),
+        "image_types": image_types,
+        "dehyphenation_count": blocks.iter().map(|block| block.dehyphenation_count).sum::<usize>(),
+        "header_removed": true,
+        "footer_removed": true,
+        "page_number_removed": true,
         "isSmall": is_small,
     }));
     *chunk_index += 1;
@@ -933,5 +1016,51 @@ mod tests {
         let output = chunk_document(&document, None).unwrap();
         assert_eq!(output["chunks"][0]["ragEligible"], false);
         assert_eq!(output["chunks"][0]["ragQuality"], "rejected");
+    }
+
+    #[test]
+    fn math_and_image_metadata_comes_from_structured_blocks() {
+        let document = json!({
+            "id": "structured",
+            "source": { "path": "book.pdf" },
+            "pages": [{ "number": 4, "blocks": [
+                {"id":"p","type":"paragraph","content":"Body", "dehyphenationCount":2},
+                {"id":"f","type":"formula","content":"A^{T}A=I","formulaConfidence":0.88,"displayOrInline":"display","atomicBlock":true},
+                {"id":"m","type":"matrix","content":"\\begin{bmatrix}1&0\\\\0&1\\end{bmatrix}","formulaConfidence":0.94,"displayOrInline":"display","atomicBlock":true},
+                {"id":"i","type":"image","content":"Figure 1","imageType":"diagram","atomicBlock":true}
+            ]}]
+        });
+        let output = chunk_document(&document, None).unwrap();
+        let chunk = &output["chunks"][0];
+        assert_eq!(chunk["contains_formula"], true);
+        assert_eq!(chunk["contains_display_formula"], true);
+        assert_eq!(chunk["contains_matrix"], true);
+        assert_eq!(chunk["formula_count"], 2);
+        assert_eq!(chunk["contains_image"], true);
+        assert_eq!(chunk["image_count"], 1);
+        assert_eq!(chunk["dehyphenation_count"], 2);
+        assert_eq!(chunk["math_quality"], "review");
+    }
+
+    #[test]
+    fn oversized_atomic_matrix_is_not_split() {
+        let content = "x".repeat(1000);
+        let document = json!({
+            "id":"atomic",
+            "source":{"path":"book.pdf"},
+            "pages":[{"number":1,"blocks":[
+                {"id":"m","type":"matrix","content":content,"atomicBlock":true}
+            ]}]
+        });
+        let output = chunk_document(
+            &document,
+            Some(&json!({"targetTokens":8,"maxTokens":16,"overlap":2})),
+        )
+        .unwrap();
+        assert_eq!(output["count"], 1);
+        assert_eq!(
+            output["chunks"][0]["block_ids"].as_array().unwrap().len(),
+            1
+        );
     }
 }

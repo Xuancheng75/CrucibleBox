@@ -102,12 +102,44 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  height: 154px;
+  height: 178px;
   padding: 16px;
   overflow: hidden;
   box-shadow: none !important;
   cursor: pointer;
   transition: border-color 0.16s ease, transform 0.16s ease;
+}
+
+.ob-market-card-content {
+  display: grid;
+  grid-template-rows: 22px 22px 18px minmax(34px, 1fr) 28px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.ob-market-card-status {
+  display: flex;
+  min-width: 0;
+  min-height: 22px;
+  align-items: center;
+}
+
+.ob-market-card-status .ant-tag {
+  margin: 0;
+}
+
+.ob-market-card-description {
+  align-self: start;
+  min-height: 34px;
+  max-height: 34px;
+  overflow: hidden;
+  line-height: 17px !important;
+}
+
+.ob-market-card-action {
+  align-self: end;
+  justify-self: start;
 }
 
 .ob-market-card:hover {

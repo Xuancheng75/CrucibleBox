@@ -137,6 +137,7 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
     let mut suspected_false_heading_count = 0usize;
     let mut toc_entry_count = 0usize;
     let mut formula_block_count = 0usize;
+    let mut matrix_block_count = 0usize;
     let mut image_block_count = 0usize;
     let mut table_block_count = 0usize;
     let mut native_text_block_count = 0usize;
@@ -205,6 +206,7 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
                                 low_confidence_formula_count += 1;
                             }
                         }
+                        "matrix" => matrix_block_count += 1,
                         "image" => image_block_count += 1,
                         "table" => table_block_count += 1,
                         "figure" => figure_block_count += 1,
@@ -336,11 +338,15 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
         "headingCandidateCount": heading_candidate_count,
         "acceptedHeadingCount": accepted_heading_count,
         "rejectedHeadingCount": rejected_heading_count,
-        "suspectedFalseHeadingCount": suspected_false_heading_count + rejected_heading_count,
+        // Rejected candidates are evidence that the classifier worked, not
+        // false headings in the recovered tree. Keep the two diagnostics
+        // separate instead of double-counting rejected numbered paragraphs.
+        "suspectedFalseHeadingCount": suspected_false_heading_count,
         "headingConfidenceAverage": if heading_confidence_count == 0 { 0.0 } else { heading_confidence_sum / heading_confidence_count as f64 },
         "tocEntryCount": toc_entry_count,
         "sectionPathAccuracySample": section_samples,
         "formulaBlockCount": formula_block_count,
+        "matrixBlockCount": matrix_block_count,
         "formulaRecognitionLowConfidenceCount": low_confidence_formula_count,
         "imageBlockCount": image_block_count,
         "tableBlockCount": table_block_count,

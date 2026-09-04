@@ -118,6 +118,15 @@ pub fn is_strict_formula_candidate(value: &str) -> bool {
             || matches!(character, '^' | '_' | '≤' | '≥' | '≠')
     });
     let has_digit = text.chars().any(|character| character.is_ascii_digit());
+    let operand_count = text
+        .chars()
+        .filter(|character| {
+            character.is_alphanumeric() || "αβγδεζηθλμνξπρστφχω".contains(*character)
+        })
+        .count();
+    let has_large_operator = text
+        .chars()
+        .any(|character| matches!(character, '∑' | '∫' | '√'));
     let words = text.split_whitespace().collect::<Vec<_>>();
     let long_words = words
         .iter()
@@ -151,8 +160,30 @@ pub fn is_strict_formula_candidate(value: &str) -> bool {
     if words.len() > 8 || long_words > 3 {
         return false;
     }
+    // Isolated relation signs and bracket fragments are common PDF text-layer
+    // artifacts. They carry no complete expression and must wait for
+    // geometry-based coalescing instead of becoming standalone formulas.
+    let has_sufficient_operands = operand_count >= 2 || (has_large_operator && operand_count >= 1);
+    let has_complete_relation = text
+        .find(['=', '＝'])
+        .map(|index| {
+            let separator_len = text[index..]
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(1);
+            let has_operand = |part: &str| {
+                part.chars().any(|character| {
+                    character.is_alphanumeric() || "αβγδεζηθλμνξπρστφχω".contains(character)
+                })
+            };
+            has_operand(&text[..index]) && has_operand(&text[index + separator_len..])
+        })
+        .unwrap_or(true);
     operators > 0
         && compact_len <= 180
+        && has_sufficient_operands
+        && has_complete_relation
         && (has_math_symbol || has_digit || text.contains('=') || text.contains('＝'))
 }
 
@@ -267,6 +298,13 @@ mod tests {
     fn accepts_compact_math_expression() {
         for value in ["Ax = 0", "A^T A x = A^T b", "λ1 + λ2 = 1", "A^{-1}"] {
             assert!(is_strict_formula_candidate(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn rejects_operator_only_pdf_fragments() {
+        for value in ["=", "=(", ") - (", "x =", "= 12"] {
+            assert!(!is_strict_formula_candidate(value), "{value}");
         }
     }
 }
