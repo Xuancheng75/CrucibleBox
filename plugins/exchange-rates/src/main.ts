@@ -11,6 +11,10 @@ interface RatesCache {
   provider?: string
 }
 
+interface RatesPayload {
+  rates?: Record<string, number>
+}
+
 let ctx: PluginContext | null = null
 
 const CACHE_KEY = 'rates:cache'
@@ -73,12 +77,12 @@ async function fetchAndCacheRates(): Promise<unknown> {
   try {
     let provider = 'ExchangeRate API'
     let resp = await ctx.api.fetch('https://open.er-api.com/v6/latest/USD')
-    let data: any = resp.ok ? JSON.parse(await readFetchBody(resp)) : null
+    let data = resp.ok ? parseRatesPayload(await readFetchBody(resp)) : null
     if (!data?.rates) {
       // Public fallback is deliberately queried only after the primary feed
       // fails, keeping normal traffic and memory use unchanged.
       resp = await ctx.api.fetch('https://api.frankfurter.app/latest?from=USD')
-      data = resp.ok ? JSON.parse(await readFetchBody(resp)) : null
+      data = resp.ok ? parseRatesPayload(await readFetchBody(resp)) : null
       provider = 'Frankfurter fallback'
     }
     if (!data?.rates) return { error: `汇率服务不可用（HTTP ${resp.status}）` }
@@ -97,6 +101,18 @@ async function fetchAndCacheRates(): Promise<unknown> {
     }
     return { error: (e as Error).message }
   }
+}
+
+function parseRatesPayload(raw: string): RatesPayload {
+  const parsed: unknown = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const rates = (parsed as { rates?: unknown }).rates
+  if (!rates || typeof rates !== 'object' || Array.isArray(rates)) return {}
+  const numericRates = Object.entries(rates).filter(
+    (entry): entry is [string, number] =>
+      typeof entry[1] === 'number' && Number.isFinite(entry[1])
+  )
+  return { rates: Object.fromEntries(numericRates) }
 }
 
 async function readFetchBody(response: Response | PluginFetchResponse): Promise<string> {

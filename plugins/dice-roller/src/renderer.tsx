@@ -33,7 +33,7 @@ export default function DiceRollerPlugin({ config }: PluginRenderProps) {
   const total = result.reduce((sum, value) => sum + value, 0)
 
   const handleRoll = () => {
-    let parsed = { count, sides, modifier: 0 }
+    let parsed: ReturnType<typeof parseDiceNotation>
     try {
       parsed = parseDiceNotation(notation)
       setCount(parsed.count)
@@ -47,11 +47,16 @@ export default function DiceRollerPlugin({ config }: PluginRenderProps) {
     const second = mode === 'normal' ? null : rollDice(parsed.count, parsed.sides)
     const firstTotal = first.reduce((sum, value) => sum + value, 0)
     const secondTotal = second?.reduce((sum, value) => sum + value, 0) ?? firstTotal
-    const next = mode === 'advantage'
-      ? (firstTotal >= secondTotal ? first : second ?? first)
-      : mode === 'disadvantage'
-        ? (firstTotal <= secondTotal ? first : second ?? first)
-        : first
+    const next =
+      mode === 'advantage'
+        ? firstTotal >= secondTotal
+          ? first
+          : (second ?? first)
+        : mode === 'disadvantage'
+          ? firstTotal <= secondTotal
+            ? first
+            : (second ?? first)
+          : first
     if (parsed.modifier !== 0) next.push(parsed.modifier)
     setResult(next)
     setHistory((prev) =>
@@ -150,7 +155,10 @@ export default function DiceRollerPlugin({ config }: PluginRenderProps) {
               padding: '5px 10px',
               border: '1px solid var(--ob-color-border, #d9d9d9)',
               borderRadius: 999,
-              background: notation === preset ? 'var(--ob-color-primary-bg, #eef4ff)' : 'var(--ob-color-bg-container, #fff)',
+              background:
+                notation === preset
+                  ? 'var(--ob-color-primary-bg, #eef4ff)'
+                  : 'var(--ob-color-bg-container, #fff)',
               color: 'var(--ob-color-text, #1f2933)',
               cursor: 'pointer'
             }}
@@ -159,7 +167,14 @@ export default function DiceRollerPlugin({ config }: PluginRenderProps) {
           </button>
         ))}
       </div>
-      <label style={{ display: 'block', marginBottom: 12, fontSize: 13, color: 'var(--ob-color-text-secondary, #52616b)' }}>
+      <label
+        style={{
+          display: 'block',
+          marginBottom: 12,
+          fontSize: 13,
+          color: 'var(--ob-color-text-secondary, #52616b)'
+        }}
+      >
         投掷模式
         <select
           value={mode}
