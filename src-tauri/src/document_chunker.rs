@@ -3,9 +3,9 @@
 use serde_json::{json, Value};
 
 const DEFAULT_TARGET_TOKENS: usize = 512;
-const DEFAULT_MAX_TOKENS: usize = 1024;
-const DEFAULT_OVERLAP: usize = 50;
-const DEFAULT_MIN_CHARS: usize = 100;
+const DEFAULT_MAX_TOKENS: usize = 800;
+const DEFAULT_OVERLAP: usize = 80;
+const DEFAULT_MIN_TOKENS: usize = 180;
 
 #[derive(Debug, Clone, Copy)]
 struct ChunkOptions {
@@ -13,7 +13,8 @@ struct ChunkOptions {
     target_tokens: usize,
     max_tokens: usize,
     overlap: usize,
-    min_chunk_size: usize,
+    min_tokens: usize,
+    pages_per_chunk: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,8 @@ enum Strategy {
     Structure,
     Semantic,
     Hybrid,
+    Pages,
+    Chapters,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +32,19 @@ struct BlockInput {
     content: String,
     block_type: String,
     page: usize,
+    section_path: String,
+    section_path_confidence: f64,
+    section_id: Option<String>,
+    parent_id: Option<String>,
+    language: Option<String>,
+    ocr_confidence: Option<f32>,
+    ocr_noise_candidate: bool,
+    formula_confidence: Option<f64>,
+    formula_display: Option<String>,
+    formula_quality: Option<String>,
+    image_type: Option<String>,
+    dehyphenation_count: usize,
+    atomic_block: bool,
 }
 
 /// Chunk a unified document. Token counts are deterministic character-based
@@ -54,13 +70,243 @@ pub fn chunk_document(document: &Value, raw_options: Option<&Value>) -> Result<V
         .unwrap_or("document")
         .to_string();
     let blocks = flatten_blocks(document);
-    let chunks = build_chunks(&blocks, &document_id, &source_file, &source_path, options);
+    let document_quality = document
+        .get("metadata")
+        .and_then(|metadata| metadata.get("quality"));
+    let mut chunks = build_chunks(&blocks, &document_id, &source_file, &source_path, options);
+    // When OCR yields no reliable heading hierarchy, build_chunks intentionally
+    // creates page fallback boundaries. Do not merge those small page groups
+    // back into a document-wide chunk; the fallback exists specifically to
+    // preserve page-level retrieval units. A flat set of visual OCR headings
+    // is not enough to establish a usable section tree.
+    if options.strategy == Strategy::Hybrid && has_reliable_structure(&blocks) {
+        merge_small_chunks(&mut chunks, options);
+    }
+    apply_document_quality_gate(&mut chunks, document_quality);
+    for (index, chunk) in chunks.iter_mut().enumerate() {
+        chunk["chunk_index"] = json!(index);
+        chunk["chunk_id"] = json!(format!("{document_id}-c{index}"));
+    }
     Ok(json!({
         "documentId": document_id,
         "strategy": options.strategy.as_str(),
         "chunks": chunks,
-        "count": chunks.len()
+        "count": chunks.len(),
+        "quality": quality_report(&chunks, blocks.len(), document_quality)
     }))
+}
+
+fn apply_document_quality_gate(chunks: &mut [Value], quality: Option<&Value>) {
+    let Some(quality) = quality else {
+        return;
+    };
+    let passed = quality
+        .get("passed")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let rag_quality = quality
+        .get("ragQuality")
+        .and_then(Value::as_str)
+        .unwrap_or("good");
+    let missing_structure = quality
+        .get("qualityFlags")
+        .and_then(Value::as_array)
+        .is_some_and(|flags| flags.iter().any(|flag| flag == "missing_structure"));
+    for chunk in chunks {
+        let mut eligible = chunk["ragEligible"].as_bool().unwrap_or(false);
+        let mut flags = chunk["quality_flags"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if rag_quality == "rejected" {
+            eligible = false;
+            flags.push(json!("document_quality_rejected"));
+        } else if !passed && missing_structure {
+            eligible = false;
+            flags.push(json!("missing_structure"));
+        }
+        flags.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        flags.dedup();
+        chunk["ragEligible"] = json!(eligible);
+        chunk["quality_flags"] = json!(flags);
+        chunk["ragQuality"] = json!(rag_quality);
+    }
+}
+
+fn merge_small_chunks(chunks: &mut Vec<Value>, options: ChunkOptions) {
+    let mut index = 0usize;
+    while index + 1 < chunks.len() {
+        let current_tokens = chunks[index]["token_count"].as_u64().unwrap_or(0) as usize;
+        let next_tokens = chunks[index + 1]["token_count"].as_u64().unwrap_or(0) as usize;
+        if current_tokens < options.min_tokens
+            && current_tokens.saturating_add(next_tokens) <= options.max_tokens
+        {
+            let right = chunks[index + 1].clone();
+            let current_content = chunks[index]["content"].as_str().unwrap_or("");
+            let next_content = right["content"].as_str().unwrap_or("");
+            chunks[index]["content"] = json!(format!("{current_content}\n\n{next_content}"));
+            chunks[index]["token_count"] = json!(estimate_tokens(
+                chunks[index]["content"].as_str().unwrap_or("")
+            ));
+            chunks[index]["character_count"] = json!(chunks[index]["content"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .count());
+            chunks[index]["page_end"] = right["page_end"].clone();
+            chunks[index]["type"] = json!("text");
+            merge_chunk_metadata(&mut chunks[index], &right);
+            let right_ids = right["block_ids"].as_array().cloned();
+            if let (Some(left), Some(right)) = (
+                chunks[index]["block_ids"].as_array_mut(),
+                right_ids.as_deref(),
+            ) {
+                left.extend(right.iter().cloned());
+            }
+            chunks.remove(index + 1);
+        } else {
+            index += 1;
+        }
+    }
+    if chunks.len() > 1 {
+        let last_index = chunks.len() - 1;
+        let last_tokens = chunks[last_index]["token_count"].as_u64().unwrap_or(0) as usize;
+        let previous_tokens = chunks[last_index - 1]["token_count"].as_u64().unwrap_or(0) as usize;
+        if last_tokens < options.min_tokens
+            && previous_tokens.saturating_add(last_tokens) <= options.max_tokens
+        {
+            let tail = chunks.pop().unwrap_or_default();
+            let tail_content = tail["content"].as_str().unwrap_or("");
+            let previous_content = chunks[last_index - 1]["content"].as_str().unwrap_or("");
+            chunks[last_index - 1]["content"] =
+                json!(format!("{previous_content}\n\n{tail_content}"));
+            chunks[last_index - 1]["token_count"] = json!(estimate_tokens(
+                chunks[last_index - 1]["content"].as_str().unwrap_or("")
+            ));
+            chunks[last_index - 1]["character_count"] = json!(chunks[last_index - 1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .count());
+            chunks[last_index - 1]["page_end"] = tail["page_end"].clone();
+            merge_chunk_metadata(&mut chunks[last_index - 1], &tail);
+            let tail_ids = tail["block_ids"].as_array().cloned().unwrap_or_default();
+            if let Some(ids) = chunks[last_index - 1]["block_ids"].as_array_mut() {
+                ids.extend(tail_ids);
+            }
+        }
+    }
+}
+
+fn merge_chunk_metadata(left: &mut Value, right: &Value) {
+    if left["title"].is_null() {
+        left["title"] = right["title"].clone();
+    }
+    if left["section_path"].is_null() {
+        left["section_path"] = right["section_path"].clone();
+    }
+    if left["section_id"].is_null() {
+        left["section_id"] = right["section_id"].clone();
+    }
+    if left["parent_id"].is_null() {
+        left["parent_id"] = right["parent_id"].clone();
+    }
+    let left_confidence = left["section_path_confidence"].as_f64().unwrap_or(0.0);
+    let right_confidence = right["section_path_confidence"].as_f64().unwrap_or(0.0);
+    left["section_path_confidence"] = json!(left_confidence.min(right_confidence));
+    left["contains_formula"] = json!(
+        left["contains_formula"].as_bool().unwrap_or(false)
+            || right["contains_formula"].as_bool().unwrap_or(false)
+    );
+    left["contains_inline_formula"] = json!(
+        left["contains_inline_formula"].as_bool().unwrap_or(false)
+            || right["contains_inline_formula"].as_bool().unwrap_or(false)
+    );
+    left["contains_display_formula"] = json!(
+        left["contains_display_formula"].as_bool().unwrap_or(false)
+            || right["contains_display_formula"].as_bool().unwrap_or(false)
+    );
+    left["contains_matrix"] = json!(
+        left["contains_matrix"].as_bool().unwrap_or(false)
+            || right["contains_matrix"].as_bool().unwrap_or(false)
+    );
+    for field in ["formula_count", "image_count", "dehyphenation_count"] {
+        left[field] = json!(
+            left[field].as_u64().unwrap_or_default() + right[field].as_u64().unwrap_or_default()
+        );
+    }
+    left["contains_table"] = json!(
+        left["contains_table"].as_bool().unwrap_or(false)
+            || right["contains_table"].as_bool().unwrap_or(false)
+    );
+    left["contains_image"] = json!(
+        left["contains_image"].as_bool().unwrap_or(false)
+            || right["contains_image"].as_bool().unwrap_or(false)
+    );
+    if left["language"] != right["language"] && !right["language"].is_null() {
+        left["language"] = json!("mixed");
+    }
+    if left["ocr_quality"] == "native_or_unknown" {
+        left["ocr_quality"] = right["ocr_quality"].clone();
+    } else if right["ocr_quality"] == "degraded" {
+        left["ocr_quality"] = json!("degraded");
+    }
+    left["ragEligible"] = json!(
+        left["ragEligible"].as_bool().unwrap_or(false)
+            && right["ragEligible"].as_bool().unwrap_or(false)
+    );
+    let mut flags = left["quality_flags"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    flags.extend(
+        right["quality_flags"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+    );
+    flags.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+    flags.dedup();
+    left["quality_flags"] = json!(flags);
+    let token_count = left["token_count"].as_u64().unwrap_or(0) as usize;
+    left["isSmall"] = json!(token_count < DEFAULT_MIN_TOKENS);
+}
+
+fn quality_report(chunks: &[Value], block_count: usize, document_quality: Option<&Value>) -> Value {
+    let mut token_counts = chunks
+        .iter()
+        .filter_map(|chunk| chunk["token_count"].as_u64().map(|value| value as usize))
+        .collect::<Vec<_>>();
+    token_counts.sort_unstable();
+    let total = token_counts.len();
+    let sum = token_counts.iter().sum::<usize>();
+    let tiny = token_counts.iter().filter(|value| **value <= 10).count();
+    let sectioned = chunks
+        .iter()
+        .filter(|chunk| {
+            chunk["section_path"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        })
+        .count();
+    let rag_eligible = chunks
+        .iter()
+        .filter(|chunk| chunk["ragEligible"].as_bool().unwrap_or(false))
+        .count();
+    json!({
+        "passed": total == 0 || (block_count < 100 || (tiny * 100 <= total * 35 && sectioned * 100 >= total * 60)),
+        "chunkCount": total,
+        "averageTokens": if total == 0 { 0.0 } else { sum as f64 / total as f64 },
+        "medianTokens": token_counts.get(total / 2).copied().unwrap_or(0),
+        "underTenRatio": if total == 0 { 0.0 } else { tiny as f64 / total as f64 },
+        "sectionPathRatio": if total == 0 { 0.0 } else { sectioned as f64 / total as f64 },
+        "ragEligibleCount": rag_eligible,
+        "ragEligibleRatio": if total == 0 { 0.0 } else { rag_eligible as f64 / total as f64 },
+        "documentRagQuality": document_quality
+            .and_then(|quality| quality.get("ragQuality"))
+            .cloned()
+            .unwrap_or_else(|| json!("unknown")),
+    })
 }
 
 fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
@@ -73,6 +319,8 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
         "structure" => Strategy::Structure,
         "semantic" => Strategy::Semantic,
         "hybrid" => Strategy::Hybrid,
+        "pages" | "page" => Strategy::Pages,
+        "chapters" | "chapter" => Strategy::Chapters,
         other => return Err(format!("unsupported chunk strategy: {other}")),
     };
     let number = |name: &str, default: usize| {
@@ -85,12 +333,24 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
     let target_tokens = number("targetTokens", DEFAULT_TARGET_TOKENS);
     let max_tokens = number("maxTokens", DEFAULT_MAX_TOKENS);
     let overlap = number("overlap", DEFAULT_OVERLAP);
-    let min_chunk_size = number("minChunkSize", DEFAULT_MIN_CHARS);
+    let min_tokens = object
+        .and_then(|value| value.get("minTokens"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .or_else(|| {
+            object
+                .and_then(|value| value.get("minChunkSize"))
+                .and_then(Value::as_u64)
+                .map(|value| (value as usize / 4).max(1))
+        })
+        .unwrap_or(DEFAULT_MIN_TOKENS);
+    let pages_per_chunk = number("pagesPerChunk", 1);
     if !(1..=32_768).contains(&target_tokens)
         || !(1..=65_536).contains(&max_tokens)
         || max_tokens < target_tokens
         || overlap >= max_tokens
-        || min_chunk_size > 1_000_000
+        || min_tokens > 65_536
+        || !(1..=100).contains(&pages_per_chunk)
     {
         return Err(
             "invalid chunk options: require 1 <= targetTokens <= maxTokens, overlap < maxTokens"
@@ -102,12 +362,14 @@ fn parse_options(raw: Option<&Value>) -> Result<ChunkOptions, String> {
         target_tokens,
         max_tokens,
         overlap,
-        min_chunk_size,
+        min_tokens,
+        pages_per_chunk,
     })
 }
 
 fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
     let mut blocks = Vec::new();
+    let mut sections: Vec<(u8, String, String)> = Vec::new();
     let Some(pages) = document.get("pages").and_then(Value::as_array) else {
         return blocks;
     };
@@ -124,6 +386,50 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
             if content.is_empty() {
                 continue;
             }
+            let block_type = block
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("paragraph")
+                .to_string();
+            if block_type == "toc_entry"
+                || block_type == "toc"
+                || matches!(
+                    block_type.as_str(),
+                    "header" | "footer" | "page_number" | "production_mark"
+                )
+                || block
+                    .get("excludedFromRag")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+            let mut parent_id = sections.last().map(|(_, _, id)| id.clone());
+            if block_type == "heading" {
+                let level = block
+                    .get("level")
+                    .and_then(Value::as_u64)
+                    .map(|value| value.clamp(1, 6) as u8)
+                    .unwrap_or_else(|| heading_level(content));
+                while sections
+                    .last()
+                    .is_some_and(|(current, _, _)| *current >= level)
+                {
+                    sections.pop();
+                }
+                let heading_id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("p{page_number}-b{}", index + 1));
+                parent_id = sections.last().map(|(_, _, id)| id.clone());
+                sections.push((level, content.to_string(), heading_id));
+            }
+            let section_path = sections
+                .iter()
+                .map(|(_, title, _)| title.as_str())
+                .collect::<Vec<_>>()
+                .join(" / ");
             blocks.push(BlockInput {
                 id: block
                     .get("id")
@@ -131,12 +437,60 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| format!("p{page_number}-b{}", index + 1)),
                 content: content.to_string(),
-                block_type: block
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("paragraph")
-                    .to_string(),
+                block_type: block_type.clone(),
                 page: page_number,
+                section_path: block
+                    .get("sectionPath")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .unwrap_or(section_path),
+                section_path_confidence: block
+                    .get("sectionPathConfidence")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.9),
+                section_id: block
+                    .get("sectionId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                parent_id: block
+                    .get("parentId")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .or(parent_id),
+                language: block
+                    .get("language")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                ocr_confidence: block
+                    .get("confidence")
+                    .and_then(Value::as_f64)
+                    .map(|value| value as f32),
+                ocr_noise_candidate: block
+                    .get("ocrNoiseCandidate")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                formula_confidence: block.get("formulaConfidence").and_then(Value::as_f64),
+                formula_display: block
+                    .get("displayOrInline")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                formula_quality: block
+                    .get("formulaQuality")
+                    .and_then(|quality| quality.get("level"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                image_type: block
+                    .get("imageType")
+                    .or_else(|| block.get("semanticType"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                dehyphenation_count: block
+                    .get("dehyphenationCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as usize,
+                atomic_block: block.get("atomicBlock").and_then(Value::as_bool).unwrap_or(
+                    matches!(block_type.as_str(), "formula" | "matrix" | "image"),
+                ),
             });
         }
     }
@@ -151,13 +505,63 @@ fn build_chunks(
     options: ChunkOptions,
 ) -> Vec<Value> {
     let mut chunks = Vec::new();
+    if options.strategy == Strategy::Pages {
+        let mut page_blocks: Vec<&BlockInput> = Vec::new();
+        let mut first_page: Option<usize> = None;
+        let mut chunk_index = 0usize;
+        for block in blocks {
+            if first_page
+                .is_some_and(|page| block.page >= page.saturating_add(options.pages_per_chunk))
+                && !page_blocks.is_empty()
+            {
+                push_chunk(
+                    &mut chunks,
+                    &mut chunk_index,
+                    document_id,
+                    source_file,
+                    source_path,
+                    &page_blocks,
+                    options,
+                );
+                page_blocks.clear();
+                first_page = None;
+            }
+            first_page.get_or_insert(block.page);
+            page_blocks.push(block);
+        }
+        if !page_blocks.is_empty() {
+            push_chunk(
+                &mut chunks,
+                &mut chunk_index,
+                document_id,
+                source_file,
+                source_path,
+                &page_blocks,
+                options,
+            );
+        }
+        for (index, chunk) in chunks.iter_mut().enumerate() {
+            chunk["chunk_index"] = json!(index);
+            chunk["chunk_id"] = json!(format!("{document_id}-c{index}"));
+        }
+        return chunks;
+    }
     let mut current: Vec<&BlockInput> = Vec::new();
     let mut current_tokens = 0usize;
+    let structure_available = has_reliable_structure(blocks);
+    let page_fallback = options.strategy == Strategy::Hybrid
+        && !structure_available
+        && blocks
+            .first()
+            .zip(blocks.last())
+            .is_some_and(|(first, last)| first.page < last.page);
     let mut chunk_index = 0usize;
     for block in blocks {
         let block_tokens = estimate_tokens(&block.content);
-        let starts_structure = matches!(options.strategy, Strategy::Structure | Strategy::Hybrid)
-            && block.block_type == "heading";
+        let starts_structure = matches!(
+            options.strategy,
+            Strategy::Structure | Strategy::Hybrid | Strategy::Chapters
+        ) && block.block_type == "heading";
         // A proof is semantically owned by the immediately preceding theorem
         // (and a formula/definition block is likewise structural context).
         // Keep that pair together even when the proof heading would normally
@@ -168,10 +572,18 @@ fn build_chunks(
         let proof_body_continuation = block.block_type != "heading"
             && current.iter().any(|item| is_proof_heading(item))
             && current.iter().any(|item| is_theorem_heading(item));
+        let page_boundary = page_fallback
+            && current.first().is_some_and(|first| {
+                block.page >= first.page.saturating_add(2) && current_tokens > 0
+            });
         let should_flush = !current.is_empty()
             && !math_continuation
             && !proof_body_continuation
-            && (starts_structure || current_tokens + block_tokens > options.target_tokens);
+            && (page_boundary
+                || (current_tokens + block_tokens > options.target_tokens)
+                || (starts_structure
+                    && options.strategy != Strategy::Hybrid
+                    && current_tokens >= options.min_tokens));
         if should_flush {
             push_chunk(
                 &mut chunks,
@@ -185,7 +597,7 @@ fn build_chunks(
             current.clear();
             current_tokens = 0;
         }
-        if block_tokens > options.max_tokens {
+        if block_tokens > options.max_tokens && !block.atomic_block {
             if !current.is_empty() {
                 push_chunk(
                     &mut chunks,
@@ -205,6 +617,19 @@ fn build_chunks(
                     content: part,
                     block_type: block.block_type.clone(),
                     page: block.page,
+                    section_path: block.section_path.clone(),
+                    section_id: block.section_id.clone(),
+                    parent_id: block.parent_id.clone(),
+                    language: block.language.clone(),
+                    section_path_confidence: block.section_path_confidence,
+                    ocr_confidence: block.ocr_confidence,
+                    ocr_noise_candidate: block.ocr_noise_candidate,
+                    formula_confidence: block.formula_confidence,
+                    formula_display: block.formula_display.clone(),
+                    formula_quality: block.formula_quality.clone(),
+                    image_type: block.image_type.clone(),
+                    dehyphenation_count: block.dehyphenation_count,
+                    atomic_block: block.atomic_block,
                 };
                 push_chunk(
                     &mut chunks,
@@ -235,6 +660,27 @@ fn build_chunks(
     chunks
 }
 
+/// A heading label alone does not prove that OCR recovered a usable section
+/// tree. In particular, scanned pages often label every large text line as a
+/// same-level heading. Treat the structure as reliable only when the input
+/// provides hierarchy evidence (a parent link, a nested section path, or a
+/// top-level chapter heading). This keeps the existing hybrid length/merge
+/// algorithm intact while enabling its page fallback for flat OCR output.
+fn has_reliable_structure(blocks: &[BlockInput]) -> bool {
+    let headings = blocks
+        .iter()
+        .filter(|block| block.block_type == "heading")
+        .collect::<Vec<_>>();
+    if headings.is_empty() {
+        return false;
+    }
+    headings.iter().any(|heading| {
+        heading.parent_id.is_some()
+            || heading.section_path.contains(" / ")
+            || heading_level(&heading.content) == 1
+    })
+}
+
 fn push_chunk(
     chunks: &mut Vec<Value>,
     chunk_index: &mut usize,
@@ -252,13 +698,57 @@ fn push_chunk(
         .map(|block| block.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let is_small = content.chars().count() < options.min_chunk_size;
+    let token_count = estimate_tokens(&content);
+    let is_small = token_count < options.min_tokens;
     let page_start = blocks.first().map(|block| block.page).unwrap_or(1);
     let page_end = blocks.last().map(|block| block.page).unwrap_or(page_start);
     let block_ids = blocks
         .iter()
         .map(|block| block.id.clone())
         .collect::<Vec<_>>();
+    let mut quality_flags = Vec::new();
+    let rag_eligible = blocks.iter().all(|block| {
+        let eligible = !block
+            .content
+            .chars()
+            .any(|character| !crate::document_text::is_xml_10_char(character));
+        if !eligible {
+            quality_flags.push("invalid_xml_character");
+        }
+        if matches!(block.block_type.as_str(), "formula" | "matrix") {
+            quality_flags.push("contains_formula");
+            if matches!(block.formula_quality.as_deref(), Some("bad" | "review")) {
+                quality_flags.push("formula_structure_uncertain");
+            }
+        }
+        if block.block_type == "table" {
+            quality_flags.push("contains_table");
+        }
+        if block.ocr_noise_candidate {
+            quality_flags.push("ocr_noise_candidate");
+        }
+        if block
+            .ocr_confidence
+            .is_some_and(|confidence| confidence < 0.55)
+        {
+            quality_flags.push("low_ocr_confidence");
+        }
+        eligible
+            && !block.ocr_noise_candidate
+            && !matches!(block.formula_quality.as_deref(), Some("bad"))
+    });
+    quality_flags.sort_unstable();
+    quality_flags.dedup();
+    let section_path_confidence = blocks
+        .iter()
+        .map(|block| {
+            if block.section_path.is_empty() {
+                0.0
+            } else {
+                block.section_path_confidence
+            }
+        })
+        .fold(1.0_f64, f64::min);
     let block_type = blocks
         .iter()
         .find(|block| block.block_type == "heading")
@@ -269,21 +759,112 @@ fn push_chunk(
                 .map(|block| block.block_type.as_str())
                 .unwrap_or("text")
         });
+    let section_path = blocks
+        .iter()
+        .find_map(|block| (!block.section_path.is_empty()).then_some(block.section_path.clone()));
+    let section_id = blocks.iter().find_map(|block| block.section_id.clone());
+    let languages = blocks
+        .iter()
+        .filter_map(|block| block.language.as_deref())
+        .collect::<std::collections::HashSet<_>>();
+    let language = if languages.len() > 1 {
+        "mixed"
+    } else {
+        languages.iter().next().copied().unwrap_or("unknown")
+    };
+    let ocr_quality = if blocks.iter().any(|block| {
+        block
+            .ocr_confidence
+            .is_some_and(|confidence| confidence < 0.55)
+    }) {
+        "degraded"
+    } else if blocks.iter().any(|block| block.ocr_confidence.is_some()) {
+        "good"
+    } else {
+        "native_or_unknown"
+    };
+    let formula_blocks = blocks
+        .iter()
+        .filter(|block| matches!(block.block_type.as_str(), "formula" | "matrix"))
+        .collect::<Vec<_>>();
+    let formula_count = formula_blocks.len();
+    let contains_inline_formula = formula_blocks
+        .iter()
+        .any(|block| block.formula_display.as_deref() == Some("inline"));
+    let contains_display_formula = formula_blocks
+        .iter()
+        .any(|block| block.formula_display.as_deref() != Some("inline"));
+    let contains_matrix = blocks.iter().any(|block| block.block_type == "matrix");
+    let has_structured_quality = formula_blocks
+        .iter()
+        .any(|block| block.formula_quality.is_some());
+    let math_quality = if formula_blocks
+        .iter()
+        .any(|block| block.formula_quality.as_deref() == Some("bad"))
+    {
+        "bad"
+    } else if formula_blocks
+        .iter()
+        .any(|block| block.formula_quality.as_deref() == Some("review"))
+    {
+        "review"
+    } else if formula_blocks.is_empty() {
+        "none"
+    } else if !has_structured_quality {
+        formula_blocks
+            .iter()
+            .filter_map(|block| block.formula_confidence)
+            .reduce(f64::min)
+            .map(crate::document_math::math_quality)
+            .unwrap_or("review")
+    } else {
+        "good"
+    };
+    let image_blocks = blocks
+        .iter()
+        .filter(|block| matches!(block.block_type.as_str(), "image" | "figure"))
+        .collect::<Vec<_>>();
+    let image_types = image_blocks
+        .iter()
+        .filter_map(|block| block.image_type.clone())
+        .collect::<std::collections::HashSet<_>>();
     chunks.push(json!({
         "chunk_id": format!("{document_id}-c{chunk_index}"),
         "document_id": document_id,
-        "parent_id": Value::Null,
+        "parent_id": blocks.iter().find_map(|block| block.parent_id.clone()),
+        "section_id": section_id,
         "chunk_index": *chunk_index,
         "title": blocks.iter().find(|block| block.block_type == "heading").map(|block| block.content.clone()),
+        "section_path": section_path,
+        "section_path_confidence": section_path_confidence,
         "content": content,
         "page_start": page_start,
         "page_end": page_end,
         "source_file": source_file,
         "source_path": source_path,
+        "language": language,
+        "ocr_quality": ocr_quality,
         "block_ids": block_ids,
-        "token_count": estimate_tokens(&content),
+        "token_count": token_count,
         "character_count": content.chars().count(),
         "type": block_type,
+        "quality_flags": quality_flags,
+        "ragEligible": rag_eligible,
+        "contains_formula": formula_count > 0,
+        "contains_inline_formula": contains_inline_formula,
+        "contains_display_formula": contains_display_formula,
+        "contains_matrix": contains_matrix,
+        "formula_count": formula_count,
+        "math_quality": math_quality,
+        "layout_quality": if section_path_confidence >= 0.8 { "good" } else { "review" },
+        "contains_table": blocks.iter().any(|block| block.block_type == "table"),
+        "contains_image": !image_blocks.is_empty(),
+        "image_count": image_blocks.len(),
+        "image_types": image_types,
+        "dehyphenation_count": blocks.iter().map(|block| block.dehyphenation_count).sum::<usize>(),
+        "header_removed": true,
+        "footer_removed": true,
+        "page_number_removed": true,
         "isSmall": is_small,
     }));
     *chunk_index += 1;
@@ -310,6 +891,19 @@ fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4).max(1)
 }
 
+fn heading_level(text: &str) -> u8 {
+    let trimmed = text.trim();
+    let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    if (1..=6).contains(&hashes) {
+        return hashes as u8;
+    }
+    if trimmed.to_ascii_lowercase().starts_with("chapter ") || trimmed.starts_with('第') {
+        1
+    } else {
+        2
+    }
+}
+
 fn is_theorem_heading(block: &BlockInput) -> bool {
     block.block_type == "heading"
         && ["定理", "引理", "命题", "lemma", "theorem", "proposition"]
@@ -330,6 +924,8 @@ impl Strategy {
             Self::Structure => "structure",
             Self::Semantic => "semantic",
             Self::Hybrid => "hybrid",
+            Self::Pages => "pages",
+            Self::Chapters => "chapters",
         }
     }
 }
@@ -357,6 +953,7 @@ mod tests {
         assert_eq!(output["count"], 1);
         assert_eq!(output["chunks"][0]["title"], "第一章");
         assert_eq!(output["chunks"][0]["block_ids"][0], "b1");
+        assert_eq!(output["chunks"][0]["parent_id"], "b1");
     }
 
     #[test]
@@ -412,5 +1009,111 @@ mod tests {
         let content = chunks[0]["content"].as_str().unwrap();
         assert!(content.contains("定理 1"));
         assert!(content.contains("证明"));
+    }
+
+    #[test]
+    fn hybrid_without_headings_uses_page_fallback() {
+        let pages = (1..=10)
+            .map(|page| {
+                json!({
+                    "number": page,
+                    "blocks": [{
+                        "id": format!("p{page}"),
+                        "type": "paragraph",
+                        "content": format!("Page {page} body text with enough context for retrieval.")
+                    }]
+                })
+            })
+            .collect::<Vec<_>>();
+        let output = chunk_document(
+            &json!({ "id": "scan", "source": { "path": "scan.pdf" }, "pages": pages }),
+            Some(&json!({ "strategy": "hybrid", "targetTokens": 400, "maxTokens": 800 })),
+        )
+        .unwrap();
+        assert!(output["count"].as_u64().unwrap() >= 4);
+    }
+
+    #[test]
+    fn rejected_document_quality_disables_rag_chunks() {
+        let mut document = document();
+        document["metadata"] = json!({
+            "quality": {
+                "passed": false,
+                "ragQuality": "rejected",
+                "qualityFlags": ["suspected_ocr_gibberish"]
+            }
+        });
+        let output = chunk_document(&document, None).unwrap();
+        assert_eq!(output["chunks"][0]["ragEligible"], false);
+        assert_eq!(output["chunks"][0]["ragQuality"], "rejected");
+    }
+
+    #[test]
+    fn bad_formula_structure_disables_affected_rag_chunk() {
+        let document = json!({
+            "id":"bad-math",
+            "source":{"path":"math.pdf"},
+            "pages":[{"number":1,"blocks":[{
+                "id":"f1",
+                "type":"formula",
+                "content":")-4(e",
+                "formulaQuality":{"level":"bad"},
+                "atomicBlock":true
+            }]}]
+        });
+        let output = chunk_document(&document, None).unwrap();
+        assert_eq!(output["chunks"][0]["ragEligible"], false);
+        assert_eq!(output["chunks"][0]["math_quality"], "bad");
+        assert!(output["chunks"][0]["quality_flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|flag| flag == "formula_structure_uncertain"));
+    }
+
+    #[test]
+    fn math_and_image_metadata_comes_from_structured_blocks() {
+        let document = json!({
+            "id": "structured",
+            "source": { "path": "book.pdf" },
+            "pages": [{ "number": 4, "blocks": [
+                {"id":"p","type":"paragraph","content":"Body", "dehyphenationCount":2},
+                {"id":"f","type":"formula","content":"A^{T}A=I","formulaConfidence":0.88,"displayOrInline":"display","atomicBlock":true},
+                {"id":"m","type":"matrix","content":"\\begin{bmatrix}1&0\\\\0&1\\end{bmatrix}","formulaConfidence":0.94,"displayOrInline":"display","atomicBlock":true},
+                {"id":"i","type":"image","content":"Figure 1","imageType":"diagram","atomicBlock":true}
+            ]}]
+        });
+        let output = chunk_document(&document, None).unwrap();
+        let chunk = &output["chunks"][0];
+        assert_eq!(chunk["contains_formula"], true);
+        assert_eq!(chunk["contains_display_formula"], true);
+        assert_eq!(chunk["contains_matrix"], true);
+        assert_eq!(chunk["formula_count"], 2);
+        assert_eq!(chunk["contains_image"], true);
+        assert_eq!(chunk["image_count"], 1);
+        assert_eq!(chunk["dehyphenation_count"], 2);
+        assert_eq!(chunk["math_quality"], "review");
+    }
+
+    #[test]
+    fn oversized_atomic_matrix_is_not_split() {
+        let content = "x".repeat(1000);
+        let document = json!({
+            "id":"atomic",
+            "source":{"path":"book.pdf"},
+            "pages":[{"number":1,"blocks":[
+                {"id":"m","type":"matrix","content":content,"atomicBlock":true}
+            ]}]
+        });
+        let output = chunk_document(
+            &document,
+            Some(&json!({"targetTokens":8,"maxTokens":16,"overlap":2})),
+        )
+        .unwrap();
+        assert_eq!(output["count"], 1);
+        assert_eq!(
+            output["chunks"][0]["block_ids"].as_array().unwrap().len(),
+            1
+        );
     }
 }

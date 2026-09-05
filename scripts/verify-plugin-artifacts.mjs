@@ -54,6 +54,16 @@ for (const plugin of catalog) {
     .filter((entry) => !entry.isDirectory)
     .map((entry) => entry.entryName)
     .sort()
+
+  const unsafeEntry = zip.getEntries().find((entry) => {
+    const normalized = entry.entryName.replaceAll('\\', '/')
+    return normalized.split('/').includes('node_modules') || normalized.split('/').includes('.pnpm')
+  })
+  if (unsafeEntry) {
+    throw new Error(
+      `${plugin.id}: artifact must not contain development dependency tree ${unsafeEntry.entryName}`
+    )
+  }
   const expectedEntries = [...plugin.runtimeFiles].sort()
 
   if (JSON.stringify(actualEntries) !== JSON.stringify(expectedEntries)) {
@@ -73,6 +83,10 @@ for (const plugin of catalog) {
   const digest = createHash('sha256').update(readFileSync(artifactPath)).digest('hex')
   expectedPlugins.push({
     id: plugin.id,
+    displayName: manifest.displayName,
+    description: manifest.description ?? '',
+    publisher: manifest.author || 'CrucibleBox',
+    ...(manifest.icon ? { icon: manifest.icon } : {}),
     version: manifest.version,
     artifact: `${plugin.id}-${manifest.version}.zip`,
     sha256: digest,
@@ -81,6 +95,7 @@ for (const plugin of catalog) {
     backend: manifest.backend !== false,
     backendApiVersion: manifest.backend === false ? null : (manifest.backendApiVersion ?? 1),
     rendererApiVersion: manifest.rendererApiVersion ?? 1,
+    ...(manifest.minHostVersion ? { minHostVersion: manifest.minHostVersion } : {}),
     files: expectedEntries.map((runtimeFile) => {
       const content = readFileSync(resolve(pluginDirectory, runtimeFile))
       return { path: runtimeFile, sha256: sha256(content), size: content.byteLength }

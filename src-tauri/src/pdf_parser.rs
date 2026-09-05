@@ -13,8 +13,15 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const MAX_PDF_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_PDF_PAGES: usize = 2000;
 const MAX_OBJECTS: usize = 100_000;
-const PDF_RENDER_WIDTH: i32 = 1800;
+/// OCR rendering target.  A 240 DPI page keeps small mathematical glyphs
+/// legible while the caps prevent a very large page from exhausting memory.
+pub const PDF_RENDER_DPI: f32 = 240.0;
+const PDF_RENDER_MIN_WIDTH: f32 = 1400.0;
+const PDF_RENDER_MAX_WIDTH: f32 = 2800.0;
+const PDF_RENDER_MIN_HEIGHT: f32 = 1800.0;
+const PDF_RENDER_MAX_HEIGHT: i32 = 3800;
 
 #[derive(Debug)]
 struct PdfObject {
@@ -42,6 +49,177 @@ pub fn parse_file(path: &str) -> Result<Value, String> {
     parse_bytes(path, &bytes)
 }
 
+/// Split a PDF into real, independently readable PDF files. This is kept
+/// separate from the text chunker: callers asking for PDF splitting must get
+/// PDF artifacts, not a JSON RAG manifest.
+pub fn split_pdf_file(
+    path: &str,
+    output_directory: &Path,
+    pages_per_file: usize,
+) -> Result<Value, String> {
+    if !(1..=MAX_PDF_PAGES).contains(&pages_per_file) {
+        return Err(format!(
+            "每个 PDF 文件的页数必须在 1..={MAX_PDF_PAGES} 之间"
+        ));
+    }
+    let pdfium = bind_pdfium()?;
+    let source = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|error| format!("加载 PDF 失败: {error}"))?;
+    let page_count = source.pages().len() as usize;
+    if page_count == 0 {
+        return Err("PDF 不包含可拆分的页面".into());
+    }
+    if page_count > MAX_PDF_PAGES {
+        return Err(format!("PDF 页数超过 {MAX_PDF_PAGES} 页限制"));
+    }
+    std::fs::create_dir_all(output_directory)
+        .map_err(|error| format!("创建 PDF 拆分输出目录失败: {error}"))?;
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document")
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    let stem = if stem.trim().is_empty() {
+        "document"
+    } else {
+        stem.trim()
+    };
+    let mut files = Vec::new();
+    for start in (0..page_count).step_by(pages_per_file) {
+        let end = (start + pages_per_file).min(page_count) - 1;
+        let part_number = files.len() + 1;
+        let destination =
+            output_directory.join(format!("{stem}_{:03}-{:03}页.pdf", start + 1, end + 1));
+        let temporary = destination.with_extension(format!("pdf.{}.tmp", std::process::id()));
+        if temporary.exists() {
+            std::fs::remove_file(&temporary)
+                .map_err(|error| format!("清理 PDF 临时文件失败: {error}"))?;
+        }
+        let mut part = pdfium
+            .create_new_pdf()
+            .map_err(|error| format!("创建拆分 PDF 失败: {error}"))?;
+        part.pages_mut()
+            .copy_page_range_from_document(&source, (start as i32)..=(end as i32), 0)
+            .map_err(|error| format!("复制 PDF 页面 {}-{} 失败: {error}", start + 1, end + 1))?;
+        part.save_to_file(&temporary)
+            .map_err(|error| format!("写入拆分 PDF 失败: {error}"))?;
+        if destination.exists() {
+            std::fs::remove_file(&destination)
+                .map_err(|error| format!("替换已有拆分 PDF 失败: {error}"))?;
+        }
+        std::fs::rename(&temporary, &destination)
+            .map_err(|error| format!("提交拆分 PDF 失败: {error}"))?;
+        files.push(json!({
+            "index": part_number,
+            "path": destination.to_string_lossy(),
+            "startPage": start + 1,
+            "endPage": end + 1,
+            "pageCount": end - start + 1
+        }));
+    }
+    Ok(json!({
+        "sourcePath": path,
+        "outputDirectory": output_directory.to_string_lossy(),
+        "pageCount": page_count,
+        "pagesPerFile": pages_per_file,
+        "fileCount": files.len(),
+        "files": files
+    }))
+}
+
+/// Split a PDF using explicit inclusive page ranges.  This is the physical
+/// PDF splitter counterpart to text Chunk splitting: every returned artifact
+/// is a standalone, readable PDF file.
+pub fn split_pdf_file_with_ranges(
+    path: &str,
+    output_directory: &Path,
+    ranges: &[(usize, usize)],
+) -> Result<Value, String> {
+    if ranges.is_empty() {
+        return Err("至少需要一个 PDF 页码范围".into());
+    }
+    let pdfium = bind_pdfium()?;
+    let source = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|error| format!("加载 PDF 失败: {error}"))?;
+    let page_count = source.pages().len() as usize;
+    if page_count == 0 {
+        return Err("PDF 不包含可拆分的页面".into());
+    }
+    if page_count > MAX_PDF_PAGES {
+        return Err(format!("PDF 页数超过 {MAX_PDF_PAGES} 页限制"));
+    }
+    for (start, end) in ranges {
+        if *start == 0 || *end < *start || *end > page_count {
+            return Err(format!(
+                "页码范围无效: {start}-{end}（PDF 共 {page_count} 页）"
+            ));
+        }
+    }
+    std::fs::create_dir_all(output_directory)
+        .map_err(|error| format!("创建 PDF 拆分输出目录失败: {error}"))?;
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("document")
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    let stem = if stem.trim().is_empty() {
+        "document"
+    } else {
+        stem.trim()
+    };
+    let mut files = Vec::with_capacity(ranges.len());
+    for (index, (start, end)) in ranges.iter().copied().enumerate() {
+        let destination = output_directory.join(format!("{stem}_{:03}-{:03}页.pdf", start, end));
+        let temporary = destination.with_extension(format!("pdf.{}.tmp", std::process::id()));
+        if temporary.exists() {
+            std::fs::remove_file(&temporary)
+                .map_err(|error| format!("清理 PDF 临时文件失败: {error}"))?;
+        }
+        let mut part = pdfium
+            .create_new_pdf()
+            .map_err(|error| format!("创建拆分 PDF 失败: {error}"))?;
+        part.pages_mut()
+            .copy_page_range_from_document(&source, ((start - 1) as i32)..=(end - 1) as i32, 0)
+            .map_err(|error| format!("复制 PDF 页面 {start}-{end} 失败: {error}"))?;
+        part.save_to_file(&temporary)
+            .map_err(|error| format!("写入拆分 PDF 失败: {error}"))?;
+        if destination.exists() {
+            std::fs::remove_file(&destination)
+                .map_err(|error| format!("替换已有拆分 PDF 失败: {error}"))?;
+        }
+        std::fs::rename(&temporary, &destination)
+            .map_err(|error| format!("提交拆分 PDF 失败: {error}"))?;
+        files.push(json!({
+            "index": index + 1,
+            "path": destination.to_string_lossy(),
+            "startPage": start,
+            "endPage": end,
+            "pageCount": end - start + 1
+        }));
+    }
+    Ok(json!({
+        "sourcePath": path,
+        "outputDirectory": output_directory.to_string_lossy(),
+        "pageCount": page_count,
+        "fileCount": files.len(),
+        "files": files
+    }))
+}
+
 /// Render one PDF page to a PNG for the OCR worker.
 ///
 /// The application ships `pdfium.dll` as a Tauri resource. Development
@@ -64,9 +242,15 @@ pub fn render_page_to_png(
         .pages()
         .get((page_number - 1) as i32)
         .map_err(|error| format!("读取 PDF 第 {page_number} 页失败: {error}"))?;
+    let target_width = (page.width().value * PDF_RENDER_DPI / 72.0)
+        .clamp(PDF_RENDER_MIN_WIDTH, PDF_RENDER_MAX_WIDTH)
+        .round() as i32;
+    let target_height = (page.height().value * PDF_RENDER_DPI / 72.0)
+        .clamp(PDF_RENDER_MIN_HEIGHT, PDF_RENDER_MAX_HEIGHT as f32)
+        .round() as i32;
     let config = pdfium_bundled::pdfium_render::prelude::PdfRenderConfig::new()
-        .set_target_width(PDF_RENDER_WIDTH)
-        .set_maximum_height(2400);
+        .set_target_width(target_width)
+        .set_maximum_height(target_height);
     let image = page
         .render_with_config(&config)
         .map_err(|error| format!("渲染 PDF 第 {page_number} 页失败: {error}"))?
@@ -204,6 +388,7 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         .filter(|object| is_page_dictionary(&object.dictionary))
         .collect::<Vec<_>>();
     page_objects.sort_by_key(|object| object.id);
+    let page_count = page_tree_count_hint(bytes).or_else(|| pdfium_page_count(path));
 
     // Some generated PDFs omit a conventional page dictionary while still
     // containing `/Type /Page` in raw bytes. Prefer PDFium's page tree for
@@ -211,7 +396,27 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
     // expand, and keep a clear error only when both parsers reject the file.
     if page_objects.is_empty() {
         let fallback_count = count_page_markers(bytes).max(1);
-        if let Some(page_count) = pdfium_page_count(path) {
+        if fallback_count > MAX_PDF_PAGES {
+            return Err(format!(
+                "PDF 页数超过上限（最多 {} 页，检测到 {} 页）",
+                MAX_PDF_PAGES, fallback_count
+            ));
+        }
+        if let Some(page_count) = page_count {
+            if page_count > MAX_PDF_PAGES {
+                return Err(format!(
+                    "PDF 页数超过上限（最多 {} 页，检测到 {} 页）",
+                    MAX_PDF_PAGES, page_count
+                ));
+            }
+            // Object/xref streams are common in PDFs produced by modern
+            // toolchains.  PDFium can still expose their text layer even
+            // when the lightweight parser cannot see a conventional page
+            // dictionary.  Prefer that native text over sending every page
+            // through OCR (which was the source of the v4 garbage output).
+            if let Some(document) = pdfium_text_document(path, bytes, page_count) {
+                return Ok(document);
+            }
             return Ok(fallback_document(
                 path,
                 bytes,
@@ -222,6 +427,27 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         return Err(format!(
             "PDF page tree is unsupported (detected {fallback_count} page marker(s))"
         ));
+    }
+
+    if page_objects.len() > MAX_PDF_PAGES {
+        return Err(format!(
+            "PDF 页数超过上限（最多 {} 页，检测到 {} 页）",
+            MAX_PDF_PAGES,
+            page_objects.len()
+        ));
+    }
+
+    // Prefer PDFium's real text layer whenever it can open the document. It
+    // preserves segment bounds and avoids the lightweight object parser
+    // concatenating glyphs, running headers and footer text into false
+    // paragraphs. The object parser remains the deterministic fallback for
+    // PDFs PDFium cannot open or expose text for.
+    if let Some(page_count) = page_count {
+        if page_count <= MAX_PDF_PAGES {
+            if let Some(document) = pdfium_text_document(path, bytes, page_count) {
+                return Ok(document);
+            }
+        }
     }
 
     let mut pages = Vec::with_capacity(page_objects.len());
@@ -247,10 +473,21 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
                 }
                 let id = format!("p{page_number}-b{}", block_index + 1);
                 reading_order.push(id.clone());
+                let normalized = crate::document_text::normalize_text(content).0;
+                let block_type = if content.contains('|') {
+                    "table"
+                } else if looks_like_formula(content) {
+                    "formula"
+                } else {
+                    "text"
+                };
                 blocks.push(json!({
                     "id": id,
-                    "type": "text",
-                    "content": content,
+                    "type": block_type,
+                    "content": normalized,
+                    "rawText": content,
+                    "source": "native/pdf",
+                    "region": if block_type == "formula" { "formula" } else if block_type == "table" { "table" } else { "text" },
                     "language": detect_language(content),
                 }));
             }
@@ -258,7 +495,9 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         // Table/formula classification is deliberately conservative. A later
         // layout parser may enrich these blocks without changing this schema.
         has_tables |= page_text.contains('|');
-        has_formulas |= page_text.contains("\\(") || page_text.contains("\\[");
+        has_formulas |= page_text.contains("\\(")
+            || page_text.contains("\\[")
+            || page_text.lines().any(looks_like_formula);
         pages.push(json!({
             "number": page_number,
             "width": dimensions.0,
@@ -315,6 +554,612 @@ fn parse_bytes(path: &str, bytes: &[u8]) -> Result<Value, String> {
         "warnings": warnings,
         "document": document
     }))
+}
+
+/// Extract native text from a PDFium page tree that is represented by object
+/// streams/xref streams.  Each PDFium text segment becomes a normal text
+/// block with its page-space bounding box, preserving enough layout metadata
+/// for the converter and heading post-processor while avoiding OCR entirely.
+fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<Value> {
+    let pdfium = bind_pdfium().ok()?;
+    let source = pdfium.load_pdf_from_file(path, None).ok()?;
+    let mut pages = Vec::with_capacity(page_count);
+    let mut reading_order = Vec::new();
+    let mut has_text_layer = false;
+    let mut has_formulas = false;
+    for page_index in 0..page_count {
+        let page = match source.pages().get(page_index as i32) {
+            Ok(page) => page,
+            Err(_) => {
+                // A damaged page object must not truncate the document. Keep
+                // the authoritative page count and let the OCR stage attempt
+                // rendering; this also preserves stable page/chunk metadata.
+                pages.push(json!({
+                    "number": page_index + 1,
+                    "width": 612.0,
+                    "height": 792.0,
+                    "blocks": []
+                }));
+                continue;
+            }
+        };
+        let width = page.width().value;
+        let height = page.height().value;
+        let mut blocks = Vec::new();
+        if let Ok(text) = page.text() {
+            for (segment_index, segment) in text.segments().iter().enumerate() {
+                let raw_content = segment.text().trim().to_string();
+                if raw_content.is_empty() {
+                    continue;
+                }
+                let content = crate::document_text::normalize_text(&raw_content).0;
+                has_text_layer = true;
+                has_formulas |= content.contains("\\(")
+                    || content.contains("\\[")
+                    || looks_like_formula(&content);
+                let bounds = segment.bounds();
+                let id = format!("p{}-b{}", page_index + 1, segment_index + 1);
+                reading_order.push(id.clone());
+                let block_type = native_block_type(&content);
+                let mut block = json!({
+                    "id": id,
+                    "type": block_type,
+                    "content": content,
+                    "rawText": raw_content,
+                    "source": "native/pdf",
+                    "region": if block_type == "formula" { "formula" } else if block_type == "heading" { "heading" } else { "text" },
+                    "language": detect_language(&content),
+                    "bbox": [bounds.left().value, bounds.top().value, bounds.right().value, bounds.bottom().value],
+                    "confidence": 1.0
+                });
+                // Pdfium segments can overlap at font changes and expose the
+                // same character in two neighbouring segment strings. Keep
+                // character identity and geometry for short math fragments so
+                // reconstruction can deduplicate by source index instead of
+                // deleting repeated text heuristically. Limiting this to
+                // fragment-sized spans keeps large-book IR bounded.
+                if content.chars().count() <= 4 {
+                    if let Ok(chars) = segment.chars() {
+                        let glyphs = chars
+                            .iter()
+                            .filter_map(|glyph| {
+                                let character = glyph.unicode_char()?;
+                                if character.is_whitespace() {
+                                    return None;
+                                }
+                                let normalized = crate::document_text::normalize_text(
+                                    &character.to_string(),
+                                )
+                                .0;
+                                if normalized.is_empty() {
+                                    return None;
+                                }
+                                let bounds = glyph.tight_bounds().ok()?;
+                                Some(json!({
+                                    "pageCharIndex": glyph.index(),
+                                    "originalText": normalized,
+                                    "rawCodepoint": character as u32,
+                                    "bbox": [bounds.left().value, bounds.top().value, bounds.right().value, bounds.bottom().value],
+                                    "baseline": glyph.origin_y().ok().map(|value| value.value),
+                                    "fontName": glyph.font_name(),
+                                    "fontSize": glyph.scaled_font_size().value,
+                                    "coordinateSystem": "pdf",
+                                }))
+                            })
+                            .collect::<Vec<_>>();
+                        if !glyphs.is_empty() {
+                            block["nativeGlyphs"] = Value::Array(glyphs);
+                        }
+                    }
+                }
+                blocks.push(block);
+            }
+        }
+        coalesce_native_formula_fragments(&mut blocks);
+        coalesce_native_multiline_math(&mut blocks);
+        has_formulas |= blocks
+            .iter()
+            .any(|block| block["type"].as_str() == Some("formula"));
+        pages.push(json!({
+            "number": page_index + 1,
+            "width": width,
+            "height": height,
+            "blocks": blocks
+        }));
+    }
+    let source_hash = {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    };
+    Some(json!({
+        "route": if has_text_layer { "native" } else { "ocr" },
+        "requiresOcr": !has_text_layer,
+        "ocrPageNumbers": if has_text_layer { json!([]) } else { json!((1..=page_count).collect::<Vec<_>>()) },
+        "warnings": if has_text_layer { json!([]) } else { json!([{ "code": "pdfium-text-empty", "message": "PDFium 未发现原生文字层，页面将交给 OCR。" }]) },
+        "document": {
+            "id": format!("pdf-{source_hash}"),
+            "source": {
+                "path": path,
+                "mime": "application/pdf",
+                "size": bytes.len(),
+                "hash": source_hash,
+                "engine": "pdfium-text",
+                "engineVersion": pdfium_bundled::PDFIUM_VERSION
+            },
+            "metadata": {
+                "pageCount": page_count,
+                "hasTextLayer": has_text_layer,
+                "isScanned": !has_text_layer,
+                "hasTables": false,
+                "hasFormulas": has_formulas,
+                "hasImages": bytes.windows(15).any(|window| window == b"/Subtype /Image")
+                    || bytes.windows(14).any(|window| window == b"/Subtype/Image")
+            },
+            "pages": pages,
+            "structure": { "outline": [], "readingOrder": reading_order }
+        }
+    }))
+}
+
+/// Reassemble PDFium font/style segments that belong to one visual text line.
+/// Formula blocks remain atomic so downstream exporters can preserve OMML and
+/// Markdown math instead of flattening them back into prose.
+pub(crate) fn coalesce_native_text_fragments(blocks: &mut Vec<Value>) {
+    let mut index = 0usize;
+    while index + 1 < blocks.len() {
+        if !matches!(blocks[index]["type"].as_str(), Some("text" | "paragraph"))
+            || !matches!(
+                blocks[index + 1]["type"].as_str(),
+                Some("text" | "paragraph")
+            )
+        {
+            index += 1;
+            continue;
+        }
+        let (Some(left_bbox), Some(right_bbox)) =
+            (block_bbox(&blocks[index]), block_bbox(&blocks[index + 1]))
+        else {
+            index += 1;
+            continue;
+        };
+        if !same_text_line(&blocks[index], &blocks[index + 1]) {
+            index += 1;
+            continue;
+        }
+        let left_len = blocks[index]["content"]
+            .as_str()
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        let right_len = blocks[index + 1]["content"]
+            .as_str()
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        // The high-value failure mode is a short font/math run splitting a
+        // logical line. Joining two already substantial runs here changes TOC
+        // and heading evidence before structure recovery, so leave those for
+        // the paragraph/reading-order stage.
+        let continues_short_run = blocks[index]["containsMergedShortRun"] == true;
+        if left_len > 8 && right_len > 8 && !continues_short_run {
+            index += 1;
+            continue;
+        }
+        let height = (left_bbox[3] - left_bbox[1])
+            .abs()
+            .max((right_bbox[3] - right_bbox[1]).abs())
+            .max(1.0);
+        let gap = right_bbox[0] - left_bbox[2];
+        if gap < -height || gap > height * 4.0 {
+            index += 1;
+            continue;
+        }
+        let left_text = blocks[index]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_end();
+        let right_text = blocks[index + 1]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim();
+        let duplicate = deduplicated_formula_fragments(&blocks[index..=index + 1]).len() == 1
+            || (right_len <= 8 && gap <= height * 0.12 && left_text.ends_with(right_text));
+        if !duplicate {
+            let separator = if gap <= height * 0.18
+                || right_text.starts_with(|character: char| ",.;:!?)]}".contains(character))
+                || left_text.ends_with(|character: char| "([{/+-−=".contains(character))
+            {
+                ""
+            } else {
+                " "
+            };
+            blocks[index]["content"] = json!(format!("{left_text}{separator}{right_text}"));
+            blocks[index]["rawText"] = blocks[index]["content"].clone();
+        }
+        blocks[index]["bbox"] = json!([
+            left_bbox[0].min(right_bbox[0]),
+            left_bbox[1].min(right_bbox[1]),
+            left_bbox[2].max(right_bbox[2]),
+            left_bbox[3].max(right_bbox[3])
+        ]);
+        blocks[index]["containsMergedShortRun"] =
+            json!(continues_short_run || left_len <= 8 || right_len <= 8);
+        blocks.remove(index + 1);
+    }
+    for block in blocks {
+        if let Some(value) = block.as_object_mut() {
+            value.remove("containsMergedShortRun");
+        }
+    }
+}
+
+fn native_block_type(text: &str) -> &'static str {
+    let value = text.trim();
+    if value.is_empty()
+        || value
+            .chars()
+            .all(|character| character.is_ascii_digit() || " .-()[]".contains(character))
+    {
+        return "text";
+    }
+    if looks_like_formula(value) {
+        return "formula";
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower == "contents"
+        || lower == "preface"
+        || lower.starts_with("chapter ")
+        || lower.starts_with("appendix ")
+        || value.starts_with('第')
+        || (value.split_whitespace().next().is_some_and(|token| {
+            token
+                .chars()
+                .all(|character| character.is_ascii_digit() || character == '.')
+        }) && value.chars().any(|character| character.is_alphabetic()))
+    {
+        "heading"
+    } else {
+        "text"
+    }
+}
+
+fn looks_like_formula(text: &str) -> bool {
+    crate::document_layout::is_strict_formula_candidate(text)
+}
+
+/// PDFium may expose one mathematical line as many short text objects. Join
+/// only adjacent glyph-like objects on the same visual line, and only commit
+/// the merge when the complete line passes the strict formula policy. This
+/// avoids treating an isolated `A` or `T` as a formula while recovering the
+/// common `A T A x = A T b` shape into one IR block.
+fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
+    let mut index = 0usize;
+    while index < blocks.len() {
+        if !is_formula_fragment(&blocks[index]) {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        while end < blocks.len()
+            && is_formula_fragment(&blocks[end])
+            && same_formula_line(&blocks[end - 1], &blocks[end])
+        {
+            end += 1;
+        }
+        if end.saturating_sub(index) < 3 {
+            index += 1;
+            continue;
+        }
+        let fragments = deduplicated_formula_fragments(&blocks[index..end]);
+        let original_tokens = formula_original_tokens(&fragments);
+        let candidate = if original_tokens.is_empty() {
+            fragments
+                .iter()
+                .filter_map(|block| block["content"].as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            original_tokens
+                .iter()
+                .filter_map(|token| token["originalText"].as_str())
+                .collect::<String>()
+        };
+        if !looks_like_formula(&candidate) {
+            index += 1;
+            continue;
+        }
+        let mut merged = blocks[index].clone();
+        merged["type"] = json!("formula");
+        merged["region"] = json!("formula");
+        merged["source"] = json!("native/pdf/formula");
+        merged["content"] = json!(candidate.clone());
+        merged["rawText"] = json!(candidate);
+        let inline = (index > 0 && same_text_line(&blocks[index - 1], &blocks[index]))
+            || (end < blocks.len() && same_text_line(&blocks[end - 1], &blocks[end]));
+        merged["displayOrInline"] = json!(if inline { "inline" } else { "display" });
+        merged["originalTokens"] =
+            if original_tokens.is_empty() {
+                Value::Array(fragments
+                .iter()
+                .map(|block| {
+                    let bbox = block.get("bbox").cloned().unwrap_or(Value::Null);
+                    let values = bbox.as_array();
+                    let center_x = values.and_then(|items| {
+                        Some((items.first()?.as_f64()? + items.get(2)?.as_f64()?) / 2.0)
+                    });
+                    let center_y = values.and_then(|items| {
+                        Some((items.get(1)?.as_f64()? + items.get(3)?.as_f64()?) / 2.0)
+                    });
+                    let height = values.and_then(|items| {
+                        Some((items.get(3)?.as_f64()? - items.get(1)?.as_f64()?).abs())
+                    });
+                    let baseline = values
+                        .and_then(|items| items.get(3))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    json!({
+                        "blockId": block["id"],
+                        "originalText": block["content"],
+                        "bbox": bbox,
+                        "centerX": center_x,
+                        "centerY": center_y,
+                        "baseline": baseline,
+                        "estimatedFontHeight": height,
+                        "confidence": block.get("confidence").cloned().unwrap_or(json!(1.0)),
+                    })
+                })
+                .collect())
+            } else {
+                Value::Array(original_tokens)
+            };
+        if let Some(bbox) = merged_bbox_values(&blocks[index..end]) {
+            merged["bbox"] = json!(bbox);
+        }
+        blocks[index] = merged;
+        for remove_index in (index + 1..end).rev() {
+            blocks.remove(remove_index);
+        }
+    }
+}
+
+fn formula_original_tokens(blocks: &[&Value]) -> Vec<Value> {
+    let mut tokens = blocks
+        .iter()
+        .flat_map(|block| {
+            block["nativeGlyphs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return tokens;
+    }
+    tokens.sort_by(|left, right| {
+        left["pageCharIndex"]
+            .as_u64()
+            .cmp(&right["pageCharIndex"].as_u64())
+    });
+    tokens.dedup_by(|left, right| left["pageCharIndex"] == right["pageCharIndex"]);
+    tokens.sort_by(|left, right| {
+        let left_x = left["bbox"][0].as_f64().unwrap_or(0.0);
+        let right_x = right["bbox"][0].as_f64().unwrap_or(0.0);
+        left_x.total_cmp(&right_x).then_with(|| {
+            left["pageCharIndex"]
+                .as_u64()
+                .cmp(&right["pageCharIndex"].as_u64())
+        })
+    });
+    tokens
+}
+
+fn deduplicated_formula_fragments(blocks: &[Value]) -> Vec<&Value> {
+    let mut kept: Vec<&Value> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let duplicate_overlay = kept.iter().any(|previous| {
+            previous["content"] == block["content"]
+                && match (block_bbox(previous), block_bbox(block)) {
+                    (Some(left), Some(right)) => {
+                        let (left_x0, left_x1) = (left[0].min(left[2]), left[0].max(left[2]));
+                        let (left_y0, left_y1) = (left[1].min(left[3]), left[1].max(left[3]));
+                        let (right_x0, right_x1) = (right[0].min(right[2]), right[0].max(right[2]));
+                        let (right_y0, right_y1) = (right[1].min(right[3]), right[1].max(right[3]));
+                        let overlap_x = (left_x1.min(right_x1) - left_x0.max(right_x0)).max(0.0);
+                        let overlap_y = (left_y1.min(right_y1) - left_y0.max(right_y0)).max(0.0);
+                        let left_area =
+                            ((left[2] - left[0]).abs() * (left[3] - left[1]).abs()).max(1.0);
+                        let right_area =
+                            ((right[2] - right[0]).abs() * (right[3] - right[1]).abs()).max(1.0);
+                        let area_overlay =
+                            overlap_x * overlap_y >= left_area.min(right_area) * 0.80;
+                        // PdfPageTextSegment::text() selects every character
+                        // intersecting the segment rectangle. At font changes
+                        // (notably a smaller math glyph), adjacent segment
+                        // rectangles can therefore expose the same short text
+                        // window twice even though their full rectangles do
+                        // not overlap by 80%. Suppress that duplicate only
+                        // when geometry proves a boundary overlap and one
+                        // window is materially smaller. Equal-size repeated
+                        // matrix cells remain distinct.
+                        let left_height = (left[3] - left[1]).abs().max(1.0);
+                        let right_height = (right[3] - right[1]).abs().max(1.0);
+                        let height_ratio =
+                            left_height.min(right_height) / left_height.max(right_height);
+                        let boundary_overlap = right_x0
+                            <= left_x1 + left_height.max(right_height) * 0.05
+                            && right_x1 > left_x1
+                            && overlap_y > 0.0
+                            && height_ratio <= 0.75;
+                        area_overlay || boundary_overlap
+                    }
+                    _ => false,
+                }
+        });
+        if !duplicate_overlay {
+            kept.push(block);
+        }
+    }
+    kept
+}
+
+/// Recover vertically stacked matrix rows and aligned equation systems after
+/// horizontal glyph coalescing. This remains deliberately conservative: every
+/// row must already be a formula, geometry must overlap, and the group must
+/// carry either matrix delimiters or complete relations.
+fn coalesce_native_multiline_math(blocks: &mut Vec<Value>) {
+    let mut index = 0usize;
+    while index < blocks.len() {
+        if blocks[index]["type"] != "formula" {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        while end < blocks.len()
+            && end - index < 12
+            && blocks[end]["type"] == "formula"
+            && vertically_adjacent_math(&blocks[end - 1], &blocks[end])
+        {
+            end += 1;
+        }
+        if end - index < 2 {
+            index += 1;
+            continue;
+        }
+        let rows = blocks[index..end]
+            .iter()
+            .filter_map(|block| block["content"].as_str())
+            .collect::<Vec<_>>();
+        let has_matrix_delimiter = rows.iter().any(|row| {
+            row.chars()
+                .any(|character| "[]()".contains(character))
+        });
+        let equation_system = rows.iter().all(|row| {
+            row.find(['=', '＝']).is_some_and(|separator| {
+                let separator_len = row[separator..]
+                    .chars()
+                    .next()
+                    .map(char::len_utf8)
+                    .unwrap_or(1);
+                row[..separator].chars().any(char::is_alphanumeric)
+                    && row[separator + separator_len..]
+                        .chars()
+                        .any(char::is_alphanumeric)
+            })
+        });
+        if !has_matrix_delimiter && !equation_system {
+            index += 1;
+            continue;
+        }
+        let mut merged = blocks[index].clone();
+        let content = rows.join("\n");
+        merged["content"] = json!(content.clone());
+        merged["rawText"] = json!(content);
+        merged["displayOrInline"] = json!("display");
+        merged["atomicBlock"] = json!(true);
+        merged["originalRows"] = Value::Array(blocks[index..end].to_vec());
+        if let Some(bbox) = merged_bbox_values(&blocks[index..end]) {
+            merged["bbox"] = json!(bbox);
+        }
+        blocks[index] = merged;
+        blocks.drain(index + 1..end);
+        index += 1;
+    }
+}
+
+fn vertically_adjacent_math(upper: &Value, lower: &Value) -> bool {
+    let (Some(a), Some(b)) = (block_bbox(upper), block_bbox(lower)) else {
+        return false;
+    };
+    let (a_top, a_bottom) = (a[1].min(a[3]), a[1].max(a[3]));
+    let (b_top, b_bottom) = (b[1].min(b[3]), b[1].max(b[3]));
+    let height = (a_bottom - a_top).max(b_bottom - b_top).max(1.0);
+    let center_delta = (((a_top + a_bottom) - (b_top + b_bottom)) / 2.0).abs();
+    let overlap_x =
+        (a[2].max(a[0]).min(b[2].max(b[0])) - a[0].min(a[2]).max(b[0].min(b[2]))).max(0.0);
+    let min_width = (a[2] - a[0]).abs().min((b[2] - b[0]).abs()).max(1.0);
+    let left_aligned = (a[0].min(a[2]) - b[0].min(b[2])).abs() <= height * 1.5;
+    center_delta >= height * 0.45
+        && center_delta <= height * 3.2
+        && (overlap_x / min_width >= 0.35 || left_aligned)
+}
+
+fn is_formula_fragment(block: &Value) -> bool {
+    let text = block["content"].as_str().unwrap_or_default().trim();
+    !text.is_empty()
+        && text.chars().count() <= 4
+        && !matches!(
+            text.to_ascii_lowercase().as_str(),
+            "and"
+                | "or"
+                | "if"
+                | "the"
+                | "for"
+                | "with"
+                | "from"
+                | "then"
+                | "but"
+                | "at"
+                | "to"
+                | "by"
+                | "as"
+                | "in"
+                | "on"
+        )
+        && text.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || "αβγδεζηθλμνξπρστφχω=+-−×÷^_()[]{}".contains(character)
+        })
+        && matches!(block["type"].as_str(), Some("text" | "formula"))
+}
+
+fn same_text_line(left: &Value, right: &Value) -> bool {
+    let (Some(left), Some(right)) = (block_bbox(left), block_bbox(right)) else {
+        return false;
+    };
+    let left_y0 = left[1].min(left[3]);
+    let left_y1 = left[1].max(left[3]);
+    let right_y0 = right[1].min(right[3]);
+    let right_y1 = right[1].max(right[3]);
+    let overlap = (left_y1.min(right_y1) - left_y0.max(right_y0)).max(0.0);
+    let min_height = (left_y1 - left_y0).min(right_y1 - right_y0).max(1.0);
+    overlap / min_height >= 0.45
+}
+
+fn block_bbox(block: &Value) -> Option<[f32; 4]> {
+    let values = block.get("bbox")?.as_array()?;
+    (values.len() == 4).then_some([
+        values[0].as_f64()? as f32,
+        values[1].as_f64()? as f32,
+        values[2].as_f64()? as f32,
+        values[3].as_f64()? as f32,
+    ])
+}
+
+fn same_formula_line(left: &Value, right: &Value) -> bool {
+    let (Some(left_bbox), Some(right_bbox)) = (block_bbox(left), block_bbox(right)) else {
+        return false;
+    };
+    let left_height = (left_bbox[3] - left_bbox[1]).abs().max(1.0);
+    let right_height = (right_bbox[3] - right_bbox[1]).abs().max(1.0);
+    let left_center = (left_bbox[1] + left_bbox[3]) / 2.0;
+    let right_center = (right_bbox[1] + right_bbox[3]) / 2.0;
+    let horizontal_gap = right_bbox[0] - left_bbox[2];
+    (left_center - right_center).abs() <= left_height.max(right_height) * 1.8
+        && horizontal_gap >= -left_height
+        && horizontal_gap <= left_height.max(right_height) * 14.0
+}
+
+fn merged_bbox_values(blocks: &[Value]) -> Option<[f32; 4]> {
+    blocks.iter().filter_map(block_bbox).reduce(|left, right| {
+        [
+            left[0].min(right[0]),
+            left[1].min(right[1]),
+            left[2].max(right[2]),
+            left[3].max(right[3]),
+        ]
+    })
 }
 
 fn pdfium_page_count(path: &str) -> Option<usize> {
@@ -611,18 +1456,25 @@ fn literal_string(bytes: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
                     }
                     b'\n' => {}
                     byte if (b'0'..=b'7').contains(&byte) => {
-                        let mut value = byte - b'0';
+                        // PDF octal escapes are specified as at most three
+                        // digits, but malformed/generated files sometimes
+                        // contain a value larger than one byte. Decode in a
+                        // wider integer and clamp instead of allowing debug
+                        // builds to panic on u8 overflow.
+                        let mut value = u16::from(byte - b'0');
                         for _ in 0..2 {
                             if let Some(next) = bytes.get(cursor + 1) {
                                 if (b'0'..=b'7').contains(next) {
-                                    value = value * 8 + *next - b'0';
+                                    value = value
+                                        .saturating_mul(8)
+                                        .saturating_add(u16::from(*next - b'0'));
                                     cursor += 1;
                                 } else {
                                     break;
                                 }
                             }
                         }
-                        decoded.push(value);
+                        decoded.push(value.min(u16::from(u8::MAX)) as u8);
                     }
                     other => decoded.push(other),
                 }
@@ -804,6 +1656,45 @@ fn count_page_markers(bytes: &[u8]) -> usize {
     count
 }
 
+/// Read the total page count from the PDF page tree when available. Some
+/// scanned PDFs use compressed page objects that older PDFium builds expose
+/// incompletely; the page-tree `/Count` keeps OCR from silently truncating
+/// the document in that case.
+fn page_tree_count_hint(bytes: &[u8]) -> Option<usize> {
+    let mut cursor = 0usize;
+    let mut best: Option<usize> = None;
+    while let Some(relative) = find_token(&bytes[cursor..], b"/Type") {
+        let position = cursor + relative;
+        let value = skip_ws(bytes, position + 5);
+        if bytes.get(value..value + 6) != Some(b"/Pages") {
+            cursor = position + 5;
+            continue;
+        }
+        let search_end = (value + 4096).min(bytes.len());
+        let Some(relative_count) = find_token(&bytes[value..search_end], b"/Count") else {
+            cursor = value + 6;
+            continue;
+        };
+        let count_start = skip_ws(bytes, value + relative_count + 6);
+        let mut count_end = count_start;
+        while count_end < search_end && bytes[count_end].is_ascii_digit() {
+            count_end += 1;
+        }
+        if count_end > count_start {
+            if let Some(count) = std::str::from_utf8(&bytes[count_start..count_end])
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                if (1..=MAX_PDF_PAGES).contains(&count) {
+                    best = Some(best.map_or(count, |current| current.max(count)));
+                }
+            }
+        }
+        cursor = value + 6;
+    }
+    best
+}
+
 fn detect_language(text: &str) -> &'static str {
     if text
         .chars()
@@ -889,6 +1780,23 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_SCAN_FIXTURE_PDF"]
+    fn scan_fixture_preserves_page_tree_count() {
+        let path = std::env::var("DOCUMENT_ENGINE_SCAN_FIXTURE_PDF").unwrap();
+        let output = parse_file(&path).unwrap();
+        let page_count = output["document"]["metadata"]["pageCount"]
+            .as_u64()
+            .unwrap_or_default();
+        let page_array_count = output["document"]["pages"].as_array().map_or(0, Vec::len);
+        eprintln!(
+            "scan fixture page count: metadata={} pages={} ocrPageNumbers={}",
+            page_count, page_array_count, output["ocrPageNumbers"]
+        );
+        assert_eq!(page_count, page_array_count as u64);
+        assert_eq!(page_count, 10);
+    }
+
+    #[test]
     fn extracts_escaped_and_hex_text() {
         let stream = b"BT (A\\(B) Tj [ (C) 120 (D) ] TJ <00480069> Tj ET";
         let text = extract_text(stream);
@@ -917,6 +1825,16 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn rejects_fallback_documents_over_page_limit() {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        for _ in 0..(MAX_PDF_PAGES + 1) {
+            pdf.extend_from_slice(b"/Type /Page\n");
+        }
+        let error = parse_bytes("input.pdf", &pdf).unwrap_err();
+        assert!(error.contains("页数超过上限"));
     }
 
     #[cfg(windows)]
@@ -1009,8 +1927,218 @@ mod tests {
     }
 
     #[test]
+    fn coalesces_same_line_math_fragments_but_not_document_labels() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"text","content":"A","bbox":[10,100,18,112]}),
+            json!({"id":"t","type":"text","content":"T","bbox":[22,100,30,112]}),
+            json!({"id":"ax","type":"text","content":"A","bbox":[34,100,42,112]}),
+            json!({"id":"x","type":"text","content":"x","bbox":[46,100,54,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[60,100,68,112]}),
+            json!({"id":"b","type":"text","content":"b","bbox":[74,100,82,112]}),
+            json!({"id":"label","type":"text","content":"FIELD ARCHIVE / FOGHARBOR","bbox":[10,20,220,32]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks[0]["type"], "formula");
+        assert_eq!(blocks[0]["content"], "A T A x = b");
+        assert_eq!(blocks[1]["content"], "FIELD ARCHIVE / FOGHARBOR");
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn formula_coalescing_stops_at_prose_and_marks_mixed_line_inline() {
+        let mut blocks = vec![
+            json!({"id":"prefix","type":"text","content":"Solving","bbox":[0,100,38,112]}),
+            json!({"id":"a","type":"text","content":"A","bbox":[42,100,48,112]}),
+            json!({"id":"x","type":"text","content":"x","bbox":[49,100,55,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[57,102,63,110]}),
+            json!({"id":"b","type":"text","content":"b","bbox":[65,100,71,112]}),
+            json!({"id":"and","type":"text","content":"and","bbox":[75,100,93,112]}),
+            json!({"id":"c","type":"text","content":"c","bbox":[97,100,103,112]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks[1]["content"], "A x = b");
+        assert_eq!(blocks[1]["displayOrInline"], "inline");
+        assert_eq!(blocks[2]["content"], "and");
+    }
+
+    #[test]
+    fn coalescing_removes_only_geometrically_overlapping_duplicate_glyphs() {
+        let mut blocks = vec![
+            json!({"id":"x1","type":"text","content":"x","bbox":[10,100,18,112]}),
+            json!({"id":"x-overlay","type":"text","content":"x","bbox":[10.2,100,18.2,112]}),
+            json!({"id":"plus","type":"text","content":"+","bbox":[24,100,32,112]}),
+            json!({"id":"x2","type":"text","content":"x","bbox":[38,100,46,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[52,100,60,112]}),
+            json!({"id":"two","type":"text","content":"2","bbox":[66,100,74,112]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "x + x = 2");
+        assert_eq!(blocks[0]["originalTokens"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn coalescing_removes_smaller_duplicate_window_at_segment_boundary() {
+        let mut blocks = vec![
+            json!({"id":"lhs","type":"text","content":"A","bbox":[10,100,18,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[22,104,30,108]}),
+            json!({"id":"lambda-x","type":"text","content":"λx","bbox":[34,100,46,112]}),
+            json!({"id":"lambda-x-window","type":"text","content":"λx","bbox":[45.8,103,52,110]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "A = λx");
+        assert_eq!(blocks[0]["originalTokens"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn coalesces_native_text_style_fragments_on_the_same_line() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"text","content":"The equation 2x","bbox":[10.0,20.0,90.0,32.0]}),
+            json!({"id":"b","type":"text","content":"−","bbox":[91.0,20.0,96.0,32.0]}),
+            json!({"id":"c","type":"text","content":"y = 1 is represented","bbox":[97.0,20.0,190.0,32.0]}),
+        ];
+        coalesce_native_text_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "The equation 2x−y = 1 is represented");
+    }
+
+    #[test]
+    fn native_text_fragment_merge_preserves_distinct_columns() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"text","content":"left","bbox":[10.0,20.0,40.0,32.0]}),
+            json!({"id":"b","type":"text","content":"right","bbox":[300.0,20.0,340.0,32.0]}),
+        ];
+        coalesce_native_text_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn native_text_fragment_merge_removes_overlapping_suffix_window() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"paragraph","content":"The equation 2x","bbox":[10.0,20.0,90.0,32.0]}),
+            json!({"id":"b","type":"paragraph","content":"2x","bbox":[89.5,21.0,101.0,31.0]}),
+            json!({"id":"c","type":"paragraph","content":"− y = 1","bbox":[102.0,20.0,140.0,32.0]}),
+        ];
+        coalesce_native_text_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "The equation 2x− y = 1");
+    }
+
+    #[test]
+    fn coalesces_aligned_equations_but_not_unrelated_formula_lines() {
+        let mut equations = vec![
+            json!({"id":"r1","type":"formula","content":"x + y = 2","bbox":[20,100,100,112]}),
+            json!({"id":"r2","type":"formula","content":"x - y = 0","bbox":[20,116,100,128]}),
+        ];
+        coalesce_native_multiline_math(&mut equations);
+        assert_eq!(equations.len(), 1);
+        assert_eq!(equations[0]["content"], "x + y = 2\nx - y = 0");
+
+        let mut unrelated = vec![
+            json!({"id":"a","type":"formula","content":"x + y","bbox":[20,100,100,112]}),
+            json!({"id":"b","type":"formula","content":"a - b","bbox":[20,116,100,128]}),
+        ];
+        coalesce_native_multiline_math(&mut unrelated);
+        assert_eq!(unrelated.len(), 2);
+    }
+
+    #[test]
     fn rejects_non_pdf() {
         let path = write_pdf(b"not a pdf");
         assert!(parse_file(&path).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_FIXTURE_PDF pointing at the local large PDF"]
+    fn parses_large_fixture_without_forcing_ocr() {
+        let path = std::env::var("DOCUMENT_ENGINE_FIXTURE_PDF").unwrap();
+        let parsed = parse_file(&path).unwrap();
+        let document = parsed.get("document").unwrap();
+        // The regression fixture is intentionally supplied by the caller and
+        // has changed from the original 542-page sample to Thomas Calculus
+        // (1348 pages). Validate the bounded real page count instead of
+        // coupling the parser to one historical copy.
+        assert!(document["metadata"]["pageCount"].as_u64().unwrap_or(0) >= 500);
+        assert!(document["metadata"]["hasTextLayer"]
+            .as_bool()
+            .unwrap_or(false));
+        assert!(!parsed["requiresOcr"].as_bool().unwrap_or(true));
+        let mut normalized = document.clone();
+        let sanitization = crate::document_text::sanitize_document(&mut normalized);
+        crate::document_quality::annotate_native_text_quality(&mut normalized);
+        crate::document_structure::rebuild(&mut normalized);
+        for page in normalized["pages"].as_array_mut().into_iter().flatten() {
+            if let Some(blocks) = page["blocks"].as_array_mut() {
+                coalesce_native_text_fragments(blocks);
+            }
+        }
+        crate::document_engine_service::enrich_formula_blocks(&mut normalized);
+        let quality = crate::document_quality::report(
+            &normalized,
+            sanitization.invalid_control_chars_removed,
+        );
+        eprintln!("fixture document quality: {quality}");
+        let formula_samples = normalized["pages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|page| page["blocks"].as_array().into_iter().flatten())
+            .filter(|block| block["type"] == "formula")
+            .filter_map(|block| block["content"].as_str())
+            .take(40)
+            .collect::<Vec<_>>();
+        eprintln!("fixture formula samples: {formula_samples:?}");
+        assert_eq!(quality["invalidControlChars"], 0);
+        assert_eq!(quality["invalidXmlChars"], 0);
+        assert!(
+            quality["matrixBlockCount"].as_u64().unwrap_or(0) > 0,
+            "math textbook should recover at least one structured matrix"
+        );
+        let chunks = crate::document_chunker::chunk_document(&normalized, None).unwrap();
+        eprintln!("fixture chunk quality: {}", chunks["quality"]);
+        assert!(chunks["quality"]["passed"].as_bool().unwrap_or(false));
+        let output_root = std::env::temp_dir().join(format!(
+            "cruciblebox-math-export-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&output_root).unwrap();
+        let markdown_path = output_root.join("document.md");
+        let docx_path = output_root.join("document.docx");
+        let markdown =
+            crate::document_converter::convert_document(&normalized, "md", markdown_path.to_str())
+                .unwrap();
+        let docx =
+            crate::document_converter::convert_document(&normalized, "docx", docx_path.to_str())
+                .unwrap();
+        let markdown_text = std::fs::read_to_string(&markdown_path).unwrap();
+        assert!(markdown_text.contains("$$") || markdown_text.contains('$'));
+        assert_eq!(docx["quality"]["docxXmlParse"], "passed");
+        assert_eq!(docx["quality"]["invalidXmlChars"], 0);
+        assert!(markdown["bytes"].as_u64().unwrap_or(0) > 0);
+        assert!(docx["bytes"].as_u64().unwrap_or(0) > 0);
+        eprintln!(
+            "fixture exports: matrixBlocks={} markdownBytes={} docxBytes={} docxQuality={}",
+            quality["matrixBlockCount"], markdown["bytes"], docx["bytes"], docx["quality"]
+        );
+        if std::env::var_os("DOCUMENT_ENGINE_KEEP_OUTPUT").is_some() {
+            std::fs::write(
+                output_root.join("document.json"),
+                serde_json::to_vec_pretty(&normalized).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                output_root.join("document-chunks.json"),
+                serde_json::to_vec_pretty(&chunks).unwrap(),
+            )
+            .unwrap();
+            eprintln!("fixture output retained at {}", output_root.display());
+        } else {
+            let _ = std::fs::remove_dir_all(output_root);
+        }
     }
 }

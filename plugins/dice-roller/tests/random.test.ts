@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { randomInteger, rollDice } from '../src/random'
+import { parseDiceNotation, randomInteger, rollDice } from '../src/random'
 
 describe('dice Web Crypto mapping', () => {
   it('maps the accepted uint32 range onto exact dice boundaries', () => {
@@ -35,5 +35,11 @@ describe('dice Web Crypto mapping', () => {
     expect(() => rollDice(1, 1, () => 0)).toThrow(RangeError)
     expect(() => randomInteger(6, () => -1)).toThrow(RangeError)
     expect(() => randomInteger(6, () => 0x1_0000_0000)).toThrow(RangeError)
+  })
+
+  it('parses bounded tabletop notation and modifiers', () => {
+    expect(parseDiceNotation(' 3d20 + 4 ')).toEqual({ count: 3, sides: 20, modifier: 4 })
+    expect(parseDiceNotation('1D6-2')).toEqual({ count: 1, sides: 6, modifier: -2 })
+    expect(() => parseDiceNotation('d6')).toThrow(RangeError)
   })
 })

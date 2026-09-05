@@ -19,11 +19,19 @@ mod document_converter;
 mod document_engine_cache;
 mod document_engine_service;
 mod document_engine_task;
+mod document_layout;
+mod document_math;
 mod document_parser;
+mod document_quality;
+mod document_structure;
+mod document_text;
 mod envelope_host;
+mod formula_ocr;
 mod install;
 mod journal;
 mod manifest;
+mod marketplace_download;
+mod marketplace_transport;
 mod ocr_worker;
 mod pdf_parser;
 mod permissions;
@@ -197,6 +205,7 @@ fn main() {
             commands::settings_get_all,
             commands::app_get_version,
             commands::app_get_platform,
+            commands::app_check_update,
             commands::plugin_list,
             commands::plugin_get,
             commands::plugin_enable,
@@ -207,6 +216,8 @@ fn main() {
             commands::plugin_clear_logs,
             commands::plugin_uninstall,
             commands::plugin_install_preview,
+            commands::marketplace_download_plugin,
+            commands::marketplace_catalog,
             commands::plugin_install_commit,
             commands::plugin_install_discard,
             commands::plugin_register_import_path,

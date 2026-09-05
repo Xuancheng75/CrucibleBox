@@ -1,9 +1,9 @@
 {
   "name": "dice-roller",
-  "version": "0.1.7",
+  "version": "0.3.0",
   "displayName": "骰子与随机数",
-  "description": "一个轻量随机工具插件，支持多枚骰子投掷并保留本次打开期间的历史记录。",
-  "author": "Codex",
+  "description": "支持骰子表达式、快捷预设、优势/劣势投掷与本次会话历史的轻量随机工具。",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "backend": false,

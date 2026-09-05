@@ -6,10 +6,10 @@
 
 ## 1. 项目简介
 
-- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 19 + Ant Design 6 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前发布基线 **1.9.13**；Electron 43 为已冻结的历史运行线）。
+- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 18 + Ant Design 5 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前开发与验证基线 **2.0.0**；Electron 43/React 19/Ant Design 6 为已冻结的历史运行线）。
 - 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/{cruciblebox-plugin-api,openbox-rpc}`）。
 - 插件模型：Manifest v2 + 自包含 browser renderer（跨源 sandboxed iframe + MessagePort RPC）+ 可选 backend（Rust sidecar 内嵌 quickjs-ng，帧协议 RPC v2）。UniEnv 为宿主固定摘要可信服务。
-- 当前基线：Rust workspace `src-tauri`（主 app + `cruciblebox-plugin-host` sidecar）测试全绿；插件独立构建（自包含 `scripts/` 构建器）；数据库 schema v3（rusqlite bundled）；插件 SDK v2 已冻结；自动更新走 tauri-plugin-updater（minisign 强制签名）。
+- 当前基线：Rust workspace `src-tauri`（主 app + `cruciblebox-plugin-host` sidecar）；插件独立构建；数据库 schema v4；插件 SDK v2 保持兼容；自动更新通过 `tauri-stable` / `tauri-beta` 双端点并强制 minisign 签名。2.0 宿主新增插件市场、任务中心和插件身份视觉体系。
 - 插件 SDK 独立化（1.9.0）：插件自包含工程（独立 build/clean/typecheck/test，无 `../../scripts` 隐式依赖），宿主只消费 `plugin.json + dist/main.js + dist/renderer.js`；`@openbox/ui` 已内联进 theme-manager（`plugins/theme-manager/src/theme-vars.ts`）。
 
 ## 2. 关键文件地图
@@ -32,6 +32,9 @@ Electron 遗留层（**已冻结**，勿改功能）：
 Tauri 前端（`tauri-frontend/`）：
 
 - `src/App.tsx`：骨架 UI（内存探针 + 更新检查 + 插件宿主）。
+- `src/pages/Marketplace.tsx` / `marketplace-catalog.ts`：双栏插件市场与官方只读目录（2.0.0 不接入 GitHub Marketplace/账户系统）。
+- `src/pages/TaskCenter.tsx` / `store/task.store.ts`：宿主长任务的统一状态与失败入口。
+- `src/plugin-identity.ts`：第一方插件分类、颜色和发布者身份映射。
 - `src/PluginHost.tsx`：插件 iframe 宿主（invoke 创建 session + 复用 `src/plugin-runtime/PluginFrameBridge.ts` 握手）。
 - 复用仓库根 `src/plugin-runtime/`（frame-entry + PluginFrameBridge，纯浏览器逻辑）与 `shared/`。
 
@@ -71,13 +74,14 @@ cd tauri-frontend && npm run build
 
 - Trunk-based：`main` 唯一长期分支，始终可发布。
 - 一个工作包 = 一个短分支（`feat/<版本>-<描述>` / `refactor/<版本>-<描述>` / `fix/...` / `chore/...` / `hotfix/...`）+ 一个 PR + merge。
+- Codex 本地工作分支使用 `codex/` 前缀；推送 PR 时按上述类型转换或保留可追溯名称。
 - Conventional Commits；全量门禁通过后才提交；不允许本地攒多个未推工作包。
-- 发布：Tauri 链 `git tag -a tauri-vX.Y.Z` → push tag → `tauri-release.yml` 自动发布（Electron 链 `v*` 已冻结）。
+- 发布：正式版 tag `tauri-vX.Y.Z` 更新 `tauri-stable`；测试版 tag `tauri-vX.Y.Z-beta.N` / `-rc.N` 更新 `tauri-beta`。Electron 链 `v*` 已冻结。
 - main 已开启分支保护（要求 PR + `Verify Windows x64` / `Verify Tauri (Rust) x64` status check + 禁 force push）。
 
 ## 6. 版本路线
 
-1.8.X Tauri 迁移（骨架/DB/sidecar/renderer/发布链）→ 1.9.X 插件独立化 + 宿主收敛 → **1.9.2 冻结 Tauri 为唯一运行线并发布首个 Tauri 正式版**（Electron 分支归档）。当前发布基线：**1.9.13**。逐版本变更见 `docs/changelog.md`；UniEnv 在线版本源决策见 `docs/adr-0021-unienv-online-version-feeds.md`。
+1.8.X Tauri 迁移 → 1.9.X 插件独立化与宿主收敛 → **2.0.0 现代工作台、插件身份、市场/任务中心和双更新通道**。当前开发基线：**2.0.0**；1.9.26 为最后一个过渡版本。
 
 ## 7. 文档约定
 

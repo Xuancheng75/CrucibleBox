@@ -9,9 +9,9 @@ import type {
   TaskSnapshot,
   TaskStatus
 } from '../../../plugin-system/trusted-services/unienv/task-manager'
-import type { ToolId } from '../../../plugin-system/trusted-services/unienv/protocol'
 import {
   TOOL_VERSION_LIFECYCLE_AS_OF,
+  type ToolId,
   formatComboLifecycleSummary,
   formatToolVersionOption,
   getPreferredToolVersion,
@@ -19,7 +19,7 @@ import {
   orderToolVersionsForDisplay,
   requiresComboVersionConfirmation,
   requiresToolVersionConfirmation
-} from '../../../plugin-system/trusted-services/unienv/version-lifecycle'
+} from './catalog'
 
 // ============================================================
 // 内联样式常量 — 复刻 Ant Design 5.x 视觉风格
@@ -749,8 +749,9 @@ export default function UniEnvUI({
   const isToolLoading = operationLoading[activeKey] || false
   const activeVersions = versions[activeKey] || []
 
-  /** 该工具是否有在线版本源（node/go/java，与宿主 provider_supports 对齐） */
-  const isProviderTool = (toolId: string) => ['node', 'go', 'java'].includes(toolId)
+  /** 在线版本源与宿主 provider_supports 保持一致。 */
+  const isProviderTool = (toolId: string) =>
+    ['node', 'go', 'java', 'ruby', 'zig', 'deno', 'bun'].includes(toolId)
   const selectedVersion = selectedVersions[activeKey]
   const selectedLifecycle =
     activeTool && selectedVersion

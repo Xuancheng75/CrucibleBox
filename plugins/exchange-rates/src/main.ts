@@ -8,6 +8,11 @@ interface RatesCache {
   base: string
   rates: Record<string, number>
   updatedAt: number
+  provider?: string
+}
+
+interface RatesPayload {
+  rates?: Record<string, number>
 }
 
 let ctx: PluginContext | null = null
@@ -32,7 +37,7 @@ const plugin: PluginMain = {
       case 'getRates': {
         const cached = await getCachedRates()
         if (cached && Date.now() - cached.updatedAt < CACHE_TTL) {
-          return { rates: cached.rates, updatedAt: cached.updatedAt, base: cached.base, cached: true }
+          return { rates: cached.rates, updatedAt: cached.updatedAt, base: cached.base, cached: true, provider: cached.provider }
         }
         return await fetchAndCacheRates()
       }
@@ -70,26 +75,44 @@ async function getCachedRates(): Promise<RatesCache | null> {
 async function fetchAndCacheRates(): Promise<unknown> {
   if (!ctx) return { error: 'not activated' }
   try {
-    const resp = await ctx.api.fetch('https://open.er-api.com/v6/latest/USD')
-    if (!resp.ok) return { error: `API returned HTTP ${resp.status}` }
-    const data = JSON.parse(await readFetchBody(resp))
-    if (data.result !== 'success' || !data.rates) {
-      return { error: 'API returned error' }
+    let provider = 'ExchangeRate API'
+    let resp = await ctx.api.fetch('https://open.er-api.com/v6/latest/USD')
+    let data = resp.ok ? parseRatesPayload(await readFetchBody(resp)) : null
+    if (!data?.rates) {
+      // Public fallback is deliberately queried only after the primary feed
+      // fails, keeping normal traffic and memory use unchanged.
+      resp = await ctx.api.fetch('https://api.frankfurter.app/latest?from=USD')
+      data = resp.ok ? parseRatesPayload(await readFetchBody(resp)) : null
+      provider = 'Frankfurter fallback'
     }
+    if (!data?.rates) return { error: `汇率服务不可用（HTTP ${resp.status}）` }
     const cache: RatesCache = {
       base: 'USD',
       rates: data.rates,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      provider
     }
     await ctx.storage.set(CACHE_KEY, cache)
-    return { rates: data.rates, updatedAt: cache.updatedAt, base: 'USD', cached: false }
+    return { rates: data.rates, updatedAt: cache.updatedAt, base: 'USD', cached: false, provider }
   } catch (e) {
     const cached = await getCachedRates()
     if (cached) {
-      return { rates: cached.rates, updatedAt: cached.updatedAt, base: cached.base, cached: true, stale: true }
+      return { rates: cached.rates, updatedAt: cached.updatedAt, base: cached.base, cached: true, stale: true, provider: cached.provider }
     }
     return { error: (e as Error).message }
   }
+}
+
+function parseRatesPayload(raw: string): RatesPayload {
+  const parsed: unknown = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const rates = (parsed as { rates?: unknown }).rates
+  if (!rates || typeof rates !== 'object' || Array.isArray(rates)) return {}
+  const numericRates = Object.entries(rates).filter(
+    (entry): entry is [string, number] =>
+      typeof entry[1] === 'number' && Number.isFinite(entry[1])
+  )
+  return { rates: Object.fromEntries(numericRates) }
 }
 
 async function readFetchBody(response: Response | PluginFetchResponse): Promise<string> {

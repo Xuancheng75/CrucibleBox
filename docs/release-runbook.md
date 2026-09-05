@@ -83,7 +83,7 @@ gh attestation verify <setup.exe> -R Xuancheng75/CrucibleBox
 
 流程：版本提升（`src-tauri/tauri.conf.json` + 两处 `Cargo.toml` + lockfile +
 `tauri-frontend/package.json` 成对提升）→ 短分支 PR（双 CI 绿）→ merge → 打
-annotated tag `tauri-vX.Y.Z` 推送 → CI 自动完成：
+annotated tag `tauri-vX.Y.Z`（稳定）或 `tauri-vX.Y.Z-beta.N` / `-rc.N`（测试）推送 → CI 自动完成：
 
 版本唯一来源为 `src-tauri/tauri.conf.json`。提交前运行
 `npm run verify:tauri-version`，它会校验 Tauri 配置、Cargo 包/锁文件和前端
@@ -95,9 +95,39 @@ Tauri 版本或 channel 推导。
   官方插件打包（`artifacts/plugins/*.zip`）→ sidecar 构建+stage →
   图标缓存强制清理 → `cargo tauri build --bundles nsis`（minisign 签名 latest.json）
 - **Verify embedded app icon**：解包 setup.exe 字节级校验内嵌应用图标
-- SBOM（cargo-cyclonedx 双源）→ attestation → GitHub Release 发布 → 同步滚动清单
-  `tauri-latest/latest.json`（任何旧版客户端由此发现新版）
+- SBOM（cargo-cyclonedx 双源）→ attestation → GitHub Release 发布 → 按通道同步滚动清单：
+  正式版本写入 `tauri-stable/latest.json`，beta/rc 写入 `tauri-beta/latest.json`。两个通道互不覆盖。
+
+设置页将 `stable` / `beta` 持久化到 `settings.updateChannel`，Rust updater 按该值选择端点。
+不得恢复为单一 `tauri-latest`：否则测试版发布会污染稳定版用户的更新结果。
 
 产物：`CrucibleBox_X.Y.Z_x64-setup.exe(+.sig)`、`latest.json`、双 SBOM、
 **官方插件包 zip（unienv/diary 等）**。已装用户升级宿主后需导入对应插件包以启用
 插件新功能（NSIS 不更新 %APPDATA% 内的插件）。
+
+### 2.0.0 正式版发布前补充检查
+
+- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
+- Document Engine 0.10.0 的 `minHostVersion` 为 `2.0.0`；默认中英混排 OCR 模型从固定 ModelScope 镜像获取，逐文件执行 SHA-256 校验；不访问 Hugging Face。
+- 市场目录、插件包和更新清单仍使用 GitHub Release 直连；模型源与插件下载链路分离，禁止把模型镜像当作插件下载代理。
+- 发布前验证市场刷新失败时仍能显示内置/最近缓存目录；网络恢复后强制刷新能反映新增插件和插件更新；多选、批量下载、全部更新不能改变卡片高度、左侧布局或进度布局。
+- Document Engine 解析验收必须记录 `invalidControlChars=0`、`invalidXmlChars=0`、native/OCR 质量、TOC/heading/section sample、formula/image/table block 计数，以及 350–600 token Hybrid Chunk 回归指标；扫描 PDF 必须跑完整 OCR 回归。
+- IPC 任务快照必须通过节点数/深度预算；完整解析结果只能从输出路径或权威缓存读取，不能因预览快照触发 `PAYLOAD_TOO_COMPLEX`。
+
+### beta6 发布前补充检查
+
+- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.6`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
+- Document Engine 0.7.0 的 `minHostVersion` 为 `2.0.0-beta.6`；插件包必须完成预检、确认、提交、打开和升级链路。
+- 市场目录请求在 Windows 优先走 WinHTTP 自动代理/WPAD，插件包新传输优先走 BITS；ureq/Range 路径只作兼容回退。禁止加入镜像源或绕过 HTTPS、大小、SHA-256 校验。
+- 发布前验证市场刷新失败时仍能显示内置/最近缓存目录；网络恢复后强制刷新能反映新增插件和插件更新；多选、批量下载、全部更新不能改变卡片高度、左侧布局或进度布局。
+- Document Engine 解析验收必须记录 `invalidControlChars=0`、`invalidXmlChars=0`、native/OCR 质量、TOC/heading/section sample、formula/image/table block 计数，以及 350–600 token Hybrid Chunk 回归指标；扫描 PDF 必须跑完整 OCR 回归。
+- IPC 任务快照必须通过节点数/深度预算；完整解析结果只能从输出路径读取，不能因预览快照触发 `PAYLOAD_TOO_COMPLEX`。
+
+### beta5 发布前补充检查
+
+- Tauri 版本唯一取自 `src-tauri/tauri.conf.json`，本次必须为 `2.0.0-beta.5`；根目录 `package.json` 的 Electron `1.7.3` 不得修改。
+- Document Engine 0.6.0 的 `minHostVersion` 为 `2.0.0-beta.5`，插件包必须在宿主 beta5 上完成预检、确认、提交和打开链路。
+- `plugins.json` 必须携带插件展示元数据（名称、描述、发布者、图标）以及当前 beta5 tag 的固定 GitHub Release 下载 URL；滚动 `tauri-beta` 只更新 beta 通道，不得覆盖 `tauri-stable`，不配置镜像地址。
+- 发布前验证市场刷新失败时仍能显示内置/最近缓存目录，网络恢复后强制刷新能反映新增插件和插件更新；下载中断后重试应复用 `.part` 文件并重新完成 SHA-256 校验。
+- Document Engine 解析验收必须记录 `invalidControlChars=0`、`invalidXmlChars=0`、TOC/heading/section sample、formula/image/table/native/OCR block 计数，以及 350–600 token Hybrid Chunk 回归指标。
+- DOCX 验收必须逐个解析 `[Content_Types].xml`、relationships、document、styles、numbering、header/footer XML；再在 Windows 上执行 Word/LibreOffice 打开和 DOCX→PDF 冒烟。

@@ -1,11 +1,17 @@
 import { Tooltip, theme } from 'antd'
-import { AppstoreOutlined, SettingOutlined, FileTextOutlined } from '@ant-design/icons'
+import {
+  AppstoreOutlined,
+  ClockCircleOutlined,
+  SettingOutlined,
+  ShopOutlined
+} from '@ant-design/icons'
 import openboxIcon from '../assets/openbox-neon-64.png'
 import type { AppPage } from '../app-pages'
 
 const NAV_ITEMS: Array<{ key: AppPage; icon: React.ReactNode; label: string }> = [
   { key: 'home', icon: <AppstoreOutlined />, label: '工作台' },
-  { key: 'logs', icon: <FileTextOutlined />, label: '插件日志' },
+  { key: 'marketplace', icon: <ShopOutlined />, label: '插件市场' },
+  { key: 'tasks', icon: <ClockCircleOutlined />, label: '任务中心' },
   { key: 'settings', icon: <SettingOutlined />, label: '设置' }
 ]
 
@@ -79,7 +85,7 @@ export default function IconRail({ selectedKey, onChange }: IconRailProps) {
                   background: active
                     ? `linear-gradient(135deg, ${token.colorPrimary}, ${token.colorPrimaryHover})`
                     : 'transparent',
-                  boxShadow: active ? `0 4px 16px ${token.colorPrimary}66` : 'none',
+                  boxShadow: 'none',
                   transition: 'all 0.2s ease'
                 }}
               >

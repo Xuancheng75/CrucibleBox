@@ -22,6 +22,7 @@ import {
   startBatch,
   startChunk,
   startConvert,
+  startPdfSplit,
   startParse,
   startOcr,
   updateRemoteModel,
@@ -70,7 +71,79 @@ const FONT = {
   sizeTitle: '20px'
 }
 
+/** Merge progress from the event stream and polling without allowing a late
+ * worker frame to move the task backwards. Older hosts may not send sequence,
+ * so percent remains a safe fallback ordering key. */
+function mergeProgress(current: OcrProgress | null, incoming: OcrProgress): OcrProgress {
+  if (!current) return incoming
+  const currentSequence = typeof current.sequence === 'number' ? current.sequence : 0
+  const incomingSequence = typeof incoming.sequence === 'number' ? incoming.sequence : 0
+  if (
+    incomingSequence < currentSequence ||
+    (incomingSequence === currentSequence && incoming.percent < current.percent)
+  ) {
+    return current
+  }
+  return incoming.percent < current.percent
+    ? { ...incoming, percent: current.percent }
+    : incoming
+}
+
+function setMergedProgress(
+  setter: React.Dispatch<React.SetStateAction<OcrProgress | null>>,
+  progress: OcrProgress
+) {
+  setter((current) => mergeProgress(current, progress))
+}
+
 const prettyJson = (value: unknown): string => JSON.stringify(value, null, 2) ?? ''
+
+/** Show produced artifacts first; keep the bounded task metadata behind a
+ * disclosure so users do not mistake a JSON response for the actual output. */
+const renderArtifactResult = (value: unknown, kind: 'chunk' | 'convert'): React.ReactNode => {
+  if (!value || typeof value !== 'object') return <pre>{prettyJson(value)}</pre>
+  const result = value as Record<string, unknown>
+  const outputPath = typeof result.outputPath === 'string' ? result.outputPath : ''
+  const files = Array.isArray(result.files)
+    ? result.files.filter(
+        (file): file is { path: string; startPage?: number; endPage?: number } =>
+          Boolean(file && typeof file === 'object' && typeof (file as Record<string, unknown>).path === 'string')
+      )
+    : []
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {outputPath && (
+        <div style={{ wordBreak: 'break-all' }}>
+          输出文件：<strong>{outputPath}</strong>
+        </div>
+      )}
+      {files.length > 0 && (
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            {kind === 'chunk' ? '拆分后的 PDF 文件' : '生成的文件'}
+          </div>
+          {files.map((file) => (
+            <div key={file.path} style={{ marginTop: 3, wordBreak: 'break-all' }}>
+              {file.startPage && file.endPage
+                ? `第 ${file.startPage}-${file.endPage} 页：`
+                : ''}
+              {file.path}
+            </div>
+          ))}
+        </div>
+      )}
+      {kind === 'chunk' && files.length === 0 && outputPath && (
+        <div style={{ color: COLORS.textSecondary }}>
+          这是用于 AI/RAG 的逐行 Chunk 索引（JSONL）；同目录还会生成清单 JSON，原始 PDF 未被改写。
+        </div>
+      )}
+      <details>
+        <summary style={{ cursor: 'pointer', color: COLORS.textSecondary }}>查看任务元数据</summary>
+        <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>{prettyJson(value)}</pre>
+      </details>
+    </div>
+  )
+}
 
 /** Keep the actual path in state while showing a readable value in narrow inputs. */
 const displayPath = (path: string): string => {
@@ -224,6 +297,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [loadingStatus, setLoadingStatus] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [ocrPath, setOcrPath] = useState('')
+  const [ocrLanguage, setOcrLanguage] = useState<'auto' | 'zh' | 'en' | 'mix'>('auto')
   const [ocrTaskId, setOcrTaskId] = useState<string | null>(null)
   const [ocrTask, setOcrTask] = useState<DocumentTaskSnapshot | null>(null)
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null)
@@ -237,6 +311,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [parseResult, setParseResult] = useState<ParsedDocumentResult | null>(null)
   const [parseError, setParseError] = useState<string | null>(null)
   const [parseBusy, setParseBusy] = useState(false)
+  const [parseOutputDirectory, setParseOutputDirectory] = useState('')
   const [chunkPath, setChunkPath] = useState('')
   const [chunkTaskId, setChunkTaskId] = useState<string | null>(null)
   const [chunkTask, setChunkTask] = useState<DocumentTaskSnapshot | null>(null)
@@ -244,9 +319,13 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [chunkResult, setChunkResult] = useState<unknown>(null)
   const [chunkError, setChunkError] = useState<string | null>(null)
   const [chunkBusy, setChunkBusy] = useState(false)
+  const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic' | 'pdf-pages' | 'pdf-fixed' | 'pdf-chapters' | 'pdf-ranges'>('hybrid')
+  const [chunkOutputDirectory, setChunkOutputDirectory] = useState('')
+  const [splitPagesPerFile, setSplitPagesPerFile] = useState(50)
+  const [splitRanges, setSplitRanges] = useState('1-10\n11-20')
   const [convertPath, setConvertPath] = useState('')
   const [convertTarget, setConvertTarget] = useState('md')
-  const [convertOutput, setConvertOutput] = useState('')
+  const [convertOutputDirectory, setConvertOutputDirectory] = useState('')
   const [convertTaskId, setConvertTaskId] = useState<string | null>(null)
   const [convertTask, setConvertTask] = useState<DocumentTaskSnapshot | null>(null)
   const [convertProgress, setConvertProgress] = useState<OcrProgress | null>(null)
@@ -412,11 +491,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   useEffect(() => {
     return api.onBackendMessage((message) => {
       if (!isDocumentProgressMessage(message)) return
-      if (ocrTaskId && message.taskId === ocrTaskId) setOcrProgress(message.progress)
-      if (parseTaskId && message.taskId === parseTaskId) setParseProgress(message.progress)
-      if (chunkTaskId && message.taskId === chunkTaskId) setChunkProgress(message.progress)
-      if (convertTaskId && message.taskId === convertTaskId) setConvertProgress(message.progress)
-      if (batchTaskId && message.taskId === batchTaskId) setBatchProgress(message.progress)
+      if (ocrTaskId && message.taskId === ocrTaskId) setMergedProgress(setOcrProgress, message.progress)
+      if (parseTaskId && message.taskId === parseTaskId) setMergedProgress(setParseProgress, message.progress)
+      if (chunkTaskId && message.taskId === chunkTaskId) setMergedProgress(setChunkProgress, message.progress)
+      if (convertTaskId && message.taskId === convertTaskId) setMergedProgress(setConvertProgress, message.progress)
+      if (batchTaskId && message.taskId === batchTaskId) setMergedProgress(setBatchProgress, message.progress)
     })
   }, [api, ocrTaskId, parseTaskId, chunkTaskId, convertTaskId, batchTaskId])
 
@@ -429,7 +508,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         const snapshot = await getTask(send, ocrTaskId)
         if (!active) return
         setOcrTask(snapshot)
-        if (snapshot.progress) setOcrProgress(snapshot.progress)
+        if (snapshot.progress) setMergedProgress(setOcrProgress, snapshot.progress)
         if (snapshot.status === 'succeeded' && isOcrResult(snapshot.result))
           setOcrResult(snapshot.result)
         if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
@@ -466,7 +545,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         const snapshot = await getTask(send, parseTaskId)
         if (!active) return
         setParseTask(snapshot)
-        if (snapshot.progress) setParseProgress(snapshot.progress)
+        if (snapshot.progress) setMergedProgress(setParseProgress, snapshot.progress)
         if (snapshot.status === 'succeeded' && isParsedDocumentResult(snapshot.result)) {
           setParseResult(snapshot.result)
         }
@@ -499,14 +578,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     async (
       taskId: string,
       setTask: (task: DocumentTaskSnapshot) => void,
-      setProgress: (progress: OcrProgress) => void,
+      setProgress: React.Dispatch<React.SetStateAction<OcrProgress | null>>,
       setResult: (result: unknown) => void,
       setError: (error: string) => void
     ) => {
       try {
         const snapshot = await getTask(send, taskId)
         setTask(snapshot)
-        if (snapshot.progress) setProgress(snapshot.progress)
+        if (snapshot.progress) setMergedProgress(setProgress, snapshot.progress)
         if (snapshot.status === 'succeeded') setResult(snapshot.result)
         if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
           setError(
@@ -608,7 +687,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setOcrProgress(null)
     setOcrTask(null)
     try {
-      const accepted = await startOcr(send, path)
+      const accepted = await startOcr(send, path, { language: ocrLanguage })
       setOcrTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
@@ -626,7 +705,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setOcrBusy(false)
     }
-  }, [api, ocrPath, send])
+  }, [api, ocrLanguage, ocrPath, send])
 
   const stopOcr = useCallback(async () => {
     if (!ocrTaskId) return
@@ -649,7 +728,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setParseProgress(null)
     setParseTask(null)
     try {
-      const accepted = await startParse(send, path)
+      const accepted = await startParse(send, path, {
+        outputDirectory: parseOutputDirectory.trim() || undefined
+      })
       setParseTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
@@ -667,7 +748,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setParseBusy(false)
     }
-  }, [api, parsePath, send])
+  }, [api, parseOutputDirectory, parsePath, send])
 
   const stopParse = useCallback(async () => {
     if (!parseTaskId) return
@@ -690,14 +771,34 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setChunkProgress(null)
     setChunkTask(null)
     try {
-      const accepted = await startChunk(send, path)
+      const pdfMode = chunkStrategy.startsWith('pdf-')
+      const ranges = splitRanges
+        .split(/\r?\n|[,;]+/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map((value) => {
+          const match = value.match(/^(\d+)\s*[-~]\s*(\d+)$/)
+          return match ? { start: Number(match[1]), end: Number(match[2]) } : null
+        })
+        .filter((value): value is { start: number; end: number } => Boolean(value))
+      const accepted = pdfMode
+        ? await startPdfSplit(send, path, {
+            outputDirectory: chunkOutputDirectory.trim() || undefined,
+            pagesPerFile: splitPagesPerFile,
+            mode: chunkStrategy === 'pdf-pages' ? 'pages' : chunkStrategy === 'pdf-ranges' ? 'ranges' : chunkStrategy === 'pdf-chapters' ? 'chapters' : 'fixed',
+            ranges: chunkStrategy === 'pdf-ranges' ? ranges : undefined
+          })
+        : await startChunk(send, path, {
+            strategy: chunkStrategy,
+            outputDirectory: chunkOutputDirectory.trim() || undefined
+          })
       setChunkTaskId(accepted.taskId)
       setRecentTasks((previous) =>
         [
           {
             id: accepted.taskId,
             name: path.split(/[\\/]/).pop() || path,
-            action: '切分',
+            action: pdfMode ? 'PDF 拆分' : '文本分块',
             status: accepted.status
           },
           ...previous
@@ -708,7 +809,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setChunkBusy(false)
     }
-  }, [api, chunkPath, send])
+  }, [api, chunkPath, chunkOutputDirectory, chunkStrategy, send, splitPagesPerFile, splitRanges])
 
   const runConvert = useCallback(async () => {
     const path = convertPath.trim()
@@ -726,7 +827,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         send,
         path,
         convertTarget,
-        convertOutput.trim() || undefined
+        convertOutputDirectory.trim() || undefined
       )
       setConvertTaskId(accepted.taskId)
       setRecentTasks((previous) =>
@@ -745,7 +846,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setConvertBusy(false)
     }
-  }, [api, convertOutput, convertPath, convertTarget, send])
+  }, [api, convertOutputDirectory, convertPath, convertTarget, send])
 
   const runBatch = useCallback(async () => {
     const paths = batchPaths
@@ -1311,6 +1412,34 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       >
         选择图片
       </button>
+      <label
+        style={{
+          display: 'block',
+          marginTop: 12,
+          fontSize: FONT.sizeSm,
+          color: COLORS.textSecondary
+        }}
+      >
+        识别语言
+        <select
+          value={ocrLanguage}
+          onChange={(event) => setOcrLanguage(event.target.value as typeof ocrLanguage)}
+          style={{
+            display: 'block',
+            marginTop: 6,
+            padding: '8px 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 6,
+            background: COLORS.bgWhite,
+            fontSize: FONT.sizeMd
+          }}
+        >
+          <option value="auto">自动（按当前模型）</option>
+          <option value="zh">中文</option>
+          <option value="en">英文/数学</option>
+          <option value="mix">中英文混合</option>
+        </select>
+      </label>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button
           type="button"
@@ -1451,6 +1580,38 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         >
           选择 PDF
         </button>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <input
+            value={displayPath(parseOutputDirectory)}
+            readOnly
+            title={parseOutputDirectory || undefined}
+            placeholder="解析结果目录（默认使用 Document Engine/output）"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: '9px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd
+            }}
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              const [path] = await selectPaths({ type: 'folder' })
+              if (path) setParseOutputDirectory(path)
+            }}
+            style={{
+              padding: '6px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 5,
+              background: COLORS.bgWhite,
+              whiteSpace: 'nowrap'
+            }}
+          >
+            选择输出目录
+          </button>
+        </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <button
             type="button"
@@ -1590,6 +1751,26 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             </pre>
           </div>
         )}
+        {parseResult?.outputs?.files && parseResult.outputs.files.length > 0 && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              background: COLORS.successBg,
+              border: `1px solid ${COLORS.successBorder}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeSm
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>可直接交给 AI 的完整结果</div>
+            {parseResult.outputs.files.map((file) => (
+              <div key={file.path} style={{ marginTop: 4, wordBreak: 'break-all' }}>
+                {file.kind === 'markdown' ? 'Markdown' : file.kind === 'text' ? 'TXT' : 'Document JSON'}：
+                {file.path}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     )
   }
@@ -1599,7 +1780,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       {renderCurrentDocument()}
       <h3 style={{ margin: '0 0 8px', fontSize: FONT.sizeXl, fontWeight: 600 }}>文档切分</h3>
       <p style={{ margin: '0 0 14px', color: COLORS.textSecondary, fontSize: FONT.sizeMd }}>
-        按结构/语义边界生成 RAG 可用 Chunk。
+        可生成 AI/RAG 文本分块，也可以将 PDF 拆分为多个真实 PDF 文件。
       </p>
       <input
         value={displayPath(chunkPath)}
@@ -1634,6 +1815,115 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       >
         选择文档
       </button>
+      <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+        切分方式
+        <select
+          value={chunkStrategy}
+          onChange={(event) => setChunkStrategy(event.target.value as typeof chunkStrategy)}
+          style={{
+            display: 'block',
+            width: '100%',
+            marginTop: 6,
+            height: 36,
+            padding: '0 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 6,
+            background: COLORS.bgWhite,
+            color: COLORS.text
+          }}
+        >
+          <option value="hybrid">结构 + 长度（推荐）</option>
+          <option value="pages">按页切分</option>
+          <option value="chapters">按章节/标题切分</option>
+          <option value="structure">按结构边界</option>
+          <option value="semantic">按语义/长度</option>
+          <option value="pdf-pages">PDF 按页拆分</option>
+          <option value="pdf-fixed">PDF 按固定页数拆分</option>
+          <option value="pdf-chapters">PDF 按章节/标题拆分</option>
+          <option value="pdf-ranges">PDF 按页码范围拆分</option>
+        </select>
+      </label>
+      {chunkStrategy.startsWith('pdf-') && !['pdf-ranges', 'pdf-chapters'].includes(chunkStrategy) && (
+        <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+          每个 PDF 页数
+          <input
+            type="number"
+            min={1}
+            max={2000}
+            value={splitPagesPerFile}
+            onChange={(event) => setSplitPagesPerFile(Math.max(1, Math.min(2000, Number(event.target.value) || 1)))}
+            style={{
+              display: 'block',
+              width: 140,
+              marginTop: 6,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd
+            }}
+          />
+        </label>
+      )}
+      {chunkStrategy === 'pdf-ranges' && (
+        <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+          页码范围（每行一个，如 1-10）
+          <textarea
+            value={splitRanges}
+            onChange={(event) => setSplitRanges(event.target.value)}
+            rows={3}
+            style={{
+              display: 'block',
+              width: '100%',
+              boxSizing: 'border-box',
+              marginTop: 6,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd,
+              resize: 'vertical'
+            }}
+          />
+        </label>
+      )}
+      <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+        输出文件夹
+        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+          <input
+            value={displayPath(chunkOutputDirectory)}
+            readOnly
+            title={chunkOutputDirectory || undefined}
+            placeholder="默认使用 Document Engine/output"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              boxSizing: 'border-box',
+              padding: '9px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              fontSize: FONT.sizeMd
+            }}
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              const [path] = await selectPaths({ type: 'folder' })
+              if (path) setChunkOutputDirectory(path)
+            }}
+            style={{
+              padding: '6px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 5,
+              background: COLORS.bgWhite,
+              whiteSpace: 'nowrap'
+            }}
+          >
+            选择文件夹
+          </button>
+        </div>
+        <span style={{ display: 'block', marginTop: 4, color: COLORS.textTertiary, fontSize: FONT.sizeSm }}>
+          切分结果会写入所选文件夹，并在任务结果中显示完整路径。
+        </span>
+      </label>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button
           type="button"
@@ -1648,7 +1938,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             cursor: 'pointer'
           }}
         >
-          {chunkBusy ? '启动中…' : '开始切分'}
+          {chunkBusy ? '启动中…' : chunkStrategy.startsWith('pdf-') ? '开始拆分 PDF' : '开始文本分块'}
         </button>
         {(chunkTask?.status === 'running' || chunkTask?.status === 'queued') && (
           <button
@@ -1687,12 +1977,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         </div>
       )}
       {chunkResult != null && (
-        <pre
+        <div
           style={{
             marginTop: 14,
-            whiteSpace: 'pre-wrap',
-            maxHeight: 360,
-            overflow: 'auto',
             padding: 12,
             background: COLORS.bgGray,
             border: `1px solid ${COLORS.border}`,
@@ -1700,8 +1987,8 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             fontSize: FONT.sizeSm
           }}
         >
-          {prettyJson(chunkResult)}
-        </pre>
+          {renderArtifactResult(chunkResult, 'chunk')}
+        </div>
       )}
     </div>
   )
@@ -1760,17 +2047,35 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           <option value="pdf">PDF</option>
         </select>
         <input
-          value={convertOutput}
-          onChange={(event) => setConvertOutput(event.target.value)}
-          placeholder="输出路径（可选）"
+          value={displayPath(convertOutputDirectory)}
+          readOnly
+          title={convertOutputDirectory || undefined}
+          placeholder="转换结果目录（默认使用 Document Engine/output）"
           style={{
             flex: 1,
+            minWidth: 0,
             padding: '9px 10px',
             border: `1px solid ${COLORS.border}`,
             borderRadius: 6,
             fontSize: FONT.sizeMd
           }}
         />
+        <button
+          type="button"
+          onClick={async () => {
+            const [path] = await selectPaths({ type: 'folder' })
+            if (path) setConvertOutputDirectory(path)
+          }}
+          style={{
+            padding: '6px 10px',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 5,
+            background: COLORS.bgWhite,
+            whiteSpace: 'nowrap'
+          }}
+        >
+          选择输出目录
+        </button>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button
@@ -1827,10 +2132,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         </div>
       )}
       {convertResult != null && (
-        <pre
+        <div
           style={{
             marginTop: 14,
-            whiteSpace: 'pre-wrap',
             padding: 12,
             background: COLORS.successBg,
             border: `1px solid ${COLORS.successBorder}`,
@@ -1838,8 +2142,8 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             fontSize: FONT.sizeSm
           }}
         >
-          {prettyJson(convertResult)}
-        </pre>
+          {renderArtifactResult(convertResult, 'convert')}
+        </div>
       )}
     </div>
   )
@@ -2159,7 +2463,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         >
           <div style={{ fontWeight: 600, fontSize: FONT.sizeLg }}>推荐模型</div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-            首次使用建议安装标准 PP-OCRv4；包含 OCR 所需的检测、识别和字典文件。
+            首次使用推荐 PP-OCRv6-small-det + 通用 PP-OCRv5-mobile-rec 轻量方案；公式区域按需进入独立 Formula Recognizer。
           </div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
             下载地址已固定并逐文件校验 SHA-256，安装完成后即可用于本地 OCR。
@@ -2212,7 +2516,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                           ? `缺少 ${bundle.missing.length} 个文件`
                           : entry.offline
                             ? '插件内置，可离线安装'
-                            : '支持镜像回退下载'}
+                            : '按官方地址下载并校验 SHA-256'}
                     </div>
                   </div>
                   <button

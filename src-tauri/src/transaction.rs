@@ -450,6 +450,12 @@ pub fn trusted_allowlist(permissions: &[String]) -> Option<Vec<String>> {
             "dist/main.js".to_string(),
             "dist/renderer.js".to_string(),
             "plugin.json".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx".to_string(),
+            "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt".to_string(),
             "assets/models/ppocrv4-mobile-zh-en/manifest.json".to_string(),
             "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".to_string(),
             "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".to_string(),
@@ -631,6 +637,20 @@ fn copy_directory_contents(
         let source_path = entry.path();
         let dest_path = dest.join(entry.file_name());
         let meta = fs::symlink_metadata(&source_path).map_err(|e| e.to_string())?;
+        // Source-directory imports often point at a plugin checkout.  Package
+        // managers keep their dependency graph under node_modules/.pnpm and
+        // use junctions/symlinks there; those files are not runtime payload
+        // (the packager allowlist already excludes them).  Ignore these
+        // development-only trees while retaining the fail-closed policy for
+        // symlinks anywhere in the actual plugin payload.
+        if meta.is_dir()
+            && matches!(
+                entry.file_name().to_string_lossy().as_ref(),
+                "node_modules" | ".pnpm" | ".git" | "target"
+            )
+        {
+            continue;
+        }
         if meta.file_type().is_symlink() {
             return Err(format!(
                 "Plugin directory contains a symbolic link: {}",
@@ -789,6 +809,7 @@ fn copy_allowed_files(
 
 fn is_optional_document_engine_asset(path: &str) -> bool {
     path.starts_with("assets/models/ppocrv4-mobile-zh-en/")
+        || path.starts_with("assets/models/ppocrv6-small-det-v5-mobile-rec/")
 }
 
 #[cfg(test)]
@@ -1033,6 +1054,27 @@ mod tests {
     }
 
     #[test]
+    fn stage_ignores_dependency_symlink_trees() {
+        let root = temp_root("stage-node-modules");
+        let plugins = root.join("plugins");
+        fs::create_dir_all(&plugins).unwrap();
+        let source = make_source(&root);
+        let dependencies = source.join("node_modules").join(".pnpm");
+        fs::create_dir_all(&dependencies).unwrap();
+        let link = dependencies.join("linked-package");
+        #[cfg(windows)]
+        let created = std::os::windows::fs::symlink_dir(&source, &link).is_ok();
+        #[cfg(not(windows))]
+        let created = std::os::unix::fs::symlink(&source, &link).is_ok();
+        if !created {
+            return;
+        }
+        let mut txn = DirectoryTransaction::new(opts(&plugins, "demo", &source, false)).unwrap();
+        txn.stage().unwrap();
+        assert!(!txn.stage_dir().join("node_modules").exists());
+    }
+
+    #[test]
     fn stage_with_allowed_files_copies_only_whitelist() {
         let root = temp_root("allowed-files");
         let plugins = root.join("plugins");
@@ -1094,6 +1136,12 @@ mod tests {
                 "dist/main.js".into(),
                 "dist/renderer.js".into(),
                 "plugin.json".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx".into(),
+                "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt".into(),
                 "assets/models/ppocrv4-mobile-zh-en/manifest.json".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".into(),

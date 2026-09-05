@@ -225,7 +225,14 @@ async function handleMessage(message: unknown): Promise<unknown> {
       await mutationQueue
       const items = await loadItems(store)
       if (items.length === 0) return { error: '没有可抽奖的选项' }
-      return { winner: selectWeightedItem(items, secureRandomUnit()) } satisfies SpinResult
+      const payload = (msg.payload && typeof msg.payload === 'object' ? msg.payload : {}) as { noRepeat?: unknown }
+      const previous = await store.get<number>('lastWinnerId')
+      const pool = payload.noRepeat === true && items.length > 1 && Number.isSafeInteger(previous)
+        ? items.filter((item) => item.id !== previous)
+        : items
+      const winner = selectWeightedItem(pool, secureRandomUnit())
+      await store.set('lastWinnerId', winner.id)
+      return { winner } satisfies SpinResult
     }
 
     default:

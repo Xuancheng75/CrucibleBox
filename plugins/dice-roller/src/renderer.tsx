@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PluginRenderProps } from 'cruciblebox-plugin-api'
-import { rollDice } from './random.js'
+import { parseDiceNotation, rollDice } from './random.js'
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number(value)
@@ -16,23 +16,54 @@ interface HistoryEntry {
   total: number
 }
 
+type RollMode = 'normal' | 'advantage' | 'disadvantage'
+
+const QUICK_PRESETS = ['1d6', '1d20', '2d6', '4d6', '1d100']
+
 export default function DiceRollerPlugin({ config }: PluginRenderProps) {
   const defaultSides = clampNumber(config.defaultSides, 2, 100, 6)
   const [count, setCount] = useState(2)
   const [sides, setSides] = useState(defaultSides)
+  const [notation, setNotation] = useState('2d6')
+  const [notationError, setNotationError] = useState<string | null>(null)
+  const [mode, setMode] = useState<RollMode>('normal')
   const [result, setResult] = useState<number[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
 
   const total = result.reduce((sum, value) => sum + value, 0)
 
   const handleRoll = () => {
-    const next = rollDice(count, sides)
+    let parsed: ReturnType<typeof parseDiceNotation>
+    try {
+      parsed = parseDiceNotation(notation)
+      setCount(parsed.count)
+      setSides(parsed.sides)
+      setNotationError(null)
+    } catch (error) {
+      setNotationError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    const first = rollDice(parsed.count, parsed.sides)
+    const second = mode === 'normal' ? null : rollDice(parsed.count, parsed.sides)
+    const firstTotal = first.reduce((sum, value) => sum + value, 0)
+    const secondTotal = second?.reduce((sum, value) => sum + value, 0) ?? firstTotal
+    const next =
+      mode === 'advantage'
+        ? firstTotal >= secondTotal
+          ? first
+          : (second ?? first)
+        : mode === 'disadvantage'
+          ? firstTotal <= secondTotal
+            ? first
+            : (second ?? first)
+          : first
+    if (parsed.modifier !== 0) next.push(parsed.modifier)
     setResult(next)
     setHistory((prev) =>
       [
         {
           id: Date.now(),
-          label: `${count}d${sides}`,
+          label: `${notation}${mode === 'normal' ? '' : mode === 'advantage' ? '（优势）' : '（劣势）'}`,
           values: next,
           total: next.reduce((sum, value) => sum + value, 0)
         },
@@ -97,6 +128,69 @@ export default function DiceRollerPlugin({ config }: PluginRenderProps) {
           />
         </label>
       </div>
+
+      <label
+        style={{
+          display: 'block',
+          marginBottom: 12,
+          fontSize: 13,
+          color: 'var(--ob-color-text-secondary, #52616b)'
+        }}
+      >
+        骰子表达式
+        <input
+          value={notation}
+          onChange={(event) => setNotation(event.target.value)}
+          placeholder="例如 2d6+1"
+          aria-label="骰子表达式"
+          style={{ ...numberInputStyle, marginTop: 6 }}
+        />
+      </label>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, margin: '-2px 0 12px' }}>
+        {QUICK_PRESETS.map((preset) => (
+          <button
+            key={preset}
+            onClick={() => setNotation(preset)}
+            style={{
+              padding: '5px 10px',
+              border: '1px solid var(--ob-color-border, #d9d9d9)',
+              borderRadius: 999,
+              background:
+                notation === preset
+                  ? 'var(--ob-color-primary-bg, #eef4ff)'
+                  : 'var(--ob-color-bg-container, #fff)',
+              color: 'var(--ob-color-text, #1f2933)',
+              cursor: 'pointer'
+            }}
+          >
+            {preset}
+          </button>
+        ))}
+      </div>
+      <label
+        style={{
+          display: 'block',
+          marginBottom: 12,
+          fontSize: 13,
+          color: 'var(--ob-color-text-secondary, #52616b)'
+        }}
+      >
+        投掷模式
+        <select
+          value={mode}
+          onChange={(event) => setMode(event.target.value as RollMode)}
+          style={{ ...numberInputStyle, marginTop: 6 }}
+        >
+          <option value="normal">标准</option>
+          <option value="advantage">优势（投两组取高）</option>
+          <option value="disadvantage">劣势（投两组取低）</option>
+        </select>
+      </label>
+      {notationError && (
+        <div style={{ color: 'var(--ob-color-error, #ff4d4f)', marginBottom: 10 }}>
+          {notationError}
+        </div>
+      )}
 
       <button
         onClick={handleRoll}

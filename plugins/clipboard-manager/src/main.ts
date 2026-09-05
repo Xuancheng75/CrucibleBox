@@ -71,6 +71,11 @@ const plugin: PluginMain = {
       case 'copyToClipboard': {
         if (msg.text === undefined) return { error: 'missing text' }
         await ctx.api.clipboard.write(msg.text)
+        // Clipboard monitors are intentionally debounced by the host.  Add
+        // explicit copies immediately so a fast copy-and-open flow never
+        // loses the item before the native change event arrives.
+        lastText = msg.text
+        if (msg.text) await enqueueHistoryMutation(() => addToHistory(msg.text!))
         return { ok: true }
       }
       default:

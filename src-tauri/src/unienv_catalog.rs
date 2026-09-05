@@ -250,24 +250,60 @@ const JAVA: [(&str, ToolArtifact); 8] = [
 
 /// Rust：rustup-init.exe 安装器（对齐 python/git 直装模式）。
 /// 摘要取自官方 sidecar https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe.sha256
-const RUST: [(&str, ToolArtifact); 1] = [(
-    "stable",
-    ToolArtifact {
-        filename: "rustup-init.exe",
-        sha256: "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
-        release_tag: None,
-    },
-)];
+const RUST: [(&str, ToolArtifact); 3] = [
+    (
+        "stable",
+        ToolArtifact {
+            filename: "rustup-init.exe",
+            sha256: "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+            release_tag: None,
+        },
+    ),
+    (
+        "beta",
+        ToolArtifact {
+            filename: "rustup-init.exe",
+            sha256: "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+            release_tag: None,
+        },
+    ),
+    (
+        "nightly",
+        ToolArtifact {
+            filename: "rustup-init.exe",
+            sha256: "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+            release_tag: None,
+        },
+    ),
+];
 
 /// PHP：windows.php.net NTS x64 zip（摘要为发布时官网制品实测值）
-const PHP: [(&str, ToolArtifact); 1] = [(
-    "8.3.33",
-    ToolArtifact {
-        filename: "php-8.3.33-nts-Win32-vs16-x64.zip",
-        sha256: "534399107056313246f424adbbb7937337e40fbbf6aa7bc26287ba9cfd2e4a2a",
-        release_tag: None,
-    },
-)];
+const PHP: [(&str, ToolArtifact); 3] = [
+    (
+        "8.2.30",
+        ToolArtifact {
+            filename: "php-8.2.30-nts-Win32-vs16-x64.zip",
+            sha256: "bdc06e9a98d182e7526d17da5f12f7432e4f98e3cf337b3998b4e15791494000",
+            release_tag: None,
+        },
+    ),
+    (
+        "8.3.33",
+        ToolArtifact {
+            filename: "php-8.3.33-nts-Win32-vs16-x64.zip",
+            sha256: "534399107056313246f424adbbb7937337e40fbbf6aa7bc26287ba9cfd2e4a2a",
+            release_tag: None,
+        },
+    ),
+    (
+        "8.4.16",
+        ToolArtifact {
+            filename: "php-8.4.16-nts-Win32-vs17-x64.zip",
+            sha256: "cfd66a27d32e0ce2f462527f8f29fd2d797c714083c07a32b6147d06a7553d6f",
+            release_tag: None,
+        },
+    ),
+];
 
 /// 工具显示名（catalog 内独立实现，避免依赖 service 层）
 fn display_name(tool: &str, _version: &str) -> String {

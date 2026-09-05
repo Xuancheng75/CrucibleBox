@@ -300,13 +300,26 @@ export function cloneFrame(frame: GifFrame): GifFrame {
   }
 }
 
-export function frameToDataURL(frame: GifFrame): string {
+export function frameToDataURL(frame: GifFrame, maxDimension = 192): string {
   const canvas = document.createElement('canvas')
-  canvas.width = frame.imageData.width
-  canvas.height = frame.imageData.height
+  const sourceWidth = frame.imageData.width
+  const sourceHeight = frame.imageData.height
+  const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight))
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale))
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale))
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Failed to get 2d context for frame preview')
-  ctx.putImageData(frame.imageData, 0, 0)
+  if (scale === 1) {
+    ctx.putImageData(frame.imageData, 0, 0)
+  } else {
+    const source = document.createElement('canvas')
+    source.width = sourceWidth
+    source.height = sourceHeight
+    const sourceContext = source.getContext('2d')
+    if (!sourceContext) throw new Error('Failed to get 2d context for frame preview source')
+    sourceContext.putImageData(frame.imageData, 0, 0)
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height)
+  }
   return canvas.toDataURL('image/png')
 }
 

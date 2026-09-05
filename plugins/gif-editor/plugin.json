@@ -1,9 +1,9 @@
 {
   "name": "gif-editor",
-  "version": "0.3.9",
+  "version": "0.5.0",
   "displayName": "GIF 编辑器",
   "description": "导入 GIF，按帧拆分，逐帧编辑图片，再合成导出 GIF",
-  "author": "OpenBox",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,

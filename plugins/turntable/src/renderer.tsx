@@ -128,6 +128,8 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
   const [editingItem, setEditingItem] = useState<TurntableItem | null>(null)
   const [form, setForm] = useState<ItemForm>({ label: '', weight: 1 })
   const [resultVisible, setResultVisible] = useState(false)
+  const [noRepeat, setNoRepeat] = useState(true)
+  const [spinHistory, setSpinHistory] = useState<string[]>([])
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rotationRef = useRef(0)
@@ -212,7 +214,7 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
     setWinner(null)
     setResultVisible(false)
 
-    const result = await api.sendToBackend({ type: 'spin' }) as SpinResult | { error: string }
+    const result = await api.sendToBackend({ type: 'spin', payload: { noRepeat } }) as SpinResult | { error: string }
 
     if (isErrorResult(result)) {
       api.notify('转盘抽奖', result.error as string)
@@ -262,6 +264,7 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
         setSpinning(false)
         setWinner(spinResult.winner)
         setResultVisible(true)
+        setSpinHistory((history) => [spinResult.winner.label, ...history].slice(0, 8))
       }
     }
 
@@ -367,6 +370,10 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
             >
               {spinning ? '旋转中...' : '开始抽奖'}
             </button>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 13, color: 'var(--ob-color-text-secondary, #666)' }}>
+              <input type="checkbox" checked={noRepeat} onChange={(event) => setNoRepeat(event.target.checked)} />
+              避免连续抽中同一选项
+            </label>
 
             {resultVisible && winner && (
               <div style={{
@@ -388,6 +395,14 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
               </div>
             )}
           </div>
+          {spinHistory.length > 0 && (
+            <div style={{ ...sectionBg, marginTop: 12 }}>
+              <h3 style={{ margin: '0 0 8px', fontSize: 15 }}>最近中奖记录</h3>
+              <div style={{ color: 'var(--ob-color-text-secondary, #666)', fontSize: 13 }}>
+                {spinHistory.map((label, index) => `${index + 1}. ${label}`).join('　')}
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 320 }}>

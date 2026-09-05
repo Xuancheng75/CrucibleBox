@@ -2,10 +2,11 @@ import { useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import type { PluginRenderProps } from 'cruciblebox-plugin-api'
 
-type TabId = 'json' | 'base64' | 'url' | 'timestamp' | 'uuid' | 'regex' | 'hash'
+type TabId = 'json' | 'diff' | 'base64' | 'url' | 'timestamp' | 'uuid' | 'regex' | 'hash'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'json', label: 'JSON' },
+  { id: 'diff', label: 'JSON 对比' },
   { id: 'base64', label: 'Base64' },
   { id: 'url', label: 'URL' },
   { id: 'timestamp', label: '时间戳' },
@@ -131,10 +132,81 @@ const s: Record<string, CSSProperties> = {
   }
 }
 
+function flattenJson(value: unknown, path = '$', output = new Map<string, string>()): Map<string, string> {
+  if (value && typeof value === 'object') {
+    const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item] as const) : Object.entries(value)
+    if (entries.length === 0) output.set(path, JSON.stringify(value))
+    for (const [key, child] of entries) flattenJson(child, `${path}.${key}`, output)
+  } else {
+    output.set(path, JSON.stringify(value))
+  }
+  return output
+}
+
+function JsonDiffTab() {
+  const [left, setLeft] = useState('')
+  const [right, setRight] = useState('')
+  const [result, setResult] = useState('')
+  const [error, setError] = useState('')
+
+  const compare = () => {
+    try {
+      const a = flattenJson(JSON.parse(left))
+      const b = flattenJson(JSON.parse(right))
+      const paths = [...new Set([...a.keys(), ...b.keys()])].sort()
+      const changes = paths.flatMap((path) => {
+        if (!a.has(path)) return [`+ ${path}: ${b.get(path)}`]
+        if (!b.has(path)) return [`- ${path}: ${a.get(path)}`]
+        return a.get(path) === b.get(path) ? [] : [`~ ${path}: ${a.get(path)} → ${b.get(path)}`]
+      })
+      setResult(changes.length ? changes.join('\n') : '两个 JSON 结构与值完全一致')
+      setError('')
+    } catch (e) {
+      setError((e as Error).message)
+      setResult('')
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+        <textarea style={s.textarea} value={left} onChange={(e) => setLeft(e.target.value)} placeholder="基准 JSON" />
+        <textarea style={s.textarea} value={right} onChange={(e) => setRight(e.target.value)} placeholder="目标 JSON" />
+      </div>
+      <button style={{ ...s.btn, marginTop: 10 }} onClick={compare}>结构化对比</button>
+      {error && <div style={s.error}>{error}</div>}
+      {result && <div style={s.output}>{result}</div>}
+    </div>
+  )
+}
+
 function JsonTab() {
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+
+  const runQuery = () => {
+    try {
+      const parsed: unknown = JSON.parse(input)
+      const value = query
+        .trim()
+        .replace(/^\$\.?/, '')
+        .split('.')
+        .filter(Boolean)
+        .reduce<unknown>((current, key) => {
+          if (current && typeof current === 'object' && key in current) {
+            return (current as Record<string, unknown>)[key]
+          }
+          throw new Error(`未找到路径: ${key}`)
+        }, parsed)
+      setOutput(JSON.stringify(value, null, 2))
+      setError('')
+    } catch (e) {
+      setError((e as Error).message)
+      setOutput('')
+    }
+  }
 
   const format = () => {
     try {
@@ -179,6 +251,11 @@ function JsonTab() {
         <button style={s.btn} onClick={format}>格式化</button>
         <button style={s.btn} onClick={minify}>压缩</button>
         <button style={s.btnSecondary} onClick={validate}>校验</button>
+      </div>
+      <label style={s.label}>JSONPath 查询（支持 $.user.name 这类点路径）</label>
+      <div style={{ ...s.row, alignItems: 'center' }}>
+        <input style={s.input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="$.data.items" />
+        <button style={s.btnSecondary} onClick={runQuery}>查询</button>
       </div>
       {error && <div style={s.error}>{error}</div>}
       {output && <div style={s.output}>{output}</div>}
@@ -465,6 +542,7 @@ export default function JsonToolkitPlugin(_props: PluginRenderProps) {
         ))}
       </div>
       {activeTab === 'json' && <JsonTab />}
+      {activeTab === 'diff' && <JsonDiffTab />}
       {activeTab === 'base64' && <Base64Tab />}
       {activeTab === 'url' && <UrlTab />}
       {activeTab === 'timestamp' && <TimestampTab />}

@@ -1,23 +1,25 @@
 {
   "unienv": {
     "name": "unienv",
-    "version": "0.6.0",
-    "digest": "81c73dc3e19772a02f41c05540d5c8e36f17999d3517e45853175a093f6f169a",
+    "version": "0.11.0",
+    "digest": "75d84102ff8db835e60021d76d611a0a995ebdbb0e14cfdc28c71f21ccca3c92",
     "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.1.2",
+    "version": "0.10.0",
     "permissions": ["trusted:document-engine", "dialog"],
-    "digest": "37d713086be0df5213eb642739124ce973a0d4006314f800978946baa5c282b1",
+    "digest": "e1d7bba1695ed2fc35ef6b48db72a6a463a8450d9c2a0df8e60a21c8b1de0a85",
     "files": [
       "dist/main.js",
       "dist/renderer.js",
       "plugin.json",
-      "assets/models/ppocrv4-mobile-zh-en/manifest.json",
-      "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx",
-      "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx",
-      "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt"
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
+      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
     ]
   }
 }

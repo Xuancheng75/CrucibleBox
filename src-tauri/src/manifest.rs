@@ -29,6 +29,7 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "manifestVersion",
     "backendApiVersion",
     "rendererApiVersion",
+    "minHostVersion",
     "permissions",
     "config",
 ];
@@ -64,6 +65,7 @@ pub struct Manifest {
     pub backend: Option<bool>,
     pub backend_api_version: Option<u8>,
     pub renderer_api_version: Option<u8>,
+    pub min_host_version: Option<String>,
     pub permissions: Vec<String>,
     pub config: serde_json::Map<String, serde_json::Value>,
 }
@@ -101,6 +103,16 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         get_api_version(object, "backendApiVersion", "manifest.backendApiVersion")?;
     let renderer_api_version =
         get_api_version(object, "rendererApiVersion", "manifest.rendererApiVersion")?;
+    let min_host_version = get_optional_string(
+        object,
+        "minHostVersion",
+        "manifest.minHostVersion",
+        100,
+        false,
+    )?;
+    if let Some(version) = &min_host_version {
+        parse_semver(version).map_err(|error| format!("manifest.minHostVersion: {error}"))?;
+    }
 
     // 规则 5：backend 可选，必须 boolean
     let backend = match object.get("backend") {
@@ -155,6 +167,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         backend,
         backend_api_version,
         renderer_api_version,
+        min_host_version,
         permissions,
         config,
     })
@@ -214,6 +227,25 @@ pub fn assert_manifest_installable(
                 .to_string(),
         )
     }
+}
+
+/// Reject a plugin whose declared minimum host version is newer than this
+/// application.  The comparison uses the same SemVer ordering as upgrade
+/// checks, including beta/rc precedence.
+pub fn assert_host_version_compatible(
+    manifest: &Manifest,
+    host_version: &str,
+) -> Result<(), String> {
+    let Some(minimum) = &manifest.min_host_version else {
+        return Ok(());
+    };
+    if compare_versions(host_version, minimum)? < 0 {
+        return Err(format!(
+            "{}: requires host >= {}, current host is {}",
+            manifest.name, minimum, host_version
+        ));
+    }
+    Ok(())
 }
 
 /// 校验 main/renderer 入口：canonicalize 包含性 + 常规文件 + 非 symlink
@@ -843,6 +875,19 @@ mod tests {
     }
 
     #[test]
+    fn host_version_constraint_parses_and_validates() {
+        let manifest = expect_ok(parse_with(|value| {
+            value["minHostVersion"] = json!("2.0.0-beta.3");
+        }));
+        assert_eq!(manifest.min_host_version.as_deref(), Some("2.0.0-beta.3"));
+
+        let error = expect_err(parse_with(|value| {
+            value["minHostVersion"] = json!("2.0");
+        }));
+        assert!(error.contains("manifest.minHostVersion"), "error: {error}");
+    }
+
+    #[test]
     fn rejects_unknown_top_level_field() {
         let error = expect_err(parse_with(|value| {
             value["evil"] = json!(1);
@@ -1127,6 +1172,16 @@ mod tests {
         }));
         assert!(assert_manifest_installable(&v1, false).is_err());
         assert!(assert_manifest_installable(&v1, true).is_ok());
+    }
+
+    #[test]
+    fn host_version_compatibility() {
+        let manifest = expect_ok(parse_with(|value| {
+            value["minHostVersion"] = json!("2.0.0-beta.3");
+        }));
+        assert!(assert_host_version_compatible(&manifest, "2.0.0-beta.4").is_ok());
+        let error = expect_err(assert_host_version_compatible(&manifest, "2.0.0-beta.2"));
+        assert!(error.contains("requires host"), "error: {error}");
     }
 
     #[test]

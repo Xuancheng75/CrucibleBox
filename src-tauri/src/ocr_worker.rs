@@ -8,7 +8,7 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -43,6 +43,8 @@ pub struct OcrWorkerOptions {
     pub model_directory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_profile: Option<String>,
 }
 
 impl OcrWorkerRequest {
@@ -53,6 +55,7 @@ impl OcrWorkerRequest {
         device: Option<String>,
         model_directory: Option<String>,
         dictionary_path: Option<String>,
+        model_profile: Option<String>,
     ) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -64,6 +67,7 @@ impl OcrWorkerRequest {
                 device,
                 model_directory,
                 dictionary_path,
+                model_profile,
             }),
         }
     }
@@ -143,6 +147,55 @@ impl OcrWorkerManager {
             .into_iter()
             .find(|candidate| candidate.is_file())
             .unwrap_or_default()
+    }
+
+    fn resolve_ort_runtime(worker_exe: &Path) -> Result<PathBuf, String> {
+        const ORT_DLL: &str = "onnxruntime.dll";
+        const ORT_PROVIDER_DLL: &str = "onnxruntime_providers_shared.dll";
+        let mut candidates = Vec::new();
+        if let Some(configured) = std::env::var_os("ORT_DYLIB_PATH") {
+            candidates.push(PathBuf::from(configured));
+        }
+        if let Some(worker_dir) = worker_exe.parent() {
+            candidates.push(worker_dir.join(ORT_DLL));
+            candidates.push(worker_dir.join("binaries").join(ORT_DLL));
+            candidates.push(worker_dir.join("resources").join(ORT_DLL));
+            if let Some(parent) = worker_dir.parent() {
+                candidates.push(parent.join(ORT_DLL));
+                candidates.push(parent.join("binaries").join(ORT_DLL));
+                candidates.push(parent.join("resources").join(ORT_DLL));
+            }
+        }
+        if let Some(app_dir) = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(PathBuf::from))
+        {
+            candidates.push(app_dir.join(ORT_DLL));
+            candidates.push(app_dir.join("binaries").join(ORT_DLL));
+            candidates.push(app_dir.join("resources").join(ORT_DLL));
+        }
+
+        let mut checked = Vec::new();
+        for candidate in candidates {
+            if checked.contains(&candidate) {
+                continue;
+            }
+            checked.push(candidate.clone());
+            let Some(parent) = candidate.parent() else {
+                continue;
+            };
+            if candidate.is_file() && parent.join(ORT_PROVIDER_DLL).is_file() {
+                return Ok(candidate);
+            }
+        }
+        Err(format!(
+            "OCR runtime is incomplete; expected {ORT_DLL} and {ORT_PROVIDER_DLL} in the same directory; checked: {}",
+            checked
+                .iter()
+                .map(|path| path.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ))
     }
 
     pub fn status(&self) -> Value {
@@ -323,10 +376,21 @@ impl OcrWorkerManager {
             ));
         }
         let mut command = Command::new(&self.worker_exe);
+        let ort_runtime = Self::resolve_ort_runtime(&self.worker_exe)?;
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .env("ORT_DYLIB_PATH", &ort_runtime);
+        if let Some(runtime_dir) = ort_runtime.parent() {
+            let mut search_paths = vec![runtime_dir.to_path_buf()];
+            if let Some(existing) = std::env::var_os("PATH") {
+                search_paths.extend(std::env::split_paths(&existing));
+            }
+            if let Ok(joined) = std::env::join_paths(search_paths) {
+                command.env("PATH", joined);
+            }
+        }
         if let Some(parent) = self.worker_exe.parent() {
             command.current_dir(parent);
         }
@@ -353,6 +417,12 @@ impl OcrWorkerManager {
                     let mut reader = std::io::BufReader::new(stderr);
                     let mut sink = Vec::new();
                     let _ = reader.read_to_end(&mut sink);
+                    if !sink.is_empty() {
+                        eprintln!(
+                            "[ocr-worker] stderr: {}",
+                            String::from_utf8_lossy(&sink).trim()
+                        );
+                    }
                 })
                 .map_err(|error| format!("spawn OCR worker stderr thread failed: {error}"))?;
         }
@@ -424,6 +494,7 @@ mod tests {
             Some("cpu".into()),
             Some("C:\\models".into()),
             Some("C:\\models\\dict.txt".into()),
+            Some("ppocrv4-mobile-zh-en".into()),
         );
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["protocolVersion"], 1);
@@ -444,13 +515,38 @@ mod tests {
     }
 
     #[test]
+    fn ort_resolver_accepts_packaged_binaries_directory() {
+        let dir = temp_dir("ort-packaged");
+        let worker = dir.join("ocr-worker.exe");
+        let runtime_dir = dir.join("binaries");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        fs::write(&worker, b"worker").unwrap();
+        fs::write(runtime_dir.join("onnxruntime.dll"), b"runtime").unwrap();
+        fs::write(
+            runtime_dir.join("onnxruntime_providers_shared.dll"),
+            b"providers",
+        )
+        .unwrap();
+        let found = OcrWorkerManager::resolve_ort_runtime(&worker).unwrap();
+        assert_eq!(found, runtime_dir.join("onnxruntime.dll"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn unavailable_worker_fails_without_spawning() {
         let manager = OcrWorkerManager::new(
             PathBuf::from("C:\\definitely-missing\\ocr-worker.exe"),
             Duration::from_millis(100),
         );
-        let request =
-            OcrWorkerRequest::new("task-1".into(), "input.png".into(), None, None, None, None);
+        let request = OcrWorkerRequest::new(
+            "task-1".into(),
+            "input.png".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let cancelled = AtomicBool::new(false);
         let error = manager.run(&request, &cancelled, &|_| {}).unwrap_err();
         assert!(error.contains("unavailable"));

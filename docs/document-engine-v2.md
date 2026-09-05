@@ -2,8 +2,9 @@
 
 > 基于 `OCR.md` 全新方案，替代旧版 Python Worker 架构。
 > 本文档为开发计划与架构设计，覆盖 Phase 0-10 全部阶段。
-> **实施状态**：本文是设计基线；已完成实现、门禁和限制以
-> [`document-engine-development-report.md`](document-engine-development-report.md) 为准。
+> **实施状态**：2.0.0 / Document Engine 0.10.0 已按本架构继续落地；已完成实现、门禁和限制以
+> [`document-engine-development-report.md`](document-engine-development-report.md) 为准。当前默认 OCR profile 为
+> `ppocrv6-small-det-v5-mobile-rec`，公式阶段使用可替换的本地适配器。
 
 ## 1. 项目概述
 

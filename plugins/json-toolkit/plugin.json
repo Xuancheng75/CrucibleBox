@@ -1,9 +1,9 @@
 {
   "name": "json-toolkit",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "displayName": "JSON/文本工具箱",
-  "description": "JSON 格式化/校验、Base64、URL 编解码、时间戳转换、UUID 生成、正则测试、文本哈希等实用工具集合。",
-  "author": "cruciblebox",
+  "description": "JSON 格式化、路径查询与结构化对比，以及 Base64、URL、时间戳、UUID、正则和哈希工具。",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "backend": false,

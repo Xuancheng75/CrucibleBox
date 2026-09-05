@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  appendByteBoundedEntry,
   appendHistoryEntry,
   applyHistoryDelta,
   applyFilterValues,
@@ -160,6 +161,39 @@ describe('renderer thumbnail state', () => {
 
     expect(restored.get('stable-id')?.url).toBe('1')
     expect(render).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases removed and replaced thumbnail URLs when requested', () => {
+    const release = vi.fn()
+    const render = vi.fn((item: FrameState<TestImage>) => `${item.id}:${item.imageData.pixels[0]}`)
+    const first = reconcileThumbnailCache(
+      [frame('a', { pixels: [1], bytes: 1 })],
+      new Map(),
+      render
+    )
+    const replaced = reconcileThumbnailCache(
+      [frame('b', { pixels: [2], bytes: 1 })],
+      first,
+      render,
+      release
+    )
+
+    expect(release).toHaveBeenCalledWith('a:1')
+    expect(replaced.get('b')?.url).toBe('b:2')
+  })
+})
+
+describe('byte-bounded editor history', () => {
+  it('keeps the newest entry while evicting old payloads by bytes', () => {
+    const stack = appendByteBoundedEntry(
+      [{ id: 'old', bytes: 8 }],
+      { id: 'new', bytes: 8 },
+      50,
+      10,
+      (value) => value.bytes
+    )
+
+    expect(stack).toEqual([{ id: 'new', bytes: 8 }])
   })
 })
 

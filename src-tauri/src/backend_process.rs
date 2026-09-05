@@ -446,6 +446,8 @@ pub struct BackendProcessManager {
     maintenance: Mutex<HashSet<String>>,
     /// 每个插件的生命周期操作单飞锁。导入、升级、启停、卸载和恢复不得并行。
     lifecycle: Mutex<HashSet<String>>,
+    /// 激活单飞锁。只保护同一插件的 spawn/initialize，绝不跨插件串行化。
+    activating: Mutex<HashSet<String>>,
     db: Arc<Mutex<Db>>,
     sidecar_exe: PathBuf,
     /// 事件发射回调（main.rs setup 注入 app.emit；未注入时 no-op）
@@ -475,6 +477,7 @@ impl BackendProcessManager {
             crash_history: Mutex::new(HashMap::new()),
             maintenance: Mutex::new(HashSet::new()),
             lifecycle: Mutex::new(HashSet::new()),
+            activating: Mutex::new(HashSet::new()),
             db,
             sidecar_exe,
             emitter: Mutex::new(None),
@@ -567,8 +570,10 @@ impl BackendProcessManager {
         plugin_id: &str,
         record: crate::db::PluginBackendRecord,
     ) -> Result<Arc<BackendProcess>, String> {
-        let maintenance_guard = self.maintenance.lock().unwrap();
-        if maintenance_guard.contains(plugin_id) {
+        // Do not hold the maintenance registry lock while spawning a process
+        // or waiting for lifecycle.initialize.  A slow plugin must not block
+        // maintenance checks for unrelated plugins.
+        if self.maintenance.lock().unwrap().contains(plugin_id) {
             return Err("plugin is in maintenance".into());
         }
         if let Some(p) = self.processes.lock().unwrap().get(plugin_id) {
@@ -577,35 +582,44 @@ impl BackendProcessManager {
         if !record.enabled {
             return Err("plugin is disabled".into());
         }
+        {
+            let mut activating = self.activating.lock().unwrap();
+            if !activating.insert(plugin_id.to_string()) {
+                return Err("plugin activation already in progress".into());
+            }
+        }
         let guard = crate::permissions::PermissionGuard::from_json(&record.permissions);
-        let proc = BackendProcess::spawn(
-            plugin_id.to_string(),
-            guard,
-            self.db.clone(),
-            self.sidecar_exe.clone(),
-            PathBuf::from(&record.installed_path),
-            record.entry_main,
-            self.crash_callback(),
-            self.emitter(),
-        )?;
-        // initialize
-        if let Err(error) = proc.request(
-            "lifecycle.initialize",
-            json!({ "pluginId": plugin_id, "config": {} }),
-        ) {
-            let _ = proc.dispose();
-            return Err(error);
-        }
-        self.processes
-            .lock()
-            .unwrap()
-            .insert(plugin_id.to_string(), proc.clone());
-        // 1.9.17：clipboard 权限插件自动启动宿主侧剪贴板监控
-        if proc.permissions.has(crate::permissions::CLIPBOARD) {
-            let _ = crate::clipboard_monitor::start(plugin_id, self.emitter());
-        }
-        drop(maintenance_guard);
-        Ok(proc)
+        let result = (|| {
+            let proc = BackendProcess::spawn(
+                plugin_id.to_string(),
+                guard,
+                self.db.clone(),
+                self.sidecar_exe.clone(),
+                PathBuf::from(&record.installed_path),
+                record.entry_main,
+                self.crash_callback(),
+                self.emitter(),
+            )?;
+            // initialize
+            if let Err(error) = proc.request(
+                "lifecycle.initialize",
+                json!({ "pluginId": plugin_id, "config": {} }),
+            ) {
+                let _ = proc.dispose();
+                return Err(error);
+            }
+            self.processes
+                .lock()
+                .unwrap()
+                .insert(plugin_id.to_string(), proc.clone());
+            // 1.9.17：clipboard 权限插件自动启动宿主侧剪贴板监控
+            if proc.permissions.has(crate::permissions::CLIPBOARD) {
+                let _ = crate::clipboard_monitor::start(plugin_id, self.emitter());
+            }
+            Ok(proc)
+        })();
+        self.activating.lock().unwrap().remove(plugin_id);
+        result
     }
 
     /// 标记插件进入维护窗口。调用方必须在完成操作后调用 end_maintenance。
@@ -1212,7 +1226,7 @@ mod tests {
 
         let tools = send(&proc, "listTools", json!({ "type": "listTools" }));
         assert!(
-            tools.as_array().map(|a| a.len() == 7).unwrap_or(false),
+            tools.as_array().map(|a| a.len() == 11).unwrap_or(false),
             "listTools: {tools}"
         );
         send(&proc, "listCombos", json!({ "type": "listCombos" }));
