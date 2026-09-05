@@ -366,26 +366,54 @@ type DocumentBlock = (
     Option<String>,
     Option<u8>,
     Option<String>,
+    Option<crate::document_math::MathNode>,
 );
 
 fn document_blocks(document: &Value) -> Vec<DocumentBlock> {
-    let mut blocks = Vec::new();
+    let mut blocks: Vec<DocumentBlock> = Vec::new();
     if let Some(pages) = document.get("pages").and_then(Value::as_array) {
         for page in pages {
             let number = page.get("number").and_then(Value::as_u64).unwrap_or(1) as usize;
+            let mut previous_source_bbox = None;
+            let mut paragraph_left = None;
             if let Some(page_blocks) = page.get("blocks").and_then(Value::as_array) {
                 for block in page_blocks {
                     let Some(content) = block.get("content").and_then(Value::as_str) else {
                         continue;
                     };
                     if !content.trim().is_empty() {
+                        let block_type = block
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("paragraph")
+                            .to_string();
+                        let bbox = converter_block_bbox(block);
+                        let merge_plain_text = matches!(block_type.as_str(), "text" | "paragraph")
+                            && blocks.last().is_some_and(|previous: &DocumentBlock| {
+                                previous.0 == number
+                                    && matches!(previous.1.as_str(), "text" | "paragraph")
+                                    && adjacent_text_geometry(
+                                        previous_source_bbox,
+                                        bbox,
+                                        paragraph_left,
+                                    )
+                            });
+                        if merge_plain_text {
+                            let previous = blocks.last_mut().expect("checked above");
+                            if previous.2.ends_with('-')
+                                && content.trim_start().starts_with(char::is_lowercase)
+                            {
+                                previous.2.pop();
+                            } else if !previous.2.ends_with(char::is_whitespace) {
+                                previous.2.push(' ');
+                            }
+                            previous.2.push_str(content.trim());
+                            previous_source_bbox = bbox;
+                            continue;
+                        }
                         blocks.push((
                             number,
-                            block
-                                .get("type")
-                                .and_then(Value::as_str)
-                                .unwrap_or("paragraph")
-                                .to_string(),
+                            block_type,
                             content.trim().to_string(),
                             crate::document_math::latex_from_block(block).or_else(|| {
                                 block
@@ -401,7 +429,10 @@ fn document_blocks(document: &Value) -> Vec<DocumentBlock> {
                                 .get("displayOrInline")
                                 .and_then(Value::as_str)
                                 .map(ToOwned::to_owned),
+                            crate::document_math::ast_from_block(block),
                         ));
+                        previous_source_bbox = bbox;
+                        paragraph_left = bbox.map(|value| value[0]);
                     }
                 }
             }
@@ -410,19 +441,86 @@ fn document_blocks(document: &Value) -> Vec<DocumentBlock> {
     blocks
 }
 
+fn converter_block_bbox(block: &Value) -> Option<[f64; 4]> {
+    let values = block.get("bbox")?.as_array()?;
+    if values.len() != 4 {
+        return None;
+    }
+    Some([
+        values[0].as_f64()?,
+        values[1].as_f64()?,
+        values[2].as_f64()?,
+        values[3].as_f64()?,
+    ])
+}
+
+fn adjacent_text_geometry(
+    left: Option<[f64; 4]>,
+    right: Option<[f64; 4]>,
+    paragraph_left: Option<f64>,
+) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+    let (left_y0, left_y1) = (left[1].min(left[3]), left[1].max(left[3]));
+    let (right_y0, right_y1) = (right[1].min(right[3]), right[1].max(right[3]));
+    let left_height = (left_y1 - left_y0).max(1.0);
+    let right_height = (right_y1 - right_y0).max(1.0);
+    let height = left_height.max(right_height);
+    let overlap = (left_y1.min(right_y1) - left_y0.max(right_y0)).max(0.0);
+    let same_line =
+        overlap / left_height.min(right_height) >= 0.45 && right[0] - left[2] <= height * 4.0;
+    let center_delta = ((left_y0 + left_y1) - (right_y0 + right_y1)).abs() / 2.0;
+    let expected_left = paragraph_left.unwrap_or(left[0]);
+    let next_line =
+        center_delta <= height * 1.8 && (expected_left - right[0]).abs() <= height * 2.5;
+    same_line || next_line
+}
+
+fn same_line_geometry(left: Option<[f64; 4]>, right: Option<[f64; 4]>) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+    let (left_y0, left_y1) = (left[1].min(left[3]), left[1].max(left[3]));
+    let (right_y0, right_y1) = (right[1].min(right[3]), right[1].max(right[3]));
+    let minimum_height = (left_y1 - left_y0).min(right_y1 - right_y0).max(1.0);
+    let maximum_height = (left_y1 - left_y0).max(right_y1 - right_y0).max(1.0);
+    let overlap = (left_y1.min(right_y1) - left_y0.max(right_y0)).max(0.0);
+    overlap / minimum_height >= 0.35 && right[0] - left[2] <= maximum_height * 4.0
+}
+
 fn document_to_text(document: &Value) -> String {
     document_blocks(document)
         .into_iter()
-        .map(|(_, _, content, _, _, _)| content)
+        .map(|(_, block_type, content, _, _, _, ast)| {
+            if matches!(block_type.as_str(), "formula" | "matrix") {
+                ast.as_ref()
+                    .map(crate::document_math::to_plain_text)
+                    .unwrap_or(content)
+            } else {
+                content
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
 fn document_to_markdown(document: &Value) -> String {
     let mut result = String::new();
-    for (_, block_type, content, latex, level, display) in document_blocks(document) {
+    let mut previous_was_text = false;
+    let mut pending_inline_formula = false;
+    let mut previous_page = None;
+    for (page, block_type, content, latex, level, display, _) in document_blocks(document) {
+        if previous_page.is_some() && previous_page != Some(page) && pending_inline_formula {
+            result.push_str("\n\n");
+            pending_inline_formula = false;
+        }
+        previous_page = Some(page);
         match block_type.as_str() {
             "heading" => {
+                if pending_inline_formula {
+                    result.push_str("\n\n");
+                }
                 // Keep chapter/section hierarchy readable while remaining
                 // compatible with blocks produced by older parser versions.
                 let lower = content.to_ascii_lowercase();
@@ -440,17 +538,39 @@ fn document_to_markdown(document: &Value) -> String {
             "formula" | "matrix" => {
                 let formula = latex.unwrap_or_else(|| normalize_formula(&content));
                 if display.as_deref() == Some("inline") && block_type == "formula" {
+                    if previous_was_text && result.ends_with("\n\n") {
+                        result.truncate(result.len() - 2);
+                        result.push(' ');
+                    } else if pending_inline_formula {
+                        result.push(' ');
+                    }
                     result.push('$');
                     result.push_str(&formula);
                     result.push('$');
+                    pending_inline_formula = true;
+                    previous_was_text = false;
+                    continue;
                 } else {
+                    if pending_inline_formula {
+                        result.push_str("\n\n");
+                    }
                     result.push_str("$$\n");
                     result.push_str(&formula);
                     result.push_str("\n$$");
                 }
             }
-            _ => result.push_str(&content),
+            _ => {
+                if pending_inline_formula {
+                    result.push(' ');
+                }
+                result.push_str(&content);
+            }
         }
+        result.push_str("\n\n");
+        previous_was_text = matches!(block_type.as_str(), "text" | "paragraph");
+        pending_inline_formula = false;
+    }
+    if pending_inline_formula {
         result.push_str("\n\n");
     }
     result
@@ -465,7 +585,7 @@ fn document_to_html(document: &Value) -> String {
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Document</title><style>body{max-width:980px;margin:2rem auto;padding:0 2rem;font-family:system-ui,sans-serif;line-height:1.65;color:#202124}.page{break-after:page;position:relative}.formula{font-family:serif;text-align:center;margin:1rem 0;font-size:1.1em}.caption{color:#666;font-size:.9em}</style></head><body>\n",
     );
     let mut current_page = None;
-    for (page, block_type, content, latex, level, _) in document_blocks(document) {
+    for (page, block_type, content, latex, level, _, _) in document_blocks(document) {
         if current_page != Some(page) {
             if current_page.is_some() {
                 result.push_str("</section>\n");
@@ -549,7 +669,7 @@ fn document_to_docx(document: &Value) -> Result<Vec<u8>, String> {
         .start_file("word/styles.xml", options)
         .map_err(|error| format!("创建 DOCX 样式失败: {error}"))?;
     writer
-        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="25"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="720"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:rPr><w:i/><w:color w:val="666666"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Formula"><w:name w:val="Formula"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr></w:style></w:styles>"#)
+        .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="120" w:after="60"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="100" w:after="40"/></w:pPr><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="80" w:after="40"/></w:pPr><w:rPr><w:b/><w:sz w:val="25"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="720"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:rPr><w:i/><w:color w:val="666666"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Formula"><w:name w:val="Formula"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="0"/></w:pPr></w:style></w:styles>"#)
         .map_err(|error| error.to_string())?;
     writer
         .start_file("word/numbering.xml", options)
@@ -579,41 +699,168 @@ fn document_to_docx_xml(document: &Value) -> String {
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>"#,
     );
-    let mut previous_page = None;
-    for (page, block_type, content, latex, level, _) in document_blocks(document) {
-        if previous_page.is_some() && previous_page != Some(page) {
-            xml.push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
+    if let Some(pages) = document.get("pages").and_then(Value::as_array) {
+        for (page_index, page) in pages.iter().enumerate() {
+            if page_index > 0 {
+                xml.push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
+            }
+            let mut flow = DocxFlowParagraph::default();
+            for block in page
+                .get("blocks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let content = block
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if content.is_empty() {
+                    continue;
+                }
+                let block_type = block
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("paragraph");
+                let bbox = converter_block_bbox(block);
+                let display = block.get("displayOrInline").and_then(Value::as_str);
+                let inline_formula = block_type == "formula" && display == Some("inline");
+                let plain_text = matches!(block_type, "text" | "paragraph");
+                let can_join = if flow.runs.is_empty() {
+                    true
+                } else if inline_formula || flow.last_was_formula {
+                    same_line_geometry(flow.last_bbox, bbox)
+                } else {
+                    plain_text && adjacent_text_geometry(flow.last_bbox, bbox, flow.paragraph_left)
+                };
+                if (plain_text || inline_formula) && can_join {
+                    if inline_formula {
+                        flow.push_formula(block, bbox);
+                    } else {
+                        flow.push_text(content, bbox);
+                    }
+                    continue;
+                }
+                flow.flush_into(&mut xml);
+                if plain_text || inline_formula {
+                    if inline_formula {
+                        flow.push_formula(block, bbox);
+                    } else {
+                        flow.push_text(content, bbox);
+                    }
+                } else {
+                    push_standalone_docx_block(&mut xml, block, block_type, content);
+                }
+            }
+            flow.flush_into(&mut xml);
         }
-        previous_page = Some(page);
-        let style = if block_type == "heading" {
-            let style_name = format!("Heading{}", level.unwrap_or(2));
-            format!("<w:pPr><w:pStyle w:val=\"{style_name}\"/></w:pPr>")
-        } else if block_type == "list" {
-            "<w:pPr><w:pStyle w:val=\"ListParagraph\"/><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr>".to_string()
-        } else if block_type == "caption" {
-            "<w:pPr><w:pStyle w:val=\"Caption\"/></w:pPr>".to_string()
-        } else if matches!(block_type.as_str(), "formula" | "matrix") {
-            "<w:pPr><w:pStyle w:val=\"Formula\"/></w:pPr>".to_string()
-        } else {
-            String::new()
-        };
-        if block_type == "table" {
-            xml.push_str(&table_to_docx_xml(&content));
-            continue;
+    }
+    xml.push_str(r#"<w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr></w:body></w:document>"#);
+    xml
+}
+
+#[derive(Default)]
+struct DocxFlowParagraph {
+    runs: String,
+    last_bbox: Option<[f64; 4]>,
+    paragraph_left: Option<f64>,
+    last_was_formula: bool,
+}
+
+impl DocxFlowParagraph {
+    fn push_text(&mut self, content: &str, bbox: Option<[f64; 4]>) {
+        let needs_space = !self.runs.is_empty();
+        self.runs.push_str("<w:r><w:t xml:space=\"preserve\">");
+        if needs_space {
+            self.runs.push(' ');
+        }
+        self.runs.push_str(&escape_xml(content));
+        self.runs.push_str("</w:t></w:r>");
+        if self.paragraph_left.is_none() {
+            self.paragraph_left = bbox.map(|value| value[0]);
+        }
+        self.last_bbox = bbox;
+        self.last_was_formula = false;
+    }
+
+    fn push_formula(&mut self, block: &Value, bbox: Option<[f64; 4]>) {
+        let content = block.get("content").and_then(Value::as_str).unwrap_or("");
+        let latex = crate::document_math::latex_from_block(block)
+            .or_else(|| {
+                block
+                    .get("latex")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| normalize_formula(content));
+        if !self.runs.is_empty() {
+            self.runs
+                .push_str("<w:r><w:t xml:space=\"preserve\"> </w:t></w:r>");
+        }
+        let ast = crate::document_math::ast_from_block(block);
+        self.runs
+            .push_str(&formula_to_omml(ast.as_ref(), &latex, true));
+        if self.paragraph_left.is_none() {
+            self.paragraph_left = bbox.map(|value| value[0]);
+        }
+        self.last_bbox = bbox;
+        self.last_was_formula = true;
+    }
+
+    fn flush_into(&mut self, xml: &mut String) {
+        if self.runs.is_empty() {
+            return;
         }
         xml.push_str("<w:p>");
-        xml.push_str(&style);
-        if matches!(block_type.as_str(), "formula" | "matrix") {
-            xml.push_str(&formula_to_omml(latex.as_deref().unwrap_or(&content)));
-        } else {
-            xml.push_str("<w:r><w:t xml:space=\"preserve\">");
-            xml.push_str(&escape_xml(&content));
-            xml.push_str("</w:t></w:r>");
-        }
+        xml.push_str(&self.runs);
         xml.push_str("</w:p>");
+        *self = Self::default();
     }
-    xml.push_str(r#"<w:sectPr><w:headerReference w:type="default" r:id="rIdHeader"/><w:footerReference w:type="default" r:id="rIdFooter"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>"#);
-    xml
+}
+
+fn push_standalone_docx_block(xml: &mut String, block: &Value, block_type: &str, content: &str) {
+    if block_type == "table" {
+        xml.push_str(&table_to_docx_xml(content));
+        return;
+    }
+    let level = block
+        .get("level")
+        .and_then(Value::as_u64)
+        .map(|value| value.clamp(1, 6) as u8);
+    let style = if block_type == "heading" {
+        format!(
+            "<w:pPr><w:pStyle w:val=\"Heading{}\"/></w:pPr>",
+            level.unwrap_or(2)
+        )
+    } else if block_type == "list" {
+        "<w:pPr><w:pStyle w:val=\"ListParagraph\"/><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr>".to_string()
+    } else if block_type == "caption" {
+        "<w:pPr><w:pStyle w:val=\"Caption\"/></w:pPr>".to_string()
+    } else if matches!(block_type, "formula" | "matrix") {
+        "<w:pPr><w:pStyle w:val=\"Formula\"/></w:pPr>".to_string()
+    } else {
+        String::new()
+    };
+    xml.push_str("<w:p>");
+    xml.push_str(&style);
+    if matches!(block_type, "formula" | "matrix") {
+        let latex = crate::document_math::latex_from_block(block)
+            .or_else(|| {
+                block
+                    .get("latex")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| normalize_formula(content));
+        let ast = crate::document_math::ast_from_block(block);
+        xml.push_str(&formula_to_omml(ast.as_ref(), &latex, false));
+    } else {
+        xml.push_str("<w:r><w:t xml:space=\"preserve\">");
+        xml.push_str(&escape_xml(content));
+        xml.push_str("</w:t></w:r>");
+    }
+    xml.push_str("</w:p>");
 }
 
 fn table_to_docx_xml(content: &str) -> String {
@@ -644,12 +891,100 @@ fn table_to_docx_xml(content: &str) -> String {
     xml
 }
 
-fn formula_to_omml(value: &str) -> String {
-    let expression = formula_expression_to_omml(value);
-    format!(
-        r#"<m:oMathPara><m:oMath>{}</m:oMath></m:oMathPara>"#,
-        expression
-    )
+fn formula_to_omml(
+    ast: Option<&crate::document_math::MathNode>,
+    value: &str,
+    inline: bool,
+) -> String {
+    let expression = ast
+        .map(math_node_to_omml)
+        .unwrap_or_else(|| formula_expression_to_omml(value));
+    if inline {
+        format!(r#"<m:oMath>{expression}</m:oMath>"#)
+    } else {
+        format!(r#"<m:oMathPara><m:oMath>{expression}</m:oMath></m:oMathPara>"#)
+    }
+}
+
+fn math_node_to_omml(node: &crate::document_math::MathNode) -> String {
+    use crate::document_math::MathNode;
+    match node {
+        MathNode::Symbol { value }
+        | MathNode::Identifier { value }
+        | MathNode::Number { value }
+        | MathNode::Operator { value } => format!(
+            "<m:r><m:t xml:space=\"preserve\">{}</m:t></m:r>",
+            escape_xml(value)
+        ),
+        MathNode::Sequence { children } => children.iter().map(math_node_to_omml).collect(),
+        MathNode::Superscript { base, exponent } => format!(
+            "<m:sSup><m:e>{}</m:e><m:sup>{}</m:sup></m:sSup>",
+            math_node_to_omml(base),
+            math_node_to_omml(exponent)
+        ),
+        MathNode::Subscript { base, subscript } => format!(
+            "<m:sSub><m:e>{}</m:e><m:sub>{}</m:sub></m:sSub>",
+            math_node_to_omml(base),
+            math_node_to_omml(subscript)
+        ),
+        MathNode::SubSuperscript {
+            base,
+            subscript,
+            exponent,
+        } => format!(
+            "<m:sSubSup><m:e>{}</m:e><m:sub>{}</m:sub><m:sup>{}</m:sup></m:sSubSup>",
+            math_node_to_omml(base),
+            math_node_to_omml(subscript),
+            math_node_to_omml(exponent)
+        ),
+        MathNode::Fraction {
+            numerator,
+            denominator,
+        } => format!(
+            "<m:f><m:fPr/><m:num>{}</m:num><m:den>{}</m:den></m:f>",
+            math_node_to_omml(numerator),
+            math_node_to_omml(denominator)
+        ),
+        MathNode::Root { radicand } => format!(
+            "<m:rad><m:radPr/><m:deg/><m:e>{}</m:e></m:rad>",
+            math_node_to_omml(radicand)
+        ),
+        MathNode::Matrix { rows, delimiter } => {
+            let (begin, end) = match delimiter.as_str() {
+                "pmatrix" => ("(", ")"),
+                "vmatrix" => ("|", "|"),
+                _ => ("[", "]"),
+            };
+            let rows = rows
+                .iter()
+                .map(|row| {
+                    format!(
+                        "<m:mr>{}</m:mr>",
+                        row.iter()
+                            .map(|cell| format!("<m:e>{}</m:e>", math_node_to_omml(cell)))
+                            .collect::<String>()
+                    )
+                })
+                .collect::<String>();
+            format!("<m:d><m:dPr><m:begChr m:val=\"{}\"/><m:endChr m:val=\"{}\"/></m:dPr><m:e><m:m>{}</m:m></m:e></m:d>", begin, end, rows)
+        }
+        MathNode::Equation { left, right } => format!(
+            "{}<m:r><m:t>=</m:t></m:r>{}",
+            math_node_to_omml(left),
+            math_node_to_omml(right)
+        ),
+        MathNode::EquationArray { equations } => format!(
+            "<m:eqArr>{}</m:eqArr>",
+            equations
+                .iter()
+                .map(|equation| format!("<m:e>{}</m:e>", math_node_to_omml(equation)))
+                .collect::<String>()
+        ),
+        MathNode::Group { child } => format!(
+            "<m:d><m:dPr><m:begChr m:val=\"(\"/><m:endChr m:val=\")\"/></m:dPr><m:e>{}</m:e></m:d>",
+            math_node_to_omml(child)
+        ),
+    }
 }
 
 /// Emit a small deterministic OMML subset for the structures most commonly
@@ -946,6 +1281,23 @@ mod tests {
     }
 
     #[test]
+    fn joins_pdf_text_segments_without_crossing_formula_or_column_boundaries() {
+        let document = json!({"pages":[{"number":1,"blocks":[
+            {"type":"text","content":"This is a","bbox":[40.0,700.0,90.0,712.0]},
+            {"type":"text","content":"line of text.","bbox":[94.0,700.0,155.0,712.0]},
+            {"type":"text","content":"It contin-","bbox":[40.0,684.0,90.0,696.0]},
+            {"type":"text","content":"ues here.","bbox":[40.0,668.0,88.0,680.0]},
+            {"type":"formula","content":"Ax=b","bbox":[100.0,668.0,130.0,680.0]},
+            {"type":"text","content":"right column","bbox":[350.0,668.0,430.0,680.0]}
+        ]}]});
+        let blocks = document_blocks(&document);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].2, "This is a line of text. It continues here.");
+        assert_eq!(blocks[1].1, "formula");
+        assert_eq!(blocks[2].2, "right column");
+    }
+
+    #[test]
     fn markdown_distinguishes_inline_and_display_math() {
         let document = json!({"pages":[{"number":1,"blocks":[
             {"type":"formula","content":"x_1","latex":"x_{1}","displayOrInline":"inline"},
@@ -954,6 +1306,16 @@ mod tests {
         let markdown = document_to_markdown(&document);
         assert!(markdown.contains("$x_{1}$"));
         assert!(markdown.contains("$$\n\\begin{bmatrix}"));
+    }
+
+    #[test]
+    fn markdown_keeps_inline_formula_inside_surrounding_sentence() {
+        let document = json!({"pages":[{"number":1,"blocks":[
+            {"type":"paragraph","content":"Solve"},
+            {"type":"formula","content":"Ax=b","latex":"Ax=b","displayOrInline":"inline"},
+            {"type":"paragraph","content":"for x."}
+        ]}]});
+        assert_eq!(document_to_markdown(&document), "Solve $Ax=b$ for x.\n\n");
     }
 
     #[test]
@@ -1015,5 +1377,72 @@ mod tests {
             let code = character as u32;
             (code < 0x20 && !matches!(character, '\n' | '\r' | '\t')) || code == 0x7f
         }));
+    }
+
+    #[test]
+    fn docx_prefers_math_ast_and_emits_editable_subsup_and_matrix() {
+        let matrix = crate::document_math::MathNode::Matrix {
+            rows: vec![
+                vec![
+                    crate::document_math::MathNode::Number { value: "1".into() },
+                    crate::document_math::MathNode::Number { value: "1".into() },
+                ],
+                vec![
+                    crate::document_math::MathNode::Number { value: "2".into() },
+                    crate::document_math::MathNode::Number { value: "3".into() },
+                ],
+            ],
+            delimiter: "pmatrix".into(),
+        };
+        let subsup = crate::document_math::MathNode::SubSuperscript {
+            base: Box::new(crate::document_math::MathNode::Identifier { value: "x".into() }),
+            subscript: Box::new(crate::document_math::MathNode::Number { value: "1".into() }),
+            exponent: Box::new(crate::document_math::MathNode::Number { value: "2".into() }),
+        };
+        let document = json!({"pages":[{"number":1,"blocks":[
+            {"type":"formula","content":"wrong fallback","math":{"ast":subsup}},
+            {"type":"matrix","content":"wrong fallback","math":{"ast":matrix}}
+        ]}]});
+        let xml = document_to_docx_xml(&document);
+        assert!(xml.contains("<m:sSubSup>"));
+        assert!(xml.contains("<m:begChr m:val=\"(\"/>"));
+        assert_eq!(xml.matches("<m:mr>").count(), 2);
+        assert_eq!(
+            xml.matches("<m:e><m:r><m:t xml:space=\"preserve\">1")
+                .count(),
+            2
+        );
+        assert!(!xml.contains("wrong fallback"));
+    }
+
+    #[test]
+    fn inline_formula_uses_omath_without_omath_para() {
+        let ast = crate::document_math::MathNode::Equation {
+            left: Box::new(crate::document_math::MathNode::Identifier { value: "Ax".into() }),
+            right: Box::new(crate::document_math::MathNode::Identifier { value: "b".into() }),
+        };
+        let document = json!({"pages":[{"number":1,"blocks":[{
+            "type":"formula",
+            "content":"Ax=b",
+            "displayOrInline":"inline",
+            "math":{"ast":ast}
+        }]}]});
+        let xml = document_to_docx_xml(&document);
+        assert!(xml.contains("<m:oMath>"));
+        assert!(!xml.contains("<m:oMathPara>"));
+    }
+
+    #[test]
+    fn docx_keeps_surrounding_text_and_inline_formula_in_one_paragraph() {
+        let document = json!({"pages":[{"number":1,"blocks":[
+            {"type":"text","content":"Solve","bbox":[40.0,700.0,75.0,712.0]},
+            {"type":"formula","content":"Ax=b","latex":"Ax=b","displayOrInline":"inline","bbox":[80.0,700.0,110.0,712.0]},
+            {"type":"text","content":"for x.","bbox":[115.0,700.0,150.0,712.0]}
+        ]}]});
+        let xml = document_to_docx_xml(&document);
+        assert_eq!(xml.matches("<w:p>").count(), 1);
+        assert!(xml.contains("Solve"));
+        assert!(xml.contains("<m:oMath>"));
+        assert!(xml.contains("for x."));
     }
 }

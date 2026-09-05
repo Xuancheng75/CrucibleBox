@@ -7,6 +7,7 @@ import { ThemeProvider } from './components/ThemeProvider'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import PluginDropOverlay from './components/PluginDropOverlay'
 import PluginInstallPreviewModal from './components/PluginInstallPreviewModal'
+import StartupUpdatePrompt from './components/StartupUpdatePrompt'
 import { useGlobalPluginDrop } from './hooks/useGlobalPluginDrop'
 import { PluginLifecycleStatus } from '../../shared/types/plugin.types'
 import { APP_PAGE_LOADERS, type AppPage } from './app-pages'
@@ -177,6 +178,7 @@ export default function App() {
           )}
         </Suspense>
       </MainLayout>
+      <StartupUpdatePrompt />
       <PluginDropOverlay active={dragActive} target={dragTarget} />
       <PluginInstallPreviewModal />
       {/-((beta|rc)\.)/i.test(appVersion) && (

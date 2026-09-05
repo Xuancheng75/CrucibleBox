@@ -161,6 +161,12 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
     let mut ocr_noise_count = 0usize;
     let mut ocr_content_chars = 0usize;
     let mut low_confidence_formula_count = 0usize;
+    let mut formula_total = 0usize;
+    let mut formula_inline = 0usize;
+    let mut formula_display = 0usize;
+    let mut formula_ast_success = 0usize;
+    let mut formula_latex_success = 0usize;
+    let mut formula_suspicious_count = 0usize;
 
     if let Some(pages) = document["pages"].as_array() {
         for page in pages {
@@ -199,6 +205,26 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
                         "toc_entry" => toc_entry_count += 1,
                         "formula" => {
                             formula_block_count += 1;
+                            formula_total += 1;
+                            if block["displayOrInline"] == "inline" {
+                                formula_inline += 1;
+                            } else {
+                                formula_display += 1;
+                            }
+                            formula_ast_success += usize::from(
+                                block["formulaQuality"]["astValid"]
+                                    .as_bool()
+                                    .unwrap_or(false),
+                            );
+                            formula_latex_success += usize::from(
+                                block["formulaQuality"]["latexValid"]
+                                    .as_bool()
+                                    .unwrap_or(false),
+                            );
+                            formula_suspicious_count += usize::from(
+                                block["formulaQuality"]["level"] == "bad"
+                                    || block["formulaQuality"]["level"] == "review",
+                            );
                             if block["formulaConfidence"]
                                 .as_f64()
                                 .is_some_and(|confidence| confidence < 0.60)
@@ -206,7 +232,25 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
                                 low_confidence_formula_count += 1;
                             }
                         }
-                        "matrix" => matrix_block_count += 1,
+                        "matrix" => {
+                            matrix_block_count += 1;
+                            formula_total += 1;
+                            formula_display += 1;
+                            formula_ast_success += usize::from(
+                                block["formulaQuality"]["astValid"]
+                                    .as_bool()
+                                    .unwrap_or(false),
+                            );
+                            formula_latex_success += usize::from(
+                                block["formulaQuality"]["latexValid"]
+                                    .as_bool()
+                                    .unwrap_or(false),
+                            );
+                            formula_suspicious_count += usize::from(
+                                block["formulaQuality"]["level"] == "bad"
+                                    || block["formulaQuality"]["level"] == "review",
+                            );
+                        }
                         "image" => image_block_count += 1,
                         "table" => table_block_count += 1,
                         "figure" => figure_block_count += 1,
@@ -278,9 +322,19 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
         && (ocr_noise_ratio >= 0.20
             || (low_ocr_confidence && ocr_content_chars > 0 && ocr_noise_ratio >= 0.05));
     let formula_recognition_low_confidence = low_confidence_formula_count > 0;
+    let formula_uncertain_ratio = if formula_total == 0 {
+        0.0
+    } else {
+        formula_suspicious_count as f64 / formula_total as f64
+    };
+    let formula_detection_uncertain = formula_uncertain_ratio >= 0.05;
     let rag_quality = if suspected_ocr_gibberish {
         "rejected"
-    } else if low_ocr_confidence || missing_structure || invalid_xml_chars > 0 {
+    } else if low_ocr_confidence
+        || missing_structure
+        || invalid_xml_chars > 0
+        || formula_detection_uncertain
+    {
         "degraded"
     } else {
         "good"
@@ -318,6 +372,7 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
         (ocr_noise_ratio >= 0.05).then_some("mixed_script_noise"),
         suspected_ocr_gibberish.then_some("suspected_ocr_gibberish"),
         missing_structure.then_some("missing_structure"),
+        formula_detection_uncertain.then_some("formula_detection_uncertain"),
         formula_recognition_low_confidence.then_some("formula_recognition_low_confidence"),
     ]
     .into_iter()
@@ -348,6 +403,19 @@ pub fn report(document: &Value, removed_control_chars: usize) -> Value {
         "formulaBlockCount": formula_block_count,
         "matrixBlockCount": matrix_block_count,
         "formulaRecognitionLowConfidenceCount": low_confidence_formula_count,
+        "formulaQa": {
+            "formulaTotal": formula_total,
+            "formulaInline": formula_inline,
+            "formulaDisplay": formula_display,
+            "formulaMatrix": matrix_block_count,
+            "formulaAstSuccess": formula_ast_success,
+            "formulaLatexSuccess": formula_latex_success,
+            "formulaOmmlSuccess": "not_run",
+            "formulaFallbackCount": 0,
+            "formulaFailedCount": formula_total.saturating_sub(formula_ast_success),
+            "formulaSuspiciousCount": formula_suspicious_count
+            ,"formulaUncertainRatio": formula_uncertain_ratio
+        },
         "imageBlockCount": image_block_count,
         "tableBlockCount": table_block_count,
         "nativeTextBlockCount": native_text_block_count,

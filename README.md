@@ -33,7 +33,7 @@
 ## 快速开始
 
 ```bash
-# Tauri 线（当前开发基线 2.0.0-beta.8）
+# Tauri 线（当前正式基线 2.0.0）
 cd src-tauri && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 cd tauri-frontend && npm install && npm run build
 npm run build:frame              # 插件 frame runtime（out/plugin-frame/runtime.js）
@@ -118,7 +118,7 @@ browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题�
 - **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2
   downloadBootstrapper 兜底）+ tauri-plugin-updater（minisign 强制签名 JSON）+ cargo-cyclonedx
   Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版为 **v1.9.2**；当前开发与
-  验证基线为 **v2.0.0-beta.8**，稳定/测试通道分别发布到 `tauri-stable` / `tauri-beta` 滚动元数据。
+  验证基线为 **v2.0.0**，稳定/测试通道分别发布到 `tauri-stable` / `tauri-beta` 滚动元数据。
 - 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
   宿主和 11 个正式插件可生成 CycloneDX SBOM。
 - 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息（进程内存探针已于 1.9.3 移除）。
@@ -146,7 +146,7 @@ updater JSON + plugin signatures + CycloneDX SBOMs + SHA-256 checksums + GitHub 
 attestation. Windows installers are currently unsigned and can display Unknown publisher or
 SmartScreen warnings.
 
-## 当前验证基线（2.0.0-beta.8）
+## 当前验证基线（2.0.0）
 
 - Tauri 线：`cargo test --workspace --locked`、`cargo clippy --workspace --all-targets --locked -D warnings`、
   `cargo fmt --check`、`tauri-frontend` vite build；插件独立 `clean && build`（11/11）。
@@ -155,7 +155,7 @@ SmartScreen warnings.
   `package.json` 的 `1.7.3` 仅属于冻结 Electron 遗留线。
 - 数据库 schema v4（rusqlite bundled WAL）；`%APPDATA%\cruciblebox` 数据路径（L3 已迁移）。
 - 2.0 宿主包含插件市场、任务中心、插件身份视觉体系和扁平化主题表面；市场仅从 CrucibleBox GitHub Release 官方目录下载安装，Windows 优先使用 WinHTTP 自动代理/WPAD 与 BITS，支持手动刷新、稳定/测试通道、进程内目录缓存、离线回退、断点续传、进度显示、批量下载和全部更新，并严格校验插件 ID、来源 URL、声明大小和 SHA-256，再复用既有安装确认与可恢复事务；不接入镜像源、GitHub Marketplace 或账户系统。
-- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.8.0，支持最多 2000 页 PDF、PDFium 原生文字优先、统一文本清洗、TOC 隔离、章节树、公式块、DOCX XML 校验、Markdown/TXT/JSON 导出、真实 PDF 物理拆分、JSONL 文本分块、可选择输出文件夹与 ModelScope 镜像校验的内置 CPU OCR 默认模型）、
+- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.10.0，支持最多 2000 页 PDF、PDFium 原生文字优先、统一文本清洗、TOC 隔离、章节树、公式块、DOCX XML 校验、Markdown/TXT/JSON 导出、真实 PDF 物理拆分、JSONL 文本分块、可选择输出文件夹与 ModelScope 镜像校验的内置 CPU OCR 默认模型）、
   Diary、Dice Roller、GIF Editor、Theme Manager、Turntable、UniEnv、JSON/文本工具箱、
   剪贴板管理器、系统信息面板和实时汇率，共 11 个；UniEnv（0.11.0）额外提供 Ruby、Zig、Deno、Bun 及现代 TypeScript/Ruby Web/Zig 原生组合包，并提供 Rust/PHP 多版本选择。第一方插件清单发布者统一为 `CrucibleBox`。
 - 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 按插件激活单飞 / 崩溃 backoff+隔离 / PermissionGuard /

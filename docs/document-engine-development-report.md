@@ -1,12 +1,12 @@
 # Document Engine Development Report
 
 日期：2026-09-02
-发布基线：CrucibleBox 2.0.0-beta.8（Document Engine 0.9.0）
+发布基线：CrucibleBox 2.0.0（Document Engine 0.10.0）
 范围：`plugins/document-engine`、Rust trusted service、Rust OCR worker、Tauri Windows 打包链。
 
 ## 结论
 
-Document Engine 0.8.0 在保留既有 Tauri trusted service、PDFium、PP-OCR worker 和 Hybrid Chunk 长度策略的前提下，将处理链收敛为 `PDF → Layout Analysis → Native/OCR 来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式/表格/图片元数据 → Document IR v3`。解析型 JSON/Markdown/TXT/Chunk 与阅读型 DOCX/HTML/PDF 继续分离；原生文字层只决定普通文字来源，不再决定公式、表格、图片和标题流程是否运行。所有文档处理请求仍经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。默认中英混排模型固定从 ModelScope 镜像获取并逐文件校验 SHA-256。
+Document Engine 0.10.0 在保留既有 Tauri trusted service、PDFium、PP-OCR worker 和 Hybrid Chunk 长度策略的前提下，将处理链收敛为 `PDF → Layout Analysis → Native/OCR 来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式/表格/图片元数据 → Document IR v3`。解析型 JSON/Markdown/TXT/Chunk 与阅读型 DOCX/HTML/PDF 继续分离；原生文字层只决定普通文字来源，不再决定公式、表格、图片和标题流程是否运行。所有文档处理请求仍经 Rust trusted service，OCR 由独立 Rust + PaddleOCR ONNX worker 执行。默认中英混排模型固定从 ModelScope 镜像获取并逐文件校验 SHA-256。
 
 本版本的重点是结构正确性和输出可靠性，不重新设计已稳定的 Chunk 长度算法：文本进入 IR 前统一 NFC/XML-safe 清洗并修复字体控制字符断词；TOC entry 不进入正文 heading stack；章节标题、编号段落、习题编号和正文使用不同语义类型；Formula Block 保留 `latex`、`plainText`、bbox、page、confidence 和 source；DOCX 生成前后解析 XML parts，并写入 Heading/List/Table/Caption/OMML、页眉、页脚和页码结构。
 

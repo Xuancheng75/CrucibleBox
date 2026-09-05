@@ -141,6 +141,17 @@ pub fn is_strict_formula_candidate(value: &str) -> bool {
         .chars()
         .filter(|character| !character.is_whitespace())
         .count();
+    const MATH_WORDS: &[&str] = &[
+        "sin", "cos", "tan", "cot", "sec", "csc", "log", "ln", "exp", "det", "rank", "trace", "tr",
+        "max", "min", "lim", "mod", "gcd", "ker", "dim", "span", "null", "eig", "svd", "lu", "qr",
+    ];
+    let has_unknown_lowercase_word = text
+        .split(|character: char| !character.is_alphabetic())
+        .filter(|token| token.chars().count() >= 3)
+        .any(|token| {
+            token.chars().all(|character| character.is_lowercase())
+                && !MATH_WORDS.contains(&token.to_ascii_lowercase().as_str())
+        });
 
     // A slash-separated heading such as "TIDE / WIND / MEMORY" is prose,
     // not math.  Keep slash formulas possible only when they also contain an
@@ -157,7 +168,7 @@ pub fn is_strict_formula_candidate(value: &str) -> bool {
 
     // Sentences and ordinary headings may contain a hyphen or a slash.  A
     // formula candidate must remain compact and math-dense.
-    if words.len() > 8 || long_words > 3 {
+    if words.len() > 8 || long_words > 3 || has_unknown_lowercase_word {
         return false;
     }
     // Isolated relation signs and bracket fragments are common PDF text-layer
@@ -299,6 +310,15 @@ mod tests {
         for value in ["Ax = 0", "A^T A x = A^T b", "λ1 + λ2 = 1", "A^{-1}"] {
             assert!(is_strict_formula_candidate(value), "{value}");
         }
+    }
+
+    #[test]
+    fn rejects_prose_absorbed_into_formula_candidate() {
+        assert!(!is_strict_formula_candidate("ofx=1/2"));
+        assert!(!is_strict_formula_candidate("sin2πxatx=1/4"));
+        assert!(is_strict_formula_candidate("sin2πx=1"));
+        assert!(is_strict_formula_candidate("detA=0"));
+        assert!(is_strict_formula_candidate("[S,E]=eig(A)"));
     }
 
     #[test]

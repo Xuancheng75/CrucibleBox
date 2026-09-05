@@ -101,6 +101,7 @@ pub fn enrich_block(block: &mut Value) {
         "quality": math_quality(confidence),
         "originalTokens": block.get("originalTokens").cloned().unwrap_or(Value::Null),
     });
+    block["formulaQuality"] = formula_quality(&ast, confidence);
     if is_matrix {
         block["type"] = json!("matrix");
         block["region"] = json!("formula");
@@ -125,6 +126,9 @@ fn positioned_token_latex(block: &Value) -> Option<String> {
                     .abs()
                     .max(1.0),
                 text.to_string(),
+                token.get("baseline").and_then(Value::as_f64),
+                token.get("fontSize").and_then(Value::as_f64),
+                token.get("coordinateSystem").and_then(Value::as_str) == Some("pdf"),
             ))
         })
         .collect::<Vec<_>>();
@@ -132,32 +136,124 @@ fn positioned_token_latex(block: &Value) -> Option<String> {
         return None;
     }
     positioned.sort_by(|left, right| left.0.total_cmp(&right.0));
-    let mut centers = positioned.iter().map(|token| token.1).collect::<Vec<_>>();
-    centers.sort_by(f64::total_cmp);
-    let baseline_center = centers[centers.len() / 2];
-    let mut heights = positioned.iter().map(|token| token.2).collect::<Vec<_>>();
+    let mut heights = positioned
+        .iter()
+        .map(|token| token.5.unwrap_or(token.2))
+        .collect::<Vec<_>>();
     heights.sort_by(f64::total_cmp);
-    let body_height = heights[heights.len() / 2].max(1.0);
+    let body_height = heights.last().copied().unwrap_or(1.0).max(1.0);
+    let mut centers = positioned
+        .iter()
+        .filter(|token| token.5.unwrap_or(token.2) >= body_height * 0.90)
+        .map(|token| token.4.unwrap_or(token.1))
+        .collect::<Vec<_>>();
+    centers.sort_by(f64::total_cmp);
+    let baseline_center = centers
+        .get(centers.len() / 2)
+        .copied()
+        .unwrap_or_else(|| positioned[0].4.unwrap_or(positioned[0].1));
     let mut output = String::new();
     let mut spatial_script = false;
-    for (_, center_y, height, text) in positioned {
+    let mut last_script = None;
+    let mut index = 0usize;
+    while index < positioned.len() {
+        let (x, center_y, height, text, baseline, font_size, pdf_coordinates) = &positioned[index];
+        let effective_y = baseline.unwrap_or(*center_y);
+        let effective_height = font_size.unwrap_or(*height);
+        let vertical_delta = if *pdf_coordinates {
+            effective_y - baseline_center
+        } else {
+            baseline_center - effective_y
+        };
+        if let Some((
+            next_x,
+            next_center_y,
+            next_height,
+            next_text,
+            next_baseline,
+            next_font_size,
+            next_pdf_coordinates,
+        )) = positioned.get(index + 1)
+        {
+            let next_effective_y = next_baseline.unwrap_or(*next_center_y);
+            let next_effective_height = next_font_size.unwrap_or(*next_height);
+            let next_delta = if *next_pdf_coordinates {
+                next_effective_y - baseline_center
+            } else {
+                baseline_center - next_effective_y
+            };
+            let stacked_pair = effective_height <= body_height * 0.82
+                && next_effective_height <= body_height * 0.82
+                && (*next_x - *x).abs() <= body_height * 0.55
+                && vertical_delta * next_delta < 0.0
+                && vertical_delta.abs() > body_height * 0.10
+                && next_delta.abs() > body_height * 0.10
+                && text.chars().all(char::is_alphanumeric)
+                && next_text.chars().all(char::is_alphanumeric);
+            if stacked_pair {
+                let (numerator, denominator) = if vertical_delta > next_delta {
+                    (text, next_text)
+                } else {
+                    (next_text, text)
+                };
+                output.push_str("\\frac{");
+                output.push_str(numerator);
+                output.push_str("}{");
+                output.push_str(denominator);
+                output.push('}');
+                spatial_script = true;
+                last_script = None;
+                index += 2;
+                continue;
+            }
+        }
         // Font fallback and hinting can vary ordinary glyph heights by around
         // ten percent. Require a materially smaller glyph and a clear vertical
         // displacement before creating script structure.
-        let small = height <= body_height * 0.78;
-        if small && center_y < baseline_center - body_height * 0.22 && !output.is_empty() {
-            output.push_str("^{");
-            output.push_str(&text);
-            output.push('}');
+        let small = effective_height <= body_height * 0.82;
+        let script_text = text.chars().all(|character| {
+            character.is_alphanumeric() || "αβγδεζηθλμνξπρστφχω∞".contains(character)
+        });
+        if small && script_text && vertical_delta > body_height * 0.10 && !output.is_empty() {
+            if last_script == Some('^') && output.ends_with('}') {
+                output.pop();
+                output.push_str(text);
+                output.push('}');
+            } else {
+                let sign = output
+                    .chars()
+                    .last()
+                    .filter(|character| matches!(character, '-' | '−'));
+                if sign.is_some() {
+                    output.pop();
+                }
+                output.push_str("^{");
+                if let Some(sign) = sign {
+                    output.push(sign);
+                }
+                output.push_str(text);
+                output.push('}');
+            }
             spatial_script = true;
-        } else if small && center_y > baseline_center + body_height * 0.22 && !output.is_empty() {
-            output.push_str("_{");
-            output.push_str(&text);
-            output.push('}');
+            last_script = Some('^');
+        } else if small && script_text && vertical_delta < -body_height * 0.10 && !output.is_empty()
+        {
+            if last_script == Some('_') && output.ends_with('}') {
+                output.pop();
+                output.push_str(text);
+                output.push('}');
+            } else {
+                output.push_str("_{");
+                output.push_str(text);
+                output.push('}');
+            }
             spatial_script = true;
+            last_script = Some('_');
         } else {
-            output.push_str(&text);
+            output.push_str(text);
+            last_script = None;
         }
+        index += 1;
     }
     spatial_script.then_some(output)
 }
@@ -169,6 +265,33 @@ pub fn latex_from_block(block: &Value) -> Option<String> {
         .map(|node| to_latex(&node))
 }
 
+pub fn ast_from_block(block: &Value) -> Option<MathNode> {
+    serde_json::from_value(block.get("math")?.get("ast")?.clone()).ok()
+}
+
+/// Produce a deterministic searchable representation without Markdown
+/// delimiters or PDF character-level line breaks.
+pub fn to_plain_text(node: &MathNode) -> String {
+    match node {
+        MathNode::Matrix { rows, .. } => format!(
+            "[{}]",
+            rows.iter()
+                .map(|row| format!(
+                    "[{}]",
+                    row.iter().map(to_plain_text).collect::<Vec<_>>().join(", ")
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        MathNode::EquationArray { equations } => equations
+            .iter()
+            .map(to_plain_text)
+            .collect::<Vec<_>>()
+            .join("; "),
+        _ => to_latex(node),
+    }
+}
+
 pub fn math_quality(confidence: f64) -> &'static str {
     if confidence >= 0.9 {
         "good"
@@ -176,6 +299,117 @@ pub fn math_quality(confidence: f64) -> &'static str {
         "review"
     } else {
         "fallback"
+    }
+}
+
+pub fn formula_quality(ast: &MathNode, recognition_confidence: f64) -> Value {
+    let latex = to_latex(ast);
+    let latex_valid = validate_latex(&latex);
+    let matrix_valid = matrix_dimensions_valid(ast);
+    let suspicious_glyphs = latex
+        .chars()
+        .filter(|character| {
+            let code = *character as u32;
+            (0xE000..=0xF8FF).contains(&code)
+                || matches!(character, '¤' | '' | '' | '' | '' | '' | '')
+        })
+        .count();
+    let mut score = recognition_confidence.clamp(0.0, 1.0) * 40.0;
+    score += if latex_valid { 30.0 } else { 0.0 };
+    score += if matrix_valid { 20.0 } else { 0.0 };
+    score += if suspicious_glyphs == 0 { 10.0 } else { 0.0 };
+    let hard_failure = latex.is_empty() || !latex_valid || !matrix_valid || suspicious_glyphs > 0;
+    let level = if hard_failure || score < 65.0 {
+        "bad"
+    } else if score < 80.0 {
+        "review"
+    } else if score < 95.0 {
+        "good"
+    } else {
+        "excellent"
+    };
+    json!({
+        "score": score,
+        "level": level,
+        "astValid": !latex.is_empty() && latex_valid && matrix_valid,
+        "latexValid": latex_valid,
+        "matrixDimensionsValid": matrix_valid,
+        "suspiciousGlyphCount": suspicious_glyphs,
+        "recognitionConfidence": recognition_confidence,
+    })
+}
+
+pub fn validate_latex(value: &str) -> bool {
+    if value.is_empty()
+        || value.chars().any(|character| {
+            let code = character as u32;
+            (code < 0x20 && !matches!(character, '\n' | '\r' | '\t'))
+                || (0xE000..=0xF8FF).contains(&code)
+        })
+    {
+        return false;
+    }
+    let mut delimiters = Vec::new();
+    for character in value.chars() {
+        match character {
+            '{' | '(' | '[' => delimiters.push(character),
+            '}' | ')' | ']' => {
+                let expected = match character {
+                    '}' => '{',
+                    ')' => '(',
+                    ']' => '[',
+                    _ => unreachable!(),
+                };
+                if delimiters.pop() != Some(expected) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    delimiters.is_empty()
+}
+
+fn matrix_dimensions_valid(node: &MathNode) -> bool {
+    match node {
+        MathNode::Matrix { rows, .. } => rows.first().is_some_and(|first| {
+            !first.is_empty()
+                && rows.iter().all(|row| row.len() == first.len())
+                && rows.iter().flatten().all(|cell| {
+                    let value = to_plain_text(cell);
+                    !value.trim().is_empty()
+                        && !value
+                            .trim_end()
+                            .ends_with(|character: char| "+−-*/=^_".contains(character))
+                })
+        }),
+        MathNode::Sequence { children } => children.iter().all(matrix_dimensions_valid),
+        MathNode::Superscript { base, exponent } => {
+            matrix_dimensions_valid(base) && matrix_dimensions_valid(exponent)
+        }
+        MathNode::Subscript { base, subscript } => {
+            matrix_dimensions_valid(base) && matrix_dimensions_valid(subscript)
+        }
+        MathNode::SubSuperscript {
+            base,
+            subscript,
+            exponent,
+        } => {
+            matrix_dimensions_valid(base)
+                && matrix_dimensions_valid(subscript)
+                && matrix_dimensions_valid(exponent)
+        }
+        MathNode::Fraction {
+            numerator,
+            denominator,
+        } => matrix_dimensions_valid(numerator) && matrix_dimensions_valid(denominator),
+        MathNode::Root { radicand } => matrix_dimensions_valid(radicand),
+        MathNode::Equation { left, right } => {
+            matrix_dimensions_valid(left) && matrix_dimensions_valid(right)
+        }
+        MathNode::EquationArray { equations } => equations.iter().all(matrix_dimensions_valid),
+        MathNode::Group { child } => matrix_dimensions_valid(child),
+        _ => true,
     }
 }
 
@@ -239,10 +473,29 @@ fn parse_expression(value: &str) -> MathNode {
     if let Some((left, right)) = split_top_level(value, '=') {
         return MathNode::Equation {
             left: Box::new(parse_sequence(left)),
-            right: Box::new(parse_sequence(right)),
+            right: Box::new(parse_latex_fraction(right).unwrap_or_else(|| parse_sequence(right))),
         };
     }
+    if let Some(fraction) = parse_latex_fraction(value) {
+        return fraction;
+    }
     parse_sequence(value)
+}
+
+fn parse_latex_fraction(value: &str) -> Option<MathNode> {
+    let value = value.trim();
+    let rest = value.strip_prefix("\\frac{")?;
+    let numerator_end = rest.find('}')?;
+    let numerator = &rest[..numerator_end];
+    let denominator = rest[numerator_end + 1..].strip_prefix('{')?;
+    let denominator_end = denominator.find('}')?;
+    if !denominator[denominator_end + 1..].trim().is_empty() {
+        return None;
+    }
+    Some(MathNode::Fraction {
+        numerator: Box::new(parse_sequence(numerator)),
+        denominator: Box::new(parse_sequence(&denominator[..denominator_end])),
+    })
 }
 
 fn parse_sequence(value: &str) -> MathNode {
@@ -451,6 +704,26 @@ mod tests {
     }
 
     #[test]
+    fn groups_multi_glyph_and_negative_superscripts() {
+        let exponent = json!({
+            "originalTokens": [
+                {"originalText":"e","bbox":[10,20,20,32]},
+                {"originalText":"A","bbox":[21,14,27,22]},
+                {"originalText":"t","bbox":[28,14,34,22]}
+            ]
+        });
+        assert_eq!(positioned_token_latex(&exponent).as_deref(), Some("e^{At}"));
+        let inverse = json!({
+            "originalTokens": [
+                {"originalText":"A","bbox":[10,20,20,32]},
+                {"originalText":"−","bbox":[21,14,27,22]},
+                {"originalText":"1","bbox":[28,14,34,22]}
+            ]
+        });
+        assert_eq!(positioned_token_latex(&inverse).as_deref(), Some("A^{−1}"));
+    }
+
+    #[test]
     fn ordinary_minor_font_variation_is_not_a_superscript() {
         let block = json!({
             "originalTokens": [
@@ -464,12 +737,53 @@ mod tests {
     }
 
     #[test]
+    fn reconstructs_stacked_native_glyphs_as_a_fraction() {
+        let mut block = json!({
+            "type":"formula",
+            "content":"x=21",
+            "formulaConfidence":0.82,
+            "originalTokens": [
+                {"originalText":"x","bbox":[139.1,483.5,145.2,477.7],"baseline":477.8,"fontSize":12.95,"coordinateSystem":"pdf"},
+                {"originalText":"=","bbox":[148.8,482.5,157.4,479.5],"baseline":477.8,"fontSize":12.95,"coordinateSystem":"pdf"},
+                {"originalText":"2","bbox":[162.6,479.8,166.9,473.4],"baseline":473.4,"fontSize":9.58,"coordinateSystem":"pdf"},
+                {"originalText":"1","bbox":[163.3,489.3,166.0,482.9],"baseline":482.9,"fontSize":9.58,"coordinateSystem":"pdf"}
+            ]
+        });
+        enrich_block(&mut block);
+        assert_eq!(block["normalizedLatex"], "x=\\frac{1}{2}");
+        assert_eq!(block["math"]["ast"]["right"]["kind"], "fraction");
+    }
+
+    #[test]
     fn reconstructs_rectangular_matrix() {
         let ast = parse_math("[1 1\n2 3\n3 4]", "");
         assert_eq!(
             to_latex(&ast),
             "\\begin{bmatrix}1 & 1 \\\\ 2 & 3 \\\\ 3 & 4\\end{bmatrix}"
         );
+    }
+
+    #[test]
+    fn plain_text_matrix_is_compact_and_preserves_repeated_cells() {
+        let ast = parse_math("[1 1\n2 3]", "");
+        assert_eq!(to_plain_text(&ast), "[[1, 1], [2, 3]]");
+    }
+
+    #[test]
+    fn formula_quality_rejects_private_use_glyphs_and_bad_braces() {
+        let private = MathNode::Symbol {
+            value: "\u{f8ee}".into(),
+        };
+        assert_eq!(formula_quality(&private, 1.0)["level"], "bad");
+        assert!(!validate_latex("x_{1"));
+        assert!(validate_latex("x_{1}^{2}"));
+    }
+
+    #[test]
+    fn matrix_quality_rejects_truncated_cells() {
+        let ast = parse_math("[1 1\nJ3 1+]", "");
+        assert_eq!(formula_quality(&ast, 1.0)["level"], "bad");
+        assert_eq!(formula_quality(&ast, 1.0)["matrixDimensionsValid"], false);
     }
 
     #[test]
