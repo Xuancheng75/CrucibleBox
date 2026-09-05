@@ -7,7 +7,6 @@ import { ThemeProvider } from './components/ThemeProvider'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import PluginDropOverlay from './components/PluginDropOverlay'
 import PluginInstallPreviewModal from './components/PluginInstallPreviewModal'
-import StartupUpdatePrompt from './components/StartupUpdatePrompt'
 import { useGlobalPluginDrop } from './hooks/useGlobalPluginDrop'
 import { PluginLifecycleStatus } from '../../shared/types/plugin.types'
 import { APP_PAGE_LOADERS, type AppPage } from './app-pages'
@@ -21,6 +20,8 @@ const PAGE_COMPONENTS: Record<AppPage, React.LazyExoticComponent<React.Component
   pluginView: lazy(APP_PAGE_LOADERS.pluginView),
   settings: lazy(APP_PAGE_LOADERS.settings)
 }
+
+const StartupUpdatePrompt = lazy(() => import('./components/StartupUpdatePrompt'))
 
 const PAGE_NAMES: Record<AppPage, string> = {
   home: '主页',
@@ -178,7 +179,9 @@ export default function App() {
           )}
         </Suspense>
       </MainLayout>
-      <StartupUpdatePrompt />
+      <Suspense fallback={null}>
+        <StartupUpdatePrompt />
+      </Suspense>
       <PluginDropOverlay active={dragActive} target={dragTarget} />
       <PluginInstallPreviewModal />
       {/-((beta|rc)\.)/i.test(appVersion) && (
