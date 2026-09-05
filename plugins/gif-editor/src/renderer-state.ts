@@ -194,9 +194,15 @@ export type ThumbnailCache<T> = Map<string, ThumbnailCacheEntry<T>>
 export function reconcileThumbnailCache<T>(
   frames: readonly FrameState<T>[],
   previous: ThumbnailCache<T>,
-  renderThumbnail: (frame: FrameState<T>) => string
+  renderThumbnail: (frame: FrameState<T>) => string,
+  releaseThumbnail?: (url: string) => void
 ): ThumbnailCache<T> {
-  if (frames.length === 0) return previous.size === 0 ? previous : new Map()
+  if (frames.length === 0) {
+    if (releaseThumbnail) {
+      for (const entry of previous.values()) releaseThumbnail(entry.url)
+    }
+    return previous.size === 0 ? previous : new Map()
+  }
 
   const next: ThumbnailCache<T> = new Map()
   let changed = previous.size !== frames.length
@@ -211,7 +217,35 @@ export function reconcileThumbnailCache<T>(
     }
   }
 
+  if (releaseThumbnail) {
+    for (const [id, entry] of previous) {
+      const replacement = next.get(id)
+      if (!replacement || replacement.url !== entry.url) releaseThumbnail(entry.url)
+    }
+  }
+
   return changed || next.size !== previous.size ? next : previous
+}
+
+/**
+ * Keep history bounded by both entry count and the actual retained payload.
+ * Image editing history is not safely bounded by count: one 4K RGBA layer is
+ * roughly 32 MiB before cloning and can turn a small stack into gigabytes.
+ */
+export function appendByteBoundedEntry<T>(
+  stack: readonly T[],
+  entry: T,
+  maxEntries: number,
+  maxBytes: number,
+  estimateBytes: (value: T) => number
+): T[] {
+  const next = [...stack, entry].slice(-Math.max(1, Math.floor(maxEntries)))
+  let totalBytes = next.reduce((total, value) => total + Math.max(0, estimateBytes(value)), 0)
+  while (next.length > 1 && totalBytes > maxBytes) {
+    const removed = next.shift()
+    if (removed !== undefined) totalBytes -= Math.max(0, estimateBytes(removed))
+  }
+  return next
 }
 
 export interface FilterValues {

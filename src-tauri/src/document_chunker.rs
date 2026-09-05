@@ -41,6 +41,7 @@ struct BlockInput {
     ocr_noise_candidate: bool,
     formula_confidence: Option<f64>,
     formula_display: Option<String>,
+    formula_quality: Option<String>,
     image_type: Option<String>,
     dehyphenation_count: usize,
     atomic_block: bool,
@@ -473,6 +474,11 @@ fn flatten_blocks(document: &Value) -> Vec<BlockInput> {
                     .get("displayOrInline")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
+                formula_quality: block
+                    .get("formulaQuality")
+                    .and_then(|quality| quality.get("level"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
                 image_type: block
                     .get("imageType")
                     .or_else(|| block.get("semanticType"))
@@ -620,6 +626,7 @@ fn build_chunks(
                     ocr_noise_candidate: block.ocr_noise_candidate,
                     formula_confidence: block.formula_confidence,
                     formula_display: block.formula_display.clone(),
+                    formula_quality: block.formula_quality.clone(),
                     image_type: block.image_type.clone(),
                     dehyphenation_count: block.dehyphenation_count,
                     atomic_block: block.atomic_block,
@@ -710,6 +717,9 @@ fn push_chunk(
         }
         if matches!(block.block_type.as_str(), "formula" | "matrix") {
             quality_flags.push("contains_formula");
+            if matches!(block.formula_quality.as_deref(), Some("bad" | "review")) {
+                quality_flags.push("formula_structure_uncertain");
+            }
         }
         if block.block_type == "table" {
             quality_flags.push("contains_table");
@@ -723,7 +733,9 @@ fn push_chunk(
         {
             quality_flags.push("low_ocr_confidence");
         }
-        eligible && !block.ocr_noise_candidate
+        eligible
+            && !block.ocr_noise_candidate
+            && !matches!(block.formula_quality.as_deref(), Some("bad"))
     });
     quality_flags.sort_unstable();
     quality_flags.dedup();
@@ -783,13 +795,31 @@ fn push_chunk(
         .iter()
         .any(|block| block.formula_display.as_deref() != Some("inline"));
     let contains_matrix = blocks.iter().any(|block| block.block_type == "matrix");
-    let math_confidence = formula_blocks
+    let has_structured_quality = formula_blocks
         .iter()
-        .filter_map(|block| block.formula_confidence)
-        .reduce(f64::min);
-    let math_quality = math_confidence
-        .map(crate::document_math::math_quality)
-        .unwrap_or("none");
+        .any(|block| block.formula_quality.is_some());
+    let math_quality = if formula_blocks
+        .iter()
+        .any(|block| block.formula_quality.as_deref() == Some("bad"))
+    {
+        "bad"
+    } else if formula_blocks
+        .iter()
+        .any(|block| block.formula_quality.as_deref() == Some("review"))
+    {
+        "review"
+    } else if formula_blocks.is_empty() {
+        "none"
+    } else if !has_structured_quality {
+        formula_blocks
+            .iter()
+            .filter_map(|block| block.formula_confidence)
+            .reduce(f64::min)
+            .map(crate::document_math::math_quality)
+            .unwrap_or("review")
+    } else {
+        "good"
+    };
     let image_blocks = blocks
         .iter()
         .filter(|block| matches!(block.block_type.as_str(), "image" | "figure"))
@@ -1016,6 +1046,29 @@ mod tests {
         let output = chunk_document(&document, None).unwrap();
         assert_eq!(output["chunks"][0]["ragEligible"], false);
         assert_eq!(output["chunks"][0]["ragQuality"], "rejected");
+    }
+
+    #[test]
+    fn bad_formula_structure_disables_affected_rag_chunk() {
+        let document = json!({
+            "id":"bad-math",
+            "source":{"path":"math.pdf"},
+            "pages":[{"number":1,"blocks":[{
+                "id":"f1",
+                "type":"formula",
+                "content":")-4(e",
+                "formulaQuality":{"level":"bad"},
+                "atomicBlock":true
+            }]}]
+        });
+        let output = chunk_document(&document, None).unwrap();
+        assert_eq!(output["chunks"][0]["ragEligible"], false);
+        assert_eq!(output["chunks"][0]["math_quality"], "bad");
+        assert!(output["chunks"][0]["quality_flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|flag| flag == "formula_structure_uncertain"));
     }
 
     #[test]

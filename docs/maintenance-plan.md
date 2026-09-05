@@ -1,7 +1,7 @@
 # CrucibleBox 维护复杂度优化方案（整合版）
 
-> 状态：维护规范（2.0.0-beta.8 工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。
-> 基线：CrucibleBox 2.0.0-beta.8（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
+> 状态：维护规范（2.0.0 正式版工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。
+> 基线：CrucibleBox 2.0.0（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
 > 唯一可编辑源码：`E:\CrucibleBox_Sourses`（git 仓库；beta6 发布提交以实际发布 tag 为准）。
 > `E:\CrucibleBox_Plugins` 为只读镜像 / 发布备份，不参与构建。
 

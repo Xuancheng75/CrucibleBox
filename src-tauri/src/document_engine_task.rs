@@ -169,7 +169,18 @@ impl TaskRecord {
         core.settled = true;
         core.snapshot["status"] = json!("succeeded");
         core.snapshot["completedAt"] = json!(now_ms());
-        core.snapshot["result"] = result;
+        // Executors persist the complete document/chunk result in the disk
+        // cache. Keep only the same bounded preview used by polling in the
+        // retained task record, otherwise 100 completed large PDFs can pin
+        // hundreds of megabytes (or more) until task eviction.
+        let compact = compact_snapshot(&json!({ "result": result }));
+        core.snapshot["result"] = compact["result"].clone();
+        if let Some(bytes) = compact.get("resultBytes") {
+            core.snapshot["resultBytes"] = bytes.clone();
+        }
+        if let Some(truncated) = compact.get("resultTruncated") {
+            core.snapshot["resultTruncated"] = truncated.clone();
+        }
     }
 
     fn complete_failed(&self, message: String) {

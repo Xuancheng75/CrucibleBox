@@ -24,6 +24,7 @@ import { isResidueWorkerAbortError, runResidueWorker } from './residue-worker'
 import type { GifDocument, GifFrame, Rgb } from './types'
 import {
   appendHistoryEntry,
+  appendByteBoundedEntry,
   applyHistoryDelta,
   applyFilterValues,
   cloneHistoryEntry,
@@ -57,6 +58,8 @@ type HistoryEntry = RendererHistoryEntry<ImageData>
 const MAX_HISTORY_ENTRIES = 50
 const MAX_HISTORY_BYTES = 256 * 1024 * 1024
 const HISTORY_LIMITS = { maxEntries: MAX_HISTORY_ENTRIES, maxBytes: MAX_HISTORY_BYTES }
+const MAX_LAYER_HISTORY_ENTRIES = 50
+const MAX_LAYER_HISTORY_BYTES = 128 * 1024 * 1024
 const STYLE_ID = 'gif-editor-plugin-styles'
 
 export default function GifEditorPlugin({ api }: PluginRenderProps) {
@@ -282,7 +285,15 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           setLayerRedoStack((stack) => {
             if (stack.length === 0) return stack
             const entry = stack[stack.length - 1]
-            setLayerUndoStack((us) => [...us, cloneLayers(layerSession)])
+            setLayerUndoStack((us) =>
+              appendByteBoundedEntry(
+                us,
+                cloneLayers(layerSession),
+                MAX_LAYER_HISTORY_ENTRIES,
+                MAX_LAYER_HISTORY_BYTES,
+                layersByteLength
+              )
+            )
             setLayerSession(cloneLayers(entry))
             return stack.slice(0, -1)
           })
@@ -290,7 +301,15 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           setLayerUndoStack((stack) => {
             if (stack.length === 0) return stack
             const entry = stack[stack.length - 1]
-            setLayerRedoStack((rs) => [...rs, cloneLayers(layerSession)])
+            setLayerRedoStack((rs) =>
+              appendByteBoundedEntry(
+                rs,
+                cloneLayers(layerSession),
+                MAX_LAYER_HISTORY_ENTRIES,
+                MAX_LAYER_HISTORY_BYTES,
+                layersByteLength
+              )
+            )
             setLayerSession(cloneLayers(entry))
             return stack.slice(0, -1)
           })
@@ -338,7 +357,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
 
   useEffect(() => {
     setThumbCache((previous) =>
-      reconcileThumbnailCache(doc?.frames ?? [], previous, frameToDataURL)
+      reconcileThumbnailCache(doc?.frames ?? [], previous, frameToDataURL, releasePreviewUrl)
     )
   }, [doc?.frames])
 
@@ -435,7 +454,15 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
 
   const pushLayerHistory = useCallback(() => {
     if (layerSession) {
-      setLayerUndoStack((stack) => [...stack, cloneLayers(layerSession)].slice(-50))
+      setLayerUndoStack((stack) =>
+        appendByteBoundedEntry(
+          stack,
+          cloneLayers(layerSession),
+          MAX_LAYER_HISTORY_ENTRIES,
+          MAX_LAYER_HISTORY_BYTES,
+          layersByteLength
+        )
+      )
       setLayerRedoStack([])
     }
   }, [layerSession])
@@ -2033,4 +2060,12 @@ function layerThumb(imageData: ImageData): string {
 
 function cloneLayers(layers: LayerItem[]): LayerItem[] {
   return layers.map((l) => ({ ...l, imageData: new ImageData(new Uint8ClampedArray(l.imageData.data), l.imageData.width, l.imageData.height) }))
+}
+
+function layersByteLength(layers: LayerItem[]): number {
+  return layers.reduce((total, layer) => total + layer.imageData.data.byteLength, 0)
+}
+
+function releasePreviewUrl(url: string): void {
+  if (url.startsWith('blob:')) URL.revokeObjectURL(url)
 }

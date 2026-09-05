@@ -662,6 +662,13 @@ fn restore_reading_order(blocks: &mut [Value], page_width: u32) {
 
 fn rebuild_document_structure(document: &mut Value) {
     crate::document_structure::rebuild(document);
+    if let Some(pages) = document.get_mut("pages").and_then(Value::as_array_mut) {
+        for page in pages {
+            if let Some(blocks) = page.get_mut("blocks").and_then(Value::as_array_mut) {
+                crate::pdf_parser::coalesce_native_text_fragments(blocks);
+            }
+        }
+    }
 }
 
 pub(crate) fn enrich_formula_blocks(document: &mut Value) {
@@ -688,7 +695,9 @@ pub(crate) fn enrich_formula_blocks(document: &mut Value) {
                     block["formulaEngine"] = json!(result.engine);
                     block["formulaModelVersion"] = json!(result.model_version);
                     block["formulaConfidence"] = json!(result.confidence);
-                    block["displayOrInline"] = json!(result.display_or_inline);
+                    block["displayOrInline"] = block["displayOrInline"]
+                        .as_str()
+                        .map_or_else(|| json!(result.display_or_inline), |mode| json!(mode));
                     block["region"] = json!("formula");
                     block["source"] = block["source"]
                         .as_str()

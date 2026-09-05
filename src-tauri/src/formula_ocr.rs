@@ -181,27 +181,16 @@ fn normalize(value: &str) -> String {
             character => output.push(character),
         }
     }
-    let normalized = collapse_adjacent_duplicate_tokens(output.trim());
-    let mut normalized = normalized;
+    // Do not remove repeated textual tokens here. Repetition can be meaningful
+    // (for example a matrix row containing `1 1`) and text-only normalization
+    // has no geometric evidence that two tokens represent the same PDF glyph.
+    // Overprinted-glyph suppression belongs to the native PDF reconstruction
+    // stage where source ids and bounding boxes are available.
+    let mut normalized = output.trim().to_string();
     if normalized.contains(r"\sqrt{") && !normalized.ends_with('}') {
         normalized.push('}');
     }
     normalized
-}
-
-/// PDF text layers can repeat an extracted glyph sequence when a visible
-/// symbol is represented by overlapping text objects.  Collapse only exact
-/// adjacent whitespace-delimited duplicates; this is intentionally not a
-/// spelling or formula inference heuristic.
-fn collapse_adjacent_duplicate_tokens(value: &str) -> String {
-    let mut result = Vec::new();
-    for token in value.split_whitespace() {
-        if result.last().is_some_and(|previous| *previous == token) {
-            continue;
-        }
-        result.push(token);
-    }
-    result.join(" ")
 }
 
 /// PDF text extraction often returns superscript/subscript glyphs as separate
@@ -265,9 +254,9 @@ mod tests {
     }
 
     #[test]
-    fn collapses_only_adjacent_duplicate_formula_tokens() {
+    fn preserves_repeated_formula_tokens_without_geometry() {
         let result = recognize_text("2x 2x + 3y");
-        assert_eq!(result.normalized_latex, "2x + 3y");
+        assert_eq!(result.normalized_latex, "2x 2x + 3y");
         let separated = recognize_text("x + x");
         assert_eq!(separated.normalized_latex, "x + x");
     }

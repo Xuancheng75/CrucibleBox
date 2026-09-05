@@ -601,7 +601,7 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
                 let id = format!("p{}-b{}", page_index + 1, segment_index + 1);
                 reading_order.push(id.clone());
                 let block_type = native_block_type(&content);
-                blocks.push(json!({
+                let mut block = json!({
                     "id": id,
                     "type": block_type,
                     "content": content,
@@ -611,7 +611,48 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
                     "language": detect_language(&content),
                     "bbox": [bounds.left().value, bounds.top().value, bounds.right().value, bounds.bottom().value],
                     "confidence": 1.0
-                }));
+                });
+                // Pdfium segments can overlap at font changes and expose the
+                // same character in two neighbouring segment strings. Keep
+                // character identity and geometry for short math fragments so
+                // reconstruction can deduplicate by source index instead of
+                // deleting repeated text heuristically. Limiting this to
+                // fragment-sized spans keeps large-book IR bounded.
+                if content.chars().count() <= 4 {
+                    if let Ok(chars) = segment.chars() {
+                        let glyphs = chars
+                            .iter()
+                            .filter_map(|glyph| {
+                                let character = glyph.unicode_char()?;
+                                if character.is_whitespace() {
+                                    return None;
+                                }
+                                let normalized = crate::document_text::normalize_text(
+                                    &character.to_string(),
+                                )
+                                .0;
+                                if normalized.is_empty() {
+                                    return None;
+                                }
+                                let bounds = glyph.tight_bounds().ok()?;
+                                Some(json!({
+                                    "pageCharIndex": glyph.index(),
+                                    "originalText": normalized,
+                                    "rawCodepoint": character as u32,
+                                    "bbox": [bounds.left().value, bounds.top().value, bounds.right().value, bounds.bottom().value],
+                                    "baseline": glyph.origin_y().ok().map(|value| value.value),
+                                    "fontName": glyph.font_name(),
+                                    "fontSize": glyph.scaled_font_size().value,
+                                    "coordinateSystem": "pdf",
+                                }))
+                            })
+                            .collect::<Vec<_>>();
+                        if !glyphs.is_empty() {
+                            block["nativeGlyphs"] = Value::Array(glyphs);
+                        }
+                    }
+                }
+                blocks.push(block);
             }
         }
         coalesce_native_formula_fragments(&mut blocks);
@@ -659,6 +700,98 @@ fn pdfium_text_document(path: &str, bytes: &[u8], page_count: usize) -> Option<V
             "structure": { "outline": [], "readingOrder": reading_order }
         }
     }))
+}
+
+/// Reassemble PDFium font/style segments that belong to one visual text line.
+/// Formula blocks remain atomic so downstream exporters can preserve OMML and
+/// Markdown math instead of flattening them back into prose.
+pub(crate) fn coalesce_native_text_fragments(blocks: &mut Vec<Value>) {
+    let mut index = 0usize;
+    while index + 1 < blocks.len() {
+        if !matches!(blocks[index]["type"].as_str(), Some("text" | "paragraph"))
+            || !matches!(
+                blocks[index + 1]["type"].as_str(),
+                Some("text" | "paragraph")
+            )
+        {
+            index += 1;
+            continue;
+        }
+        let (Some(left_bbox), Some(right_bbox)) =
+            (block_bbox(&blocks[index]), block_bbox(&blocks[index + 1]))
+        else {
+            index += 1;
+            continue;
+        };
+        if !same_text_line(&blocks[index], &blocks[index + 1]) {
+            index += 1;
+            continue;
+        }
+        let left_len = blocks[index]["content"]
+            .as_str()
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        let right_len = blocks[index + 1]["content"]
+            .as_str()
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        // The high-value failure mode is a short font/math run splitting a
+        // logical line. Joining two already substantial runs here changes TOC
+        // and heading evidence before structure recovery, so leave those for
+        // the paragraph/reading-order stage.
+        let continues_short_run = blocks[index]["containsMergedShortRun"] == true;
+        if left_len > 8 && right_len > 8 && !continues_short_run {
+            index += 1;
+            continue;
+        }
+        let height = (left_bbox[3] - left_bbox[1])
+            .abs()
+            .max((right_bbox[3] - right_bbox[1]).abs())
+            .max(1.0);
+        let gap = right_bbox[0] - left_bbox[2];
+        if gap < -height || gap > height * 4.0 {
+            index += 1;
+            continue;
+        }
+        let left_text = blocks[index]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_end();
+        let right_text = blocks[index + 1]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim();
+        let duplicate = deduplicated_formula_fragments(&blocks[index..=index + 1]).len() == 1
+            || (right_len <= 8 && gap <= height * 0.12 && left_text.ends_with(right_text));
+        if !duplicate {
+            let separator = if gap <= height * 0.18
+                || right_text.starts_with(|character: char| ",.;:!?)]}".contains(character))
+                || left_text.ends_with(|character: char| "([{/+-−=".contains(character))
+            {
+                ""
+            } else {
+                " "
+            };
+            blocks[index]["content"] = json!(format!("{left_text}{separator}{right_text}"));
+            blocks[index]["rawText"] = blocks[index]["content"].clone();
+        }
+        blocks[index]["bbox"] = json!([
+            left_bbox[0].min(right_bbox[0]),
+            left_bbox[1].min(right_bbox[1]),
+            left_bbox[2].max(right_bbox[2]),
+            left_bbox[3].max(right_bbox[3])
+        ]);
+        blocks[index]["containsMergedShortRun"] =
+            json!(continues_short_run || left_len <= 8 || right_len <= 8);
+        blocks.remove(index + 1);
+    }
+    for block in blocks {
+        if let Some(value) = block.as_object_mut() {
+            value.remove("containsMergedShortRun");
+        }
+    }
 }
 
 fn native_block_type(text: &str) -> &'static str {
@@ -719,11 +852,19 @@ fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
             continue;
         }
         let fragments = deduplicated_formula_fragments(&blocks[index..end]);
-        let candidate = fragments
-            .iter()
-            .filter_map(|block| block["content"].as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let original_tokens = formula_original_tokens(&fragments);
+        let candidate = if original_tokens.is_empty() {
+            fragments
+                .iter()
+                .filter_map(|block| block["content"].as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            original_tokens
+                .iter()
+                .filter_map(|token| token["originalText"].as_str())
+                .collect::<String>()
+        };
         if !looks_like_formula(&candidate) {
             index += 1;
             continue;
@@ -734,8 +875,12 @@ fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
         merged["source"] = json!("native/pdf/formula");
         merged["content"] = json!(candidate.clone());
         merged["rawText"] = json!(candidate);
-        merged["originalTokens"] = Value::Array(
-            fragments
+        let inline = (index > 0 && same_text_line(&blocks[index - 1], &blocks[index]))
+            || (end < blocks.len() && same_text_line(&blocks[end - 1], &blocks[end]));
+        merged["displayOrInline"] = json!(if inline { "inline" } else { "display" });
+        merged["originalTokens"] =
+            if original_tokens.is_empty() {
+                Value::Array(fragments
                 .iter()
                 .map(|block| {
                     let bbox = block.get("bbox").cloned().unwrap_or(Value::Null);
@@ -764,8 +909,10 @@ fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
                         "confidence": block.get("confidence").cloned().unwrap_or(json!(1.0)),
                     })
                 })
-                .collect(),
-        );
+                .collect())
+            } else {
+                Value::Array(original_tokens)
+            };
         if let Some(bbox) = merged_bbox_values(&blocks[index..end]) {
             merged["bbox"] = json!(bbox);
         }
@@ -776,6 +923,38 @@ fn coalesce_native_formula_fragments(blocks: &mut Vec<Value>) {
     }
 }
 
+fn formula_original_tokens(blocks: &[&Value]) -> Vec<Value> {
+    let mut tokens = blocks
+        .iter()
+        .flat_map(|block| {
+            block["nativeGlyphs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return tokens;
+    }
+    tokens.sort_by(|left, right| {
+        left["pageCharIndex"]
+            .as_u64()
+            .cmp(&right["pageCharIndex"].as_u64())
+    });
+    tokens.dedup_by(|left, right| left["pageCharIndex"] == right["pageCharIndex"]);
+    tokens.sort_by(|left, right| {
+        let left_x = left["bbox"][0].as_f64().unwrap_or(0.0);
+        let right_x = right["bbox"][0].as_f64().unwrap_or(0.0);
+        left_x.total_cmp(&right_x).then_with(|| {
+            left["pageCharIndex"]
+                .as_u64()
+                .cmp(&right["pageCharIndex"].as_u64())
+        })
+    });
+    tokens
+}
+
 fn deduplicated_formula_fragments(blocks: &[Value]) -> Vec<&Value> {
     let mut kept: Vec<&Value> = Vec::with_capacity(blocks.len());
     for block in blocks {
@@ -783,13 +962,37 @@ fn deduplicated_formula_fragments(blocks: &[Value]) -> Vec<&Value> {
             previous["content"] == block["content"]
                 && match (block_bbox(previous), block_bbox(block)) {
                     (Some(left), Some(right)) => {
-                        let overlap_x = (left[2].min(right[2]) - left[0].max(right[0])).max(0.0);
-                        let overlap_y = (left[3].min(right[3]) - left[1].max(right[1])).max(0.0);
+                        let (left_x0, left_x1) = (left[0].min(left[2]), left[0].max(left[2]));
+                        let (left_y0, left_y1) = (left[1].min(left[3]), left[1].max(left[3]));
+                        let (right_x0, right_x1) = (right[0].min(right[2]), right[0].max(right[2]));
+                        let (right_y0, right_y1) = (right[1].min(right[3]), right[1].max(right[3]));
+                        let overlap_x = (left_x1.min(right_x1) - left_x0.max(right_x0)).max(0.0);
+                        let overlap_y = (left_y1.min(right_y1) - left_y0.max(right_y0)).max(0.0);
                         let left_area =
                             ((left[2] - left[0]).abs() * (left[3] - left[1]).abs()).max(1.0);
                         let right_area =
                             ((right[2] - right[0]).abs() * (right[3] - right[1]).abs()).max(1.0);
-                        overlap_x * overlap_y >= left_area.min(right_area) * 0.80
+                        let area_overlay =
+                            overlap_x * overlap_y >= left_area.min(right_area) * 0.80;
+                        // PdfPageTextSegment::text() selects every character
+                        // intersecting the segment rectangle. At font changes
+                        // (notably a smaller math glyph), adjacent segment
+                        // rectangles can therefore expose the same short text
+                        // window twice even though their full rectangles do
+                        // not overlap by 80%. Suppress that duplicate only
+                        // when geometry proves a boundary overlap and one
+                        // window is materially smaller. Equal-size repeated
+                        // matrix cells remain distinct.
+                        let left_height = (left[3] - left[1]).abs().max(1.0);
+                        let right_height = (right[3] - right[1]).abs().max(1.0);
+                        let height_ratio =
+                            left_height.min(right_height) / left_height.max(right_height);
+                        let boundary_overlap = right_x0
+                            <= left_x1 + left_height.max(right_height) * 0.05
+                            && right_x1 > left_x1
+                            && overlap_y > 0.0
+                            && height_ratio <= 0.75;
+                        area_overlay || boundary_overlap
                     }
                     _ => false,
                 }
@@ -886,11 +1089,42 @@ fn is_formula_fragment(block: &Value) -> bool {
     let text = block["content"].as_str().unwrap_or_default().trim();
     !text.is_empty()
         && text.chars().count() <= 4
+        && !matches!(
+            text.to_ascii_lowercase().as_str(),
+            "and"
+                | "or"
+                | "if"
+                | "the"
+                | "for"
+                | "with"
+                | "from"
+                | "then"
+                | "but"
+                | "at"
+                | "to"
+                | "by"
+                | "as"
+                | "in"
+                | "on"
+        )
         && text.chars().all(|character| {
             character.is_ascii_alphanumeric()
                 || "αβγδεζηθλμνξπρστφχω=+-−×÷^_()[]{}".contains(character)
         })
         && matches!(block["type"].as_str(), Some("text" | "formula"))
+}
+
+fn same_text_line(left: &Value, right: &Value) -> bool {
+    let (Some(left), Some(right)) = (block_bbox(left), block_bbox(right)) else {
+        return false;
+    };
+    let left_y0 = left[1].min(left[3]);
+    let left_y1 = left[1].max(left[3]);
+    let right_y0 = right[1].min(right[3]);
+    let right_y1 = right[1].max(right[3]);
+    let overlap = (left_y1.min(right_y1) - left_y0.max(right_y0)).max(0.0);
+    let min_height = (left_y1 - left_y0).min(right_y1 - right_y0).max(1.0);
+    overlap / min_height >= 0.45
 }
 
 fn block_bbox(block: &Value) -> Option<[f32; 4]> {
@@ -1711,6 +1945,23 @@ mod tests {
     }
 
     #[test]
+    fn formula_coalescing_stops_at_prose_and_marks_mixed_line_inline() {
+        let mut blocks = vec![
+            json!({"id":"prefix","type":"text","content":"Solving","bbox":[0,100,38,112]}),
+            json!({"id":"a","type":"text","content":"A","bbox":[42,100,48,112]}),
+            json!({"id":"x","type":"text","content":"x","bbox":[49,100,55,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[57,102,63,110]}),
+            json!({"id":"b","type":"text","content":"b","bbox":[65,100,71,112]}),
+            json!({"id":"and","type":"text","content":"and","bbox":[75,100,93,112]}),
+            json!({"id":"c","type":"text","content":"c","bbox":[97,100,103,112]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks[1]["content"], "A x = b");
+        assert_eq!(blocks[1]["displayOrInline"], "inline");
+        assert_eq!(blocks[2]["content"], "and");
+    }
+
+    #[test]
     fn coalescing_removes_only_geometrically_overlapping_duplicate_glyphs() {
         let mut blocks = vec![
             json!({"id":"x1","type":"text","content":"x","bbox":[10,100,18,112]}),
@@ -1724,6 +1975,54 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["content"], "x + x = 2");
         assert_eq!(blocks[0]["originalTokens"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn coalescing_removes_smaller_duplicate_window_at_segment_boundary() {
+        let mut blocks = vec![
+            json!({"id":"lhs","type":"text","content":"A","bbox":[10,100,18,112]}),
+            json!({"id":"eq","type":"text","content":"=","bbox":[22,104,30,108]}),
+            json!({"id":"lambda-x","type":"text","content":"λx","bbox":[34,100,46,112]}),
+            json!({"id":"lambda-x-window","type":"text","content":"λx","bbox":[45.8,103,52,110]}),
+        ];
+        coalesce_native_formula_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "A = λx");
+        assert_eq!(blocks[0]["originalTokens"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn coalesces_native_text_style_fragments_on_the_same_line() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"text","content":"The equation 2x","bbox":[10.0,20.0,90.0,32.0]}),
+            json!({"id":"b","type":"text","content":"−","bbox":[91.0,20.0,96.0,32.0]}),
+            json!({"id":"c","type":"text","content":"y = 1 is represented","bbox":[97.0,20.0,190.0,32.0]}),
+        ];
+        coalesce_native_text_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "The equation 2x−y = 1 is represented");
+    }
+
+    #[test]
+    fn native_text_fragment_merge_preserves_distinct_columns() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"text","content":"left","bbox":[10.0,20.0,40.0,32.0]}),
+            json!({"id":"b","type":"text","content":"right","bbox":[300.0,20.0,340.0,32.0]}),
+        ];
+        coalesce_native_text_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn native_text_fragment_merge_removes_overlapping_suffix_window() {
+        let mut blocks = vec![
+            json!({"id":"a","type":"paragraph","content":"The equation 2x","bbox":[10.0,20.0,90.0,32.0]}),
+            json!({"id":"b","type":"paragraph","content":"2x","bbox":[89.5,21.0,101.0,31.0]}),
+            json!({"id":"c","type":"paragraph","content":"− y = 1","bbox":[102.0,20.0,140.0,32.0]}),
+        ];
+        coalesce_native_text_fragments(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "The equation 2x− y = 1");
     }
 
     #[test]
@@ -1769,6 +2068,11 @@ mod tests {
         let sanitization = crate::document_text::sanitize_document(&mut normalized);
         crate::document_quality::annotate_native_text_quality(&mut normalized);
         crate::document_structure::rebuild(&mut normalized);
+        for page in normalized["pages"].as_array_mut().into_iter().flatten() {
+            if let Some(blocks) = page["blocks"].as_array_mut() {
+                coalesce_native_text_fragments(blocks);
+            }
+        }
         crate::document_engine_service::enrich_formula_blocks(&mut normalized);
         let quality = crate::document_quality::report(
             &normalized,
@@ -1821,6 +2125,20 @@ mod tests {
             "fixture exports: matrixBlocks={} markdownBytes={} docxBytes={} docxQuality={}",
             quality["matrixBlockCount"], markdown["bytes"], docx["bytes"], docx["quality"]
         );
-        let _ = std::fs::remove_dir_all(output_root);
+        if std::env::var_os("DOCUMENT_ENGINE_KEEP_OUTPUT").is_some() {
+            std::fs::write(
+                output_root.join("document.json"),
+                serde_json::to_vec_pretty(&normalized).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                output_root.join("document-chunks.json"),
+                serde_json::to_vec_pretty(&chunks).unwrap(),
+            )
+            .unwrap();
+            eprintln!("fixture output retained at {}", output_root.display());
+        } else {
+            let _ = std::fs::remove_dir_all(output_root);
+        }
     }
 }
