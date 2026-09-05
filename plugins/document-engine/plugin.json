@@ -1,26 +1,50 @@
 {
   "name": "document-engine",
-  "version": "0.1.2",
+  "version": "0.10.0",
   "displayName": "Document Engine",
-  "description": "统一本地文档处理基础设施：OCR、PDF/Office 解析、文档切分、格式转换、批量处理、任务队列、缓存和模型管理（Rust + PaddleOCR ONNX）",
+  "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的 OCR、解析结果导出、真实 PDF 拆分、AI/RAG 文本分块、格式转换、批量任务、缓存和模型管理",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,
   "backendApiVersion": 2,
   "rendererApiVersion": 2,
+  "minHostVersion": "2.0.0",
   "permissions": ["trusted:document-engine", "dialog"],
   "config": {
     "modelDirectory": {
       "type": "string",
       "label": "OCR 模型目录",
-      "description": "PaddleOCR ONNX 模型与字典目录；留空使用 Worker 默认目录",
+      "description": "PaddleOCR ONNX 模型与字典目录；留空使用内置轻量模型",
       "default": ""
+    },
+    "modelProfile": {
+      "type": "select",
+      "label": "OCR 模型方案",
+      "description": "默认使用 PP-OCRv6-small-det + 通用 PP-OCRv5_mobile_rec；英文模型仅在明确选择时使用",
+      "default": "auto",
+      "options": [
+        { "label": "自动（推荐）", "value": "auto" },
+        { "label": "PP-OCRv5 中英混排方案", "value": "ppocrv6-small-det-v5-mobile-rec" },
+        { "label": "PP-OCRv5 英文优化方案", "value": "ppocrv6-small-det-v5-en-rec" },
+        { "label": "PP-OCRv4 兼容方案", "value": "ppocrv4-mobile-zh-en" }
+      ]
+    },
+    "textRecognitionMode": {
+      "type": "select",
+      "label": "文字识别语言",
+      "description": "自动/中文混排使用通用 PP-OCRv5；英文优化模式需明确选择",
+      "default": "auto",
+      "options": [
+        { "label": "自动（中英混排）", "value": "auto" },
+        { "label": "中文/混排", "value": "mixed" },
+        { "label": "英文优化", "value": "english" }
+      ]
     },
     "dictionaryPath": {
       "type": "string",
       "label": "OCR 字典路径",
-      "description": "ppocr_keys_v1.txt 路径；留空使用模型目录中的同名文件",
+      "description": "识别字典路径；留空根据模型方案自动选择",
       "default": ""
     },
     "cacheDirectory": {

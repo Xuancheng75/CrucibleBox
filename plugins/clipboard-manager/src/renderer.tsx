@@ -9,6 +9,14 @@ interface ClipItem {
   pinned: boolean
 }
 
+type ContentKind = 'all' | 'text' | 'link' | 'code'
+
+function classifyContent(text: string): Exclude<ContentKind, 'all'> {
+  if (/^https?:\/\/\S+$/i.test(text.trim())) return 'link'
+  if (/[{};]|=>|\b(const|let|function|class|SELECT|FROM)\b/.test(text)) return 'code'
+  return 'text'
+}
+
 const s: Record<string, CSSProperties> = {
   page: {
     minHeight: '100%',
@@ -111,6 +119,8 @@ const s: Record<string, CSSProperties> = {
 export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
   const [items, setItems] = useState<ClipItem[]>([])
   const [search, setSearch] = useState('')
+  const [pinnedOnly, setPinnedOnly] = useState(false)
+  const [kind, setKind] = useState<ContentKind>('all')
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async () => {
@@ -120,13 +130,17 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
   }, [api])
 
   useEffect(() => {
-    refresh()
-    const timer = setInterval(refresh, 2000)
-    return () => clearInterval(timer)
-  }, [refresh])
+    void refresh()
+    return api.onBackendMessage((message) => {
+      const event = message as { type?: unknown }
+      if (event.type === 'clipboard:changed') void refresh()
+    })
+  }, [api, refresh])
 
   const filtered = items.filter((item) =>
-    item.text.toLowerCase().includes(search.toLowerCase())
+    item.text.toLowerCase().includes(search.toLowerCase()) &&
+    (!pinnedOnly || item.pinned) &&
+    (kind === 'all' || classifyContent(item.text) === kind)
   )
 
   const pinned = filtered.filter((i) => i.pinned)
@@ -134,6 +148,10 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
 
   const handleCopy = async (text: string) => {
     await api.sendToBackend({ type: 'copyToClipboard', text })
+    // The host clipboard event is debounced and may arrive after this view
+    // renders.  Refresh immediately so an explicit copy is visible even when
+    // the native event is coalesced or the clipboard owner is this plugin.
+    await refresh()
     api.notify('已复制', text.slice(0, 50))
   }
 
@@ -152,6 +170,17 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
     if (!ok) return
     await api.sendToBackend({ type: 'clearAll' })
     refresh()
+  }
+
+
+  const handleExport = () => {
+    const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `cruciblebox-clipboard-${new Date().toISOString().slice(0, 10)}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
   }
 
   const formatTime = (ts: number) => {
@@ -173,7 +202,22 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <select
+          value={kind}
+          onChange={(event) => setKind(event.target.value as ContentKind)}
+          style={{ ...s.iconBtn, padding: '7px 8px' }}
+          aria-label="内容类型"
+        >
+          <option value="all">全部类型</option>
+          <option value="text">文本</option>
+          <option value="link">链接</option>
+          <option value="code">代码</option>
+        </select>
+        <button style={s.iconBtn} onClick={handleExport} disabled={filtered.length === 0}>导出</button>
         <button style={s.btnDanger} onClick={handleClear}>清空</button>
+        <button style={s.iconBtn} onClick={() => setPinnedOnly((value) => !value)}>
+          {pinnedOnly ? '显示全部' : '仅置顶'}
+        </button>
       </div>
 
       {filtered.length === 0 && (
@@ -186,7 +230,7 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
           {pinned.map((item) => (
             <div key={item.id} style={s.itemPinned} onClick={() => handleCopy(item.text)}>
               <div style={s.text}>{item.text}</div>
-              <div style={s.meta}>{formatTime(item.timestamp)}</div>
+              <div style={s.meta}>{classifyContent(item.text)} · {formatTime(item.timestamp)}</div>
               <div style={s.actions}>
                 <button style={s.iconBtn} onClick={(e) => { e.stopPropagation(); handleTogglePin(item.id) }}>取消置顶</button>
                 <button style={s.iconBtn} onClick={(e) => { e.stopPropagation(); handleDelete(item.id) }}>删除</button>
@@ -202,7 +246,7 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
           {unpinned.map((item) => (
             <div key={item.id} style={s.item} onClick={() => handleCopy(item.text)}>
               <div style={s.text}>{item.text}</div>
-              <div style={s.meta}>{formatTime(item.timestamp)}</div>
+              <div style={s.meta}>{classifyContent(item.text)} · {formatTime(item.timestamp)}</div>
               <div style={s.actions}>
                 <button style={s.iconBtn} onClick={(e) => { e.stopPropagation(); handleTogglePin(item.id) }}>置顶</button>
                 <button style={s.iconBtn} onClick={(e) => { e.stopPropagation(); handleDelete(item.id) }}>删除</button>

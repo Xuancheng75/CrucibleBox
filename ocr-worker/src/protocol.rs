@@ -23,6 +23,7 @@ pub struct OcrOptions {
     pub device: Option<String>,
     pub model_directory: Option<String>,
     pub dictionary_path: Option<String>,
+    pub model_profile: Option<String>,
 }
 
 impl OcrRequest {
@@ -59,7 +60,12 @@ pub struct ModelInfo {
     pub detection_sha256: String,
     pub recognition_sha256: String,
     pub dictionary_sha256: String,
+    pub detection_path: String,
+    pub recognition_path: String,
+    pub dictionary_path: String,
+    pub model_version: String,
     pub device: &'static str,
+    pub model_profile: &'static str,
 }
 
 #[derive(Debug, Serialize)]

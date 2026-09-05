@@ -126,6 +126,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
   const [rates, setRates] = useState<Record<string, number> | null>(null)
   const [updatedAt, setUpdatedAt] = useState(0)
   const [cached, setCached] = useState(false)
+  const [provider, setProvider] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -133,12 +134,13 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
   const [from, setFrom] = useState('USD')
   const [to, setTo] = useState('CNY')
   const [convertResult, setConvertResult] = useState<{ result: number; rate: number } | null>(null)
+  const [favorites, setFavorites] = useState<string[]>(['CNY', 'EUR', 'JPY', 'GBP'])
 
   const fetchRates = useCallback(async () => {
     setLoading(true)
     setError('')
     const res = await api.sendToBackend({ type: 'getRates' }) as {
-      rates?: Record<string, number>; updatedAt?: number; cached?: boolean; error?: string
+      rates?: Record<string, number>; updatedAt?: number; cached?: boolean; provider?: string; error?: string
     }
     if (res.error) {
       setError(res.error)
@@ -146,6 +148,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
       setRates(res.rates)
       setUpdatedAt(res.updatedAt || 0)
       setCached(res.cached || false)
+      setProvider(res.provider || '')
     }
     setLoading(false)
   }, [api])
@@ -171,7 +174,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
     setLoading(true)
     setError('')
     const res = await api.sendToBackend({ type: 'refresh' }) as {
-      rates?: Record<string, number>; updatedAt?: number; error?: string
+      rates?: Record<string, number>; updatedAt?: number; provider?: string; error?: string
     }
     if (res.error) {
       setError(res.error)
@@ -179,8 +182,21 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
       setRates(res.rates)
       setUpdatedAt(res.updatedAt || 0)
       setCached(false)
+      setProvider(res.provider || '')
     }
     setLoading(false)
+  }
+
+  const swapCurrencies = () => {
+    setFrom(to)
+    setTo(from)
+    setConvertResult(null)
+  }
+
+  const toggleFavorite = (code: string) => {
+    setFavorites((current) =>
+      current.includes(code) ? current.filter((item) => item !== code) : [...current, code].slice(-8)
+    )
   }
 
   const displayRates = rates
@@ -215,7 +231,7 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
               {CURRENCIES.map((c) => <option key={c} value={c}>{c} {CURRENCY_NAMES[c] || ''}</option>)}
             </select>
           </div>
-          <div style={{ fontSize: 18, padding: '8px 0' }}>→</div>
+          <button style={{ ...s.btnSecondary, padding: '8px 12px' }} onClick={swapCurrencies} title="交换币种">⇄</button>
           <div style={s.field}>
             <label style={s.label}>到</label>
             <select style={s.select} value={to} onChange={(e) => setTo(e.target.value)}>
@@ -248,15 +264,18 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
           <>
             <div style={s.rateList}>
               {displayRates.map(([code, rate]) => (
-                <div key={code} style={s.rateItem}>
+                <div key={code} style={{ ...s.rateItem, order: favorites.includes(code) ? -1 : 0 }}>
                   <span>{CURRENCY_NAMES[code] || code} ({code})</span>
-                  <span style={{ fontWeight: 600 }}>{rate.toFixed(4)}</span>
+                  <span>
+                    <button onClick={() => toggleFavorite(code)} style={{ border: 0, background: 'transparent', cursor: 'pointer', color: favorites.includes(code) ? '#faad14' : '#999' }} aria-label={`${favorites.includes(code) ? '取消收藏' : '收藏'} ${code}`}>★</button>
+                    <strong>{rate.toFixed(4)}</strong>
+                  </span>
                 </div>
               ))}
             </div>
             <div style={s.meta}>
               更新时间: {updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : '未知'}
-              {cached && ' (缓存)'}
+              {cached && ' · 缓存'}{provider && ` · ${provider}`}
             </div>
           </>
         )}

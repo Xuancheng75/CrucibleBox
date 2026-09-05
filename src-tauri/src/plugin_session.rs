@@ -131,6 +131,10 @@ impl RendererSessionRegistry {
     }
 
     pub fn create(&mut self, input: CreateSessionInput) -> Result<RendererSession, String> {
+        // Sessions are short-lived capability records. Prune abandoned
+        // issued/active entries before allocating another one so repeated
+        // plugin navigation cannot grow the registry without a bound.
+        self.cleanup_expired();
         if input.plugin_id.is_empty() || input.plugin_id != input.plugin_id.trim() {
             return Err("pluginId must be a non-empty trimmed string".into());
         }
@@ -262,7 +266,6 @@ impl RendererSessionRegistry {
         n
     }
 
-    #[allow(dead_code)]
     pub fn cleanup_expired(&mut self) -> usize {
         let now = now_ms();
         let keys: Vec<String> = self

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Table, App, Tag, Typography, Select, Space, Button, Popconfirm, Tooltip } from 'antd'
+import { Table, App, Tag, Typography, Select, Space, Button, Popconfirm } from 'antd'
 import { ClearOutlined } from '@ant-design/icons'
 import { theme } from 'antd'
 import { tauriApi } from '../api/tauriApi'
@@ -9,7 +9,7 @@ import type { PluginLogEntry } from '../../../shared/types/plugin.types'
 
 const { Title, Text } = Typography
 
-export default function PluginLogs() {
+export default function PluginLogs({ embedded = false }: { embedded?: boolean }) {
   const { token } = theme.useToken()
   const { message } = App.useApp()
   const { plugins } = usePlugins()
@@ -131,22 +131,12 @@ export default function PluginLogs() {
       title: '消息',
       dataIndex: 'message',
       render: (v: string) => (
-        <Tooltip title={v}>
-          <span
-            style={{
-              fontFamily: 'monospace',
-              fontSize: 12,
-              color: token.colorText,
-              display: 'block',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              maxWidth: '100%'
-            }}
-          >
-            {v}
-          </span>
-        </Tooltip>
+        <Text
+          ellipsis={{ tooltip: v }}
+          style={{ display: 'block', maxWidth: 720, fontFamily: 'monospace', fontSize: 12 }}
+        >
+          {v}
+        </Text>
       )
     }
   ]
@@ -163,14 +153,14 @@ export default function PluginLogs() {
           gap: 12
         }}
       >
-        <div>
+        {!embedded && <div>
           <Title level={4} style={{ margin: 0, fontWeight: 600 }}>
             插件日志
           </Title>
           <Text type="secondary" style={{ fontSize: 13 }}>
             查看和筛选插件运行日志
           </Text>
-        </div>
+        </div>}
         <Space wrap>
           <Select
             allowClear
@@ -212,6 +202,25 @@ export default function PluginLogs() {
         pagination={{ pageSize: 50, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
         locale={{ emptyText: '暂无日志' }}
         style={{ borderTop: `1px solid ${token.colorBorderSecondary}` }}
+        expandable={{
+          expandedRowRender: (record) => (
+            <div style={{ padding: '4px 12px' }}>
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <Text type="secondary">
+                  来源：{pluginName(record.pluginId)} · 级别：{record.level.toUpperCase()} · 时间：
+                  {record.timestamp}
+                </Text>
+                <Typography.Paragraph
+                  copyable={{ text: record.message, tooltips: ['复制完整日志', '已复制'] }}
+                  style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'monospace' }}
+                >
+                  {record.message}
+                </Typography.Paragraph>
+              </Space>
+            </div>
+          ),
+          rowExpandable: (record) => Boolean(record.message)
+        }}
       />
     </div>
   )

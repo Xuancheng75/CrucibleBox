@@ -3,11 +3,14 @@ import IconRail from '../components/IconRail'
 import CommandPalette from '../components/CommandPalette'
 import { useAppStore } from '../store/app.store'
 import { useThemeStore } from '../store/theme.store'
+import GlobalTaskDock from '../components/GlobalTaskDock'
 
 const { Header, Sider, Content } = Layout
 
 const PAGE_META: Record<string, { title: string; subtitle: string; hud: string }> = {
   home: { title: '工作台', subtitle: '启动与管理工作台中的工具插件', hud: 'WORKBENCH' },
+  marketplace: { title: '插件市场', subtitle: '发现和获取新的工具能力', hud: 'MARKET' },
+  tasks: { title: '任务中心', subtitle: '统一查看下载、安装与后台任务', hud: 'TASKS' },
   logs: { title: '插件日志', subtitle: '查看插件运行日志', hud: 'TRACE LOG' },
   settings: { title: '设置', subtitle: '应用信息与运行环境', hud: 'SYSTEM CFG' },
   pluginView: { title: '插件详情', subtitle: '插件运行界面', hud: 'PLUGIN LINK' }
@@ -23,11 +26,17 @@ export default function MainLayout({ children }: MainLayoutProps) {
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const themeName = useThemeStore((s) => s.theme.name)
   const pageMeta = PAGE_META[currentPage] ?? PAGE_META.home
+  const selectedNavigationPage = currentPage === 'pluginView' ? 'home' : currentPage
 
   return (
     <Layout
       className="ob-app-layout"
-      style={{ minHeight: '100vh', background: token.colorBgLayout }}
+      style={{
+        height: '100dvh',
+        minHeight: 0,
+        overflow: 'hidden',
+        background: token.colorBgLayout
+      }}
     >
       <Sider
         className="ob-rail-shell"
@@ -35,12 +44,31 @@ export default function MainLayout({ children }: MainLayoutProps) {
         style={{
           background: token.colorBgContainer,
           borderRight: `1px solid ${token.colorBorder}`,
-          position: 'relative'
+          // Keep the rail anchored to the viewport.  `sticky` can still move
+          // with an intermediate flex scrolling context in compact windows.
+          position: 'fixed',
+          left: 0,
+          top: 0,
+          height: '100dvh',
+          minHeight: 0,
+          zIndex: 20,
+          flexShrink: 0,
+          overflow: 'hidden',
+          alignSelf: 'flex-start'
         }}
       >
-        <IconRail selectedKey={currentPage} onChange={setCurrentPage} />
+        <IconRail selectedKey={selectedNavigationPage} onChange={setCurrentPage} />
       </Sider>
-      <Layout className="ob-app-main-layout">
+      <Layout
+        className="ob-app-main-layout"
+        style={{
+          height: '100dvh',
+          minWidth: 0,
+          minHeight: 0,
+          overflow: 'hidden',
+          marginLeft: 72
+        }}
+      >
         <Header
           className="ob-app-header"
           style={{
@@ -58,15 +86,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
             zIndex: 10
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 12,
-              flexShrink: 0,
-              minWidth: 0
-            }}
-          >
+          <div style={{ flexShrink: 0, minWidth: 0 }}>
             <span
               className="ob-brand-wordmark"
               style={{
@@ -78,16 +98,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
               }}
             >
               CrucibleBox
-            </span>
-            <span
-              className="ob-page-subtitle"
-              style={{
-                fontSize: 12,
-                color: token.colorTextTertiary,
-                whiteSpace: 'nowrap'
-              }}
-            >
-              {pageMeta.subtitle}
             </span>
           </div>
           <div style={{ flex: 1 }} />
@@ -113,17 +123,16 @@ export default function MainLayout({ children }: MainLayoutProps) {
           style={{
             margin: '0 28px 28px',
             padding: 4,
-            minHeight: 'calc(100vh - 92px)',
-            overflow: 'auto'
+            minHeight: 0,
+            flex: 1,
+            overflow: 'auto',
+            overscrollBehavior: 'contain'
           }}
         >
-          <div className="ob-hud-strip" aria-hidden="true">
-            <span>CRUCIBLEBOX // {pageMeta.hud}</span>
-            <span>LINK STABLE · NODE 01</span>
-          </div>
           <div className="ob-main-surface">{children}</div>
         </Content>
       </Layout>
+      <GlobalTaskDock />
       <CommandPalette />
     </Layout>
   )

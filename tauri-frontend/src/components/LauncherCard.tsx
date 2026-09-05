@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons'
 import type { PluginMeta } from '../../../shared/types/plugin.types'
 import { PluginLifecycleStatus } from '../../../shared/types/plugin.types'
-import { useThemeStore } from '../store/theme.store'
+import { isOfficialPlugin, pluginIdentity } from '../plugin-identity'
 import PluginGlyph from './PluginGlyph'
 
 interface SortableState {
@@ -64,8 +64,8 @@ export default function LauncherCard({
   onSelectToggle
 }: LauncherCardProps) {
   const { token } = theme.useToken()
-  const toolboxThemeId = useThemeStore((state) => state.theme.id)
   const [hovered, setHovered] = useState(false)
+  const identity = pluginIdentity(plugin.name, plugin.author)
 
   const statusMeta = status
     ? (STATUS_META[status] ?? { tone: 'neutral' as const, text: status })
@@ -86,21 +86,15 @@ export default function LauncherCard({
   const transition = sortable?.isDragging
     ? 'none'
     : (sortable?.dragStyle?.transition ?? 'all 0.2s ease')
-  const flatCardTheme = toolboxThemeId === 'light' || toolboxThemeId === 'leaf'
-
   const cardStyle: CSSProperties = {
     cursor: sortable?.isDragging ? 'grabbing' : 'pointer',
     position: 'relative',
-    padding: 20,
+    padding: 18,
     borderRadius: token.borderRadius,
     background: token.colorBgContainer,
     border: `1px solid ${effectiveHovered ? token.colorPrimary : token.colorBorder}`,
-    boxShadow: flatCardTheme
-      ? 'none'
-      : effectiveHovered
-        ? token.boxShadowSecondary
-        : token.boxShadow,
-    transform: effectiveHovered ? 'translateY(-3px)' : 'translateY(0)',
+    boxShadow: 'none',
+    transform: effectiveHovered ? 'translateY(-1px)' : 'translateY(0)',
     transition,
     height: '100%',
     display: 'flex',
@@ -120,11 +114,6 @@ export default function LauncherCard({
     onOpen(plugin)
   }
 
-  // 批量模式下的选中描边
-  const selectionStyle: CSSProperties = selectable && selected
-    ? { outline: `2px solid ${token.colorPrimary}`, outlineOffset: -1 }
-    : {}
-
   return (
     <article
       ref={sortable?.setNodeRef}
@@ -132,14 +121,16 @@ export default function LauncherCard({
       data-module={plugin.name.toUpperCase().slice(0, 12)}
       data-dragging={sortable?.isDragging}
       data-sorting={sortable?.isSorting}
-      {...(selectable ? {} : sortable?.dragAttributes ?? {})}
-      {...(selectable ? {} : sortable?.dragListeners ?? {})}
+      data-selected={selectable && selected}
+      {...(selectable ? {} : (sortable?.dragAttributes ?? {}))}
+      {...(selectable ? {} : (sortable?.dragListeners ?? {}))}
       role="listitem"
+      aria-selected={selectable ? selected : undefined}
       aria-posinset={sortable ? sortable.index + 1 : undefined}
       aria-setsize={sortable ? sortable.total : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{ ...cardStyle, ...selectionStyle }}
+      style={cardStyle}
     >
       {/* 批量勾选标记 */}
       {selectable && (
@@ -155,13 +146,19 @@ export default function LauncherCard({
             lineHeight: 1
           }}
         >
-          {selected ? <CheckCircleFilled /> : <span style={{
-            display: 'inline-block',
-            width: 16,
-            height: 16,
-            border: `2px solid ${token.colorBorder}`,
-            borderRadius: '50%'
-          }} />}
+          {selected ? (
+            <CheckCircleFilled />
+          ) : (
+            <span
+              style={{
+                display: 'inline-block',
+                width: 16,
+                height: 16,
+                border: `2px solid ${token.colorBorder}`,
+                borderRadius: '50%'
+              }}
+            />
+          )}
         </div>
       )}
       <button
@@ -172,6 +169,7 @@ export default function LauncherCard({
             ? `${selected ? '取消选择' : '选择'} ${plugin.displayName}`
             : `打开 ${plugin.displayName}，${statusMeta.text}`
         }
+        aria-pressed={selectable ? selected : undefined}
         onClick={handleOpen}
         style={{
           position: 'absolute',
@@ -297,23 +295,47 @@ export default function LauncherCard({
           pointerEvents: 'none'
         }}
       >
-        <PluginGlyph name={plugin.displayName || plugin.name} icon={plugin.icon} size={56} />
-
-        <div
-          style={{
-            marginTop: 14,
-            fontWeight: 600,
-            fontSize: 14,
-            color: token.colorText,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }}
-        >
-          {plugin.displayName}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <PluginGlyph
+            pluginId={plugin.name}
+            name={plugin.displayName || plugin.name}
+            icon={plugin.icon}
+            size={54}
+          />
+          <div style={{ minWidth: 0, flex: 1, paddingTop: 2 }}>
+            <div
+              style={{
+                fontWeight: 650,
+                fontSize: 15,
+                color: token.colorText,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              {plugin.displayName}
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  padding: '2px 7px',
+                  borderRadius: 999,
+                  color: identity.accent,
+                  background: `color-mix(in srgb, ${identity.accent} 11%, transparent)`,
+                  fontSize: 10,
+                  fontWeight: 600
+                }}
+              >
+                {identity.category}
+              </span>
+              {isOfficialPlugin(plugin.name) && (
+                <span style={{ color: token.colorTextTertiary, fontSize: 10 }}>官方</span>
+              )}
+            </div>
+          </div>
         </div>
-        <div style={{ fontSize: 12, color: token.colorTextTertiary, marginTop: 2 }}>
-          v{plugin.version}
+        <div style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 12 }}>
+          {identity.publisher} · v{plugin.version}
         </div>
         <div
           style={{
@@ -349,7 +371,7 @@ export default function LauncherCard({
               height: 8,
               borderRadius: '50%',
               background: statusColor,
-              boxShadow: `0 0 6px ${statusColor}`
+              border: `1px solid color-mix(in srgb, ${statusColor} 70%, transparent)`
             }}
           />
           <span style={{ fontSize: 12, color: token.colorTextTertiary }}>{statusMeta.text}</span>

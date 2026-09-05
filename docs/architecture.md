@@ -1,6 +1,7 @@
-# CrucibleBox 架构（Tauri 2 基线，1.9.1）
+# CrucibleBox 架构（Tauri 2 基线，2.0.0）
 
-> 运行时基线自 1.9.1 起为 **Tauri 2 + Rust core + WebView2 + 插件 Rust sidecar**。
+> 运行时基线自 1.9.1 起为 **Tauri 2 + Rust core + WebView2 + 插件 Rust sidecar**；本文按 2.0.0
+> 发布基线维护。
 > Electron 43 历史架构（1.5.23 ~ 1.7.3 生产线）已冻结并归档至 `docs/history/` 与
 > `docs/electron-legacy-registry.md`（快照 tag `electron-1.7.3-production`）。
 > 插件生态契约（Manifest v2 / renderer RPC / backend RPC / 主题 / UniEnv）跨两条线保留。
@@ -19,7 +20,8 @@ flowchart LR
   CORE --> UPDATER["tauri-plugin-updater"]
 ```
 
-宿主使用 Tauri 2.11.x（Rust）、React 19、Ant Design 6、zustand 与 rusqlite（bundled SQLite）。
+Tauri 宿主使用 Tauri 2.11.x（Rust）、React 18、Ant Design 5、zustand 与 rusqlite（bundled SQLite）；
+Electron 冻结线仍保留 React 19 与 Ant Design 6，仅作历史参照。
 WebView2（Chromium）承载宿主 React UI 与插件 sandboxed iframe；Rust core 进程承载 DB、IPC、
 会话管理、插件协议与更新。React Server Components 不适用于离线桌面 renderer。
 
@@ -63,9 +65,11 @@ stop、deactivate 和维护操作使用 single-flight/维护租约，配置重�
 ### 插件排序
 
 插件列表以 `plugins.sort_order` 为稳定排序契约（v3 schema 引入），读取统一按
-`sort_order ASC, installed_at DESC`；启用插件的激活顺序跟随列表顺序。重排要求提交全部已安装
-插件 ID 的完整排列，重复、缺失与未知 ID 都在写入前被拒绝，新顺序在 `BEGIN IMMEDIATE` 事务内
-持久化，失败回滚并保持原列表。新安装插件通过原子 `MAX(sort_order)+1` 追加到列表末尾。
+`sort_order ASC, installed_at DESC`；启用插件的激活顺序跟随列表顺序。普通模式支持单插件长按
+排序，批量管理模式支持保持组内相对顺序的多选组拖拽（向下拖到目标项后方，向上拖到目标项
+前方）。重排要求提交全部已安装插件 ID 的完整排列，重复、缺失与未知 ID 都在写入前被拒绝，
+新顺序在 `BEGIN IMMEDIATE` 事务内持久化，失败回滚并保持原列表。新安装插件通过原子
+`MAX(sort_order)+1` 追加到列表末尾。
 
 ## Renderer 隔离
 

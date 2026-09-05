@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { resolveDocumentDropPaths, resolveDropPaths } from '../utils/drop-target'
+import { shouldHandleGlobalFileDrop } from '../utils/plugin-drop'
 import { usePluginStore } from '../store/plugin.store'
 import { useAppStore } from '../store/app.store'
 
@@ -33,18 +34,46 @@ export function useGlobalPluginDrop(): GlobalDropState {
       hideTimer = setTimeout(() => setDragActive(false), 1200)
     }
 
+    // dnd-kit 的插件排序是窗口内指针手势，不应被全局 OS 文件拖放层消费。
+    // 订阅 store 让内部拖拽一开始就撤掉可能已经显示的外部拖放遮罩。
+    const unsubscribeInternalDrag = usePluginStore.subscribe((state) => {
+      if (!state.internalPluginDragActive) return
+      if (hideTimer) clearTimeout(hideTimer)
+      setDragActive(false)
+    })
+
     getCurrentWebviewWindow()
       .onDragDropEvent((event) => {
-        if (event.payload.type === 'enter' || event.payload.type === 'over') {
+        const store = usePluginStore.getState()
+        const payload = event.payload
+        const paths = 'paths' in payload ? payload.paths ?? [] : []
+        // Tauri's `over` heartbeat only carries the cursor position. Keep the
+        // existing overlay alive without pretending that it supplied paths.
+        if (payload.type === 'over' && paths.length === 0) {
+          bumpActive()
+          return
+        }
+        if (payload.type === 'leave') {
+          if (hideTimer) clearTimeout(hideTimer)
+          setDragActive(false)
+          return
+        }
+        if (!shouldHandleGlobalFileDrop(store.internalPluginDragActive, paths)) {
+          if (payload.type === 'drop') {
+            setDragActive(false)
+          }
+          return
+        }
+        if (payload.type === 'enter' || payload.type === 'over') {
           const app = useAppStore.getState()
           const documentActive =
             app.currentPage === 'pluginView' && app.activePluginId === 'document-engine'
           const resolved =
-            documentActive && event.payload.type === 'enter'
-              ? resolveDocumentDropPaths(event.payload.paths)
+            documentActive && payload.type === 'enter'
+              ? resolveDocumentDropPaths(paths)
               : null
           const target =
-            event.payload.type === 'over'
+            payload.type === 'over'
               ? undefined
               : resolved
                 ? resolved.pluginZips.length > 0 && resolved.documents.length > 0
@@ -58,17 +87,17 @@ export function useGlobalPluginDrop(): GlobalDropState {
           bumpActive(target)
           return
         }
-        if (event.payload.type !== 'drop') return
+        if (payload.type !== 'drop') return
         if (hideTimer) clearTimeout(hideTimer)
         setDragActive(false)
 
-        const store = usePluginStore.getState()
         // 守卫：正在安装/预览未决/队列消费中 → 忽略新 drop
         if (
           store.loading ||
           store.installPreview ||
           store.queueProcessing ||
-          store.batchOperationBusy
+          store.batchOperationBusy ||
+          store.reorderBusy
         )
           return
         if (store.installQueue.length > 0) return
@@ -77,7 +106,7 @@ export function useGlobalPluginDrop(): GlobalDropState {
         const documentActive =
           app.currentPage === 'pluginView' && app.activePluginId === 'document-engine'
         if (documentActive) {
-          const resolved = resolveDocumentDropPaths(event.payload.paths)
+          const resolved = resolveDocumentDropPaths(paths)
           if (!resolved) return
           if (resolved.documents.length > 0) {
             window.dispatchEvent(
@@ -94,7 +123,7 @@ export function useGlobalPluginDrop(): GlobalDropState {
           return
         }
 
-        const resolved = resolveDropPaths(event.payload.paths)
+        const resolved = resolveDropPaths(paths)
         if (resolved) {
           store.enqueueInstalls(resolved.targets.map((path) => ({ source: resolved.kind, path })))
         }
@@ -107,6 +136,7 @@ export function useGlobalPluginDrop(): GlobalDropState {
     return () => {
       disposed = true
       unlisten?.()
+      unsubscribeInternalDrag()
       if (hideTimer) clearTimeout(hideTimer)
     }
   }, [])

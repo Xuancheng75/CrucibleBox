@@ -692,6 +692,11 @@
   background: var(--ob-color-primary-bg, #eef4ff);
 }
 
+.ge-thumb-selected {
+  border-color: var(--ob-color-success, #52c41a);
+  background: var(--ob-color-success-bg, #f6ffed);
+}
+
 .ge-thumb-img-wrap {
   position: relative;
   width: 64px;

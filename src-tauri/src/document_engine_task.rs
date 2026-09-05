@@ -12,9 +12,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const RESOURCE_OCR: &str = "ocr";
 pub const RESOURCE_PARSE: &str = "parse";
 pub const RESOURCE_CHUNK: &str = "chunk";
+pub const RESOURCE_SPLIT: &str = "split";
 pub const RESOURCE_CONVERT: &str = "convert";
 pub const RESOURCE_BATCH: &str = "batch";
 const MAX_RETAINED_TASKS: usize = 100;
+/// Keep task polling below the renderer RPC budget. Large documents remain
+/// available in the on-disk cache, while the task view receives a useful
+/// preview and byte/count metadata.
+const MAX_RESULT_PREVIEW_BYTES: usize = 192 * 1024;
+/// The renderer also enforces a node/depth budget. A result can be below the
+/// byte limit and still exceed that budget when it contains many short fields.
+const MAX_RESULT_PREVIEW_NODES: usize = 3072;
+const MAX_RESULT_PREVIEW_DEPTH: usize = 12;
 
 pub struct TaskContext {
     cancelled: Arc<AtomicBool>,
@@ -68,6 +77,20 @@ impl TaskContext {
         self.record.update_progress(stage, percent, message, extra);
     }
 
+    /// Return the canonical progress snapshot after monotonic normalization.
+    /// Real-time events and polling must expose the same value so the renderer
+    /// cannot regress when a late worker frame arrives.
+    pub fn progress_snapshot(&self) -> Value {
+        self.record
+            .core
+            .lock()
+            .unwrap()
+            .snapshot
+            .get("progress")
+            .cloned()
+            .unwrap_or_else(|| json!({ "stage": "queued", "percent": 0, "message": "" }))
+    }
+
     fn mark_running(&self) {
         let mut core = self.record.core.lock().unwrap();
         if core.settled {
@@ -103,12 +126,21 @@ impl TaskRecord {
         if status != "queued" && status != "running" {
             return;
         }
+        let previous_percent = core.snapshot["progress"]["percent"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(100) as u32;
+        let percent_value = percent.clamp(0, 100).max(previous_percent);
         let mut progress = json!({
             "stage": stage,
-            "percent": percent.clamp(0, 100),
+            "percent": percent_value,
             "message": message,
         });
-        let percent_value = percent.clamp(0, 100);
+        let sequence = core.snapshot["progress"]["sequence"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_add(1);
+        progress["sequence"] = json!(sequence);
         if let Some(started_at) = core.snapshot["startedAt"].as_u64() {
             let elapsed_ms = now_ms().saturating_sub(started_at);
             progress["elapsedMs"] = json!(elapsed_ms);
@@ -137,7 +169,18 @@ impl TaskRecord {
         core.settled = true;
         core.snapshot["status"] = json!("succeeded");
         core.snapshot["completedAt"] = json!(now_ms());
-        core.snapshot["result"] = result;
+        // Executors persist the complete document/chunk result in the disk
+        // cache. Keep only the same bounded preview used by polling in the
+        // retained task record, otherwise 100 completed large PDFs can pin
+        // hundreds of megabytes (or more) until task eviction.
+        let compact = compact_snapshot(&json!({ "result": result }));
+        core.snapshot["result"] = compact["result"].clone();
+        if let Some(bytes) = compact.get("resultBytes") {
+            core.snapshot["resultBytes"] = bytes.clone();
+        }
+        if let Some(truncated) = compact.get("resultTruncated") {
+            core.snapshot["resultTruncated"] = truncated.clone();
+        }
     }
 
     fn complete_failed(&self, message: String) {
@@ -318,7 +361,7 @@ impl TaskManager {
         let inner = self.inner.lock().unwrap();
         inner.tasks.get(task_id).map(|r| {
             let core = r.core.lock().unwrap();
-            core.snapshot.clone()
+            compact_snapshot(&core.snapshot)
         })
     }
 
@@ -329,7 +372,7 @@ impl TaskManager {
             .values()
             .map(|r| {
                 let core = r.core.lock().unwrap();
-                core.snapshot.clone()
+                compact_snapshot(&core.snapshot)
             })
             .collect()
     }
@@ -362,6 +405,193 @@ impl TaskManager {
             let oldest = inner.terminal_order.remove(0);
             inner.tasks.remove(&oldest);
         }
+    }
+}
+
+/// Return a bounded task envelope. The full result is written to the
+/// Document Engine cache by each executor; transporting thousands of pages in
+/// every 500 ms poll would otherwise trip the renderer JSON budget.
+fn compact_snapshot(snapshot: &Value) -> Value {
+    let encoded = snapshot
+        .get("result")
+        .and_then(|result| serde_json::to_vec(result).ok());
+    let Some(encoded) = encoded else {
+        return snapshot.clone();
+    };
+    let shape = JsonShape::measure(&snapshot["result"]);
+    if encoded.len() <= MAX_RESULT_PREVIEW_BYTES
+        && shape.nodes <= MAX_RESULT_PREVIEW_NODES
+        && shape.max_depth <= MAX_RESULT_PREVIEW_DEPTH
+    {
+        return snapshot.clone();
+    }
+
+    let mut compact = snapshot.clone();
+    let result = snapshot.get("result").cloned().unwrap_or(Value::Null);
+    compact["resultBytes"] = json!(encoded.len());
+    compact["resultTruncated"] = json!(true);
+    compact["result"] = compact_result(&result, &mut CompactBudget::default());
+    compact
+}
+
+#[derive(Debug, Default)]
+struct CompactBudget {
+    nodes: usize,
+}
+
+impl CompactBudget {
+    fn take(&mut self) -> bool {
+        if self.nodes >= MAX_RESULT_PREVIEW_NODES {
+            return false;
+        }
+        self.nodes += 1;
+        true
+    }
+}
+
+#[derive(Debug, Default)]
+struct JsonShape {
+    nodes: usize,
+    max_depth: usize,
+}
+
+impl JsonShape {
+    fn measure(value: &Value) -> Self {
+        fn visit(value: &Value, depth: usize, result: &mut JsonShape) {
+            result.nodes = result.nodes.saturating_add(1);
+            result.max_depth = result.max_depth.max(depth);
+            match value {
+                Value::Array(values) => values
+                    .iter()
+                    .for_each(|value| visit(value, depth.saturating_add(1), result)),
+                Value::Object(values) => values
+                    .values()
+                    .for_each(|value| visit(value, depth.saturating_add(1), result)),
+                _ => {}
+            }
+        }
+        let mut result = Self::default();
+        visit(value, 0, &mut result);
+        result
+    }
+}
+
+fn compact_result(result: &Value, budget: &mut CompactBudget) -> Value {
+    if !budget.take() {
+        return Value::Null;
+    }
+    match result {
+        Value::Object(object) => {
+            let mut out = serde_json::Map::new();
+            for key in [
+                "kind",
+                "type",
+                "route",
+                "requiresOcr",
+                "documentId",
+                "strategy",
+                "count",
+                "target",
+                "outputPath",
+                "manifestPath",
+                "outputFormat",
+                "outputDirectory",
+                "outputs",
+                "sourcePath",
+                "pageCount",
+                "pagesPerFile",
+                "fileCount",
+                "files",
+                "bytes",
+                "message",
+            ] {
+                if let Some(value) = object.get(key) {
+                    out.insert(key.to_string(), value.clone());
+                }
+            }
+            if let Some(document) = object.get("document").and_then(Value::as_object) {
+                let mut doc = serde_json::Map::new();
+                for key in ["id", "source", "metadata", "structure"] {
+                    if let Some(value) = document.get(key) {
+                        doc.insert(key.to_string(), compact_nested(value, 16, budget));
+                    }
+                }
+                if let Some(pages) = document.get("pages").and_then(Value::as_array) {
+                    doc.insert(
+                        "pages".into(),
+                        Value::Array(
+                            pages
+                                .iter()
+                                .take(3)
+                                .map(|page| compact_nested(page, 16, budget))
+                                .collect(),
+                        ),
+                    );
+                    doc.insert("pagePreviewCount".into(), json!(pages.len().min(3)));
+                    doc.insert("pageTotal".into(), json!(pages.len()));
+                }
+                out.insert("document".into(), Value::Object(doc));
+            }
+            for key in ["warnings", "ocrPageNumbers"] {
+                if let Some(values) = object.get(key).and_then(Value::as_array) {
+                    out.insert(
+                        key.to_string(),
+                        Value::Array(values.iter().take(32).cloned().collect()),
+                    );
+                }
+            }
+            for key in ["chunks", "items", "blocks"] {
+                if let Some(values) = object.get(key).and_then(Value::as_array) {
+                    out.insert(
+                        key.to_string(),
+                        Value::Array(
+                            values
+                                .iter()
+                                .take(32)
+                                .map(|v| compact_nested(v, 16, budget))
+                                .collect(),
+                        ),
+                    );
+                    out.insert(format!("{key}PreviewCount"), json!(values.len().min(32)));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .take(32)
+                .map(|v| compact_nested(v, 16, budget))
+                .collect(),
+        ),
+        _ => result.clone(),
+    }
+}
+
+fn compact_nested(value: &Value, max_chars: usize, budget: &mut CompactBudget) -> Value {
+    if !budget.take() {
+        return Value::Null;
+    }
+    match value {
+        Value::String(text) if text.len() > max_chars => Value::String(format!(
+            "{}…",
+            text.chars().take(max_chars).collect::<String>()
+        )),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .take(32)
+                .map(|(key, value)| (key.clone(), compact_nested(value, max_chars, budget)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .take(32)
+                .map(|value| compact_nested(value, max_chars, budget))
+                .collect(),
+        ),
+        _ => value.clone(),
     }
 }
 
@@ -464,5 +694,28 @@ mod tests {
         assert!(mgr.resume(&id));
         assert_eq!(mgr.get(&id).unwrap()["status"], "running");
         assert!(mgr.cancel(&id));
+    }
+
+    #[test]
+    fn compacts_node_heavy_result_even_when_bytes_are_small() {
+        let result = json!({
+            "route": "native",
+            "document": {
+                "metadata": { "pageCount": 1 },
+                "pages": [{
+                    "number": 1,
+                    "blocks": (0..5000).map(|index| json!({
+                        "id": format!("b{index}"),
+                        "content": "x"
+                    })).collect::<Vec<_>>()
+                }]
+            }
+        });
+        let snapshot = json!({ "status": "succeeded", "result": result });
+        let compact = compact_snapshot(&snapshot);
+        assert_eq!(compact["resultTruncated"], true);
+        assert!(JsonShape::measure(&compact["result"]).nodes <= MAX_RESULT_PREVIEW_NODES);
+        assert!(serde_json::to_vec(&compact).unwrap().len() < MAX_RESULT_PREVIEW_BYTES);
+        assert_eq!(compact["result"]["route"], "native");
     }
 }

@@ -18,26 +18,29 @@ pub fn host_dispatch(
     params: &Value,
     emitter: &(dyn Fn(&str, serde_json::Value) + Send + Sync),
 ) -> Result<Value, String> {
-    let db = db.lock().unwrap_or_else(|p| p.into_inner());
     match method {
         "db.query" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let sql = str_param(params, "sql")?;
             let p = array_param(params, "params")?;
             let rows = query_rows(&db, &sql, &p).map_err(|e| e.to_string())?;
             Ok(rows)
         }
         "db.execute" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let sql = str_param(params, "sql")?;
             let p = array_param(params, "params")?;
             db.execute_sql(&sql, &p).map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "storage.get" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let key = str_param(params, "key")?;
             let v = db.storage_get(plugin_id, &key).map_err(|e| e.to_string())?;
             Ok(v.map(|raw| parse_stored(&raw)).unwrap_or(Value::Null))
         }
         "storage.set" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let key = str_param(params, "key")?;
             let value = params.get("value").cloned().unwrap_or(Value::Null);
             let serialized = serde_json::to_string(&value).map_err(|e| e.to_string())?;
@@ -46,12 +49,14 @@ pub fn host_dispatch(
             Ok(Value::Null)
         }
         "storage.delete" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let key = str_param(params, "key")?;
             db.storage_delete(plugin_id, &key)
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "storage.list" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let prefix = params.get("prefix").and_then(Value::as_str).unwrap_or("");
             let rows = db
                 .storage_list(plugin_id, prefix)
@@ -63,6 +68,7 @@ pub fn host_dispatch(
             Ok(Value::Array(items))
         }
         "storage.batch" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let mutations = params
                 .get("mutations")
                 .and_then(Value::as_array)
@@ -88,6 +94,7 @@ pub fn host_dispatch(
             Ok(Value::Null)
         }
         "log.write" => {
+            let db = db.lock().unwrap_or_else(|p| p.into_inner());
             let level = params
                 .get("level")
                 .and_then(Value::as_str)
@@ -121,9 +128,53 @@ pub fn host_dispatch(
             // UniEnv 保留旧签名（service 透传）；Document Engine 自身即目标服务。
             match service.as_str() {
                 "unienv" => {
+                    // 在线版本发现有明确的网络等待上限，但不应让该等待占用
+                    // 宿主的外层数据库互斥锁。配置只读取一次，随后在无锁路径
+                    // 执行受限 HTTP 请求，其它插件的设置/日志仍可并行访问。
+                    let online_check = operation == "message"
+                        && payload
+                            .and_then(|value| value.get("type"))
+                            .and_then(Value::as_str)
+                            == Some("checkOnlineVersions");
+                    if online_check {
+                        let config = {
+                            let db = db.lock().unwrap_or_else(|p| p.into_inner());
+                            crate::unienv_service::load_config_for_host(&db, plugin_id)
+                        };
+                        return crate::unienv_service::dispatch_online_versions(
+                            &config,
+                            payload
+                                .ok_or_else(|| "message operation requires payload".to_string())?,
+                        );
+                    }
+                    let db = db.lock().unwrap_or_else(|p| p.into_inner());
                     crate::unienv_service::dispatch(&db, plugin_id, &service, &operation, payload)
                 }
                 "document-engine" => {
+                    let remote_model = operation == "message"
+                        && payload
+                            .and_then(|value| value.get("type"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|kind| {
+                                kind == "document.models.update"
+                                    || (kind == "document.models.install"
+                                        && payload
+                                            .and_then(|value| value.get("url"))
+                                            .and_then(Value::as_str)
+                                            .is_some())
+                            });
+                    if remote_model {
+                        let config = {
+                            let db = db.lock().unwrap_or_else(|p| p.into_inner());
+                            crate::document_engine_service::load_config_for_host(&db, plugin_id)
+                        };
+                        return crate::document_engine_service::dispatch_remote_model(
+                            &config,
+                            payload
+                                .ok_or_else(|| "message operation requires payload".to_string())?,
+                        );
+                    }
+                    let db = db.lock().unwrap_or_else(|p| p.into_inner());
                     crate::document_engine_service::dispatch(&db, plugin_id, &operation, payload)
                 }
                 _ => Err(format!("unknown trusted service: {service}")),

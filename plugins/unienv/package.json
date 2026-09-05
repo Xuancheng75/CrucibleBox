@@ -1,8 +1,8 @@
 {
   "name": "unienv",
-  "version": "0.6.0",
+  "version": "0.11.0",
   "private": true,
-  "description": "UniEnv - 一键式开发环境配置工具",
+  "description": "UniEnv - 一键式开发环境配置工具（Python/Node/Go/Java/Rust/PHP/Ruby/Zig/Deno/Bun）",
   "main": "dist/main.js",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",

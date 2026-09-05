@@ -47,7 +47,28 @@ function extractLargestPngPayload(ico) {
   return best
 }
 
+function validateRequiredLayers(ico) {
+  const count = ico.readUInt16LE(4)
+  const layers = new Map()
+  for (let i = 0; i < count; i += 1) {
+    const entryOffset = 6 + i * 16
+    const width = ico[entryOffset] === 0 ? 256 : ico[entryOffset]
+    const height = ico[entryOffset + 1] === 0 ? 256 : ico[entryOffset + 1]
+    if (width !== height) throw new Error(`icon.ico entry ${i} is not square (${width}x${height})`)
+    layers.set(width, (layers.get(width) ?? 0) + 1)
+  }
+  const required = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
+  const missing = required.filter((size) => !layers.has(size))
+  if (missing.length > 0) {
+    throw new Error(`icon.ico is missing Windows DPI layers: ${missing.join(', ')}`)
+  }
+}
+
 const iconBuffer = readFileSync(iconPath)
+if (iconBuffer.length < 6 || iconBuffer.readUInt16LE(0) !== 0 || iconBuffer.readUInt16LE(2) !== 1) {
+  throw new Error('not a valid .ico file (bad ICONDIR)')
+}
+validateRequiredLayers(iconBuffer)
 const payload = extractLargestPngPayload(iconBuffer)
 const exeBuffer = readFileSync(exePath)
 

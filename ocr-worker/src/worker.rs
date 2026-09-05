@@ -11,11 +11,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 
 const MAX_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 const DETECTION_THRESHOLD: f32 = 0.30;
 const MIN_COMPONENT_AREA: usize = 3;
+const LOW_CONFIDENCE_RETRY: f32 = 0.65;
 
 struct OcrEngine {
     detection: Session,
@@ -23,10 +25,15 @@ struct OcrEngine {
     dictionary: Dictionary,
     metadata: ModelMetadata,
     device: &'static str,
+    profile: &'static str,
+    detection_path: String,
+    recognition_path: String,
+    dictionary_path: String,
 }
 
 impl OcrEngine {
     fn load(paths: &ModelPaths, use_gpu: bool) -> Result<Self, String> {
+        initialize_ort()?;
         let mut metadata = paths.metadata()?;
         let dictionary = Dictionary::load(&paths.dictionary)?;
         metadata.dictionary_sha256 = dictionary.sha256.clone();
@@ -69,8 +76,15 @@ impl OcrEngine {
             recognition.outputs().first().map(|v| v.dtype())
         );
         eprintln!(
-            "[ocr-worker] loaded models det={} rec={} dictionary={}",
-            metadata.detection_sha256, metadata.recognition_sha256, metadata.dictionary_sha256
+            "[ocr-worker] loaded profile={} device={} det={} ({}) rec={} ({}) dictionary={} ({})",
+            paths.profile.id(),
+            if use_gpu { "directml" } else { "cpu" },
+            metadata.detection_sha256,
+            paths.detection.display(),
+            metadata.recognition_sha256,
+            paths.recognition.display(),
+            metadata.dictionary_sha256,
+            paths.dictionary.display()
         );
         Ok(Self {
             detection,
@@ -78,10 +92,19 @@ impl OcrEngine {
             dictionary,
             metadata,
             device: if use_gpu { "directml" } else { "cpu" },
+            profile: paths.profile.id(),
+            detection_path: paths.detection.to_string_lossy().into_owned(),
+            recognition_path: paths.recognition.to_string_lossy().into_owned(),
+            dictionary_path: paths.dictionary.to_string_lossy().into_owned(),
         })
     }
 
-    fn recognize(&mut self, request_id: &str, input_path: &str) -> Result<OcrResponse, String> {
+    fn recognize(
+        &mut self,
+        request_id: &str,
+        input_path: &str,
+        on_progress: &mut dyn FnMut(u8, &'static str, &'static str),
+    ) -> Result<OcrResponse, String> {
         let path = Path::new(input_path);
         let file_meta = std::fs::metadata(path).map_err(|e| format!("input unavailable: {e}"))?;
         if !file_meta.is_file() {
@@ -91,17 +114,45 @@ impl OcrEngine {
             return Err(format!("input exceeds {MAX_IMAGE_BYTES} bytes"));
         }
         let image = image::open(path).map_err(|e| format!("image decode failed: {e}"))?;
+        on_progress(10, "decode", "图像已解码");
         let (width, height) = image.dimensions();
         if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
             return Err("image dimensions exceed worker limits".into());
         }
 
-        let boxes = detect_text(&mut self.detection, &image)?;
+        let boxes = detect_text(&mut self.detection, &image, self.profile)?;
+        let box_count = boxes.len();
+        on_progress(35, "detect", "文本区域检测完成");
         let mut blocks = Vec::with_capacity(boxes.len());
-        for polygon in boxes {
+        for (index, polygon) in boxes.into_iter().enumerate() {
             let crop = crop_text_region(&image, &polygon);
-            let (text, confidence) =
-                recognize_text(&mut self.recognition, &self.dictionary, &crop)?;
+            let (mut text, mut confidence) =
+                recognize_text(&mut self.recognition, &self.dictionary, &crop, self.profile)?;
+            // A second, padded pass materially improves small glyphs and
+            // mathematical symbols without loading a larger recognition
+            // model.  Keep the better-confidence result so OCR remains
+            // deterministic and bounded.
+            if confidence < LOW_CONFIDENCE_RETRY {
+                let retry_crop = crop_text_region_padded(&image, &polygon, 1.25);
+                let (retry_text, retry_confidence) = recognize_text(
+                    &mut self.recognition,
+                    &self.dictionary,
+                    &retry_crop,
+                    self.profile,
+                )?;
+                if retry_confidence > confidence {
+                    text = retry_text;
+                    confidence = retry_confidence;
+                }
+            }
+            let percent = if box_count == 0 {
+                95
+            } else {
+                35u16
+                    .saturating_add((((index + 1) * 60) / box_count) as u16)
+                    .min(95) as u8
+            };
+            on_progress(percent, "recognize", "正在识别文本区域");
             if !text.trim().is_empty() {
                 blocks.push(TextBlock {
                     text,
@@ -127,10 +178,70 @@ impl OcrEngine {
                 detection_sha256: self.metadata.detection_sha256.clone(),
                 recognition_sha256: self.metadata.recognition_sha256.clone(),
                 dictionary_sha256: self.metadata.dictionary_sha256.clone(),
+                detection_path: self.detection_path.clone(),
+                recognition_path: self.recognition_path.clone(),
+                dictionary_path: self.dictionary_path.clone(),
+                model_version: format!(
+                    "{}:{}:{}:{}",
+                    self.profile,
+                    self.metadata.detection_sha256,
+                    self.metadata.recognition_sha256,
+                    self.metadata.dictionary_sha256
+                ),
                 device: self.device,
+                model_profile: self.profile,
             },
         })
     }
+}
+
+fn initialize_ort() -> Result<(), String> {
+    static INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
+    INITIALIZED
+        .get_or_init(|| {
+            let mut candidates = Vec::new();
+            if let Some(configured) = std::env::var_os("ORT_DYLIB_PATH") {
+                candidates.push(std::path::PathBuf::from(configured));
+            }
+            if let Some(directory) = std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(std::path::PathBuf::from))
+            {
+                candidates.push(directory.join("onnxruntime.dll"));
+                candidates.push(directory.join("binaries").join("onnxruntime.dll"));
+                candidates.push(directory.join("resources").join("onnxruntime.dll"));
+            }
+            let path = candidates
+                .iter()
+                .find(|candidate| {
+                    candidate.is_file()
+                        && candidate.parent().is_some_and(|parent| {
+                            parent.join("onnxruntime_providers_shared.dll").is_file()
+                        })
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "ONNX Runtime DLL pair not found; checked: {}",
+                        candidates
+                            .iter()
+                            .map(|candidate| candidate.to_string_lossy())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                })?;
+            ort::init_from(&path)
+                .map_err(|error| {
+                    format!(
+                        "ONNX Runtime DLL load failed at {}: {error}",
+                        path.display()
+                    )
+                })?
+                .commit();
+            eprintln!("[ocr-worker] loaded ONNX Runtime from {}", path.display());
+            Ok(())
+        })
+        .clone()
 }
 
 struct WorkerState {
@@ -152,6 +263,7 @@ impl WorkerState {
             device: None,
             model_directory: None,
             dictionary_path: None,
+            model_profile: None,
         });
         let requested_device = options.device.as_deref().unwrap_or("auto");
         if !matches!(requested_device, "auto" | "cpu" | "gpu") {
@@ -167,17 +279,24 @@ impl WorkerState {
         let paths = ModelPaths::resolve(
             options.model_directory.as_deref(),
             options.dictionary_path.as_deref(),
+            options.model_profile.as_deref(),
+            options.language.as_deref(),
         )?;
         let use_gpu = match requested_device {
             "gpu" => true,
             "auto" => gpu_available(),
             _ => false,
         };
+        let metadata = paths.metadata()?;
         let key = format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}",
             paths.detection.display(),
             paths.recognition.display(),
             paths.dictionary.display(),
+            paths.profile.id(),
+            metadata.detection_sha256,
+            metadata.recognition_sha256,
+            metadata.dictionary_sha256,
             if use_gpu { "gpu" } else { "cpu" }
         );
         if self.loaded_key.as_deref() != Some(key.as_str()) {
@@ -199,10 +318,24 @@ impl WorkerState {
 }
 
 fn gpu_available() -> bool {
+    static GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *GPU_AVAILABLE.get_or_init(gpu_available_uncached)
+}
+
+fn gpu_available_uncached() -> bool {
     #[cfg(windows)]
     {
-        std::process::Command::new("nvidia-smi")
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let mut command = Command::new("nvidia-smi");
+        command
             .args(["-L"])
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command
             .output()
             .map(|output| output.status.success() && !output.stdout.is_empty())
             .unwrap_or(false)
@@ -259,13 +392,18 @@ fn process_request(line: &str, state: &mut WorkerState, stdout: &mut impl Write)
         return response;
     }
     let request_id = request.request_id().to_string();
-    emit_progress(stdout, &request_id, "loading", 5, "loading OCR models");
+    let cold_start = state.engine.is_none();
+    if cold_start {
+        emit_progress(stdout, &request_id, "loading", 5, "正在加载 OCR 模型");
+    }
     let engine = match state.engine_for(request.options.as_ref()) {
         Ok(engine) => engine,
         Err(message) => return error(request_id, "model-unavailable", message),
     };
-    emit_progress(stdout, &request_id, "ocr", 20, "running OCR");
-    match engine.recognize(&request_id, &request.input) {
+    let mut progress = |percent, stage, message| {
+        emit_progress(stdout, &request_id, stage, percent, message);
+    };
+    match engine.recognize(&request_id, &request.input, &mut progress) {
         Ok(response) => serde_json::to_value(response).unwrap_or_else(|e| {
             error(
                 request_id,
@@ -299,7 +437,11 @@ fn emit_progress(
 
 type Polygon = [[i32; 2]; 4];
 
-fn detect_text(session: &mut Session, image: &DynamicImage) -> Result<Vec<Polygon>, String> {
+fn detect_text(
+    session: &mut Session,
+    image: &DynamicImage,
+    profile: &str,
+) -> Result<Vec<Polygon>, String> {
     let (original_width, original_height) = image.dimensions();
     let max_size = 960.0f32;
     let scale = (max_size / original_width.max(original_height) as f32).min(1.0);
@@ -316,10 +458,15 @@ fn detect_text(session: &mut Session, image: &DynamicImage) -> Result<Vec<Polygo
     for y in 0..height {
         for x in 0..width {
             let pixel = rgb.get_pixel(x, y);
+            let (r, g, b) = if profile == "ppocrv6-small-det-v5-mobile-rec" {
+                (pixel[2], pixel[1], pixel[0])
+            } else {
+                (pixel[0], pixel[1], pixel[2])
+            };
             let index = (y * width + x) as usize;
-            input_data[index] = (pixel[0] as f32 / 255.0 - mean[0]) / std[0];
-            input_data[plane + index] = (pixel[1] as f32 / 255.0 - mean[1]) / std[1];
-            input_data[2 * plane + index] = (pixel[2] as f32 / 255.0 - mean[2]) / std[2];
+            input_data[index] = (r as f32 / 255.0 - mean[0]) / std[0];
+            input_data[plane + index] = (g as f32 / 255.0 - mean[1]) / std[1];
+            input_data[2 * plane + index] = (b as f32 / 255.0 - mean[2]) / std[2];
         }
     }
     let input = Tensor::from_array(([1usize, 3, height as usize, width as usize], input_data))
@@ -420,12 +567,20 @@ fn connected_components(
 }
 
 fn crop_text_region(image: &DynamicImage, polygon: &Polygon) -> DynamicImage {
+    crop_text_region_padded(image, polygon, 1.0)
+}
+
+fn crop_text_region_padded(
+    image: &DynamicImage,
+    polygon: &Polygon,
+    padding_scale: f32,
+) -> DynamicImage {
     let [raw_x1, raw_y1, raw_x2, raw_y2] = polygon_bbox(polygon);
     // DB maps are often only a few pixels high on small source images. Give
     // the recognizer a little context around each component; the recognizer
     // will normalize the crop to its 48-pixel text-line canvas.
-    let horizontal_pad = ((raw_x2 - raw_x1).max(1) as f32 * 0.08).ceil() as i32;
-    let vertical_pad = ((raw_y2 - raw_y1).max(1) as f32 * 0.60).ceil() as i32;
+    let horizontal_pad = ((raw_x2 - raw_x1).max(1) as f32 * 0.08 * padding_scale).ceil() as i32;
+    let vertical_pad = ((raw_y2 - raw_y1).max(1) as f32 * 0.60 * padding_scale).ceil() as i32;
     let x1 = raw_x1 - horizontal_pad;
     let y1 = raw_y1 - vertical_pad;
     let x2 = raw_x2 + horizontal_pad;
@@ -461,6 +616,7 @@ fn recognize_text(
     session: &mut Session,
     dictionary: &Dictionary,
     image: &DynamicImage,
+    profile: &str,
 ) -> Result<(String, f32), String> {
     let target_height = 48u32;
     let (width, height) = image.dimensions();
@@ -481,10 +637,15 @@ fn recognize_text(
     for y in 0..target_height {
         for x in 0..resized_width {
             let pixel = rgb.get_pixel(x, y);
+            let (r, g, b) = if profile == "ppocrv6-small-det-v5-mobile-rec" {
+                (pixel[2], pixel[1], pixel[0])
+            } else {
+                (pixel[0], pixel[1], pixel[2])
+            };
             let index = (y * target_width + x) as usize;
-            input_data[index] = pixel[0] as f32 / 127.5 - 1.0;
-            input_data[plane + index] = pixel[1] as f32 / 127.5 - 1.0;
-            input_data[2 * plane + index] = pixel[2] as f32 / 127.5 - 1.0;
+            input_data[index] = r as f32 / 127.5 - 1.0;
+            input_data[plane + index] = g as f32 / 127.5 - 1.0;
+            input_data[2 * plane + index] = b as f32 / 127.5 - 1.0;
         }
     }
     let input = Tensor::from_array((

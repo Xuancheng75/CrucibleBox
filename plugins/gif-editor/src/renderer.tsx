@@ -24,6 +24,7 @@ import { isResidueWorkerAbortError, runResidueWorker } from './residue-worker'
 import type { GifDocument, GifFrame, Rgb } from './types'
 import {
   appendHistoryEntry,
+  appendByteBoundedEntry,
   applyHistoryDelta,
   applyFilterValues,
   cloneHistoryEntry,
@@ -57,6 +58,8 @@ type HistoryEntry = RendererHistoryEntry<ImageData>
 const MAX_HISTORY_ENTRIES = 50
 const MAX_HISTORY_BYTES = 256 * 1024 * 1024
 const HISTORY_LIMITS = { maxEntries: MAX_HISTORY_ENTRIES, maxBytes: MAX_HISTORY_BYTES }
+const MAX_LAYER_HISTORY_ENTRIES = 50
+const MAX_LAYER_HISTORY_BYTES = 128 * 1024 * 1024
 const STYLE_ID = 'gif-editor-plugin-styles'
 
 export default function GifEditorPlugin({ api }: PluginRenderProps) {
@@ -120,6 +123,8 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
   const [batchDelay, setBatchDelay] = useState(150)
   const [batchFrom, setBatchFrom] = useState(1)
   const [batchTo, setBatchTo] = useState(1)
+  const [selectedFrames, setSelectedFrames] = useState<Set<number>>(new Set())
+  const [frameSelectMode, setFrameSelectMode] = useState(false)
   const [thumbCache, setThumbCache] = useState<ThumbnailCache<ImageData>>(new Map())
   const [dragOver, setDragOver] = useState(false)
   const [residueReport, setResidueReport] = useState<ResidueReport | null>(null)
@@ -280,7 +285,15 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           setLayerRedoStack((stack) => {
             if (stack.length === 0) return stack
             const entry = stack[stack.length - 1]
-            setLayerUndoStack((us) => [...us, cloneLayers(layerSession)])
+            setLayerUndoStack((us) =>
+              appendByteBoundedEntry(
+                us,
+                cloneLayers(layerSession),
+                MAX_LAYER_HISTORY_ENTRIES,
+                MAX_LAYER_HISTORY_BYTES,
+                layersByteLength
+              )
+            )
             setLayerSession(cloneLayers(entry))
             return stack.slice(0, -1)
           })
@@ -288,7 +301,15 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           setLayerUndoStack((stack) => {
             if (stack.length === 0) return stack
             const entry = stack[stack.length - 1]
-            setLayerRedoStack((rs) => [...rs, cloneLayers(layerSession)])
+            setLayerRedoStack((rs) =>
+              appendByteBoundedEntry(
+                rs,
+                cloneLayers(layerSession),
+                MAX_LAYER_HISTORY_ENTRIES,
+                MAX_LAYER_HISTORY_BYTES,
+                layersByteLength
+              )
+            )
             setLayerSession(cloneLayers(entry))
             return stack.slice(0, -1)
           })
@@ -336,7 +357,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
 
   useEffect(() => {
     setThumbCache((previous) =>
-      reconcileThumbnailCache(doc?.frames ?? [], previous, frameToDataURL)
+      reconcileThumbnailCache(doc?.frames ?? [], previous, frameToDataURL, releasePreviewUrl)
     )
   }, [doc?.frames])
 
@@ -433,7 +454,15 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
 
   const pushLayerHistory = useCallback(() => {
     if (layerSession) {
-      setLayerUndoStack((stack) => [...stack, cloneLayers(layerSession)].slice(-50))
+      setLayerUndoStack((stack) =>
+        appendByteBoundedEntry(
+          stack,
+          cloneLayers(layerSession),
+          MAX_LAYER_HISTORY_ENTRIES,
+          MAX_LAYER_HISTORY_BYTES,
+          layersByteLength
+        )
+      )
       setLayerRedoStack([])
     }
   }, [layerSession])
@@ -827,6 +856,13 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
       return { ...d, frames }
     })
     setCurrent((c) => Math.min(c, (doc.frames.length - 1) - 1))
+  }
+
+  const removeSelectedFrames = () => {
+    if (!doc || selectedFrames.size === 0 || selectedFrames.size >= doc.frames.length) return
+    commit((d) => ({ ...d, frames: d.frames.filter((_, index) => !selectedFrames.has(index)) }))
+    setSelectedFrames(new Set())
+    setCurrent((index) => Math.min(index, Math.max(0, doc.frames.length - selectedFrames.size - 1)))
   }
 
   const moveFrame = (dir: -1 | 1) => {
@@ -1927,6 +1963,10 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           <button className="ge-btn ge-btn-sm" onClick={removeFrame} disabled={!doc}>
             删除
           </button>
+          <button className={`ge-btn ge-btn-sm ${frameSelectMode ? 'ge-btn-active' : ''}`} onClick={() => { setFrameSelectMode((value) => !value); setSelectedFrames(new Set()) }} disabled={!doc}>
+            {frameSelectMode ? '退出多选' : '多选帧'}
+          </button>
+          {frameSelectMode && <button className="ge-btn ge-btn-sm" onClick={removeSelectedFrames} disabled={selectedFrames.size === 0 || selectedFrames.size >= (doc?.frames.length ?? 0)}>删除所选 ({selectedFrames.size})</button>}
           <button className="ge-btn ge-btn-sm" onClick={() => moveFrame(-1)} disabled={!doc || current === 0}>
             ◀ 左移
           </button>
@@ -1972,7 +2012,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
         </div>
         <div className="ge-thumbs">
           {doc?.frames.map((f, i) => (
-            <div key={f.id} className={`ge-thumb ${i === current ? 'ge-thumb-active' : ''}`} onClick={() => { stopPlay(); setCurrent(i); setLassoMask(null); setLassoPoints([]); setLassoPreview(null); setLayerSession(null); setActiveLayerId(null) }}>
+            <div key={f.id} className={`ge-thumb ${i === current ? 'ge-thumb-active' : ''} ${selectedFrames.has(i) ? 'ge-thumb-selected' : ''}`} onClick={() => { stopPlay(); if (frameSelectMode) { setSelectedFrames((previous) => { const next = new Set(previous); if (next.has(i)) next.delete(i); else next.add(i); return next }) } else { setCurrent(i); setLassoMask(null); setLassoPoints([]); setLassoPreview(null); setLayerSession(null); setActiveLayerId(null) } }}>
               <div className="ge-thumb-img-wrap">
                 <img src={thumbCache.get(f.id)?.url} alt={`帧 ${i + 1}`} className="ge-thumb-img" />
                 <span className="ge-thumb-index">{i + 1}</span>
@@ -2020,4 +2060,12 @@ function layerThumb(imageData: ImageData): string {
 
 function cloneLayers(layers: LayerItem[]): LayerItem[] {
   return layers.map((l) => ({ ...l, imageData: new ImageData(new Uint8ClampedArray(l.imageData.data), l.imageData.width, l.imageData.height) }))
+}
+
+function layersByteLength(layers: LayerItem[]): number {
+  return layers.reduce((total, layer) => total + layer.imageData.data.byteLength, 0)
+}
+
+function releasePreviewUrl(url: string): void {
+  if (url.startsWith('blob:')) URL.revokeObjectURL(url)
 }

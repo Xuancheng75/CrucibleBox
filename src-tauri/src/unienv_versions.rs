@@ -1,6 +1,7 @@
 // UniEnv 在线版本发现（1.9.12）
-// 产品决策：node/go/java 上游提供权威 SHA-256，开放「在线新版本」安装；
-// python/git 无机器可读校验源，仅内置目录（新版本等待插件更新）。
+// 产品决策：node/go/java/ruby/zig/deno/bun 上游提供权威 SHA-256，开放
+// 「在线新版本」安装；python/git/rust/php 继续使用内置目录（新版本等待
+// 插件更新）。
 //
 // 安全边界：所有元数据与制品均走 HTTPS；下载后按上游声明的 SHA-256 校验，
 // 校验失败即失败（fail-closed 语义不变，只是摘要来源从编译期固定改为运行期
@@ -54,6 +55,8 @@ fn http_get_text(url: &str) -> Result<String, String> {
         .build();
     let response = agent
         .get(url)
+        .set("User-Agent", "CrucibleBox/2.0.0-beta.2")
+        .set("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| format!("GET {url}: {e}"))?;
     let mut text = String::new();
@@ -67,7 +70,10 @@ fn http_get_text(url: &str) -> Result<String, String> {
 
 /// 支持在线发现的工具集合
 pub fn provider_supports(tool: &str) -> bool {
-    matches!(tool, "node" | "go" | "java")
+    matches!(
+        tool,
+        "node" | "go" | "java" | "ruby" | "zig" | "deno" | "bun"
+    )
 }
 
 /// 强制绕过缓存重新拉取（「检查语言新版本」按钮路径）。
@@ -97,6 +103,10 @@ fn online_versions_impl(tool: &str, force: bool) -> Vec<String> {
                         .collect()),
                     "go" => fetch_go_versions(),
                     "java" => fetch_java_versions(),
+                    "ruby" => fetch_github_versions("oneclick/rubyinstaller2", "RubyInstaller-"),
+                    "deno" => fetch_github_versions("denoland/deno", "v"),
+                    "bun" => fetch_github_versions("oven-sh/bun", "bun-v"),
+                    "zig" => fetch_zig_versions(),
                     _ => Err(format!("provider unsupported: {tool_owned}")),
                 }
             })();
@@ -169,6 +179,20 @@ pub fn online_artifact(tool: &str, version: &str, mirror: &str) -> Result<Online
         "node" => node_artifact(version, mirror)?,
         "go" => go_artifact(version, mirror)?,
         "java" => java_artifact(version)?,
+        "ruby" => ruby_artifact(version)?,
+        "deno" => github_binary_artifact(
+            "denoland/deno",
+            &format!("v{version}"),
+            |name| name == "deno-x86_64-pc-windows-msvc.zip",
+            "Deno",
+        )?,
+        "bun" => github_binary_artifact(
+            "oven-sh/bun",
+            &format!("bun-v{version}"),
+            |name| name == "bun-windows-x64.zip",
+            "Bun",
+        )?,
+        "zig" => zig_artifact(version)?,
         _ => return Err(format!("provider unsupported: {tool}")),
     };
     artifact_cache()
@@ -408,6 +432,155 @@ fn java_artifact(version: &str) -> Result<OnlineArtifact, String> {
         });
     }
     Err(format!("java {version} not found in Adoptium api"))
+}
+
+// ---------------------------------------------------------------------------
+// 扩展运行时：RubyInstaller、Deno、Bun 使用 GitHub Release 的 digest，
+// Zig 使用官方 download index.json 的 shasum。摘要来自发布方，缺失时拒绝安装。
+// ---------------------------------------------------------------------------
+
+fn fetch_github_versions(repo: &str, prefix: &str) -> Result<Vec<String>, String> {
+    let url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
+    let payload: Value = serde_json::from_str(&http_get_text(&url)?)
+        .map_err(|e| format!("GitHub release json invalid: {e}"))?;
+    let mut versions = Vec::new();
+    for release in payload.as_array().unwrap_or(&Vec::new()) {
+        if release
+            .get("draft")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+            || release
+                .get("prerelease")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        {
+            continue;
+        }
+        let tag = release
+            .get("tag_name")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(version) = tag.strip_prefix(prefix) {
+            if !version.is_empty() && version.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                let normalized = if repo == "oneclick/rubyinstaller2" {
+                    version.split('-').next().unwrap_or(version)
+                } else {
+                    version
+                };
+                if !versions.iter().any(|v| v == normalized) {
+                    versions.push(normalized.to_string());
+                }
+            }
+        }
+    }
+    Ok(versions)
+}
+
+fn github_binary_artifact(
+    repo: &str,
+    tag: &str,
+    predicate: impl Fn(&str) -> bool,
+    label: &str,
+) -> Result<OnlineArtifact, String> {
+    let url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
+    let payload: Value = serde_json::from_str(&http_get_text(&url)?)
+        .map_err(|e| format!("GitHub release json invalid: {e}"))?;
+    for asset in payload
+        .get("assets")
+        .and_then(Value::as_array)
+        .unwrap_or(&Vec::new())
+    {
+        let name = asset.get("name").and_then(Value::as_str).unwrap_or("");
+        if !predicate(name) {
+            continue;
+        }
+        let digest = asset
+            .get("digest")
+            .and_then(Value::as_str)
+            .and_then(|v| v.strip_prefix("sha256:"))
+            .map(str::to_lowercase)
+            .filter(|v| v.len() == 64)
+            .ok_or_else(|| format!("GitHub asset {name} has no SHA-256 digest"))?;
+        let browser_download_url = asset
+            .get("browser_download_url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("GitHub asset {name} has no download URL"))?;
+        return Ok(OnlineArtifact {
+            sha256: digest,
+            urls: vec![(browser_download_url.to_string(), format!("{label} (官方)"))],
+        });
+    }
+    Err(format!(
+        "GitHub release {repo}@{tag} has no matching Windows x64 asset"
+    ))
+}
+
+fn ruby_artifact(version: &str) -> Result<OnlineArtifact, String> {
+    let url = "https://api.github.com/repos/oneclick/rubyinstaller2/releases?per_page=100";
+    let payload: Value = serde_json::from_str(&http_get_text(url)?)
+        .map_err(|e| format!("RubyInstaller release json invalid: {e}"))?;
+    for release in payload.as_array().unwrap_or(&Vec::new()) {
+        let tag = release
+            .get("tag_name")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !tag.starts_with(&format!("RubyInstaller-{version}-")) {
+            continue;
+        }
+        if let Ok(artifact) = github_binary_artifact(
+            "oneclick/rubyinstaller2",
+            tag,
+            |name| {
+                name.starts_with(&format!("rubyinstaller-{version}-")) && name.ends_with("-x64.exe")
+            },
+            "Ruby",
+        ) {
+            return Ok(artifact);
+        }
+    }
+    Err(format!(
+        "RubyInstaller {version} Windows x64 asset not found"
+    ))
+}
+
+fn fetch_zig_versions() -> Result<Vec<String>, String> {
+    let payload: Value =
+        serde_json::from_str(&http_get_text("https://ziglang.org/download/index.json")?)
+            .map_err(|e| format!("Zig index json invalid: {e}"))?;
+    Ok(payload
+        .as_object()
+        .map(|items| {
+            items
+                .keys()
+                .filter(|version| version.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+fn zig_artifact(version: &str) -> Result<OnlineArtifact, String> {
+    let payload: Value =
+        serde_json::from_str(&http_get_text("https://ziglang.org/download/index.json")?)
+            .map_err(|e| format!("Zig index json invalid: {e}"))?;
+    let target = payload
+        .get(version)
+        .and_then(|v| v.get("x86_64-windows"))
+        .ok_or_else(|| format!("Zig {version} Windows x64 asset not found"))?;
+    let tarball = target
+        .get("tarball")
+        .and_then(Value::as_str)
+        .ok_or("Zig tarball URL missing")?;
+    let sha256 = target
+        .get("shasum")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase)
+        .filter(|v| v.len() == 64)
+        .ok_or("Zig tarball SHA-256 missing")?;
+    Ok(OnlineArtifact {
+        sha256,
+        urls: vec![(tarball.to_string(), "Zig (官方)".into())],
+    })
 }
 
 // ---------------------------------------------------------------------------

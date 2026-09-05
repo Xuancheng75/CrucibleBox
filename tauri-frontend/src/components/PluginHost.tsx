@@ -115,6 +115,30 @@ export function PluginHost({
     return () => unlisten?.()
   }, [pluginId])
 
+  // Clipboard monitor events are delivered to the backend for persistence and
+  // also forwarded to the renderer so the history view updates immediately.
+  // Keeping this event path separate from plugin:message avoids echoing the
+  // monitor event back into the sidecar.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    tauriApi.events
+      .onClipboard((data) => {
+        if (data.pluginId !== pluginId) return
+        try {
+          bridgeRef.current?.sendBackendMessage({
+            type: 'clipboard:changed',
+            text: data.text
+          })
+        } catch (reason) {
+          console.error('[PluginFrameBridge] invalid clipboard event', reason)
+        }
+      })
+      .then((fn) => {
+        unlisten = fn
+      })
+    return () => unlisten?.()
+  }, [pluginId])
+
   // 窗口级 OS 拖放由宿主解析真实路径后转发；iframe 内的 File 对象不再自行猜测路径。
   useEffect(() => {
     const handleDocumentDrop = (event: Event) => {
@@ -241,7 +265,9 @@ export function PluginHost({
           width: '100%',
           height,
           border: 0,
-          background: 'transparent'
+          background: 'transparent',
+          borderRadius: 'var(--ob-radius, 8px)',
+          overflow: 'hidden'
         }}
       />
     </>

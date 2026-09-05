@@ -35,3 +35,20 @@ export function rollDice(
   }
   return Array.from({ length: count }, () => randomInteger(sides, source) + 1)
 }
+
+/** Parse a compact tabletop notation such as 2d6 or 3d20+4. */
+export function parseDiceNotation(value: string): {
+  count: number
+  sides: number
+  modifier: number
+} {
+  const match = /^\s*(\d{1,2})\s*[dD]\s*(\d{1,3})(?:\s*([+-])\s*(\d{1,3}))?\s*$/.exec(value)
+  if (!match) throw new RangeError('格式应为 NdM 或 NdM±K，例如 2d6+1')
+  const count = Number(match[1])
+  const sides = Number(match[2])
+  const modifier = match[3] ? Number(match[4]) * (match[3] === '-' ? -1 : 1) : 0
+  if (count < 1 || count > 20 || sides < 2 || sides > 100 || Math.abs(modifier) > 1000) {
+    throw new RangeError('骰子范围为 1-20 个、2-100 面，修正值不超过 1000')
+  }
+  return { count, sides, modifier }
+}

@@ -13,8 +13,8 @@ use crate::backend_process::BackendProcessManager;
 use crate::db::{Db, PluginRow, VersionFields};
 use crate::journal::{clear_journal, recover_interrupted, write_journal, Journal, JOURNAL_VERSION};
 use crate::manifest::{
-    assert_manifest_installable, assert_upgrade_allowed, read_manifest, validate_entrypoints,
-    Manifest,
+    assert_host_version_compatible, assert_manifest_installable, assert_upgrade_allowed,
+    read_manifest, validate_entrypoints, Manifest,
 };
 use crate::rand_token::random_token_hex;
 use crate::transaction::{
@@ -142,6 +142,16 @@ impl InstallManager {
 
     pub fn is_blocked(&self, name: &str) -> bool {
         lock(&self.blocked).contains(name)
+    }
+
+    /// Attempt deterministic journal recovery before a lifecycle operation.
+    ///
+    /// Older clients rejected enable/disable immediately when an interrupted
+    /// transaction was detected.  That left a perfectly recoverable plugin
+    /// blocked until a full restart.  Re-running the same fail-closed recovery
+    /// pass is safe and lets the caller continue when the journal is resolvable.
+    pub fn recover_if_blocked(&self, name: &str) -> Result<(), String> {
+        self.recover_blocked_plugin(name)
     }
 
     /// preview：校验来源 → 提取/定位插件根 → manifest 校验 → 事务 stage → 返回前端契约。
@@ -360,6 +370,7 @@ impl InstallManager {
         let manifest = read_manifest(&root)?;
         validate_entrypoints(&root, &manifest)?;
         assert_manifest_installable(&manifest, self.allow_legacy_full_trust)?;
+        assert_host_version_compatible(&manifest, env!("CARGO_PKG_VERSION"))?;
         if self.is_blocked(&manifest.name) {
             self.recover_blocked_plugin(&manifest.name)?;
         }
@@ -373,9 +384,29 @@ impl InstallManager {
             ));
         }
 
-        let existing = lock(&self.db)
+        let mut existing = lock(&self.db)
             .plugin_find_by_name(&manifest.name)
             .map_err(|e| e.to_string())?;
+        // A completed uninstall can leave a stale row when an older build was
+        // terminated between quarantine and the DB commit.  Do not present
+        // that ghost row as an upgrade (for example v0.1.1 -> v0.1.2): when
+        // its recorded directory is gone or no longer contains the same
+        // manifest, remove only the stale record and continue as a fresh
+        // install.  The normal orphan isolation below protects any leftover
+        // directory from being overwritten.
+        if let Some(row) = &existing {
+            let installed_path = Path::new(&row.installed_path);
+            let manifest_matches = installed_path.is_dir()
+                && read_manifest(installed_path)
+                    .map(|installed| {
+                        installed.name == manifest.name && installed.version == row.version
+                    })
+                    .unwrap_or(false);
+            if !manifest_matches {
+                lock(&self.db).plugin_delete(&row.id)?;
+                existing = None;
+            }
+        }
         let is_upgrade = existing.is_some();
         if let Some(row) = &existing {
             assert_upgrade_allowed(&manifest.name, &manifest.version, &row.version)?;

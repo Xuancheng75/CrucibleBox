@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { App, Button, Empty, Modal, Spin, Alert, theme } from 'antd'
 import {
   AppstoreOutlined,
@@ -29,6 +29,7 @@ import { usePlugins } from '../hooks/usePlugins'
 import { useAppStore } from '../store/app.store'
 import { usePluginStore } from '../store/plugin.store'
 import type { PluginMeta } from '../../../shared/types/plugin.types'
+import { reorderPluginGroup } from '../utils/plugin-reorder'
 
 interface SortableLauncherCardProps {
   plugin: PluginMeta
@@ -65,7 +66,8 @@ function SortableLauncherCard({
 }: SortableLauncherCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: plugin.id,
-    data: { plugin, index }
+    data: { plugin, index },
+    disabled: operationsDisabled
   })
 
   const style = {
@@ -79,8 +81,8 @@ function SortableLauncherCard({
       ref={setNodeRef}
       className="ob-sortable-item"
       style={style}
-      {...(batchMode ? {} : attributes)}
-      {...(batchMode ? {} : listeners)}
+      {...(operationsDisabled ? {} : attributes)}
+      {...(operationsDisabled ? {} : listeners)}
       role="listitem"
       tabIndex={-1}
     >
@@ -126,6 +128,7 @@ export default function Home() {
     batchDisablePlugins,
     pluginOperationBusy,
     batchOperationBusy,
+    reorderBusy,
     uninstallPlugin,
     reorderPlugins
   } = usePlugins()
@@ -145,14 +148,25 @@ export default function Home() {
   const [batchLifecycleAction, setBatchLifecycleAction] = useState<'enable' | 'disable' | null>(
     null
   )
+  const activeDragIdsRef = useRef<string[]>([])
+  const suppressNextCardClickRef = useRef(false)
+  const setInternalPluginDragActive = usePluginStore((s) => s.setInternalPluginDragActive)
 
   const isSorting = activeId !== null
   const pluginIds = useMemo(() => plugins.map((p) => p.id), [plugins])
-  const activePlugin = useMemo(() => plugins.find((p) => p.id === activeId), [plugins, activeId])
+  const activeDragPlugins = useMemo(
+    () =>
+      activeDragIdsRef.current
+        .map((id) => plugins.find((plugin) => plugin.id === id))
+        .filter((plugin): plugin is PluginMeta => plugin !== undefined),
+    [plugins, activeId]
+  )
 
   const runningCount = Object.values(activePlugins).filter((s) => s === 'active').length
   const lifecycleBusy =
+    loading ||
     batchOperationBusy ||
+    reorderBusy ||
     batchLifecycleAction !== null ||
     batchDeleting ||
     Object.values(pluginOperationBusy).some(Boolean)
@@ -167,7 +181,18 @@ export default function Home() {
     })
   )
 
+  // 卸载或刷新后清掉已不存在的选择项，避免批量操作误引用旧 ID。
+  useEffect(() => {
+    const ids = new Set(pluginIds)
+    setSelectedIds((current) => current.filter((id) => ids.has(id)))
+  }, [pluginIds])
+
+  useEffect(() => {
+    return () => setInternalPluginDragActive(false)
+  }, [setInternalPluginDragActive])
+
   const handleRefresh = async () => {
+    if (isSorting) return
     setRefreshing(true)
     try {
       await fetchPlugins()
@@ -180,7 +205,7 @@ export default function Home() {
   }
 
   const handleToggle = async (id: string, enabled: boolean) => {
-    if (lifecycleBusy || pluginOperationBusy[id]) return
+    if (lifecycleBusy || isSorting || pluginOperationBusy[id]) return
     const success = enabled ? await enablePlugin(id) : await disablePlugin(id)
     if (success) {
       message.success(enabled ? '插件已启用' : '插件已禁用')
@@ -190,7 +215,7 @@ export default function Home() {
   }
 
   const handleDelete = async (id: string) => {
-    if (lifecycleBusy || pluginOperationBusy[id]) return
+    if (lifecycleBusy || isSorting || pluginOperationBusy[id]) return
     const success = await uninstallPlugin(id)
     if (success) {
       message.success('插件已删除')
@@ -203,11 +228,16 @@ export default function Home() {
 
   // ---- 批量管理（1.9.12）----
   const toggleBatchMode = () => {
+    if (isSorting) return
     setBatchMode((v) => !v)
     setSelectedIds([])
   }
 
   const toggleSelect = (id: string) => {
+    if (suppressNextCardClickRef.current) {
+      suppressNextCardClickRef.current = false
+      return
+    }
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   }
 
@@ -221,7 +251,7 @@ export default function Home() {
   )
 
   const confirmBatchDelete = async () => {
-    if (lifecycleBusy) return
+    if (lifecycleBusy || isSorting) return
     const ids = [...selectedIds]
     setBatchDeleting(true)
     let succeeded = 0
@@ -251,7 +281,7 @@ export default function Home() {
   }
 
   const runBatchToggle = async (enabled: boolean) => {
-    if (lifecycleBusy || selectedIds.length === 0) return
+    if (lifecycleBusy || isSorting || selectedIds.length === 0) return
     const ids = selectedIds.filter((id) => {
       const plugin = plugins.find((item) => item.id === id)
       return plugin ? plugin.enabled !== enabled : false
@@ -282,6 +312,10 @@ export default function Home() {
 
   const handleOpen = useCallback(
     (plugin: PluginMeta) => {
+      if (suppressNextCardClickRef.current) {
+        suppressNextCardClickRef.current = false
+        return
+      }
       setActivePluginId(plugin.id)
       setCurrentPage('pluginView')
     },
@@ -304,6 +338,7 @@ export default function Home() {
 
   const handleMove = useCallback(
     (id: string, direction: -1 | 1) => {
+      if (lifecycleBusy || isSorting) return
       const currentIndex = plugins.findIndex((p) => p.id === id)
       const nextIndex = currentIndex + direction
       if (currentIndex < 0 || nextIndex < 0 || nextIndex >= plugins.length) return
@@ -314,36 +349,69 @@ export default function Home() {
       )
       void applyReorder(nextIds, plugins[currentIndex].displayName, nextIndex)
     },
-    [plugins, applyReorder]
+    [plugins, applyReorder, lifecycleBusy, isSorting]
   )
 
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    setActiveId(event.active.id as string)
-  }, [])
+  const handleDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const id = event.active.id as string
+      const selectedGroup = batchMode && selectedIds.includes(id) ? [...selectedIds] : [id]
+      activeDragIdsRef.current = selectedGroup
+      suppressNextCardClickRef.current = true
+      setActiveId(id)
+      setInternalPluginDragActive(true)
+      if (batchMode && !selectedIds.includes(id)) {
+        setSelectedIds((current) => (current.includes(id) ? current : [...current, id]))
+      }
+    },
+    [batchMode, selectedIds, setInternalPluginDragActive]
+  )
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event
-      if (over && active.id !== over.id) {
-        const oldIndex = plugins.findIndex((p) => p.id === active.id)
-        const newIndex = plugins.findIndex((p) => p.id === over.id)
-        if (oldIndex !== -1 && newIndex !== -1) {
-          const nextIds = arrayMove(
-            plugins.map((p) => p.id),
-            oldIndex,
-            newIndex
+      const currentIds = plugins.map((plugin) => plugin.id)
+      const selectedGroup = activeDragIdsRef.current
+      if (over) {
+        const groupResult = reorderPluginGroup(
+          currentIds,
+          selectedGroup,
+          active.id as string,
+          over.id as string
+        )
+        if (groupResult && batchMode) {
+          setSelectedIds(groupResult.selectedIds)
+        }
+        if (groupResult?.changed) {
+          const firstMoved = plugins.find((plugin) => plugin.id === (active.id as string))
+          const firstIndex = groupResult.orderedIds.indexOf(active.id as string)
+          void applyReorder(
+            groupResult.orderedIds,
+            selectedGroup.length > 1
+              ? `${selectedGroup.length} 个插件`
+              : (firstMoved?.displayName ?? String(active.id)),
+            firstIndex
           )
-          void applyReorder(nextIds, plugins[oldIndex].displayName, newIndex)
         }
       }
-      setTimeout(() => setActiveId(null), 0)
+      setInternalPluginDragActive(false)
+      setTimeout(() => {
+        setActiveId(null)
+        activeDragIdsRef.current = []
+        suppressNextCardClickRef.current = false
+      }, 0)
     },
-    [plugins, applyReorder]
+    [plugins, applyReorder, batchMode, setInternalPluginDragActive]
   )
 
   const handleDragCancel = useCallback(() => {
-    setTimeout(() => setActiveId(null), 0)
-  }, [])
+    setInternalPluginDragActive(false)
+    setTimeout(() => {
+      setActiveId(null)
+      activeDragIdsRef.current = []
+      suppressNextCardClickRef.current = false
+    }, 0)
+  }, [setInternalPluginDragActive])
 
   if (loading && plugins.length === 0) {
     return (
@@ -374,6 +442,7 @@ export default function Home() {
             type={batchMode ? 'primary' : 'default'}
             danger={batchMode}
             aria-label="批量管理插件"
+            disabled={lifecycleBusy || isSorting}
             onClick={toggleBatchMode}
           >
             {batchMode ? '完成管理' : '批量管理'}
@@ -381,7 +450,7 @@ export default function Home() {
           <Button
             icon={<ReloadOutlined />}
             loading={refreshing}
-            disabled={lifecycleBusy}
+            disabled={lifecycleBusy || isSorting}
             aria-label="刷新插件列表"
             onClick={handleRefresh}
           >
@@ -391,7 +460,7 @@ export default function Home() {
             data-ob-kind="primary"
             type="primary"
             icon={<ImportOutlined />}
-            disabled={lifecycleBusy}
+            disabled={lifecycleBusy || isSorting}
             onClick={() => setImportOpen(true)}
           >
             导入插件
@@ -417,7 +486,12 @@ export default function Home() {
           <span style={{ fontSize: 13, color: token.colorTextSecondary }}>
             已选择 <strong>{selectedIds.length}</strong> / {plugins.length} 个插件
           </span>
-          <Button size="small" onClick={selectAll}>
+          {selectedIds.length > 0 && (
+            <span style={{ fontSize: 12, color: token.colorTextTertiary }}>
+              长按已选卡片可拖动整组
+            </span>
+          )}
+          <Button size="small" disabled={lifecycleBusy || isSorting} onClick={selectAll}>
             {selectedIds.length === plugins.length ? '取消全选' : '全选'}
           </Button>
           <div style={{ flex: 1 }} />
@@ -426,7 +500,7 @@ export default function Home() {
             type="primary"
             size="small"
             icon={<DeleteOutlined />}
-            disabled={selectedIds.length === 0 || lifecycleBusy || batchDeleting}
+            disabled={selectedIds.length === 0 || lifecycleBusy || isSorting || batchDeleting}
             onClick={() => setBatchDeleteConfirmOpen(true)}
           >
             删除所选（{selectedIds.length}）
@@ -435,7 +509,7 @@ export default function Home() {
             type="primary"
             size="small"
             icon={<PlayCircleOutlined />}
-            disabled={selectedDisabledCount === 0 || lifecycleBusy}
+            disabled={selectedDisabledCount === 0 || lifecycleBusy || isSorting}
             loading={batchLifecycleAction === 'enable'}
             onClick={() => void runBatchToggle(true)}
           >
@@ -444,7 +518,7 @@ export default function Home() {
           <Button
             size="small"
             icon={<StopOutlined />}
-            disabled={selectedEnabledCount === 0 || lifecycleBusy}
+            disabled={selectedEnabledCount === 0 || lifecycleBusy || isSorting}
             loading={batchLifecycleAction === 'disable'}
             onClick={() => void runBatchToggle(false)}
           >
@@ -491,6 +565,7 @@ export default function Home() {
             <Button
               icon={<ReloadOutlined />}
               loading={refreshing}
+              disabled={lifecycleBusy || isSorting}
               aria-label="重试加载插件"
               onClick={handleRefresh}
             >
@@ -516,6 +591,7 @@ export default function Home() {
               data-ob-kind="primary"
               type="primary"
               icon={<ImportOutlined />}
+              disabled={lifecycleBusy || isSorting}
               onClick={() => setImportOpen(true)}
             >
               导入第一个插件
@@ -537,8 +613,6 @@ export default function Home() {
             className="ob-sortable-list"
             style={{
               display: 'grid',
-              // 1.9.12：固定一排四个（最小窗宽 800px 下每卡约 165px）
-              gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
               gap: 16
             }}
           >
@@ -565,26 +639,81 @@ export default function Home() {
             </SortableContext>
           </div>
           <DragOverlay>
-            {activePlugin ? (
+            {activeDragPlugins.length > 0 ? (
               <div
                 className="ob-launcher-drag-overlay"
+                aria-label={`正在拖动 ${activeDragPlugins.length} 个插件`}
                 style={{
-                  cursor: 'grabbing',
-                  transform: 'scale(1.04)',
-                  boxShadow: token.boxShadowSecondary
+                  position: 'relative',
+                  minWidth: 240,
+                  minHeight: 220,
+                  cursor: 'grabbing'
                 }}
               >
-                <LauncherCard
-                  plugin={activePlugin}
-                  status={activePlugins[activePlugin.id]}
-                  onOpen={handleOpen}
-                  sortable={{
-                    index: plugins.findIndex((p) => p.id === activePlugin.id),
-                    total: plugins.length,
-                    isDragging: false,
-                    isSorting: true
-                  }}
-                />
+                {activeDragPlugins.length > 1 && (
+                  <>
+                    <div
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        inset: '8px 0 0 8px',
+                        borderRadius: token.borderRadius,
+                        background: token.colorBgContainer,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                        boxShadow: 'none',
+                        transform: 'rotate(3deg)'
+                      }}
+                    />
+                    <div
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        inset: '4px 0 0 4px',
+                        borderRadius: token.borderRadius,
+                        background: token.colorBgContainer,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                        boxShadow: 'none',
+                        transform: 'rotate(-2deg)'
+                      }}
+                    />
+                  </>
+                )}
+                <div style={{ position: 'relative', transform: 'scale(1.04)' }}>
+                  <LauncherCard
+                    plugin={activeDragPlugins[0]}
+                    status={activePlugins[activeDragPlugins[0].id]}
+                    onOpen={handleOpen}
+                    sortable={{
+                      index: plugins.findIndex((p) => p.id === activeDragPlugins[0].id),
+                      total: plugins.length,
+                      isDragging: false,
+                      isSorting: true
+                    }}
+                  />
+                </div>
+                {activeDragPlugins.length > 1 && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 10,
+                      right: -8,
+                      zIndex: 2,
+                      minWidth: 30,
+                      height: 30,
+                      padding: '0 8px',
+                      borderRadius: 15,
+                      display: 'grid',
+                      placeItems: 'center',
+                      color: token.colorTextLightSolid,
+                      background: token.colorPrimary,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      border: `1px solid ${token.colorBgContainer}`
+                    }}
+                  >
+                    {activeDragPlugins.length}
+                  </div>
+                )}
               </div>
             ) : null}
           </DragOverlay>
@@ -592,7 +721,8 @@ export default function Home() {
       )}
 
       <div id="sort-instructions" className="ob-sr-only">
-        长按卡片约半秒可拖动排序，或使用每张卡片操作区的上下按钮调整顺序。
+        普通模式长按卡片约半秒可拖动排序；批量模式先选择多个插件，再长按已选卡片拖动整组，
+        或使用每张卡片操作区的上下按钮调整顺序。
       </div>
       <div aria-live="polite" aria-atomic="true" className="ob-sr-only">
         {announcement}

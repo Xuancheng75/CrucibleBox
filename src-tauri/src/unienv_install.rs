@@ -539,10 +539,11 @@ pub fn current_link(install_root: &Path, tool: &str) -> PathBuf {
     tool_dir(install_root, tool).join("current")
 }
 
-/// 运行时子目录：node→runtime、go→go、java→jdk、php→runtime；python/git 直装于版本目录
+/// 运行时子目录：node/php/zig/deno/bun→runtime、go→go、java→jdk；
+/// python/git/ruby 直装于版本目录。
 fn runtime_subdir(tool: &str) -> Option<&'static str> {
     match tool {
-        "node" | "php" => Some("runtime"),
+        "node" | "php" | "zig" | "deno" | "bun" => Some("runtime"),
         "go" => Some("go"),
         "java" => Some("jdk"),
         _ => None,
@@ -567,6 +568,177 @@ pub fn switch_version(install_root: &Path, tool: &str, version: &str) -> Result<
         return Err(format!("{tool} {version} 未安装"));
     }
     create_junction(&current_link(install_root, tool), &target)
+}
+
+/// Configure a single stable UniEnv shim directory in the current user's
+/// PATH.  Version switches only update the `current` junction, so PATH does
+/// not grow with every installed runtime.
+pub fn configure_environment(install_root: &Path) -> Result<(), String> {
+    let shim_dir = install_root.join("shims");
+    fs::create_dir_all(&shim_dir).map_err(|e| format!("创建环境 shim 目录失败: {e}"))?;
+    let current = |tool: &str| current_link(install_root, tool);
+    let shims: &[(&str, PathBuf)] = &[
+        ("python.cmd", current("python").join("python.exe")),
+        ("pip.cmd", current("python").join("Scripts").join("pip.exe")),
+        ("node.cmd", current("node").join("runtime").join("node.exe")),
+        ("npm.cmd", current("node").join("runtime").join("npm.cmd")),
+        ("npx.cmd", current("node").join("runtime").join("npx.cmd")),
+        ("git.cmd", current("git").join("cmd").join("git.exe")),
+        (
+            "go.cmd",
+            current("go").join("go").join("bin").join("go.exe"),
+        ),
+        (
+            "java.cmd",
+            current("java").join("jdk").join("bin").join("java.exe"),
+        ),
+        (
+            "javac.cmd",
+            current("java").join("jdk").join("bin").join("javac.exe"),
+        ),
+        (
+            "rustc.cmd",
+            current("rust").join("cargo").join("bin").join("rustc.exe"),
+        ),
+        (
+            "cargo.cmd",
+            current("rust").join("cargo").join("bin").join("cargo.exe"),
+        ),
+        ("php.cmd", current("php").join("runtime").join("php.exe")),
+        ("ruby.cmd", current("ruby").join("ruby.exe")),
+        ("zig.cmd", current("zig").join("runtime").join("zig.exe")),
+        ("deno.cmd", current("deno").join("runtime").join("deno.exe")),
+        ("bun.cmd", current("bun").join("runtime").join("bun.exe")),
+    ];
+    for (name, target) in shims {
+        let shim = shim_dir.join(name);
+        if target.is_file() {
+            write_cmd_shim(&shim_dir, name, target)?;
+        } else if shim.exists() {
+            fs::remove_file(&shim).map_err(|e| format!("清理失效环境 shim {name} 失败: {e}"))?;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        configure_user_path(&shim_dir)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = shim_dir;
+        Err("环境自动配置目前仅支持 Windows".into())
+    }
+}
+
+fn write_cmd_shim(directory: &Path, name: &str, target: &Path) -> Result<(), String> {
+    let shim = directory.join(name);
+    let target = target.to_string_lossy().replace('"', "\\\"");
+    let contents = format!("@echo off\r\n\"{target}\" %*\r\n");
+    fs::write(&shim, contents).map_err(|e| format!("写入环境 shim {name} 失败: {e}"))
+}
+
+#[cfg(windows)]
+fn configure_user_path(shim_dir: &Path) -> Result<(), String> {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_READ, KEY_WRITE, REG_EXPAND_SZ,
+    };
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    let environment = wide("Environment");
+    let path_name = wide("Path");
+    let mut key: HKEY = null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            environment.as_ptr(),
+            0,
+            KEY_READ | KEY_WRITE,
+            &mut key,
+        )
+    };
+    if status != 0 {
+        return Err(format!("打开用户环境变量失败（错误码 {status}）"));
+    }
+
+    let result = (|| {
+        let mut value_type = 0u32;
+        let mut byte_len = 0u32;
+        let query = unsafe {
+            RegQueryValueExW(
+                key,
+                path_name.as_ptr(),
+                null(),
+                &mut value_type,
+                null_mut(),
+                &mut byte_len,
+            )
+        };
+        let old_path = if query == 0 && byte_len > 0 {
+            let mut bytes = vec![0u8; byte_len as usize];
+            let read = unsafe {
+                RegQueryValueExW(
+                    key,
+                    path_name.as_ptr(),
+                    null(),
+                    &mut value_type,
+                    bytes.as_mut_ptr(),
+                    &mut byte_len,
+                )
+            };
+            if read != 0 {
+                return Err(format!("读取用户 PATH 失败（错误码 {read}）"));
+            }
+            let units = bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .take_while(|unit| *unit != 0)
+                .collect::<Vec<_>>();
+            String::from_utf16(&units).map_err(|e| format!("读取用户 PATH 编码失败: {e}"))?
+        } else {
+            String::new()
+        };
+        let shim = shim_dir.to_string_lossy().to_string();
+        let already_present = old_path
+            .split(';')
+            .any(|entry| entry.eq_ignore_ascii_case(&shim));
+        if already_present {
+            return Ok(());
+        }
+        let new_path = if old_path.trim().is_empty() {
+            shim
+        } else {
+            format!("{old_path};{shim}")
+        };
+        let encoded = wide(&new_path);
+        let bytes = encoded
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or_else(|| "用户 PATH 长度溢出".to_string())?;
+        let set_status = unsafe {
+            RegSetValueExW(
+                key,
+                path_name.as_ptr(),
+                0,
+                if value_type == 0 {
+                    REG_EXPAND_SZ
+                } else {
+                    value_type
+                },
+                encoded.as_ptr().cast(),
+                u32::try_from(bytes).map_err(|_| "用户 PATH 过长".to_string())?,
+            )
+        };
+        if set_status != 0 {
+            return Err(format!("写入用户 PATH 失败（错误码 {set_status}）"));
+        }
+        Ok(())
+    })();
+    unsafe { RegCloseKey(key) };
+    result
 }
 
 pub fn install_tool(
@@ -663,6 +835,11 @@ fn install_from_installer(
             "/SP-".into(),
             "/NOICONS".into(),
         ],
+        "ruby" => vec![
+            "/VERYSILENT".into(),
+            format!("/DIR={}", dir.display()),
+            "/NORESTART".into(),
+        ],
         "rust" => vec![],
         other => return Err(format!("unsupported installer tool: {other}")),
     };
@@ -692,7 +869,7 @@ fn install_from_installer(
             let mut full_args: Vec<String> = vec![
                 "-y".into(),
                 "--default-toolchain".into(),
-                "stable-x86_64-pc-windows-msvc".into(),
+                format!("{version}-x86_64-pc-windows-msvc"),
                 "--no-modify-path".into(),
             ];
             full_args.extend(args.clone());
@@ -788,6 +965,10 @@ fn display_name(tool: &str, _version: &str) -> String {
         "java" => "JDK".into(),
         "rust" => "Rust".into(),
         "php" => "PHP".into(),
+        "ruby" => "Ruby".into(),
+        "zig" => "Zig".into(),
+        "deno" => "Deno".into(),
+        "bun" => "Bun".into(),
         other => other.into(),
     }
 }

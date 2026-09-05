@@ -8,14 +8,16 @@
 
 ## 功能特性
 
-- **插件系统**：通过插件包（`.zip`）或插件目录导入，backend 运行于独立 **Rust sidecar**（quickjs-ng），安装时确认
+- **插件系统与市场**：既可导入 `.zip`/插件目录，也可从侧边栏的双栏插件市场浏览官方插件；列表、详情与安装状态统一呈现，backend 运行于独立 **Rust sidecar**（quickjs-ng）
+- **2.0 工作台**：现代化导航、可辨识的插件专属图标/分类/发布者信息、全局任务中心、清晰的运行状态反馈，以及测试版角标
 - **权限模型**：每位插件声明所需权限（网络、文件、数据库、剪贴板、通知、快捷键等），由宿主侧 `PermissionGuard` 逐调用门控；插件为可信代码，权限声明用于功能控制
 - **命令系统**：插件可注册全局命令，通过 `Cmd/Ctrl+Shift+P` 唤起
 - **全局快捷键**：插件可注册系统级快捷键（如 `Cmd/Ctrl+I` 唤起插件导入）
-- **主题系统**：内置亮色（默认）/深色/清新绿/海洋蓝/科幻面板/零号城区六套预设，运行时切换并下发 CSS 变量，插件可实时感知主题变化
-- **插件排序**：长按卡片约半秒拖动排序，或使用卡片操作区的上移/下移按钮（键盘可操作）调整顺序；顺序持久化于数据库 schema v3 `plugins.sort_order`，插件激活顺序跟随列表
-- **批量插件管理**：主页批量管理支持批量启用、批量禁用和批量删除，操作按插件串行执行并汇总失败项
+- **主题系统**：内置 16 套明暗、护眼、极简、暖色与赛博风格预设，运行时切换并下发 CSS 变量，插件可实时感知主题变化
+- **插件排序**：普通模式长按卡片约半秒拖动排序，或使用卡片操作区的上移/下移按钮（键盘可操作）；批量管理模式支持像手机多选应用一样拖动整组插件；顺序持久化于数据库 schema v3 `plugins.sort_order`，插件激活顺序跟随列表
+- **批量插件管理**：主页批量管理支持批量启用、批量禁用、批量删除和多选组拖拽，操作按插件串行执行并汇总失败项
 - **生命周期恢复**：导入、升级、启停、卸载和崩溃恢复按插件单飞，目录替换使用可恢复事务，避免频繁操作导致进程或会话残留
+- **双更新通道**：稳定版与测试版分别读取独立签名元数据，测试版不会覆盖稳定版；请求有超时、重试和状态复位
 - **插件日志**：日志入库（`plugin_logs` 表）并支持按插件、级别筛选与实时刷新
 - **自定义协议**：`cruciblebox-plugin://`（Windows path 型 `http://cruciblebox-plugin.localhost/<token>/`）安全地服务插件 renderer 静态资源（内置路径穿越防护 + MIME 白名单）
 - **配置中心**：`settings` 表持久化应用配置（rusqlite bundled WAL）
@@ -23,7 +25,7 @@
 ## 技术栈
 
 - **Tauri 2.11.x**（Rust core：rusqlite / sidecar 进程管理 / renderer 会话）+ WebView2
-- React 19 + Ant Design 6 + zustand（`tauri-frontend/`）
+- React 18 + Ant Design 5 + zustand（`tauri-frontend/`）；根目录 Electron 冻结线继续使用 React 19 + Ant Design 6
 - **rusqlite（bundled SQLite 3.53.x）**——与 better-sqlite3 文件格式零迁移兼容
 - 插件 backend：**quickjs-ng**（Rust sidecar，独立进程 + 帧协议）
 - Vitest 单元测试（Electron 冻结线）/ **cargo test + clippy + fmt**（Tauri 线）
@@ -31,7 +33,7 @@
 ## 快速开始
 
 ```bash
-# Tauri 线（当前发布线 1.9.20）
+# Tauri 线（当前正式基线 2.0.0）
 cd src-tauri && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 cd tauri-frontend && npm install && npm run build
 npm run build:frame              # 插件 frame runtime（out/plugin-frame/runtime.js）
@@ -53,7 +55,7 @@ npm run package:plugins && npm run generate:sbom
   "version": "1.0.0",
   "displayName": "示例插件",
   "description": "一个示例插件",
-  "author": "cruciblebox",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,
@@ -115,8 +117,8 @@ browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题�
 
 - **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2
   downloadBootstrapper 兜底）+ tauri-plugin-updater（minisign 强制签名 JSON）+ cargo-cyclonedx
-  Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版为 **v1.9.2**；当前发布版本与
-  验证基线为 **v1.9.20**（详见下方“当前验证基线”）。
+  Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版为 **v1.9.2**；当前开发与
+  验证基线为 **v2.0.0**，稳定/测试通道分别发布到 `tauri-stable` / `tauri-beta` 滚动元数据。
 - 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
   宿主和 11 个正式插件可生成 CycloneDX SBOM。
 - 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息（进程内存探针已于 1.9.3 移除）。
@@ -144,18 +146,19 @@ updater JSON + plugin signatures + CycloneDX SBOMs + SHA-256 checksums + GitHub 
 attestation. Windows installers are currently unsigned and can display Unknown publisher or
 SmartScreen warnings.
 
-## 当前验证基线（1.9.20）
+## 当前验证基线（2.0.0）
 
 - Tauri 线：`cargo test --workspace --locked`、`cargo clippy --workspace --all-targets --locked -D warnings`、
   `cargo fmt --check`、`tauri-frontend` vite build；插件独立 `clean && build`（11/11）。
 - 版本一致性：Tauri 版本以 `src-tauri/tauri.conf.json` 为唯一来源，运行
   `npm run verify:tauri-version` 校验 Cargo、前端 package/lockfile 与发布制品；根目录
   `package.json` 的 `1.7.3` 仅属于冻结 Electron 遗留线。
-- 数据库 schema v3（rusqlite bundled WAL）；`%APPDATA%\cruciblebox` 数据路径（L3 已迁移）。
-- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.1.2，内置 CPU OCR 默认模型并支持镜像回退）、
+- 数据库 schema v4（rusqlite bundled WAL）；`%APPDATA%\cruciblebox` 数据路径（L3 已迁移）。
+- 2.0 宿主包含插件市场、任务中心、插件身份视觉体系和扁平化主题表面；市场仅从 CrucibleBox GitHub Release 官方目录下载安装，Windows 优先使用 WinHTTP 自动代理/WPAD 与 BITS，支持手动刷新、稳定/测试通道、进程内目录缓存、离线回退、断点续传、进度显示、批量下载和全部更新，并严格校验插件 ID、来源 URL、声明大小和 SHA-256，再复用既有安装确认与可恢复事务；不接入镜像源、GitHub Marketplace 或账户系统。
+- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.10.0，支持最多 2000 页 PDF、PDFium 原生文字优先、统一文本清洗、TOC 隔离、章节树、公式块、DOCX XML 校验、Markdown/TXT/JSON 导出、真实 PDF 物理拆分、JSONL 文本分块、可选择输出文件夹与 ModelScope 镜像校验的内置 CPU OCR 默认模型）、
   Diary、Dice Roller、GIF Editor、Theme Manager、Turntable、UniEnv、JSON/文本工具箱、
-  剪贴板管理器、系统信息面板和实时汇率，共 11 个。
-- 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 崩溃 backoff+隔离 / PermissionGuard /
+  剪贴板管理器、系统信息面板和实时汇率，共 11 个；UniEnv（0.11.0）额外提供 Ruby、Zig、Deno、Bun 及现代 TypeScript/Ruby Web/Zig 原生组合包，并提供 Rust/PHP 多版本选择。第一方插件清单发布者统一为 `CrucibleBox`。
+- 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 按插件激活单飞 / 崩溃 backoff+隔离 / PermissionGuard /
   storage/log/db host 方法（e2e：真实 sidecar + gif-editor dist 全链路）。
 - Electron 冻结线测试（宿主 36 文件 263 项 + 六插件 199 项 + 供应链 16 项）作为参照保留。
 - 历史发布文档已归档至 `docs/history/`，记录的是当时状态。

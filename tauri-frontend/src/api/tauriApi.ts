@@ -98,6 +98,39 @@ export interface IpcResult<T = unknown> {
   error?: string
 }
 
+export interface AppUpdateMetadata {
+  rid: number
+  currentVersion: string
+  version: string
+  date?: string
+  body?: string
+  rawJson: Record<string, unknown>
+}
+
+export interface MarketplaceCatalogPluginDto {
+  id: string
+  version: string
+  artifact: string
+  sha256: string
+  size: number
+  url: string
+  displayName?: string
+  icon?: string
+  category?: string
+  minHostVersion?: string
+  publisher?: string
+  description?: string
+  highlights?: string[]
+}
+
+export interface MarketplaceCatalogResponse {
+  schemaVersion: number
+  plugins: MarketplaceCatalogPluginDto[]
+  source: string
+  stale: boolean
+  fetchedAt: number
+}
+
 export interface InstallSource {
   type: 'zip' | 'directory'
   path: string
@@ -141,6 +174,18 @@ export interface PluginStatusChangeEventPayload {
   status: string
 }
 
+export interface PluginClipboardEventPayload {
+  pluginId: string
+  text: string
+}
+
+export interface MarketplaceProgressEventPayload {
+  artifact: string
+  downloaded: number
+  total: number
+  stage: 'cached' | 'downloading'
+}
+
 // ---------------------------------------------------------------------------
 // API 封装
 // ---------------------------------------------------------------------------
@@ -155,10 +200,29 @@ export const tauriApi = {
 
   app: {
     getVersion: (): Promise<string> => invoke<string>('app_get_version'),
-    getPlatform: (): Promise<string> => invoke<string>('app_get_platform')
+    getPlatform: (): Promise<string> => invoke<string>('app_get_platform'),
+    checkUpdate: (
+      channel: 'stable' | 'beta',
+      timeoutMs?: number
+    ): Promise<AppUpdateMetadata | null> =>
+      invoke<AppUpdateMetadata | null>('app_check_update', { channel, timeoutMs })
   },
 
   plugin: {
+    marketplaceCatalog: (
+      forceRefresh = false,
+      channel?: 'stable' | 'beta'
+    ): Promise<MarketplaceCatalogResponse> =>
+      invoke<MarketplaceCatalogResponse>('marketplace_catalog', {
+        forceRefresh,
+        channel
+      }),
+    marketplaceDownload: (
+      id: string,
+      channel?: 'stable' | 'beta',
+      priority: 'foreground' | 'normal' = 'foreground'
+    ): Promise<string> =>
+      invoke<string>('marketplace_download_plugin', { id, channel, priority }),
     list: async (): Promise<PluginMeta[]> => {
       const dtos = await invoke<PluginMetaDto[]>('plugin_list')
       return dtos.map(toPluginMeta)
@@ -286,6 +350,20 @@ export const tauriApi = {
       callback: (payload: PluginStatusChangeEventPayload) => void
     ): Promise<UnlistenFn> =>
       listen<PluginStatusChangeEventPayload>('plugin:status-change', (event) =>
+        callback(event.payload)
+      ),
+
+    onClipboard: (
+      callback: (payload: PluginClipboardEventPayload) => void
+    ): Promise<UnlistenFn> =>
+      listen<PluginClipboardEventPayload>('plugin:clipboard', (event) =>
+        callback(event.payload)
+      ),
+
+    onMarketplaceProgress: (
+      callback: (payload: MarketplaceProgressEventPayload) => void
+    ): Promise<UnlistenFn> =>
+      listen<MarketplaceProgressEventPayload>('marketplace:progress', (event) =>
         callback(event.payload)
       )
   }

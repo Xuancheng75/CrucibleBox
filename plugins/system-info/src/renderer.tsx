@@ -95,19 +95,41 @@ function getProgressColor(percent: number): string {
 export default function SystemInfoPlugin({ api, config }: PluginRenderProps) {
   const [info, setInfo] = useState<SystemInfo | null>(null)
   const [loading, setLoading] = useState(true)
-  const refreshInterval = ((config.refreshInterval as number) || 3) * 1000
+  const [intervalSeconds, setIntervalSeconds] = useState(() => Math.max(1, Math.min(30, Number(config.refreshInterval) || 3)))
+  const [samples, setSamples] = useState<Array<{ cpu: number; memory: number }>>([])
+  const [paused, setPaused] = useState(false)
+  const refreshInterval = intervalSeconds * 1000
 
   const refresh = useCallback(async () => {
     const data = await api.sendToBackend({ type: 'getSystemInfo' }) as SystemInfo
     setInfo(data)
+    setSamples((previous) => [...previous, { cpu: data.cpu.usage, memory: data.memory.usage }].slice(-24))
     setLoading(false)
   }, [api])
 
   useEffect(() => {
-    refresh()
+    if (paused) return
+    void refresh()
     const timer = setInterval(refresh, refreshInterval)
     return () => clearInterval(timer)
-  }, [refresh, refreshInterval])
+  }, [paused, refresh, refreshInterval])
+
+  useEffect(() => {
+    const syncVisibility = () => setPaused(document.hidden)
+    document.addEventListener('visibilitychange', syncVisibility)
+    return () => document.removeEventListener('visibilitychange', syncVisibility)
+  }, [])
+
+  const exportSnapshot = () => {
+    if (!info) return
+    const blob = new Blob([JSON.stringify({ capturedAt: new Date().toISOString(), info, samples }, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `cruciblebox-system-${Date.now()}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
 
   if (loading || !info) {
     return <div style={s.page}><div style={s.loading}>正在获取系统信息...</div></div>
@@ -117,8 +139,30 @@ export default function SystemInfoPlugin({ api, config }: PluginRenderProps) {
     <div style={s.page}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h2 style={{ margin: 0, fontSize: 20 }}>系统信息面板</h2>
-        <button style={s.refreshBtn} onClick={refresh}>刷新</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <label style={{ fontSize: 12, color: 'var(--ob-color-text-secondary, #666)' }}>
+            采样间隔
+            <select value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} style={{ marginLeft: 6, padding: 5 }}>
+              {[1, 3, 5, 10, 30].map((value) => <option key={value} value={value}>{value}s</option>)}
+            </select>
+          </label>
+          <button style={s.refreshBtn} onClick={refresh}>刷新</button>
+          <button style={s.refreshBtn} onClick={() => setPaused((value) => !value)}>{paused ? '继续采样' : '暂停采样'}</button>
+          <button style={s.refreshBtn} onClick={exportSnapshot}>导出诊断</button>
+        </div>
       </div>
+
+      {samples.length > 1 && (
+        <div style={{ ...s.card, marginBottom: 16 }}>
+          <div style={s.cardTitle}>最近趋势（最多 24 个采样）</div>
+          <div style={{ display: 'flex', alignItems: 'end', gap: 3, height: 64 }}>
+            {samples.map((sample, index) => (
+              <div key={index} title={`CPU ${sample.cpu.toFixed(1)}% / 内存 ${sample.memory.toFixed(1)}%`} style={{ flex: 1, minWidth: 3, height: `${Math.max(4, Math.min(100, sample.cpu))}%`, background: 'var(--ob-color-primary, #2563eb)', borderRadius: '3px 3px 0 0' }} />
+            ))}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ob-color-text-secondary, #666)' }}>柱高表示 CPU 使用率，悬停查看内存</div>
+        </div>
+      )}
 
       <div style={s.grid}>
         <div style={s.card}>

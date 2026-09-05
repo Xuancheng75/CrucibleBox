@@ -1,0 +1,580 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, Button, Checkbox, Drawer, Dropdown, Empty, Input, Space, Tag, Typography, theme } from 'antd'
+import {
+  CheckOutlined,
+  DownloadOutlined,
+  MoreOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+  SafetyCertificateOutlined
+} from '@ant-design/icons'
+import { OFFICIAL_MARKETPLACE_CATALOG, type MarketplacePlugin } from '../marketplace-catalog'
+import { pluginIdentity } from '../plugin-identity'
+import PluginGlyph from '../components/PluginGlyph'
+import { usePluginStore } from '../store/plugin.store'
+import { useAppStore } from '../store/app.store'
+import { tauriApi, type MarketplaceCatalogResponse } from '../api/tauriApi'
+import { useTaskStore } from '../store/task.store'
+
+const { Title, Text, Paragraph } = Typography
+
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => {
+    const match = value.replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?/)
+    if (!match) return { core: [0, 0, 0], pre: [] as string[] }
+    return { core: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4]?.split('.') ?? [] }
+  }
+  const a = parse(left)
+  const b = parse(right)
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return a.core[index] - b.core[index]
+  }
+  if (a.pre.length === 0 && b.pre.length === 0) return 0
+  if (a.pre.length === 0) return 1
+  if (b.pre.length === 0) return -1
+  for (let index = 0; index < Math.max(a.pre.length, b.pre.length); index += 1) {
+    const av = a.pre[index]
+    const bv = b.pre[index]
+    if (av === undefined) return -1
+    if (bv === undefined) return 1
+    if (av === bv) continue
+    const an = /^\d+$/.test(av)
+    const bn = /^\d+$/.test(bv)
+    if (an && bn) return Number(av) - Number(bv)
+    if (an !== bn) return an ? -1 : 1
+    return av < bv ? -1 : 1
+  }
+  return 0
+}
+
+export default function Marketplace() {
+  const { token } = theme.useToken()
+  const plugins = usePluginStore((state) => state.plugins)
+  const setActivePluginId = useAppStore((state) => state.setActivePluginId)
+  const setCurrentPage = useAppStore((state) => state.setCurrentPage)
+  const installPlugin = usePluginStore((state) => state.installPlugin)
+  const fetchPlugins = usePluginStore((state) => state.fetchPlugins)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [selected, setSelected] = useState<MarketplacePlugin | null>(null)
+  const [remoteCatalog, setRemoteCatalog] = useState<MarketplacePlugin[] | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
+  const [channelReady, setChannelReady] = useState(false)
+  const [catalogSource, setCatalogSource] = useState('内置目录')
+  const [catalogStale, setCatalogStale] = useState(false)
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
+  const [newPluginCount, setNewPluginCount] = useState(0)
+  const [updateCount, setUpdateCount] = useState(0)
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchResult, setBatchResult] = useState<string | null>(null)
+  const activeDownloadTaskRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void tauriApi.settings.get('updateChannel').then((value) => {
+      if (!active) return
+      if (value === 'beta' || value === 'stable') setChannel(value)
+      setChannelReady(true)
+    }).catch(() => {
+      if (active) setChannelReady(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const loadCatalog = useCallback(async (forceRefresh: boolean) => {
+    setRefreshing(true)
+    setCatalogError(null)
+    try {
+      const payload: MarketplaceCatalogResponse = await tauriApi.plugin.marketplaceCatalog(
+        forceRefresh,
+        channel
+      )
+      const byId = new Map(OFFICIAL_MARKETPLACE_CATALOG.map((plugin) => [plugin.id, plugin]))
+      const knownIds = new Set(byId.keys())
+      const merged = payload.plugins
+        .map((entry) => {
+          const base = byId.get(String(entry.id))
+          if (!entry.id || typeof entry.version !== 'string') return null
+          if (!base && !entry.displayName) return null
+          const identity = pluginIdentity(entry.id, entry.publisher)
+          const highlights = Array.isArray(entry.highlights)
+            ? entry.highlights.filter((item): item is string => typeof item === 'string')
+            : base?.highlights ?? []
+          return {
+            ...(base ?? {
+              id: entry.id,
+              name: entry.displayName ?? entry.id,
+              version: entry.version,
+              publisher: entry.publisher ?? 'CrucibleBox',
+              category: entry.category ?? identity.category,
+              description: entry.description ?? '',
+              highlights
+            }),
+            id: entry.id,
+            name: entry.displayName ?? base?.name ?? entry.id,
+            version: entry.version,
+            publisher: entry.publisher ?? base?.publisher ?? 'CrucibleBox',
+            category: entry.category ?? base?.category ?? identity.category,
+            description: entry.description ?? base?.description ?? '',
+            highlights,
+            ...(entry.artifact ? { artifact: entry.artifact } : {}),
+            ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
+            ...(typeof entry.size === 'number' ? { size: entry.size } : {}),
+            ...(entry.url ? { url: entry.url } : {}),
+            ...(entry.icon ? { icon: entry.icon } : {}),
+            ...(entry.minHostVersion ? { minHostVersion: entry.minHostVersion } : {})
+          } as MarketplacePlugin
+        })
+        .filter((plugin): plugin is MarketplacePlugin => plugin !== null)
+      setRemoteCatalog(merged)
+      setCatalogSource(payload.source)
+      setCatalogStale(payload.stale)
+      setLastCheckedAt(payload.fetchedAt ? payload.fetchedAt * 1000 : Date.now())
+      await fetchPlugins()
+      const installed = usePluginStore.getState().plugins
+      setNewPluginCount(merged.filter((plugin) => !knownIds.has(plugin.id)).length)
+      setUpdateCount(
+        merged.filter((plugin) => {
+          const installedVersion = installed.find((item) => item.id === plugin.id)?.version
+          return Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
+        }).length
+      )
+    } catch (error) {
+      setCatalogError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRefreshing(false)
+    }
+  }, [channel, fetchPlugins])
+
+  useEffect(() => {
+    if (channelReady) void loadCatalog(false)
+  }, [channelReady, loadCatalog])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void tauriApi.events.onMarketplaceProgress((payload) => {
+      const plugin = (remoteCatalog ?? OFFICIAL_MARKETPLACE_CATALOG).find(
+        (item) => item.artifact === payload.artifact
+      )
+      if (!plugin) return
+      const percent = payload.total > 0 ? Math.round((payload.downloaded / payload.total) * 100) : 0
+      setDownloadProgress((current) => ({ ...current, [plugin.id]: percent }))
+      if (activeDownloadTaskRef.current) {
+        useTaskStore.getState().patchTask(activeDownloadTaskRef.current, {
+          progress: Math.max(0, Math.min(95, percent))
+        })
+      }
+    }).then((stop) => {
+      if (disposed) stop()
+      else unlisten = stop
+    })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [remoteCatalog])
+
+  const installedById = useMemo(
+    () => new Map(plugins.map((plugin) => [plugin.id, plugin])),
+    [plugins]
+  )
+  const marketplaceItems = remoteCatalog ?? OFFICIAL_MARKETPLACE_CATALOG
+  const catalog = useMemo(() => {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized) return marketplaceItems
+    return marketplaceItems.filter((plugin) =>
+      `${plugin.name} ${plugin.id} ${plugin.category} ${plugin.description}`
+        .toLowerCase()
+        .includes(normalized)
+    )
+  }, [marketplaceItems, query])
+
+  const updatePlugins = useMemo(
+    () => marketplaceItems.filter((plugin) => {
+      const installedVersion = installedById.get(plugin.id)?.version
+      return Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
+    }),
+    [installedById, marketplaceItems]
+  )
+
+  const selectedPlugins = useMemo(
+    () => catalog.filter((plugin) => selectedIds.has(plugin.id)),
+    [catalog, selectedIds]
+  )
+
+  const openInstalled = (plugin: MarketplacePlugin) => {
+    const installed = installedById.get(plugin.id)
+    if (!installed) return
+    setActivePluginId(installed.id)
+    setCurrentPage('pluginView')
+  }
+
+  const requestInstall = async (plugin: MarketplacePlugin) => {
+    setDownloadError(null)
+    const taskId = `marketplace-${plugin.id}-${Date.now()}`
+    activeDownloadTaskRef.current = taskId
+    setDownloadProgress((current) => ({ ...current, [plugin.id]: 0 }))
+    setDownloadingId(plugin.id)
+    useTaskStore.getState().upsertTask({ id: taskId, title: `下载 ${plugin.name}`, detail: `直连官方 Release · 通道 ${channel}`, source: 'marketplace', status: 'running', progress: 0 })
+    try {
+      const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'foreground')
+      useTaskStore.getState().patchTask(taskId, { title: `校验 ${plugin.name}`, progress: 70 })
+      const prepared = await installPlugin('zip', path)
+      const installError = usePluginStore.getState().error
+      useTaskStore.getState().patchTask(taskId, prepared
+        ? { status: 'completed', progress: 100, detail: '下载和校验完成，等待安装确认' }
+        : { status: 'failed', error: installError ?? '插件安装预检失败' })
+      if (!prepared) setDownloadError(installError ?? '插件安装预检失败，请查看任务中心后重试。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      useTaskStore.getState().patchTask(taskId, { status: 'failed', error: message })
+      setDownloadError(message)
+    } finally {
+      setDownloadingId(null)
+      activeDownloadTaskRef.current = null
+    }
+  }
+
+  const toggleSelected = (pluginId: string, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(pluginId)
+      else next.delete(pluginId)
+      return next
+    })
+  }
+
+  const allVisibleSelected = catalog.length > 0 && catalog.every((plugin) => selectedIds.has(plugin.id))
+  const someVisibleSelected = catalog.some((plugin) => selectedIds.has(plugin.id))
+  const toggleAllVisible = (checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      for (const plugin of catalog) {
+        if (checked) next.add(plugin.id)
+        else next.delete(plugin.id)
+      }
+      return next
+    })
+  }
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false)
+    setSelectedIds(new Set())
+  }
+
+  const downloadBatch = async (items: MarketplacePlugin[], action: 'download' | 'update') => {
+    if (items.length === 0 || batchBusy) return
+    setBatchBusy(true)
+    setBatchResult(null)
+    setDownloadError(null)
+    const paths: string[] = []
+    const failures: string[] = []
+    for (const plugin of items) {
+      const taskId = `marketplace-${action}-${plugin.id}-${Date.now()}`
+      activeDownloadTaskRef.current = taskId
+      setDownloadingId(plugin.id)
+      setDownloadProgress((current) => ({ ...current, [plugin.id]: 0 }))
+      useTaskStore.getState().upsertTask({
+        id: taskId,
+        title: `${action === 'update' ? '更新' : '下载'} ${plugin.name}`,
+        source: 'marketplace',
+        status: 'running',
+        progress: 0
+      })
+      try {
+        const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'normal')
+        paths.push(path)
+        useTaskStore.getState().patchTask(taskId, {
+          title: `校验 ${plugin.name}`,
+          status: 'completed',
+          progress: 100,
+          detail: '下载和校验完成，等待安装确认'
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push(`${plugin.name}: ${message}`)
+        useTaskStore.getState().patchTask(taskId, { status: 'failed', error: message })
+      }
+    }
+    setDownloadingId(null)
+    activeDownloadTaskRef.current = null
+    if (paths.length > 0) {
+      usePluginStore.getState().enqueueInstalls(paths.map((path) => ({ source: 'zip' as const, path })))
+    }
+    if (failures.length > 0) {
+      setBatchResult(`已下载 ${paths.length}/${items.length} 个；失败 ${failures.length} 个。失败项可在任务中心重试。`)
+      setDownloadError(failures.join('\n'))
+    } else {
+      setBatchResult(`已下载并校验 ${paths.length} 个插件，正在逐个等待安装确认。`)
+    }
+    setSelectedIds(new Set())
+    setBatchBusy(false)
+  }
+
+  return (
+    <div className="ob-marketplace-page">
+      <div className="ob-page-heading">
+        <div>
+          <Title level={3} style={{ margin: 0 }}>
+            插件市场
+          </Title>
+          <Text type="secondary">
+            {catalogStale ? '当前使用最近一次可用目录' : `通道：${channel === 'beta' ? '测试版' : '稳定版'}`}
+            {lastCheckedAt ? ` · ${new Date(lastCheckedAt).toLocaleTimeString()}` : ''}
+          </Text>
+        </div>
+        <Space>
+          {(newPluginCount > 0 || updateCount > 0) && (
+            <Tag color="orange">新增 {newPluginCount} · 可更新 {updateCount}</Tag>
+          )}
+          <Tag icon={<SafetyCertificateOutlined />} color={catalogStale ? 'gold' : 'blue'}>
+            {catalogStale
+              ? '缓存目录'
+              : catalogSource.includes('tauri-beta')
+                ? 'CrucibleBox 测试版目录'
+                : 'CrucibleBox 官方目录'}
+          </Tag>
+          {selectionMode ? (
+            <>
+              <Checkbox
+                checked={allVisibleSelected}
+                indeterminate={!allVisibleSelected && someVisibleSelected}
+                disabled={batchBusy || catalog.length === 0}
+                onChange={(event) => toggleAllVisible(event.target.checked)}
+              >
+                全选当前结果
+              </Checkbox>
+              <Button
+                disabled={batchBusy || selectedPlugins.length === 0}
+                loading={batchBusy}
+                icon={<DownloadOutlined />}
+                onClick={() => void downloadBatch(selectedPlugins, 'download')}
+              >
+                批量下载 ({selectedPlugins.length})
+              </Button>
+              <Button
+                disabled={batchBusy || updatePlugins.length === 0}
+                loading={batchBusy}
+                type={updatePlugins.length > 0 ? 'primary' : 'default'}
+                icon={<DownloadOutlined />}
+                onClick={() => void downloadBatch(updatePlugins, 'update')}
+              >
+                全部更新 ({updatePlugins.length})
+              </Button>
+              <Button disabled={batchBusy} onClick={exitSelectionMode}>
+                完成
+              </Button>
+            </>
+          ) : (
+            <Button icon={<MoreOutlined />} onClick={() => setSelectionMode(true)}>
+              多选
+            </Button>
+          )}
+          <Button
+            icon={<ReloadOutlined />}
+            loading={refreshing}
+            onClick={() => void loadCatalog(true)}
+          >
+            刷新
+          </Button>
+        </Space>
+      </div>
+
+      {catalogError && (
+        <Alert
+          type="warning"
+          showIcon
+          message="插件目录刷新失败"
+          description={`${catalogError}。当前仍显示可用的本地目录。`}
+          closable
+          onClose={() => setCatalogError(null)}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      <Input
+        allowClear
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        prefix={<SearchOutlined />}
+        placeholder="按名称、分类或功能搜索插件"
+        aria-label="搜索插件市场"
+        size="large"
+        style={{ marginBottom: 20 }}
+      />
+
+      {downloadError && (
+        <Alert
+          type="error"
+          showIcon
+          closable
+          message="插件下载失败"
+          description={downloadError}
+          onClose={() => setDownloadError(null)}
+          style={{ marginBottom: 20 }}
+        />
+      )}
+
+      {batchResult && (
+        <Alert
+          type="info"
+          showIcon
+          closable
+          message="批量任务"
+          description={batchResult}
+          onClose={() => setBatchResult(null)}
+          style={{ marginBottom: 20 }}
+        />
+      )}
+
+      {catalog.length === 0 ? (
+        <Empty description="没有找到匹配的插件" />
+      ) : (
+        <div className="ob-market-grid" role="list" aria-label="插件市场目录">
+            {catalog.map((plugin) => {
+            const installed = installedById.get(plugin.id)
+            const identity = pluginIdentity(plugin.id)
+            const installedVersion = installed?.version
+            const updateAvailable = Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
+            return (
+              <Dropdown
+                key={plugin.id}
+                trigger={['contextMenu']}
+                menu={{
+                  items: [{
+                    key: 'select',
+                    label: selectionMode ? '已进入多选模式' : '进入多选并选择此插件',
+                    disabled: selectionMode,
+                    onClick: () => {
+                      setSelectionMode(true)
+                      toggleSelected(plugin.id, true)
+                    }
+                  }]
+                }}
+              >
+                <article
+                  role="listitem"
+                  className="ob-market-card ob-surface-card"
+                  onClick={() => setSelected(plugin)}
+                  style={{
+                    border: `1px solid ${token.colorBorder}`,
+                    borderRadius: token.borderRadius,
+                    background: token.colorBgContainer
+                  }}
+                >
+                  {selectionMode && (
+                    <Checkbox
+                      checked={selectedIds.has(plugin.id)}
+                      disabled={batchBusy}
+                      aria-label={`选择 ${plugin.name}`}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => toggleSelected(plugin.id, event.target.checked)}
+                    />
+                  )}
+                <PluginGlyph pluginId={plugin.id} name={plugin.name} size={52} />
+                <div className="ob-market-card-content">
+                  <div className="ob-market-card-title">
+                    <span>{plugin.name}</span>
+                    <span style={{ color: token.colorTextTertiary, fontSize: 11 }}>
+                      v{plugin.version}
+                    </span>
+                  </div>
+                  <div className="ob-market-card-status">
+                    {(updateAvailable || (!installed && newPluginCount > 0 && !OFFICIAL_MARKETPLACE_CATALOG.some((item) => item.id === plugin.id))) && (
+                      <Tag color={updateAvailable ? 'orange' : 'green'}>
+                        {updateAvailable ? '可更新' : '新增'}
+                      </Tag>
+                    )}
+                  </div>
+                  <div style={{ color: token.colorTextTertiary, fontSize: 11, marginTop: 2 }}>
+                    {plugin.publisher} · {identity.category}
+                  </div>
+                  <Paragraph
+                    className="ob-market-card-description"
+                    ellipsis={{ rows: 2 }}
+                    title={plugin.description}
+                    style={{ color: token.colorTextSecondary, fontSize: 12, margin: 0 }}
+                  >
+                    {plugin.description}
+                  </Paragraph>
+                  <Button
+                    className="ob-market-card-action"
+                    size="small"
+                    type={installed && !updateAvailable ? 'default' : 'primary'}
+                    loading={downloadingId === plugin.id}
+                    disabled={batchBusy}
+                    icon={installed && !updateAvailable ? <CheckOutlined /> : <DownloadOutlined />}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (installed && !updateAvailable) openInstalled(plugin)
+                      else void requestInstall(plugin)
+                    }}
+                  >
+                    {installed && !updateAvailable ? '打开' : installed ? '更新' : '获取'}
+                  </Button>
+                </div>
+                </article>
+              </Dropdown>
+            )
+          })}
+        </div>
+      )}
+
+      <Drawer
+        width={520}
+        open={selected !== null}
+        onClose={() => setSelected(null)}
+        title={selected?.name}
+      >
+        {selected && (
+          <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <PluginGlyph pluginId={selected.id} name={selected.name} size={68} />
+              <div>
+                <Title level={4} style={{ margin: 0 }}>
+                  {selected.name}
+                </Title>
+                <Text type="secondary">
+                  {selected.publisher} · v{selected.version}
+                  {installedById.has(selected.id) ? ` · 已安装 v${installedById.get(selected.id)?.version}` : ''}
+                </Text>
+              </div>
+            </div>
+            <Paragraph>{selected.description}</Paragraph>
+            <div>
+              <Text strong>主要能力</Text>
+              <ul style={{ marginTop: 8, paddingLeft: 20 }}>
+                {selected.highlights.map((highlight) => (
+                  <li key={highlight}>{highlight}</li>
+                ))}
+              </ul>
+            </div>
+            <Button
+              type="primary"
+              block
+              loading={downloadingId === selected.id}
+              disabled={batchBusy}
+              icon={installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0 ? <CheckOutlined /> : <DownloadOutlined />}
+              onClick={() =>
+                installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0
+                  ? openInstalled(selected)
+                  : void requestInstall(selected)
+              }
+            >
+              {installedById.has(selected.id) && compareVersions(selected.version, installedById.get(selected.id)?.version ?? '0.0.0') <= 0 ? '打开' : installedById.has(selected.id) ? '更新' : '获取'}
+            </Button>
+          </Space>
+        )}
+      </Drawer>
+    </div>
+  )
+}

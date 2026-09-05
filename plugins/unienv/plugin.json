@@ -1,9 +1,9 @@
 {
   "name": "unienv",
-  "version": "0.6.0",
+  "version": "0.11.0",
   "displayName": "UniEnv",
-  "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java、Rust、PHP 的检测、安装、切换与卸载；Node/Go/Java 支持联网检查上游新版本，面向初学者",
-  "author": "UniEnv Team",
+  "description": "一键式开发环境配置工具 — 支持 Python、Node.js、Git、Go、Java、Rust、PHP、Ruby、Zig、Deno、Bun 的版本管理、安装后环境配置、切换与卸载",
+  "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
   "manifestVersion": 2,
@@ -32,11 +32,21 @@
     "onlineVersions": {
       "type": "select",
       "label": "联网检查语言版本",
-      "description": "开启后 Node/Go/Java 会从官方源发现新版本并可直接安装（Python/Git 暂不支持在线新版本）；关闭则仅显示内置版本目录。网络不可达时自动回退内置目录。",
+      "description": "开启后 Node/Go/Java/Ruby/Zig/Deno/Bun 会从官方源发现新版本并可直接安装（Python/Git 暂不支持在线新版本）；关闭则仅显示内置版本目录。网络不可达时自动回退内置目录。",
       "default": "on",
       "options": [
         { "label": "开启（推荐）", "value": "on" },
         { "label": "关闭", "value": "off" }
+      ]
+    },
+    "autoConfigureEnvironment": {
+      "type": "select",
+      "label": "安装后自动配置环境",
+      "description": "安装或组合包完成后，将 UniEnv 的当前版本入口加入当前用户 PATH；可随时关闭并恢复原环境。",
+      "default": "on",
+      "options": [
+        { "label": "开启（推荐）", "value": "on" },
+        { "label": "仅安装，不修改环境", "value": "off" }
       ]
     },
     "customCombos": {

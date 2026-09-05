@@ -37,6 +37,7 @@ export interface EngineStatus {
     device?: string
     modelDirectory?: string
     dictionaryPath?: string
+    modelProfile?: string
     cacheDirectory?: string
     outputDirectory?: string
   }
@@ -61,6 +62,12 @@ export interface ModelCatalogEntry {
   offline?: boolean
   license?: string
   totalBytes?: number
+  profile?: {
+    language?: string
+    detection?: string
+    recognition?: string
+    formula?: string
+  }
   artifacts: ModelCatalogArtifact[]
 }
 
@@ -106,6 +113,7 @@ export interface OcrResult {
     recognitionSha256: string
     dictionarySha256: string
     device: string
+    modelProfile?: string
   }
 }
 
@@ -113,6 +121,11 @@ export interface DocumentBlock {
   id: string
   type: string
   content?: string
+  rawText?: string
+  latex?: string
+  bbox?: [number, number, number, number]
+  confidence?: number
+  parentId?: string
   language?: string
   [key: string]: unknown
 }
@@ -154,6 +167,12 @@ export interface ParsedDocumentResult {
   ocrPageNumbers: number[]
   warnings: Array<{ code?: string; message?: string }>
   document: ParsedDocument
+  outputDirectory?: string
+  outputs?: {
+    directory?: string
+    textCharacters?: number
+    files?: Array<{ kind: string; path: string; bytes: number }>
+  }
 }
 
 export interface ChunkResult {
@@ -161,6 +180,24 @@ export interface ChunkResult {
   strategy: string
   count: number
   chunks: Array<Record<string, unknown>>
+  outputPath?: string
+  manifestPath?: string
+  outputFormat?: 'jsonl' | string
+}
+
+export interface PdfSplitResult {
+  sourcePath: string
+  outputDirectory: string
+  pageCount: number
+  pagesPerFile: number
+  fileCount: number
+  files: Array<{
+    index: number
+    path: string
+    startPage: number
+    endPage: number
+    pageCount: number
+  }>
 }
 
 export interface ConversionResult {
@@ -331,14 +368,37 @@ export async function startOcr(
 
 export async function startParse(
   send: (message: unknown) => Promise<unknown>,
-  path: string
+  path: string,
+  options?: { outputDirectory?: string }
 ): Promise<TaskAccepted> {
-  const response = (await send({ type: 'document.parse', path })) as Partial<TaskAccepted> & {
+  const response = (await send(omitUndefined({ type: 'document.parse', path, options }))) as Partial<TaskAccepted> & {
     error?: string
     code?: string
   }
   if (typeof response.taskId !== 'string' || response.taskId.length === 0) {
     throw new Error(response.error ?? response.code ?? 'PDF 解析任务启动失败')
+  }
+  return { taskId: response.taskId, status: response.status ?? 'queued' }
+}
+
+export async function startPdfSplit(
+  send: (message: unknown) => Promise<unknown>,
+  path: string,
+  options?: {
+    outputDirectory?: string
+    pagesPerFile?: number
+    mode?: 'pages' | 'fixed' | 'ranges' | 'chapters' | 'custom'
+    ranges?: Array<{ start: number; end: number }>
+  }
+): Promise<TaskAccepted> {
+  const response = (await send(
+    omitUndefined({ type: 'document.pdf.split', path, options })
+  )) as Partial<TaskAccepted> & {
+    error?: string
+    code?: string
+  }
+  if (typeof response.taskId !== 'string' || response.taskId.length === 0) {
+    throw new Error(response.error ?? response.code ?? 'PDF 拆分任务启动失败')
   }
   return { taskId: response.taskId, status: response.status ?? 'queued' }
 }
@@ -368,14 +428,14 @@ export async function startConvert(
   send: (message: unknown) => Promise<unknown>,
   path: string,
   target: string,
-  outputPath?: string
+  outputDirectory?: string
 ): Promise<TaskAccepted> {
   const response = (await send(
     omitUndefined({
       type: 'document.convert',
       path,
       target,
-      outputPath
+      outputDirectory
     })
   )) as Partial<TaskAccepted> & {
     error?: string

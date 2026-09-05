@@ -52,6 +52,8 @@ pub struct UniEnvConfig {
     pub custom_combos: Vec<ComboPack>,
     /// 联网检查语言新版本（默认开；不可达时静默回退内置目录）
     pub online_versions: bool,
+    /// 将 UniEnv shim 目录加入当前用户 PATH（默认开启）。
+    pub auto_configure_environment: bool,
 }
 
 fn has_control_characters(value: &str) -> bool {
@@ -350,11 +352,17 @@ fn load_config(db: &Db, plugin_id: &str) -> UniEnvConfig {
         .and_then(Value::as_str)
         .map(|v| v != "off")
         .unwrap_or(true);
+    let auto_configure_environment = parsed
+        .get("autoConfigureEnvironment")
+        .and_then(Value::as_str)
+        .map(|v| v != "off")
+        .unwrap_or(true);
     UniEnvConfig {
         install_root,
         download_mirror,
         custom_combos,
         online_versions,
+        auto_configure_environment,
     }
 }
 
@@ -369,8 +377,12 @@ fn supported_versions_raw() -> Value {
         "git": ["2.43.0", "2.44.0", "2.45.2", "2.46.0", "2.54.0"],
         "go": ["1.21.6", "1.22.4", "1.23.0", "1.26.5"],
         "java": ["17.0.11", "17.0.12", "17.0.20", "21.0.3", "21.0.5", "21.0.12", "22.0.1", "25.0.4"],
-        "rust": ["stable"],
-        "php": ["8.3.33"]
+        "rust": ["stable", "beta", "nightly"],
+        "php": ["8.2.30", "8.3.33", "8.4.16"],
+        "ruby": ["3.4.5"],
+        "zig": ["0.14.1"],
+        "deno": ["2.4.5"],
+        "bun": ["1.2.21"]
     })
 }
 
@@ -381,8 +393,12 @@ fn tool_meta() -> Value {
         { "id": "git", "displayName": "Git", "icon": "\u{1F527}", "description": "分布式版本控制" },
         { "id": "go", "displayName": "Go", "icon": "\u{1F4C0}", "description": "Go 编程语言工具链" },
         { "id": "java", "displayName": "Java (JDK)", "icon": "\u{2615}\u{FE0F}", "description": "Java 开发工具包 (Temurin)" },
-        { "id": "rust", "displayName": "Rust", "icon": "\u{1F980}", "description": "Rust 工具链（rustup，stable 通道）" },
-        { "id": "php", "displayName": "PHP", "icon": "\u{1F418}", "description": "PHP 运行时（NTS x64）" }
+        { "id": "rust", "displayName": "Rust", "icon": "\u{1F980}", "description": "Rust 工具链（stable / beta / nightly 通道）" },
+        { "id": "php", "displayName": "PHP", "icon": "\u{1F418}", "description": "PHP 运行时（8.2 / 8.3 / 8.4 NTS x64）" },
+        { "id": "ruby", "displayName": "Ruby", "icon": "💎", "description": "Ruby 运行时（RubyInstaller x64）" },
+        { "id": "zig", "displayName": "Zig", "icon": "⚡", "description": "Zig 原生工具链" },
+        { "id": "deno", "displayName": "Deno", "icon": "🦕", "description": "Deno TypeScript/JavaScript 运行时" },
+        { "id": "bun", "displayName": "Bun", "icon": "🥟", "description": "Bun JavaScript 运行时与工具链" }
     ])
 }
 
@@ -407,6 +423,34 @@ fn builtin_combos() -> Value {
         {
             "id": "fullstack-universal", "name": "全栈通用", "description": "Python 3.14 + Node 24 + Go 1.26 + Git",
             "items": [ { "toolId": "python", "version": "3.14.7" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "go", "version": "1.26.5" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "rust-dev", "name": "Rust 开发", "description": "Rust stable + Git",
+            "items": [ { "toolId": "rust", "version": "stable" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "php-web", "name": "PHP Web", "description": "PHP 8.3 + Node 24 + Git",
+            "items": [ { "toolId": "php", "version": "8.3.33" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "multi-language", "name": "多语言后端", "description": "Java 21 + Go 1.26 + Rust + Git",
+            "items": [ { "toolId": "java", "version": "21.0.12" }, { "toolId": "go", "version": "1.26.5" }, { "toolId": "rust", "version": "stable" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "ruby-web", "name": "Ruby Web", "description": "Ruby 3.4 + Node 24 + Git",
+            "items": [ { "toolId": "ruby", "version": "3.4.5" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "zig-native", "name": "Zig 原生开发", "description": "Zig 0.14 + Git",
+            "items": [ { "toolId": "zig", "version": "0.14.1" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "modern-typescript", "name": "现代 TypeScript", "description": "Node 24 + Deno 2.4 + Bun 1.2 + Git",
+            "items": [ { "toolId": "node", "version": "24.18.1" }, { "toolId": "deno", "version": "2.4.5" }, { "toolId": "bun", "version": "1.2.21" }, { "toolId": "git", "version": "2.54.0" } ]
+        },
+        {
+            "id": "polyglot-web", "name": "多运行时 Web", "description": "Python 3.14 + Ruby 3.4 + Node 24 + Git",
+            "items": [ { "toolId": "python", "version": "3.14.7" }, { "toolId": "ruby", "version": "3.4.5" }, { "toolId": "node", "version": "24.18.1" }, { "toolId": "git", "version": "2.54.0" } ]
         }
     ])
 }
@@ -420,6 +464,10 @@ fn display_name(tool: &str) -> String {
         "java" => "Java (JDK)".into(),
         "rust" => "Rust".into(),
         "php" => "PHP".into(),
+        "ruby" => "Ruby".into(),
+        "zig" => "Zig".into(),
+        "deno" => "Deno".into(),
+        "bun" => "Bun".into(),
         other => other.to_string(),
     }
 }
@@ -599,6 +647,7 @@ fn run_install_executor(
     install_root: String,
     mirror: String,
     online_versions: bool,
+    auto_configure_environment: bool,
     tool: String,
     version: String,
 ) -> Result<Value, String> {
@@ -616,6 +665,10 @@ fn run_install_executor(
         &progress_adapter(ctx, None),
         ctx.cancel_flag(),
     )?;
+    if auto_configure_environment {
+        unienv_install::configure_environment(Path::new(&install_root))?;
+        ctx.update_progress("configuring", 99, "正在配置用户开发环境");
+    }
     ctx.check_cancelled()?;
     Ok(json!({
         "kind": "install",
@@ -632,7 +685,11 @@ fn install_plan(
     tool: &str,
     version: &str,
 ) -> Result<unienv_install::InstallPlan, String> {
-    if is_supported_version(tool, version) {
+    // The extended runtimes are online-only: their release metadata carries
+    // the authoritative SHA-256 digest and must be resolved at install time.
+    // Existing static tools retain the offline, compile-time pinned catalog.
+    let online_only = matches!(tool, "ruby" | "zig" | "deno" | "bun");
+    if is_supported_version(tool, version) && !online_only {
         return Ok(unienv_install::InstallPlan {
             urls: crate::unienv_catalog::download_urls(tool, version, mirror)?,
             sha256: crate::unienv_catalog::artifact(tool, version)?
@@ -669,6 +726,7 @@ fn run_combo_executor(
     combo_id: String,
     combo_name: String,
     items: Vec<(String, String)>,
+    auto_configure_environment: bool,
 ) -> Result<Value, String> {
     let total = items.len();
     let mut results: Vec<Value> = Vec::new();
@@ -701,6 +759,9 @@ fn run_combo_executor(
         }
     }
     let success = results.iter().all(|r| r["success"] == true);
+    if auto_configure_environment && success {
+        unienv_install::configure_environment(Path::new(&install_root))?;
+    }
     let final_message = if success {
         format!("{combo_name} 全部安装完成")
     } else {
@@ -781,33 +842,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             // 「检查语言新版本」按钮路径：强制刷新上游元数据（8s 硬超时），
             // 返回 内置∪在线 的合并降序列表；失败项内联报错。
             let cfg = load_config(db, plugin_id);
-            if !cfg.online_versions {
-                return err(
-                    "online-check-disabled",
-                    "联网检查语言版本已在设置中关闭".into(),
-                );
-            }
-            let requested: Vec<String> = match request.get("tool") {
-                Some(Value::String(s)) => vec![s.clone()],
-                _ => ["node", "go", "java"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
-            };
-            let mut results = Vec::new();
-            for tool in requested {
-                if !crate::unienv_versions::provider_supports(&tool) {
-                    results.push(json!({
-                        "tool": tool, "ok": false,
-                        "error": format!("该工具不支持在线检查: {tool}"),
-                    }));
-                    continue;
-                }
-                let online = crate::unienv_versions::online_versions_force(&tool);
-                let merged = merge_static_with_online(&tool, &online);
-                results.push(json!({ "tool": tool, "ok": true, "versions": merged }));
-            }
-            json!({ "results": results })
+            check_online_versions(&cfg, request)
         }
         "listCombos" => {
             let cfg = load_config(db, plugin_id);
@@ -867,7 +902,15 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             let start = tasks().start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
-                    run_install_executor(ctx, install_root, mirror, online, tool, version)
+                    run_install_executor(
+                        ctx,
+                        install_root,
+                        mirror,
+                        online,
+                        cfg.auto_configure_environment,
+                        tool,
+                        version,
+                    )
                 }),
             );
             end_inline();
@@ -905,7 +948,15 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             let start = tasks().start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
-                    run_combo_executor(ctx, install_root, mirror, combo_id, combo_name, items)
+                    run_combo_executor(
+                        ctx,
+                        install_root,
+                        mirror,
+                        combo_id,
+                        combo_name,
+                        items,
+                        cfg.auto_configure_environment,
+                    )
                 }),
             );
             end_inline();
@@ -1001,6 +1052,56 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
     }
 }
 
+/// Network-backed version discovery extracted from `handle_message` so the
+/// host can release its outer database mutex before the bounded HTTP calls.
+fn check_online_versions(cfg: &UniEnvConfig, request: &Value) -> Value {
+    if !cfg.online_versions {
+        return err(
+            "online-check-disabled",
+            "联网检查语言版本已在设置中关闭".into(),
+        );
+    }
+    let requested: Vec<String> = match request.get("tool") {
+        Some(Value::String(s)) => vec![s.clone()],
+        _ => ["node", "go", "java", "ruby", "zig", "deno", "bun"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    };
+    let mut results = Vec::new();
+    for tool in requested {
+        if !crate::unienv_versions::provider_supports(&tool) {
+            results.push(json!({
+                "tool": tool, "ok": false,
+                "error": format!("该工具不支持在线检查: {tool}"),
+            }));
+            continue;
+        }
+        let online = crate::unienv_versions::online_versions_force(&tool);
+        let merged = merge_static_with_online(&tool, &online);
+        results.push(json!({ "tool": tool, "ok": true, "versions": merged }));
+    }
+    json!({ "results": results })
+}
+
+/// Read only the short-lived UniEnv config while the host DB guard is held.
+/// Callers performing network work should pass the returned value to
+/// `dispatch_online_versions` after releasing that guard.
+pub(crate) fn load_config_for_host(db: &Db, plugin_id: &str) -> UniEnvConfig {
+    load_config(db, plugin_id)
+}
+
+pub(crate) fn dispatch_online_versions(
+    config: &UniEnvConfig,
+    payload: &Value,
+) -> Result<Value, String> {
+    let request = payload
+        .as_object()
+        .map(|_| payload)
+        .ok_or_else(|| "message payload must be an object".to_string())?;
+    Ok(check_online_versions(config, request))
+}
+
 /// 写操作公共前置：Windows 限定 + 启动恢复 + fail-closed 断言。
 fn preflight_mutation(db: &Db, plugin_id: &str) -> Result<(), Value> {
     require_windows()?;
@@ -1055,6 +1156,10 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
         "java" => Some(("java.exe", vec!["-version"], true)),
         "rust" => Some(("rustc.exe", vec!["--version"], false)),
         "php" => Some(("php.exe", vec!["--version"], false)),
+        "ruby" => Some(("ruby.exe", vec!["--version"], false)),
+        "zig" => Some(("zig.exe", vec!["version"], false)),
+        "deno" => Some(("deno.exe", vec!["--version"], false)),
+        "bun" => Some(("bun.exe", vec!["--version"], false)),
         _ => None,
     };
     if let Some((exe, args, from_stderr)) = global {
@@ -1075,6 +1180,10 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
         "rust" => Some(("cargo\\bin\\rustc.exe", vec!["--version"], false)),
         // php zip 解压根
         "php" => Some(("runtime\\php.exe", vec!["--version"], false)),
+        "ruby" => Some(("ruby.exe", vec!["--version"], false)),
+        "zig" => Some(("runtime\\zig.exe", vec!["version"], false)),
+        "deno" => Some(("runtime\\deno.exe", vec!["--version"], false)),
+        "bun" => Some(("runtime\\bun.exe", vec!["--version"], false)),
         _ => None,
     };
     if let Some((rel_exe, args, from_stderr)) = rel {
@@ -1163,7 +1272,7 @@ mod tests {
         )
         .unwrap();
         let arr = out.as_array().unwrap();
-        assert_eq!(arr.len(), 7);
+        assert_eq!(arr.len(), 11);
         assert!(arr.iter().any(|tool| tool["id"] == "python"));
         assert!(arr.iter().any(|tool| tool["id"] == "rust"));
         assert!(arr.iter().any(|tool| tool["id"] == "php"));
@@ -1189,7 +1298,7 @@ mod tests {
             Some(&json!({ "type": "listVersions", "tool": "ruby" })),
         )
         .unwrap();
-        assert_eq!(out["code"], "unknown-tool");
+        assert!(out.as_array().unwrap().contains(&json!("3.4.5")));
     }
 
     #[test]
@@ -1220,8 +1329,10 @@ mod tests {
         )
         .unwrap();
         let arr = out.as_array().unwrap();
-        assert_eq!(arr.len(), 6);
+        assert!(arr.len() >= 12);
         assert!(arr.iter().any(|c| c["id"] == "my-combo"));
+        assert!(arr.iter().any(|c| c["id"] == "rust-dev"));
+        assert!(arr.iter().any(|c| c["id"] == "php-web"));
     }
 
     #[test]
