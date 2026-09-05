@@ -39,27 +39,27 @@ beta6 不包含下载镜像、GitHub Marketplace、账户系统、Windows Authen
 
 beta7 优先收敛 beta6 暴露的插件下载故障；插件市场下载链路不引入镜像源，仍直连 GitHub Release；Document Engine 模型制品允许使用固定、可校验的 ModelScope 镜像，不改变插件安装事务、签名校验和 Document Engine 的现有架构。
 
-| 优先级 | 范围 | 计划内容 | 验收标准 |
-| ------ | ---- | -------- | -------- |
-| P0 | 插件包下载直连 | 插件目录和插件包下载链路明确使用官方 GitHub Release 直连；移除下载路径对 `HTTP(S)_PROXY`、WinHTTP/BITS 预配置代理和本地代理端口的隐式继承。BITS 若继续保留，必须显式设置 no-proxy；兼容回退也必须使用同一条直连策略。 | 代理端口不可用时不再尝试 `127.0.0.1:7897` 等本地代理；错误信息明确区分 DNS/连接失败、HTTP 状态、断点续传和 SHA-256 校验失败；直连下载 11 个官方插件包全部通过大小与 SHA-256 校验。 |
-| P0 | Release 地址绑定 | `stable` / `beta` 清单中的每个插件 URL 必须由实际发布 tag 生成并校验，禁止引用不存在的 `tauri-v2.0.0` 或未来版本；beta 清单绑定当前 beta tag，stable 清单在 2.0.0 正式版发布前继续绑定最后一个真实稳定 Release。 | CI 在发布前验证清单 URL 的仓库、tag、artifact、版本、大小和摘要；所有 URL 返回可下载资产；清单中的应用版本、插件包版本与 Release 资产一致。 |
-| P0 | 通道选择一致性 | 插件市场、更新器和下载命令共用持久化的 stable/beta 通道，不允许界面显示 beta 却请求 stable 清单，也不允许 beta 应用无提示读取错误通道。 | beta6/beta7 安装包默认或按设置访问 `tauri-beta/plugins.json`；稳定通道只访问 `tauri-stable/plugins.json`；切换通道后刷新目录并重新计算新增/更新数量。 |
-| P1 | 下载诊断与恢复 | 在任务中心记录实际通道、Release tag、传输模式（direct）、HTTP 状态、重试次数、断点文件大小和最终校验结果；失败后保留可恢复断点，但不把网络错误伪装成固定 10% 进度。 | 网络失败提示包含可行动原因；新任务、断点恢复、重复下载、批量下载和全部更新均可重试；进度从真实字节数开始，失败任务不显示为已完成。 |
+| 优先级 | 范围             | 计划内容                                                                                                                                                                                                              | 验收标准                                                                                                                                                                           |
+| ------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0     | 插件包下载直连   | 插件目录和插件包下载链路明确使用官方 GitHub Release 直连；移除下载路径对 `HTTP(S)_PROXY`、WinHTTP/BITS 预配置代理和本地代理端口的隐式继承。BITS 若继续保留，必须显式设置 no-proxy；兼容回退也必须使用同一条直连策略。 | 代理端口不可用时不再尝试 `127.0.0.1:7897` 等本地代理；错误信息明确区分 DNS/连接失败、HTTP 状态、断点续传和 SHA-256 校验失败；直连下载 11 个官方插件包全部通过大小与 SHA-256 校验。 |
+| P0     | Release 地址绑定 | `stable` / `beta` 清单中的每个插件 URL 必须由实际发布 tag 生成并校验，禁止引用不存在的 `tauri-v2.0.0` 或未来版本；beta 清单绑定当前 beta tag，stable 清单在 2.0.0 正式版发布前继续绑定最后一个真实稳定 Release。      | CI 在发布前验证清单 URL 的仓库、tag、artifact、版本、大小和摘要；所有 URL 返回可下载资产；清单中的应用版本、插件包版本与 Release 资产一致。                                        |
+| P0     | 通道选择一致性   | 插件市场、更新器和下载命令共用持久化的 stable/beta 通道，不允许界面显示 beta 却请求 stable 清单，也不允许 beta 应用无提示读取错误通道。                                                                               | beta6/beta7 安装包默认或按设置访问 `tauri-beta/plugins.json`；稳定通道只访问 `tauri-stable/plugins.json`；切换通道后刷新目录并重新计算新增/更新数量。                              |
+| P1     | 下载诊断与恢复   | 在任务中心记录实际通道、Release tag、传输模式（direct）、HTTP 状态、重试次数、断点文件大小和最终校验结果；失败后保留可恢复断点，但不把网络错误伪装成固定 10% 进度。                                                   | 网络失败提示包含可行动原因；新任务、断点恢复、重复下载、批量下载和全部更新均可重试；进度从真实字节数开始，失败任务不显示为已完成。                                                 |
 
 ### beta7 Document Engine 边界重构计划
 
 Document Engine 在 beta7 只做有边界的管线修复，不推翻现有 Document IR，也不重新调整已经稳定的 Hybrid Chunk 目标长度、最小/最大长度和基本 merge 逻辑。两份回归样本为 `fogharbor_botanical_field_notes_scanned.pdf` 与 `linear algebra by strang 4 th edition.pdf`；模型制品允许使用已备案的 ModelScope 镜像，但必须固定版本、逐文件通过 SHA-256 校验，禁止使用未验证的 ONNX 转换物。
 
-| 阶段 | 范围 | 交付内容 | 验收门槛 |
-| ---- | ---- | -------- | -------- |
-| VNext.1 | 统一文本清洗 | Native/OCR 统一 Unicode Normalize、XML 1.0 控制字符清理、断词修复；输出前二次 XML-safe 检查 | `invalidControlChars=0`、`invalidXmlChars=0`，DOCX XML 可解析 |
-| VNext.2 | TOC 隔离 | 识别 `toc` / `toc_entry`，目录只提供章节候选，不进入正文 heading stack | TOC 不污染正文 `sectionPath`，`tocEntryCount` 可追踪 |
-| VNext.3 | 结构树 | 结合编号、视觉高度、bbox、页面位置、上下文、习题区域区分 chapter/section/list/exercise | 20–50 个章节样本抽检；`parentId`、`sectionId`、`sectionPath` 父子关系正确 |
-| VNext.4 | 来源与版面解耦 | LayoutDetector 接口与文字来源分离；Native/OCR 只负责普通文字，页眉页脚/页码单独保留 | 有文本层仍运行版面分类；扫描页不因低置信度把视觉标题全部丢失 |
-| VNext.5 | 数学/区域块 | FormulaDetector 与 FormulaRecognizer 分离；严格拒绝标题、页码、时间、URL、编号；Formula Block 保存 raw/normalized LaTeX、plainText、bbox、page、confidence、engine、modelVersion | `FIELD ARCHIVE / FOGHARBOR`、`03/10`、`08:05` 不得为公式；公式不再产生重复相邻 token |
-| VNext.6 | 输出适配 | 解析型 JSON/MD/TXT 与阅读型 DOCX/HTML/PDF 继续分离；Markdown 使用规范公式块 | Formula/TOC/结构字段在解析输出中可供 AI/RAG 使用 |
-| VNext.7 | DOCX 合法性 | XML-safe → OOXML renderer → XML parse；逐步加入 Heading/List/Table/Image/Caption/Equation/Page Break/Header/Footer/Page Number | `document.xml parse=PASS`、Word/LibreOffice 打开、DOCX→PDF 渲染通过后再做视觉相似度优化 |
-| VNext.8 | 质量门控与回归 | 文档级 `ragQuality` 与 Chunk 级 `ragEligible` 双门控；无标题扫描文档按页/语义页回退切块；输出诊断指标 | 扫描 10 页不得只有 1 个 chunk；质量不通过时不得无条件让全部 chunk 进入 RAG |
+| 阶段    | 范围           | 交付内容                                                                                                                                                                         | 验收门槛                                                                                |
+| ------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| VNext.1 | 统一文本清洗   | Native/OCR 统一 Unicode Normalize、XML 1.0 控制字符清理、断词修复；输出前二次 XML-safe 检查                                                                                      | `invalidControlChars=0`、`invalidXmlChars=0`，DOCX XML 可解析                           |
+| VNext.2 | TOC 隔离       | 识别 `toc` / `toc_entry`，目录只提供章节候选，不进入正文 heading stack                                                                                                           | TOC 不污染正文 `sectionPath`，`tocEntryCount` 可追踪                                    |
+| VNext.3 | 结构树         | 结合编号、视觉高度、bbox、页面位置、上下文、习题区域区分 chapter/section/list/exercise                                                                                           | 20–50 个章节样本抽检；`parentId`、`sectionId`、`sectionPath` 父子关系正确               |
+| VNext.4 | 来源与版面解耦 | LayoutDetector 接口与文字来源分离；Native/OCR 只负责普通文字，页眉页脚/页码单独保留                                                                                              | 有文本层仍运行版面分类；扫描页不因低置信度把视觉标题全部丢失                            |
+| VNext.5 | 数学/区域块    | FormulaDetector 与 FormulaRecognizer 分离；严格拒绝标题、页码、时间、URL、编号；Formula Block 保存 raw/normalized LaTeX、plainText、bbox、page、confidence、engine、modelVersion | `FIELD ARCHIVE / FOGHARBOR`、`03/10`、`08:05` 不得为公式；公式不再产生重复相邻 token    |
+| VNext.6 | 输出适配       | 解析型 JSON/MD/TXT 与阅读型 DOCX/HTML/PDF 继续分离；Markdown 使用规范公式块                                                                                                      | Formula/TOC/结构字段在解析输出中可供 AI/RAG 使用                                        |
+| VNext.7 | DOCX 合法性    | XML-safe → OOXML renderer → XML parse；逐步加入 Heading/List/Table/Image/Caption/Equation/Page Break/Header/Footer/Page Number                                                   | `document.xml parse=PASS`、Word/LibreOffice 打开、DOCX→PDF 渲染通过后再做视觉相似度优化 |
+| VNext.8 | 质量门控与回归 | 文档级 `ragQuality` 与 Chunk 级 `ragEligible` 双门控；无标题扫描文档按页/语义页回退切块；输出诊断指标                                                                            | 扫描 10 页不得只有 1 个 chunk；质量不通过时不得无条件让全部 chunk 进入 RAG              |
 
 模型策略：Auto/Mixed 只选择通用 `PP-OCRv5_mobile_rec`；英文优化模型必须显式选择。`PP-DocLayout-M` 作为版面/公式候选检测目标，`PP-FormulaNet_plus-S/M` 作为后续识别模型；在备案镜像模型文件、Windows runtime/依赖和两份样本回归全部具备前，不把轻量文字适配器标记为已完成的 FormulaNet。模型下载失败不得破坏普通 OCR，必须保留缺失状态、重试和 SHA-256 失败原因。
 
@@ -73,27 +73,27 @@ beta7 发布前专项检查：清理下载临时目录后分别验证 beta 与 s
 
 beta8 纠正 beta7 将“直连”作为唯一传输路线的假设：GitHub Release 地址仍是唯一可信插件来源，但传输层必须能使用系统代理。当前仅在本地工作分支实施和验证，不提交 tag、不更新滚动通道、不创建 GitHub Release；后续需求继续并入本节后再统一冻结范围。
 
-| 优先级 | 范围 | 当前方案 | 发布前验收 |
-| ------ | ---- | -------- | ---------- |
-| P0 | 统一下载网络策略 | 工具箱更新、市场目录、插件包共用 Auto/System/Manual/Direct 设置；Auto 优先显式地址，否则跟随系统代理；官方 URL、HTTPS、大小和 SHA-256 边界不变 | 四种模式分别验证；代理可用、代理中断、恢复网络、HTTP 错误和摘要错误均显示真实原因 |
-| P0 | 插件断点与重试 | 新下载优先 BITS，瞬时错误保持任务并等待恢复；兼容链使用持久 `.part` + HTTP Range，失败不删除可用断点；无进度超时提高到 300 秒 | 在 10%、50% 主动断网后恢复，字节进度从已有断点继续；最终大小和 SHA-256 通过 |
-| P0 | OCR 运行时打包 | OCR Worker 启动时从显式路径、worker 同目录、`binaries`、`resources` 和应用目录解析完整 ONNX Runtime DLL 对，并向子进程注入路径 | 安装版与便携版扫描 PDF 不再报告 `onnxruntime.dll not found`；运行时资产脚本验证 DLL 成对存在 |
-| P1 | 页面生命周期 | 设置、市场和任务页首次打开后保持挂载；插件页切换侧栏后保持后台状态；插件页映射为工作台高亮，点击工作台仍返回主页 | 下载中切页不中断；插件内状态和 iframe 会话保持；导航高亮和返回主页行为一致 |
-| P1 | 任务与日志合并 | 删除独立“插件日志”侧栏入口，任务中心提供“任务/运行日志”分页；全局任务浮层不改变市场卡片布局；日志支持筛选、展开和复制完整详情 | 下载任务跨页面可见；日志完整展示来源、时间、级别和原始消息；完成/失败状态准确 |
-| P1 | 市场卡片布局 | 卡片采用固定网格行、两行简介和底部动作区；状态标签预留空间，下载进度移出卡片 | 简介长短、更新状态和批量任务均不改变卡片高度或左侧布局 |
-| P1 | 转换输出目录 | Document Engine 转换与 PDF 解析统一使用只读目录框和“选择输出目录”；目录下自动生成目标扩展名，同格式转换使用 `-converted` 防覆盖 | Markdown/TXT/HTML/DOCX/PDF 均写入所选目录；PDF→PDF 不覆盖输入文件 |
+| 优先级 | 范围             | 当前方案                                                                                                                                       | 发布前验收                                                                                   |
+| ------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| P0     | 统一下载网络策略 | 工具箱更新、市场目录、插件包共用 Auto/System/Manual/Direct 设置；Auto 优先显式地址，否则跟随系统代理；官方 URL、HTTPS、大小和 SHA-256 边界不变 | 四种模式分别验证；代理可用、代理中断、恢复网络、HTTP 错误和摘要错误均显示真实原因            |
+| P0     | 插件断点与重试   | 新下载优先 BITS，瞬时错误保持任务并等待恢复；兼容链使用持久 `.part` + HTTP Range，失败不删除可用断点；无进度超时提高到 300 秒                  | 在 10%、50% 主动断网后恢复，字节进度从已有断点继续；最终大小和 SHA-256 通过                  |
+| P0     | OCR 运行时打包   | OCR Worker 启动时从显式路径、worker 同目录、`binaries`、`resources` 和应用目录解析完整 ONNX Runtime DLL 对，并向子进程注入路径                 | 安装版与便携版扫描 PDF 不再报告 `onnxruntime.dll not found`；运行时资产脚本验证 DLL 成对存在 |
+| P1     | 页面生命周期     | 设置、市场和任务页首次打开后保持挂载；插件页切换侧栏后保持后台状态；插件页映射为工作台高亮，点击工作台仍返回主页                               | 下载中切页不中断；插件内状态和 iframe 会话保持；导航高亮和返回主页行为一致                   |
+| P1     | 任务与日志合并   | 删除独立“插件日志”侧栏入口，任务中心提供“任务/运行日志”分页；全局任务浮层不改变市场卡片布局；日志支持筛选、展开和复制完整详情                  | 下载任务跨页面可见；日志完整展示来源、时间、级别和原始消息；完成/失败状态准确                |
+| P1     | 市场卡片布局     | 卡片采用固定网格行、两行简介和底部动作区；状态标签预留空间，下载进度移出卡片                                                                   | 简介长短、更新状态和批量任务均不改变卡片高度或左侧布局                                       |
+| P1     | 转换输出目录     | Document Engine 转换与 PDF 解析统一使用只读目录框和“选择输出目录”；目录下自动生成目标扩展名，同格式转换使用 `-converted` 防覆盖                | Markdown/TXT/HTML/DOCX/PDF 均写入所选目录；PDF→PDF 不覆盖输入文件                            |
 
 ### beta8 第二部分：数学教材结构化输出
 
 不更换普通英文 OCR 主模型，不改 Hybrid Chunk 的目标/min/max token 与基本小块合并算法。处理顺序固定为：结构分类与页面噪声标记 → 普通正文断词修复 → Math Region/二维 token → Math AST → Markdown/OMML → Clean Document IR → RAG Chunk。
 
-| 优先级 | 范围 | 实施内容 | 验收标准 |
-| ------ | ---- | -------- | -------- |
-| P0 | 英文断词 | 仅对已确认的正文段落执行显式连字符与高置信度词典式断词修复；记录 original/merged/confidence/rule | `Certainly`、`Difference` 等恢复；正常换行、标题、列表和公式不误拼 |
-| P0 | Math AST | 原生 PDF 公式合并时保留 token bbox、中心、基线、高度、置信度；统一 AST 支持上下标、方程、方程组和规则矩阵 | `A^T`、`A^{-1}`、`λ_1`、矩阵不再按字符拆散；原始 token 可调试追踪 |
-| P0 | 数学导出 | Math AST 统一生成 LaTeX；DOCX 通过 OMML 输出上下标、分式、根号和二维矩阵 | Markdown 公式边界规范；DOCX XML 可解析且矩阵生成 `m:m/m:mr` 结构 |
-| P1 | 页面噪声 | 结合边缘位置与跨页重复识别 header/footer；独立识别阿拉伯和罗马页码 | 噪声块保留在 Document IR，但不进入 Markdown/DOCX 正文和 RAG |
-| P1 | 元数据与 RAG | 公式/矩阵/图片 flag 从结构块计算；增加公式类型、数量、最低置信度、图片类型与断词统计；公式、矩阵、图片作为 atomic block | 不因单个字符或等号误报公式；长矩阵和方程组不被 Chunker 从中间切断；现有约500 token 分布不主动调整 |
+| 优先级 | 范围         | 实施内容                                                                                                                | 验收标准                                                                                          |
+| ------ | ------------ | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| P0     | 英文断词     | 仅对已确认的正文段落执行显式连字符与高置信度词典式断词修复；记录 original/merged/confidence/rule                        | `Certainly`、`Difference` 等恢复；正常换行、标题、列表和公式不误拼                                |
+| P0     | Math AST     | 原生 PDF 公式合并时保留 token bbox、中心、基线、高度、置信度；统一 AST 支持上下标、方程、方程组和规则矩阵               | `A^T`、`A^{-1}`、`λ_1`、矩阵不再按字符拆散；原始 token 可调试追踪                                 |
+| P0     | 数学导出     | Math AST 统一生成 LaTeX；DOCX 通过 OMML 输出上下标、分式、根号和二维矩阵                                                | Markdown 公式边界规范；DOCX XML 可解析且矩阵生成 `m:m/m:mr` 结构                                  |
+| P1     | 页面噪声     | 结合边缘位置与跨页重复识别 header/footer；独立识别阿拉伯和罗马页码                                                      | 噪声块保留在 Document IR，但不进入 Markdown/DOCX 正文和 RAG                                       |
+| P1     | 元数据与 RAG | 公式/矩阵/图片 flag 从结构块计算；增加公式类型、数量、最低置信度、图片类型与断词统计；公式、矩阵、图片作为 atomic block | 不因单个字符或等号误报公式；长矩阵和方程组不被 Chunker 从中间切断；现有约500 token 分布不主动调整 |
 
 回归固定包含 Strang 教材至少20页抽检以及 Fogharbor 10页扫描样本。若本机缺少 Strang 原文件或默认 PP-OCRv5 模型，只能报告对应项未执行，不得以合成测试冒充真实文档验收。
 

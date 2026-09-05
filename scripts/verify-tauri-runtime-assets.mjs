@@ -42,10 +42,7 @@ const ortDirectory = ortDirectories.find(
     firstFile([join(directory, 'onnxruntime_providers_shared.dll')])
 )
 const ort = ortDirectory
-  ? [
-      join(ortDirectory, 'onnxruntime.dll'),
-      join(ortDirectory, 'onnxruntime_providers_shared.dll')
-    ]
+  ? [join(ortDirectory, 'onnxruntime.dll'), join(ortDirectory, 'onnxruntime_providers_shared.dll')]
   : [undefined, undefined]
 if (!worker || !pdfium || !ortDirectory) {
   const missing = [

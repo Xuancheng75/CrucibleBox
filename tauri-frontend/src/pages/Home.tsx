@@ -155,10 +155,12 @@ export default function Home() {
   const isSorting = activeId !== null
   const pluginIds = useMemo(() => plugins.map((p) => p.id), [plugins])
   const activeDragPlugins = useMemo(
-    () =>
-      activeDragIdsRef.current
+    () => {
+      if (!activeId) return []
+      return activeDragIdsRef.current
         .map((id) => plugins.find((plugin) => plugin.id === id))
-        .filter((plugin): plugin is PluginMeta => plugin !== undefined),
+        .filter((plugin): plugin is PluginMeta => plugin !== undefined)
+    },
     [plugins, activeId]
   )
 

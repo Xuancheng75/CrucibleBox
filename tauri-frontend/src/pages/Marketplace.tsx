@@ -68,7 +68,6 @@ export default function Marketplace() {
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
   const [newPluginCount, setNewPluginCount] = useState(0)
   const [updateCount, setUpdateCount] = useState(0)
-  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({})
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectionMode, setSelectionMode] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
@@ -167,7 +166,6 @@ export default function Marketplace() {
       )
       if (!plugin) return
       const percent = payload.total > 0 ? Math.round((payload.downloaded / payload.total) * 100) : 0
-      setDownloadProgress((current) => ({ ...current, [plugin.id]: percent }))
       if (activeDownloadTaskRef.current) {
         useTaskStore.getState().patchTask(activeDownloadTaskRef.current, {
           progress: Math.max(0, Math.min(95, percent))
@@ -222,7 +220,6 @@ export default function Marketplace() {
     setDownloadError(null)
     const taskId = `marketplace-${plugin.id}-${Date.now()}`
     activeDownloadTaskRef.current = taskId
-    setDownloadProgress((current) => ({ ...current, [plugin.id]: 0 }))
     setDownloadingId(plugin.id)
     useTaskStore.getState().upsertTask({ id: taskId, title: `下载 ${plugin.name}`, detail: `直连官方 Release · 通道 ${channel}`, source: 'marketplace', status: 'running', progress: 0 })
     try {
@@ -282,7 +279,6 @@ export default function Marketplace() {
       const taskId = `marketplace-${action}-${plugin.id}-${Date.now()}`
       activeDownloadTaskRef.current = taskId
       setDownloadingId(plugin.id)
-      setDownloadProgress((current) => ({ ...current, [plugin.id]: 0 }))
       useTaskStore.getState().upsertTask({
         id: taskId,
         title: `${action === 'update' ? '更新' : '下载'} ${plugin.name}`,

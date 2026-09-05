@@ -166,7 +166,11 @@ describe('renderer thumbnail state', () => {
   it('releases removed and replaced thumbnail URLs when requested', () => {
     const release = vi.fn()
     const render = vi.fn((item: FrameState<TestImage>) => `${item.id}:${item.imageData.pixels[0]}`)
-    const first = reconcileThumbnailCache([frame('a', { pixels: [1], bytes: 1 })], new Map(), render)
+    const first = reconcileThumbnailCache(
+      [frame('a', { pixels: [1], bytes: 1 })],
+      new Map(),
+      render
+    )
     const replaced = reconcileThumbnailCache(
       [frame('b', { pixels: [2], bytes: 1 })],
       first,

@@ -3,19 +3,12 @@
     "name": "unienv",
     "version": "0.11.0",
     "digest": "75d84102ff8db835e60021d76d611a0a995ebdbb0e14cfdc28c71f21ccca3c92",
-    "files": [
-      "dist/main.js",
-      "dist/renderer.js",
-      "plugin.json"
-    ]
+    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   },
   "document-engine": {
     "name": "document-engine",
     "version": "0.10.0",
-    "permissions": [
-      "trusted:document-engine",
-      "dialog"
-    ],
+    "permissions": ["trusted:document-engine", "dialog"],
     "digest": "e1d7bba1695ed2fc35ef6b48db72a6a463a8450d9c2a0df8e60a21c8b1de0a85",
     "files": [
       "dist/main.js",
