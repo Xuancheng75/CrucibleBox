@@ -1,7 +1,7 @@
 # CrucibleBox 维护复杂度优化方案（整合版）
 
 > 状态：维护规范（2.0.0 正式版工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。
-> 基线：CrucibleBox 2.0.0（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
+> 基线：CrucibleBox 2.0.1（Tauri 为唯一可编辑运行线，Electron 1.7.3 冻结）。
 > 唯一可编辑源码：`E:\CrucibleBox_Sourses`（git 仓库；beta6 发布提交以实际发布 tag 为准）。
 > `E:\CrucibleBox_Plugins` 为只读镜像 / 发布备份，不参与构建。
 
@@ -70,6 +70,8 @@ beta7 不为插件下载增加镜像，不接入账户或 GitHub Marketplace；D
 beta7 发布前专项检查：清理下载临时目录后分别验证 beta 与 stable 清单；对所有插件执行单个下载、断点恢复、重复下载、批量下载和全部更新；检查清单中不存在 `tauri-v2.0.0` 等未发布 tag；确认 `latest.json`、`plugins.json`、安装包、签名和 SBOM 来自同一发布 tag。
 
 ## 0.2 beta8 候选工作包（持续补充，暂不发布）
+
+> Document Engine 状态覆盖：后续 beta 路线中关于 Document Engine 的增强项现已转为暂停中的条件性路线，不构成功能开发承诺。当前发布基线为 0.10.0；冻结范围、已知限制和恢复前置条件以 [document-engine-status.md](document-engine-status.md) 为准。
 
 beta8 纠正 beta7 将“直连”作为唯一传输路线的假设：GitHub Release 地址仍是唯一可信插件来源，但传输层必须能使用系统代理。当前仅在本地工作分支实施和验证，不提交 tag、不更新滚动通道、不创建 GitHub Release；后续需求继续并入本节后再统一冻结范围。
 

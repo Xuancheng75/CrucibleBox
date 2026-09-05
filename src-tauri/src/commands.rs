@@ -603,14 +603,22 @@ fn marketplace_agent(
     Ok(builder.build())
 }
 
-fn marketplace_catalog_urls(channel: &str) -> Vec<&'static str> {
+fn marketplace_catalog_urls(channel: &str) -> Vec<String> {
+    let base_version = env!("CARGO_PKG_VERSION")
+        .split_once('-')
+        .map(|(version, _)| version)
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let current_release = format!(
+        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v{}/plugins.json",
+        env!("CARGO_PKG_VERSION")
+    );
+    let stable_release = format!(
+        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v{base_version}/plugins.json"
+    );
     if channel == "beta" {
-        vec![
-            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-beta/plugins.json",
-            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json",
-        ]
+        vec![current_release, stable_release]
     } else {
-        vec!["https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json"]
+        vec![stable_release]
     }
 }
 
@@ -672,7 +680,7 @@ fn fetch_marketplace_catalog(
     if policy.use_native_transport() {
         for catalog_url in marketplace_catalog_urls(&channel) {
             match crate::marketplace_transport::get_text(
-                catalog_url,
+                &catalog_url,
                 MARKETPLACE_MAX_CATALOG_BYTES,
                 policy.use_system_proxy(),
             ) {
@@ -713,7 +721,7 @@ fn fetch_marketplace_catalog(
     for catalog_url in marketplace_catalog_urls(&channel) {
         for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
             let response = match agent
-                .get(catalog_url)
+                .get(&catalog_url)
                 .set("Accept", "application/json")
                 .set("Cache-Control", "no-cache")
                 .set(
@@ -1371,4 +1379,35 @@ pub fn db_status(
     }
     let db = lock(&db);
     db.status().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::marketplace_catalog_urls;
+
+    #[test]
+    fn stable_marketplace_catalog_uses_the_versioned_release() {
+        let urls = marketplace_catalog_urls("stable");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(
+            urls[0],
+            format!(
+                "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v{}/plugins.json",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert!(!urls[0].contains("tauri-stable"));
+    }
+
+    #[test]
+    fn beta_marketplace_catalog_never_uses_a_rolling_catalog() {
+        let urls = marketplace_catalog_urls("beta");
+        assert_eq!(urls.len(), 2);
+        assert!(urls.iter().all(
+            |url| url.contains("/releases/download/tauri-v") && url.ends_with("/plugins.json")
+        ));
+        assert!(urls
+            .iter()
+            .all(|url| !url.contains("tauri-beta") && !url.contains("tauri-stable")));
+    }
 }

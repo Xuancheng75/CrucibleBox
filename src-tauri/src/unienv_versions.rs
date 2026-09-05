@@ -55,7 +55,10 @@ fn http_get_text(url: &str) -> Result<String, String> {
         .build();
     let response = agent
         .get(url)
-        .set("User-Agent", "CrucibleBox/2.0.0-beta.2")
+        .set(
+            "User-Agent",
+            concat!("CrucibleBox/", env!("CARGO_PKG_VERSION")),
+        )
         .set("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| format!("GET {url}: {e}"))?;

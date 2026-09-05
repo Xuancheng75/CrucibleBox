@@ -1,6 +1,6 @@
 # 开发、构建与验证
 
-> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.0**。
+> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.1**。
 > 根目录 Electron 1.7.3 仅为冻结参照，不接受功能性改动。
 
 ## 环境
@@ -48,6 +48,8 @@ cargo test --workspace --locked
 
 ## Document Engine 0.10.0
 
+> 维护状态（2026-09-05）：Document Engine 0.10.0 功能冻结，暂停 OCR、公式、布局和格式转换增强；已知限制与条件性恢复路线见 [Document Engine 当前状态、能力边界与后续路线](document-engine-status.md)。
+
 - 统一流水线为 Layout Analysis → Native/OCR 文字来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式块与布局元数据 → Document IR v3。
 - 格式转换和 Chunk 切分只消费 IR，不得再次触发 OCR；PDF 物理拆分直接操作原始页并输出真实 PDF。
 - 文本进入 IR 前必须清除 XML 1.0 非法控制字符并修复字体编码断词；DOCX 输出前后均做 XML 解析检查，`invalidControlChars` 与 `invalidXmlChars` 必须为 0。
@@ -56,12 +58,19 @@ cargo test --workspace --locked
 - Hybrid Chunk 继续使用现有约 450–500 token 目标及既有 `target=512/min=180/max=800` 配置；本版本只修正 section/title、非法字符及公式/表格/图片元数据，不调整长度算法。
 - 默认模型随插件离线分发，`ppocrv4-mobile-zh-en` 作为兼容 profile 保留；新增模型或流水线字段时必须同步缓存版本、协议文档、插件目录和 trusted policy。
 
+## UniEnv 0.11.0
+
+> 维护状态（2026-09-05）：UniEnv 功能冻结，暂停新增工具链、版本源、安装策略和界面能力；架构、权限、安装事务、已知限制与条件性恢复路线见 [UniEnv 当前状态、能力边界与维护冻结说明](unienv-status.md)。
+
+- UniEnv 仍是宿主持有摘要的 trusted service，负责目录、官方版本发现、下载校验、解压、junction/版本切换、进程和任务管理。
+- 维护冻结不等于删除已有安装能力；仅安全、崩溃、数据损坏、构建阻断和严重回归可进入必要维护评估。
+
 ## 插件市场开发约定
 
-- 2.0.0 使用应用内置展示目录，并从 `tauri-stable/plugins.json` 获取权威下载地址和摘要；不接入 GitHub Marketplace，也不实现账户注册、登录或上传。
+- 2.0.1 使用应用内置展示目录，并从当前宿主对应的正式 Release（例如 `tauri-v2.0.1/plugins.json`）获取权威下载地址和摘要；不接入 GitHub Marketplace，也不实现账户注册、登录或上传。
 - 市场数据与安装执行分离：目录只描述插件，安装仍复用既有预检、权限确认、staging、journal 和原子替换流程。
 - 市场主页保持双栏布局，必须显示图标、名称、版本、发布者、简介及“获取/打开”状态；详情页展示权限和长描述。
-- 测试版从 `tauri-beta/plugins.json` 获取目录，正式版从 `tauri-stable/plugins.json` 获取目录；下载必须支持重试、重定向校验、临时文件和 SHA-256 校验。
+- 测试版优先从当前 beta Release（例如 `tauri-v2.0.1-beta.1/plugins.json`）获取目录并回退到对应稳定 Release；正式版从当前正式 Release（例如 `tauri-v2.0.1/plugins.json`）获取目录；下载必须支持重试、重定向校验、临时文件和 SHA-256 校验。
 - beta5 起市场在官方 GitHub Release 单一来源上支持手动刷新、目录进程内缓存、离线使用最近一次可用目录、未知官方插件动态展示、下载临时文件的 Range 断点续传、批量下载和全部更新；宿主会透传导入/预检失败的后端详情。下载仍不使用镜像源。
 - beta6 起 Windows 优先使用 WinHTTP 自动代理/WPAD 获取目录，BITS 优先处理新插件包下载；ureq 仍作为兼容回退。下载任务不再撑大市场卡片或左侧布局，批量操作使用普通优先级。
 - 在线获取仅接受 CrucibleBox 仓库的 HTTPS Release 地址，限制目录/包体大小并校验 SHA-256；不能直接执行仓库源代码。后续若引入第三方远程目录，必须再增加目录级签名和密钥轮换机制。

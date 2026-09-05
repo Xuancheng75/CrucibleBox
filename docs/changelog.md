@@ -3,6 +3,12 @@
 > 覆盖 tauri-v1.9.2（首个 Tauri 正式版）起的用户可感知变更。
 > Electron 1.7.x 线已冻结，历史见 `docs/electron-legacy-registry.md`。
 
+## 2.0.1（2026-09-05）
+
+- 修正插件市场目录定位：正式版按当前宿主版本读取固定的 `tauri-v2.0.1/plugins.json`，不再把 `tauri-stable` 滚动清单当作插件下载目录。
+- 保留插件下载的官方 Release 来源、重试、断点续传、大小与 SHA-256 校验；更新目录地址与宿主版本同步生成。
+- 完善 Document Engine 0.10.0 与 UniEnv 0.11.0 的架构、能力边界、已知限制和维护冻结说明；两者不增加功能性版本迭代。
+
 ## 2.0.0（2026-09-05）
 
 - 完成 Tauri 正式版版本对齐，稳定更新通道继续使用 `tauri-stable`，测试通道继续使用 `tauri-beta`。
