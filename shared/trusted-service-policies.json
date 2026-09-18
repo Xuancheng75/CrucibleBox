@@ -26,7 +26,7 @@
     "name": "archive-extractor",
     "version": "0.1.0",
     "permissions": ["trusted:archive-extractor", "dialog"],
-    "digest": "40b685224eb357742642ead1be6f71dde73f072fd67a3a8f452322f74f209931",
+    "digest": "cf85530ee34819175157401ae694f8534baa9fa6b2f1c1e6e026c29f40d67fee",
     "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   }
 }
