@@ -1,8 +1,8 @@
 {
   "name": "turntable",
   "version": "0.3.0",
-  "displayName": "转盘抽奖",
-  "description": "自定义转盘抽奖插件，支持添加、修改、删除选项和权重配置",
+  "displayName": "旧版转盘（兼容入口）",
+  "description": "旧选项保留入口；新的权重抽取和随机分组请使用“笔记与效率”。",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",

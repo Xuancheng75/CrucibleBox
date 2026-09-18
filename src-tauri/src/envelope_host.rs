@@ -6,7 +6,17 @@
 use crate::db::Db;
 use serde_json::{json, Value};
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+static SYSTEM_INFO_CACHE: OnceLock<Mutex<Option<(Instant, Value)>>> = OnceLock::new();
+
+pub fn configure_app(app: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(app);
+}
 
 /// 执行 host 方法。返回 Ok(result) 或 Err(message)。
 /// 前置：调用方已做 is_host_method_implemented + PermissionGuard 校验（backend_process.rs）。
@@ -109,9 +119,16 @@ pub fn host_dispatch(
             );
             Ok(Value::Null)
         }
-        // event.*：1.9.2-a 最小面——subscribe/unsubscribe 记录接受（no-op 通过），
-        // emit 由宿主事件总线后续（1.9.2-c）；当前返回 Null 保证不 NOT_ALLOWED。
-        "event.emit" | "event.subscribe" | "event.unsubscribe" => Ok(Value::Null),
+        "event.emit" => {
+            let event = str_param(params, "event")?;
+            let data = params.get("data").cloned().unwrap_or(Value::Null);
+            emitter(
+                "plugin:event",
+                json!({ "pluginId": plugin_id, "event": event, "data": data }),
+            );
+            Ok(Value::Null)
+        }
+        "event.subscribe" | "event.unsubscribe" => Ok(Value::Null),
         "trusted.invoke" => {
             let service = params
                 .get("service")
@@ -177,6 +194,9 @@ pub fn host_dispatch(
                     let db = db.lock().unwrap_or_else(|p| p.into_inner());
                     crate::document_engine_service::dispatch(&db, plugin_id, &operation, payload)
                 }
+                "archive-extractor" => {
+                    crate::archive_service::dispatch(plugin_id, &operation, payload)
+                }
                 _ => Err(format!("unknown trusted service: {service}")),
             }
         }
@@ -193,6 +213,20 @@ pub fn host_dispatch(
             );
             Ok(json!({ "shown": true }))
         }
+        "dialog.open" => {
+            let app = APP_HANDLE
+                .get()
+                .ok_or_else(|| "application handle is not ready".to_string())?;
+            let kind = str_param(params, "type")?;
+            let selected = match kind.as_str() {
+                "file" => app.dialog().file().blocking_pick_file(),
+                "folder" => app.dialog().file().blocking_pick_folder(),
+                _ => return Err("dialog type must be file or folder".into()),
+            };
+            Ok(selected
+                .map(|path| Value::String(path.to_string()))
+                .unwrap_or(Value::Null))
+        }
         "network.fetch" => {
             let url = str_param(params, "url")?;
             let opts = params
@@ -205,11 +239,7 @@ pub fn host_dispatch(
                 .and_then(Value::as_str)
                 .unwrap_or("GET")
                 .to_uppercase();
-            let timeout = std::time::Duration::from_secs(30);
-            let agent = ureq::AgentBuilder::new()
-                .timeout_connect(timeout)
-                .timeout_read(timeout)
-                .build();
+            let agent = crate::network_policy::current().agent(30, 30)?;
             let mut req = match method.as_str() {
                 "GET" => agent.get(&url),
                 "POST" => agent.post(&url),
@@ -266,11 +296,33 @@ pub fn host_dispatch(
         }
         "file.write" => {
             let path = str_param(params, "path")?;
-            let data = params.get("data").and_then(Value::as_str).unwrap_or("");
+            let encoded = str_param(params, "base64")?;
+            let data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                .map_err(|error| format!("invalid base64 payload: {error}"))?;
             if let Some(parent) = std::path::Path::new(&path).parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            std::fs::write(&path, data.as_bytes()).map_err(|e| e.to_string())?;
+            std::fs::write(&path, data).map_err(|e| e.to_string())?;
+            Ok(Value::Null)
+        }
+        "shortcut.register" => {
+            let keys = str_param(params, "keys")?;
+            APP_HANDLE
+                .get()
+                .ok_or_else(|| "application handle is not ready".to_string())?
+                .global_shortcut()
+                .register(keys.as_str())
+                .map_err(|error| format!("shortcut register failed: {error}"))?;
+            Ok(Value::Null)
+        }
+        "shortcut.unregister" => {
+            let keys = str_param(params, "keys")?;
+            APP_HANDLE
+                .get()
+                .ok_or_else(|| "application handle is not ready".to_string())?
+                .global_shortcut()
+                .unregister(keys.as_str())
+                .map_err(|error| format!("shortcut unregister failed: {error}"))?;
             Ok(Value::Null)
         }
         "clipboard.read" => {
@@ -291,6 +343,15 @@ pub fn host_dispatch(
             Ok(json!({ "ok": true }))
         }
         "system.info" => {
+            let cache = SYSTEM_INFO_CACHE.get_or_init(|| Mutex::new(None));
+            if let Some((_at, value)) = cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .filter(|(at, _)| at.elapsed() < Duration::from_secs(2))
+            {
+                return Ok(value.clone());
+            }
             use sysinfo::System;
             let mut sys = System::new_all();
             sys.refresh_all();
@@ -320,7 +381,7 @@ pub fn host_dispatch(
                 let mac = data.mac_address().to_string();
                 networks.push(json!({ "name": name, "ip": ip, "mac": mac }));
             }
-            Ok(json!({
+            let value = json!({
                 "os": {
                     "name": System::name().unwrap_or_default(),
                     "version": System::os_version().unwrap_or_default(),
@@ -343,7 +404,12 @@ pub fn host_dispatch(
                 },
                 "disks": disks,
                 "network": networks
-            }))
+            });
+            *cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some((Instant::now(), value.clone()));
+            Ok(value)
         }
         _ => Err("host method not implemented".into()),
     }

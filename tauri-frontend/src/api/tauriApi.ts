@@ -105,13 +105,13 @@ export interface AppUpdateMetadata {
   date?: string
   body?: string
   rawJson: Record<string, unknown>
+  networkRoute: string
 }
 
 export interface MarketplaceCatalogPluginDto {
   id: string
   version: string
   artifact: string
-  sha256: string
   size: number
   url: string
   displayName?: string
@@ -129,6 +129,14 @@ export interface MarketplaceCatalogResponse {
   source: string
   stale: boolean
   fetchedAt: number
+  networkRoute: string
+}
+
+export interface NetworkDiagnostic {
+  mode: string
+  route: string
+  fallbackReason?: string
+  stages: Array<{ name: string; success: boolean; elapsedMs: number; message: string }>
 }
 
 export interface InstallSource {
@@ -145,6 +153,9 @@ export interface PluginInstallPreview {
   addedPermissions: string[]
   removedPermissions: string[]
   legacyFullTrust: boolean
+  trustLevel?: 'standard' | 'full'
+  fullTrust?: boolean
+  capabilities?: Record<string, boolean | Record<string, unknown>>
 }
 
 export interface PluginInstallPreviewResponse {
@@ -183,7 +194,17 @@ export interface MarketplaceProgressEventPayload {
   artifact: string
   downloaded: number
   total: number
-  stage: 'cached' | 'downloading'
+  stage: 'cached' | 'downloading' | 'downloaded'
+}
+
+export interface HostTaskEventPayload {
+  id: string
+  title?: string
+  detail?: string
+  source: 'host' | 'plugin' | 'marketplace' | 'update'
+  status: 'queued' | 'running' | 'paused' | 'waiting-user' | 'completed' | 'failed' | 'cancelled'
+  progress?: number
+  error?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +217,10 @@ export const tauriApi = {
     set: (key: string, value: string): Promise<boolean> =>
       invoke<boolean>('settings_set', { key, value }),
     getAll: (): Promise<[string, string][]> => invoke<[string, string][]>('settings_get_all')
+  },
+
+  network: {
+    diagnose: (): Promise<NetworkDiagnostic> => invoke<NetworkDiagnostic>('network_diagnose')
   },
 
   app: {
@@ -220,9 +245,12 @@ export const tauriApi = {
     marketplaceDownload: (
       id: string,
       channel?: 'stable' | 'beta',
-      priority: 'foreground' | 'normal' = 'foreground'
+      priority: 'foreground' | 'normal' = 'foreground',
+      taskId?: string
     ): Promise<string> =>
-      invoke<string>('marketplace_download_plugin', { id, channel, priority }),
+      invoke<string>('marketplace_download_plugin', { id, channel, priority, taskId }),
+    marketplaceCancel: (taskId: string): Promise<boolean> =>
+      invoke<boolean>('marketplace_cancel_task', { taskId }),
     list: async (): Promise<PluginMeta[]> => {
       const dtos = await invoke<PluginMetaDto[]>('plugin_list')
       return dtos.map(toPluginMeta)
@@ -365,7 +393,10 @@ export const tauriApi = {
     ): Promise<UnlistenFn> =>
       listen<MarketplaceProgressEventPayload>('marketplace:progress', (event) =>
         callback(event.payload)
-      )
+      ),
+
+    onHostTask: (callback: (payload: HostTaskEventPayload) => void): Promise<UnlistenFn> =>
+      listen<HostTaskEventPayload>('host:task', (event) => callback(event.payload))
   }
 }
 

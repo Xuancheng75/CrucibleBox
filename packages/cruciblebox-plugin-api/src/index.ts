@@ -94,6 +94,11 @@ export interface PluginContext {
     execute(sql: string, params?: unknown[]): Promise<void>
   }
   storage: PluginStorageAPI
+  pluginData: PluginStorageAPI
+  capabilities: {
+    events: Pick<PluginHostAPI, 'emitEvent' | 'onEvent'>
+    system: Pick<PluginHostAPI, 'clipboard' | 'getSystemInfo' | 'registerShortcut'>
+  }
   api: PluginHostAPI
 }
 

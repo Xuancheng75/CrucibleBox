@@ -2260,11 +2260,6 @@ fn install_remote_model(cfg: &DocumentEngineConfig, request: &Value, update: boo
         Ok(None) => return err("invalid-value", "missing field: url".into()),
         Err(error) => return error,
     };
-    let expected = match str_field(request, "sha256", 128) {
-        Ok(Some(value)) => value,
-        Ok(None) => return err("invalid-value", "远程模型必须提供 sha256".into()),
-        Err(error) => return error,
-    };
     let name = match str_field(request, "name", 256) {
         Ok(Some(value)) => value.to_string(),
         Ok(None) => url.rsplit('/').next().unwrap_or("model").to_string(),
@@ -2274,7 +2269,7 @@ fn install_remote_model(cfg: &DocumentEngineConfig, request: &Value, update: boo
         PathBuf::from(&cfg.model_directory).as_path(),
         url,
         &name,
-        expected,
+        "",
         update,
     ) {
         Ok(target) => json!({

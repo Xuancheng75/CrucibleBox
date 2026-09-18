@@ -14,6 +14,7 @@ use crate::db::Db;
 use crate::unienv_install;
 use crate::unienv_task::{TaskContext, TaskManager, INSTALLATION_RESOURCE};
 use serde_json::{json, Value};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -49,6 +50,8 @@ pub struct ComboPack {
 pub struct UniEnvConfig {
     pub install_root: PathBuf,
     pub download_mirror: String,
+    /// 镜像不可用时是否允许转到官方源；默认关闭，避免“选择镜像却仍从官方下载”。
+    pub mirror_fallback: bool,
     pub custom_combos: Vec<ComboPack>,
     /// 联网检查语言新版本（默认开；不可达时静默回退内置目录）
     pub online_versions: bool,
@@ -337,7 +340,7 @@ fn load_config(db: &Db, plugin_id: &str) -> UniEnvConfig {
         .and_then(Value::as_str)
         .unwrap_or("direct");
     let download_mirror = match mirror {
-        "huawei" | "aliyun" | "tuna" => mirror.to_string(),
+        "huawei" | "aliyun" | "tuna" | "npmmirror" => mirror.to_string(),
         _ => "direct".to_string(),
     };
     let install_root = parsed
@@ -357,9 +360,15 @@ fn load_config(db: &Db, plugin_id: &str) -> UniEnvConfig {
         .and_then(Value::as_str)
         .map(|v| v != "off")
         .unwrap_or(true);
+    let mirror_fallback = parsed
+        .get("mirrorFallback")
+        .and_then(Value::as_str)
+        .map(|v| v == "on")
+        .unwrap_or(false);
     UniEnvConfig {
         install_root,
         download_mirror,
+        mirror_fallback,
         custom_combos,
         online_versions,
         auto_configure_environment,
@@ -642,21 +651,32 @@ fn progress_adapter<'a>(
     }
 }
 
-fn run_install_executor(
-    ctx: &TaskContext,
+struct InstallRequest {
     install_root: String,
     mirror: String,
+    mirror_fallback: bool,
     online_versions: bool,
     auto_configure_environment: bool,
     tool: String,
     version: String,
-) -> Result<Value, String> {
+}
+
+fn run_install_executor(ctx: &TaskContext, request: InstallRequest) -> Result<Value, String> {
+    let InstallRequest {
+        install_root,
+        mirror,
+        mirror_fallback,
+        online_versions,
+        auto_configure_environment,
+        tool,
+        version,
+    } = request;
     ctx.update_progress(
         "downloading",
         0,
         &format!("准备安装 {} {version}", display_name(&tool)),
     );
-    let plan = install_plan(&mirror, online_versions, &tool, &version)?;
+    let plan = install_plan(&mirror, mirror_fallback, online_versions, &tool, &version)?;
     unienv_install::install_with_plan(
         Path::new(&install_root),
         &tool,
@@ -678,23 +698,23 @@ fn run_install_executor(
     }))
 }
 
-/// 构建安装计划：内置版本走静态目录；在线版本走上游元数据（SHA-256 权威）
+/// 构建安装计划：内置版本走静态目录；在线版本走上游发布元数据。
 fn install_plan(
     mirror: &str,
+    mirror_fallback: bool,
     online_versions: bool,
     tool: &str,
     version: &str,
 ) -> Result<unienv_install::InstallPlan, String> {
-    // The extended runtimes are online-only: their release metadata carries
-    // the authoritative SHA-256 digest and must be resolved at install time.
-    // Existing static tools retain the offline, compile-time pinned catalog.
+    // 扩展运行时只提供在线版本，因此安装时解析发布元数据。
     let online_only = matches!(tool, "ruby" | "zig" | "deno" | "bun");
     if is_supported_version(tool, version) && !online_only {
         return Ok(unienv_install::InstallPlan {
-            urls: crate::unienv_catalog::download_urls(tool, version, mirror)?,
-            sha256: crate::unienv_catalog::artifact(tool, version)?
-                .sha256
-                .to_string(),
+            urls: select_download_routes(
+                crate::unienv_catalog::download_urls(tool, version, mirror)?,
+                mirror,
+                mirror_fallback,
+            )?,
             filename: crate::unienv_catalog::artifact(tool, version)?
                 .filename
                 .to_string(),
@@ -709,8 +729,7 @@ fn install_plan(
             .unwrap_or("artifact.bin")
             .to_string();
         return Ok(unienv_install::InstallPlan {
-            urls: artifact.urls,
-            sha256: artifact.sha256,
+            urls: select_download_routes(artifact.urls, mirror, mirror_fallback)?,
             filename,
         });
     }
@@ -719,28 +738,77 @@ fn install_plan(
     ))
 }
 
-fn run_combo_executor(
-    ctx: &TaskContext,
+fn select_download_routes(
+    urls: Vec<(String, String)>,
+    mirror: &str,
+    allow_official_fallback: bool,
+) -> Result<Vec<(String, String)>, String> {
+    if allow_official_fallback {
+        return Ok(urls);
+    }
+    let marker = match mirror {
+        "direct" => "官方",
+        "huawei" => "华为",
+        "aliyun" => "阿里",
+        "tuna" => "TUNA",
+        "npmmirror" => "npmmirror",
+        _ => "官方",
+    };
+    let selected = urls
+        .into_iter()
+        .filter(|(_, label)| {
+            let label = label.to_ascii_lowercase();
+            label.contains(&marker.to_ascii_lowercase())
+                || (mirror == "direct" && label.contains("(direct)"))
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        Err(format!(
+            "所选下载源 {mirror} 不提供 {tool_hint}，且官方源回退已关闭",
+            tool_hint = "当前工具"
+        ))
+    } else {
+        Ok(selected)
+    }
+}
+
+struct ComboInstallRequest {
     install_root: String,
     mirror: String,
+    mirror_fallback: bool,
     combo_id: String,
     combo_name: String,
     items: Vec<(String, String)>,
     auto_configure_environment: bool,
-) -> Result<Value, String> {
+}
+
+fn run_combo_executor(ctx: &TaskContext, request: ComboInstallRequest) -> Result<Value, String> {
+    let ComboInstallRequest {
+        install_root,
+        mirror,
+        mirror_fallback,
+        combo_id,
+        combo_name,
+        items,
+        auto_configure_environment,
+    } = request;
     let total = items.len();
     let mut results: Vec<Value> = Vec::new();
     for (index, (tool, version)) in items.iter().enumerate() {
         ctx.check_cancelled()?;
         let adapter = progress_adapter(ctx, Some((combo_name.clone(), index, total)));
-        match unienv_install::install_tool(
-            Path::new(&install_root),
-            tool,
-            version,
-            &mirror,
-            &adapter,
-            ctx.cancel_flag(),
-        ) {
+        let install =
+            install_plan(&mirror, mirror_fallback, false, tool, version).and_then(|plan| {
+                unienv_install::install_with_plan(
+                    Path::new(&install_root),
+                    tool,
+                    version,
+                    &plan,
+                    &adapter,
+                    ctx.cancel_flag(),
+                )
+            });
+        match install {
             Ok(()) => results.push(json!({
                 "tool": display_name(tool),
                 "success": true,
@@ -779,6 +847,93 @@ fn run_combo_executor(
             format!("组合包“{combo_name}”部分安装失败")
         },
     }))
+}
+
+fn run_offline_executor(
+    ctx: &TaskContext,
+    install_root: String,
+    tool: String,
+    version: String,
+    archive_path: String,
+    auto_configure_environment: bool,
+) -> Result<Value, String> {
+    unienv_install::install_offline_archive(
+        Path::new(&install_root),
+        &tool,
+        &version,
+        Path::new(&archive_path),
+        &progress_adapter(ctx, None),
+        ctx.cancel_flag(),
+    )?;
+    if auto_configure_environment {
+        unienv_install::configure_environment(Path::new(&install_root))?;
+    }
+    Ok(json!({
+        "kind": "install",
+        "tool": tool,
+        "version": version,
+        "message": "离线安装完成"
+    }))
+}
+
+fn installed_version_entries(install_root: &Path, tool: &str) -> Vec<Value> {
+    let root = install_root.join(tool);
+    let current_target = fs::canonicalize(root.join("current")).ok();
+    let mut entries = fs::read_dir(&root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "current"
+                || name.starts_with('.')
+                || name.contains(".next-")
+                || name.contains(".previous-")
+            {
+                return None;
+            }
+            let path = entry.path();
+            if !path.is_dir() || unienv_install::is_reparse_point(&path) {
+                return None;
+            }
+            let active = current_target
+                .as_ref()
+                .and_then(|target| fs::canonicalize(&path).ok().map(|value| value == *target))
+                .unwrap_or(false);
+            Some(json!({ "version": name, "active": active, "path": path }))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        let a = left["version"].as_str().unwrap_or_default();
+        let b = right["version"].as_str().unwrap_or_default();
+        crate::unienv_versions::compare_version_desc(a, b)
+    });
+    entries
+}
+
+fn environment_report(cfg: &UniEnvConfig) -> Value {
+    let tools = supported_versions_raw()
+        .as_object()
+        .into_iter()
+        .flat_map(|value| value.keys())
+        .map(|tool| {
+            let versions = installed_version_entries(&cfg.install_root, tool);
+            let active = versions.iter().find(|entry| entry["active"] == true);
+            json!({
+                "tool": tool,
+                "installedVersions": versions,
+                "activeVersion": active.and_then(|entry| entry["version"].as_str()),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "installRoot": cfg.install_root,
+        "downloadMirror": cfg.download_mirror,
+        "officialFallback": cfg.mirror_fallback,
+        "onlineVersions": cfg.online_versions,
+        "tools": tools,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -860,6 +1015,157 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
             json!(combos)
         }
+        "listInstalledVersions" => {
+            let tool = match tool_field(request) {
+                Ok(t) => t,
+                Err(e) => return e,
+            };
+            let cfg = load_config(db, plugin_id);
+            json!(installed_version_entries(&cfg.install_root, &tool))
+        }
+        "environmentReport" => {
+            let cfg = load_config(db, plugin_id);
+            environment_report(&cfg)
+        }
+        "openTerminal" => {
+            let cfg = load_config(db, plugin_id);
+            let directory = request
+                .get("directory")
+                .and_then(Value::as_str)
+                .map(Path::new);
+            match unienv_install::open_environment_terminal(&cfg.install_root, directory) {
+                Ok(()) => json!({ "success": true }),
+                Err(message) => err("terminal-failed", message),
+            }
+        }
+        "projectDiff" => {
+            let cfg = load_config(db, plugin_id);
+            let requested = request
+                .get("tools")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let rows = requested
+                .into_iter()
+                .filter_map(|(tool, version)| {
+                    let version = version.as_str()?.to_string();
+                    if !is_supported_tool(&tool) {
+                        return Some(
+                            json!({ "tool": tool, "version": version, "status": "unsupported" }),
+                        );
+                    }
+                    let installed = installed_version_entries(&cfg.install_root, &tool);
+                    let matching = installed.iter().find(|entry| entry["version"] == version);
+                    let status = match matching {
+                        Some(entry) if entry["active"] == true => "active",
+                        Some(_) => "installed",
+                        None => "missing",
+                    };
+                    Some(json!({ "tool": tool, "version": version, "status": status }))
+                })
+                .collect::<Vec<_>>();
+            json!({ "items": rows })
+        }
+        "installProject" => {
+            if let Err(e) = preflight_mutation(db, plugin_id) {
+                return e;
+            }
+            let cfg = load_config(db, plugin_id);
+            let requested = request
+                .get("tools")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let mut items = Vec::new();
+            for (tool, version) in requested {
+                let Some(version) = version.as_str() else {
+                    continue;
+                };
+                if !is_supported_tool(&tool) {
+                    return err("unknown-tool", format!("未知工具: {tool}"));
+                }
+                if !is_supported_version(&tool, version) {
+                    return err(
+                        "unknown-version",
+                        format!("项目清单中的版本不在可安装目录: {tool} {version}"),
+                    );
+                }
+                items.push((tool, version.to_string()));
+            }
+            if items.is_empty() {
+                return err("invalid-value", "项目工具清单为空".into());
+            }
+            if let Err(e) = try_begin_inline("项目环境安装") {
+                return e;
+            }
+            let install_root = cfg.install_root.to_string_lossy().into_owned();
+            let mirror = cfg.download_mirror.clone();
+            let mirror_fallback = cfg.mirror_fallback;
+            let auto = cfg.auto_configure_environment;
+            let start = tasks().start(
+                INSTALLATION_RESOURCE,
+                Box::new(move |ctx| {
+                    run_combo_executor(
+                        ctx,
+                        ComboInstallRequest {
+                            install_root,
+                            mirror,
+                            mirror_fallback,
+                            combo_id: "project".into(),
+                            combo_name: "项目环境".into(),
+                            items,
+                            auto_configure_environment: auto,
+                        },
+                    )
+                }),
+            );
+            end_inline();
+            match start {
+                Ok(task_id) => json!({ "success": true, "taskId": task_id }),
+                Err(conflict) => err("task-conflict", conflict),
+            }
+        }
+        "installOffline" => {
+            if let Err(e) = preflight_mutation(db, plugin_id) {
+                return e;
+            }
+            let tool = match tool_field(request) {
+                Ok(t) => t,
+                Err(e) => return e,
+            };
+            let version = match str_field(request, "version", 32) {
+                Ok(Some(value)) => value.to_string(),
+                _ => return err("invalid-value", "缺少离线版本".into()),
+            };
+            let archive_path = match str_field(request, "path", 1024) {
+                Ok(Some(value)) => value.to_string(),
+                _ => return err("invalid-value", "缺少离线包路径".into()),
+            };
+            let cfg = load_config(db, plugin_id);
+            if let Err(message) = safe_join_version_dir_dynamic(&cfg.install_root, &tool, &version)
+            {
+                return err("invalid-path", message);
+            }
+            if !Path::new(&archive_path).is_file() {
+                return err("invalid-path", "离线包文件不存在".into());
+            }
+            if let Err(e) = try_begin_inline("离线安装") {
+                return e;
+            }
+            let install_root = cfg.install_root.to_string_lossy().into_owned();
+            let auto = cfg.auto_configure_environment;
+            let start = tasks().start(
+                INSTALLATION_RESOURCE,
+                Box::new(move |ctx| {
+                    run_offline_executor(ctx, install_root, tool, version, archive_path, auto)
+                }),
+            );
+            end_inline();
+            match start {
+                Ok(task_id) => json!({ "success": true, "taskId": task_id }),
+                Err(conflict) => err("task-conflict", conflict),
+            }
+        }
         "detect" => {
             if let Err(e) = require_windows() {
                 return e;
@@ -898,18 +1204,22 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
             let install_root = cfg.install_root.to_string_lossy().into_owned();
             let mirror = cfg.download_mirror.clone();
+            let mirror_fallback = cfg.mirror_fallback;
             let online = cfg.online_versions && crate::unienv_versions::provider_supports(&tool);
             let start = tasks().start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
                     run_install_executor(
                         ctx,
-                        install_root,
-                        mirror,
-                        online,
-                        cfg.auto_configure_environment,
-                        tool,
-                        version,
+                        InstallRequest {
+                            install_root,
+                            mirror,
+                            mirror_fallback,
+                            online_versions: online,
+                            auto_configure_environment: cfg.auto_configure_environment,
+                            tool,
+                            version,
+                        },
                     )
                 }),
             );
@@ -945,17 +1255,21 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
             let install_root = cfg.install_root.to_string_lossy().into_owned();
             let mirror = cfg.download_mirror.clone();
+            let mirror_fallback = cfg.mirror_fallback;
             let start = tasks().start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
                     run_combo_executor(
                         ctx,
-                        install_root,
-                        mirror,
-                        combo_id,
-                        combo_name,
-                        items,
-                        cfg.auto_configure_environment,
+                        ComboInstallRequest {
+                            install_root,
+                            mirror,
+                            mirror_fallback,
+                            combo_id,
+                            combo_name,
+                            items,
+                            auto_configure_environment: cfg.auto_configure_environment,
+                        },
                     )
                 }),
             );
@@ -1142,40 +1456,19 @@ fn find_combo(cfg: &UniEnvConfig, combo_id: &str) -> Option<(String, Vec<(String
     })
 }
 
-/// 检测某工具是否已安装（语义逐项对齐冻结线 tools/*.ts detect）：
-/// 1) 全局命令探测（PATH 上已有同名工具即视为已安装，path=''）
-/// 2) junction 下工具 exe 运行 --version/-version 提取真实版本号
+/// 检测某工具是否已安装：
+/// 1) 优先探测开发环境管理的 current，确保切换结果不会被系统 PATH 覆盖
+/// 2) current 不存在时再探测全局命令
 /// 3) 均失败 → 未安装
 fn detect_tool(install_root: &str, tool: &str) -> Value {
-    // 1) 全局 PATH 探测
-    let global: Option<(&str, Vec<&str>, bool)> = match tool {
-        "python" => Some(("python.exe", vec!["--version"], false)),
-        "node" => Some(("node.exe", vec!["--version"], false)),
-        "git" => Some(("git.exe", vec!["--version"], false)),
-        "go" => Some(("go.exe", vec!["version"], false)),
-        "java" => Some(("java.exe", vec!["-version"], true)),
-        "rust" => Some(("rustc.exe", vec!["--version"], false)),
-        "php" => Some(("php.exe", vec!["--version"], false)),
-        "ruby" => Some(("ruby.exe", vec!["--version"], false)),
-        "zig" => Some(("zig.exe", vec!["version"], false)),
-        "deno" => Some(("deno.exe", vec!["--version"], false)),
-        "bun" => Some(("bun.exe", vec!["--version"], false)),
-        _ => None,
-    };
-    if let Some((exe, args, from_stderr)) = global {
-        if let Some(v) = unienv_install::probe_tool_version(Path::new(exe), &args, from_stderr) {
-            return json!({ "installed": true, "version": v, "path": "" });
-        }
-    }
-
-    // 2) 安装根 junction 下探测（各工具运行时布局见 runtime_subdir）
+    // 1) 安装根 current 下探测。
     let current = PathBuf::from(install_root).join(tool).join("current");
     let rel: Option<(&str, Vec<&str>, bool)> = match tool {
         "python" => Some(("python.exe", vec!["--version"], false)),
-        "node" => Some(("node.exe", vec!["--version"], false)),
+        "node" => Some(("runtime\\node.exe", vec!["--version"], false)),
         "git" => Some(("bin\\git.exe", vec!["--version"], false)),
-        "go" => Some(("bin\\go.exe", vec!["version"], false)),
-        "java" => Some(("bin\\java.exe", vec!["-version"], true)),
+        "go" => Some(("go\\bin\\go.exe", vec!["version"], false)),
+        "java" => Some(("jdk\\bin\\java.exe", vec!["-version"], true)),
         // rustup：cargo home 内的 rustc/cargo 代理
         "rust" => Some(("cargo\\bin\\rustc.exe", vec!["--version"], false)),
         // php zip 解压根
@@ -1196,6 +1489,29 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
                     "path": current.to_string_lossy(),
                 });
             }
+        }
+    }
+
+    // 2) 全局 PATH 回退。
+    let global: Option<(&str, Vec<&str>, bool)> = match tool {
+        "python" => Some(("python.exe", vec!["--version"], false)),
+        "node" => Some(("node.exe", vec!["--version"], false)),
+        "git" => Some(("git.exe", vec!["--version"], false)),
+        "go" => Some(("go.exe", vec!["version"], false)),
+        "java" => Some(("java.exe", vec!["-version"], true)),
+        "rust" => Some(("rustc.exe", vec!["--version"], false)),
+        "php" => Some(("php.exe", vec!["--version"], false)),
+        "ruby" => Some(("ruby.exe", vec!["--version"], false)),
+        "zig" => Some(("zig.exe", vec!["version"], false)),
+        "deno" => Some(("deno.exe", vec!["--version"], false)),
+        "bun" => Some(("bun.exe", vec!["--version"], false)),
+        _ => None,
+    };
+    if let Some((exe, args, from_stderr)) = global {
+        if let Some(version) =
+            unienv_install::probe_tool_version(Path::new(exe), &args, from_stderr)
+        {
+            return json!({ "installed": true, "version": version, "path": "" });
         }
     }
     json!({ "installed": false })

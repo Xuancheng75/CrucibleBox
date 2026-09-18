@@ -469,6 +469,13 @@ pub fn trusted_allowlist(permissions: &[String]) -> Option<Vec<String>> {
             "plugin.json".to_string(),
         ]);
     }
+    if permissions.iter().any(|p| p == "trusted:archive-extractor") {
+        return Some(vec![
+            "dist/main.js".to_string(),
+            "dist/renderer.js".to_string(),
+            "plugin.json".to_string(),
+        ]);
+    }
     None
 }
 
@@ -1146,6 +1153,14 @@ mod tests {
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt".into()
+            ])
+        );
+        assert_eq!(
+            trusted_allowlist(&["trusted:archive-extractor".into()]),
+            Some(vec![
+                "dist/main.js".into(),
+                "dist/renderer.js".into(),
+                "plugin.json".into()
             ])
         );
         assert_eq!(trusted_allowlist(&["storage:read".into()]), None);

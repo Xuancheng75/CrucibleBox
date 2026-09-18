@@ -152,15 +152,15 @@ const displayPath = (path: string): string => {
 }
 
 const NAV_ITEMS = [
-  { key: 'overview', label: '概览', icon: '📄' },
-  { key: 'ocr', label: 'OCR', icon: '🔍' },
-  { key: 'parse', label: 'PDF 解析', icon: '📑' },
-  { key: 'convert', label: '转换', icon: '🔄' },
-  { key: 'chunk', label: '切分', icon: '✂️' },
-  { key: 'batch', label: '批量处理', icon: '📚' },
-  { key: 'jobs', label: '任务', icon: '📋' },
-  { key: 'history', label: '历史', icon: '🕘' },
-  { key: 'models', label: '模型', icon: '🧠' }
+  { key: 'overview', label: '文件工作台', icon: '📄' },
+  { key: 'pdf-tools', label: 'PDF 工具', icon: '📑' },
+  { key: 'convert', label: '格式转换', icon: '🔄' },
+  { key: 'ocr', label: '文字识别', icon: '🔍' },
+  { key: 'extract', label: '内容提取', icon: '🧾' },
+  { key: 'rag', label: '知识库预处理', icon: '🧩' },
+  { key: 'workflows', label: '自动化流程', icon: '⚙️' },
+  { key: 'quality', label: '任务与质量', icon: '📋' },
+  { key: 'models', label: '模型与缓存', icon: '🧠' }
 ]
 
 interface RecentTask {
@@ -351,7 +351,6 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [modelSource, setModelSource] = useState('')
   const [modelName, setModelName] = useState('')
   const [modelUrl, setModelUrl] = useState('')
-  const [modelSha256, setModelSha256] = useState('')
   const [modelsBusy, setModelsBusy] = useState(false)
   const mounted = useRef(false)
 
@@ -921,7 +920,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       try {
         await installModelBundle(send, modelId)
         await refreshModels()
-        api.notify('模型安装完成', 'OCR 模型已通过 SHA-256 校验并启用')
+        api.notify('模型安装完成', 'OCR 模型已经启用')
       } catch (error) {
         setModelsError(error instanceof Error ? error.message : String(error))
       } finally {
@@ -933,16 +932,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
 
   const installRemote = useCallback(async () => {
     const url = modelUrl.trim()
-    const sha256 = modelSha256.trim()
-    if (!url || !sha256) {
-      api.notify('请输入 HTTPS 模型地址和 SHA-256')
+    if (!url) {
+      api.notify('请输入 HTTPS 模型地址')
       return
     }
     setModelsBusy(true)
     try {
-      await installRemoteModel(send, url, sha256, modelName.trim() || undefined)
+      await installRemoteModel(send, url, modelName.trim() || undefined)
       setModelUrl('')
-      setModelSha256('')
       setModelName('')
       await refreshModels()
     } catch (error) {
@@ -950,19 +947,18 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setModelsBusy(false)
     }
-  }, [api, modelName, modelSha256, modelUrl, refreshModels, send])
+  }, [api, modelName, modelUrl, refreshModels, send])
 
   const updateRemote = useCallback(
     async (name: string) => {
       const url = modelUrl.trim()
-      const sha256 = modelSha256.trim()
-      if (!url || !sha256) {
-        api.notify('请输入更新地址和 SHA-256')
+      if (!url) {
+        api.notify('请输入更新地址')
         return
       }
       setModelsBusy(true)
       try {
-        await updateRemoteModel(send, url, sha256, name)
+        await updateRemoteModel(send, url, name)
         await refreshModels()
       } catch (error) {
         setModelsError(error instanceof Error ? error.message : String(error))
@@ -970,7 +966,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         setModelsBusy(false)
       }
     },
-    [api, modelSha256, modelUrl, refreshModels, send]
+    [api, modelUrl, refreshModels, send]
   )
 
   const deleteModel = useCallback(
@@ -1132,7 +1128,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     <div>
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ margin: '0 0 4px', fontSize: FONT.sizeTitle, fontWeight: 600 }}>
-          📄 Document Engine
+          📄 文档与知识库
         </h2>
         <p style={{ margin: 0, color: COLORS.textSecondary, fontSize: FONT.sizeLg }}>
           统一本地文档处理基础设施
@@ -1585,7 +1581,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             value={displayPath(parseOutputDirectory)}
             readOnly
             title={parseOutputDirectory || undefined}
-            placeholder="解析结果目录（默认使用 Document Engine/output）"
+            placeholder="解析结果目录（默认使用文档与知识库/output）"
             style={{
               flex: 1,
               minWidth: 0,
@@ -1892,7 +1888,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             value={displayPath(chunkOutputDirectory)}
             readOnly
             title={chunkOutputDirectory || undefined}
-            placeholder="默认使用 Document Engine/output"
+            placeholder="默认使用文档与知识库/output"
             style={{
               flex: 1,
               minWidth: 0,
@@ -2050,7 +2046,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           value={displayPath(convertOutputDirectory)}
           readOnly
           title={convertOutputDirectory || undefined}
-          placeholder="转换结果目录（默认使用 Document Engine/output）"
+          placeholder="转换结果目录（默认使用文档与知识库/output）"
           style={{
             flex: 1,
             minWidth: 0,
@@ -2466,7 +2462,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             首次使用推荐 PP-OCRv6-small-det + 通用 PP-OCRv5-mobile-rec 轻量方案；公式区域按需进入独立 Formula Recognizer。
           </div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-            下载地址已固定并逐文件校验 SHA-256，安装完成后即可用于本地 OCR。
+            选择推荐方案后即可下载并用于本地 OCR。
           </div>
           {modelCatalog.length === 0 ? (
             <div
@@ -2516,7 +2512,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                           ? `缺少 ${bundle.missing.length} 个文件`
                           : entry.offline
                             ? '插件内置，可离线安装'
-                            : '按官方地址下载并校验 SHA-256'}
+                            : '按官方地址下载并安装'}
                     </div>
                   </div>
                   <button
@@ -2606,18 +2602,6 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
               padding: '8px 10px',
               border: `1px solid ${COLORS.border}`,
               borderRadius: 6
-            }}
-          />
-          <input
-            value={modelSha256}
-            onChange={(event) => setModelSha256(event.target.value)}
-            placeholder="SHA-256"
-            style={{
-              flex: 1,
-              padding: '8px 10px',
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 6,
-              fontFamily: 'monospace'
             }}
           />
           <button
@@ -2787,14 +2771,19 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       case 'ocr':
         return renderOcr()
       case 'parse':
+      case 'extract':
         return renderParse()
       case 'convert':
         return renderConvert()
       case 'chunk':
+      case 'pdf-tools':
+      case 'rag':
         return renderChunk()
       case 'batch':
+      case 'workflows':
         return renderBatch()
       case 'jobs':
+      case 'quality':
         return renderJobs()
       case 'history':
         return renderHistory()
@@ -2838,7 +2827,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
               color: COLORS.text
             }}
           >
-            📄 Document Engine
+            📄 文档与知识库
           </div>
           {NAV_ITEMS.map((item) => (
             <div

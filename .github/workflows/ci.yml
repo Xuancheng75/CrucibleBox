@@ -14,80 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    name: Verify Windows x64
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: 24.15.0
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      # Keep the precheck plugin build explicit so a failure identifies the
-      # exact gate instead of being collapsed into npm's lifecycle wrapper.
-      - name: Quality gate - build plugins
-        run: npm run build:plugins:only
-
-      - name: Quality gate - verify plugin renderers
-        run: npm run verify:plugin-renderers
-
-      - name: Quality gate - verify trusted services
-        run: npm run verify:trusted-services
-
-      - name: Quality gate - format
-        run: npm run format:check
-
-      - name: Quality gate - lint
-        run: npm run lint
-
-      - name: Quality gate - typecheck
-        run: npm run typecheck
-
-      - name: Quality gate - tests
-        run: npm test
-
-      - name: Build host and plugins
-        run: npm run build
-
-      - name: Clean checkout gate (clean tree + LF line endings)
-        run: npm run verify:clean-checkout
-
-      - name: Audit dependency graph
-        run: npm run audit:dependencies
-
-      - name: Package and verify plugins
-        run: npm run package:plugins && npm run verify:plugins
-
-      - name: Generate CycloneDX SBOMs
-        run: npm run generate:sbom
-
-      - name: Package unpacked Windows application
-        run: npm run package:dir
-
-      - name: Verify Electron native runtime
-        run: npm run smoke:native
-
-      - name: Launch packaged Windows application
-        run: npm run smoke:packaged
-
-      - name: Upload supply-chain artifacts
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
-        with:
-          name: cruciblebox-windows-supply-chain
-          if-no-files-found: error
-          path: |
-            artifacts/plugins/
-            artifacts/sbom/
-
-  # 1.9.1: Rust/Tauri 线接入 CI（并行，独立于 Electron verify）。
-  # 在 Electron 冻结/删除前先把 Rust 门禁跑进 CI；1.9.2 冻结时提升为唯一门禁。
   tauri-verify:
     name: Verify Tauri (Rust) x64
     runs-on: windows-latest
@@ -127,6 +53,9 @@ jobs:
 
       - name: Verify plugin frame runtime
         run: npm run verify:plugin-frame-runtime
+
+      - name: Prepare bundled 7-Zip runtime
+        run: npm run prepare:7zip
 
       # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
       - name: Build plugin host sidecar

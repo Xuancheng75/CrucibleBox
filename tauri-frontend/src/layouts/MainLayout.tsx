@@ -1,9 +1,10 @@
-import { Layout, theme } from 'antd'
+import { Badge, Button, Layout, theme } from 'antd'
+import { ClockCircleOutlined } from '@ant-design/icons'
 import IconRail from '../components/IconRail'
 import CommandPalette from '../components/CommandPalette'
 import { useAppStore } from '../store/app.store'
 import { useThemeStore } from '../store/theme.store'
-import GlobalTaskDock from '../components/GlobalTaskDock'
+import { useTaskStore } from '../store/task.store'
 
 const { Header, Sider, Content } = Layout
 
@@ -27,6 +28,9 @@ export default function MainLayout({ children }: MainLayoutProps) {
   const themeName = useThemeStore((s) => s.theme.name)
   const pageMeta = PAGE_META[currentPage] ?? PAGE_META.home
   const selectedNavigationPage = currentPage === 'pluginView' ? 'home' : currentPage
+  const activeTaskCount = useTaskStore(
+    (state) => state.tasks.filter((task) => ['queued', 'running', 'paused', 'waiting-user'].includes(task.status)).length
+  )
 
   return (
     <Layout
@@ -101,6 +105,16 @@ export default function MainLayout({ children }: MainLayoutProps) {
             </span>
           </div>
           <div style={{ flex: 1 }} />
+          <Badge count={activeTaskCount} size="small">
+            <Button
+              type="text"
+              icon={<ClockCircleOutlined />}
+              aria-label="打开任务中心"
+              onClick={() => setCurrentPage('tasks')}
+            >
+              任务
+            </Button>
+          </Badge>
           <div
             className="ob-theme-status"
             style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}
@@ -132,7 +146,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
           <div className="ob-main-surface">{children}</div>
         </Content>
       </Layout>
-      <GlobalTaskDock />
       <CommandPalette />
     </Layout>
   )

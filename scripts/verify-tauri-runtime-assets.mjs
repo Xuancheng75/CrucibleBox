@@ -44,12 +44,23 @@ const ortDirectory = ortDirectories.find(
 const ort = ortDirectory
   ? [join(ortDirectory, 'onnxruntime.dll'), join(ortDirectory, 'onnxruntime_providers_shared.dll')]
   : [undefined, undefined]
-if (!worker || !pdfium || !ortDirectory) {
+const sevenZipDirectory = staged
+  ? join(target, 'src-tauri', 'resources', '7zip')
+  : join(target, 'resources', '7zip')
+const sevenZip = [
+  firstFile([join(sevenZipDirectory, '7z.exe')]),
+  firstFile([join(sevenZipDirectory, '7z.dll')]),
+  firstFile([join(sevenZipDirectory, 'License.txt')])
+]
+if (!worker || !pdfium || !ortDirectory || sevenZip.some((file) => !file)) {
   const missing = [
     !worker && 'ocr-worker.exe',
     !pdfium && 'pdfium.dll',
     !ort[0] && 'onnxruntime.dll',
-    !ort[1] && 'onnxruntime_providers_shared.dll'
+    !ort[1] && 'onnxruntime_providers_shared.dll',
+    !sevenZip[0] && '7zip/7z.exe',
+    !sevenZip[1] && '7zip/7z.dll',
+    !sevenZip[2] && '7zip/License.txt'
   ]
     .filter(Boolean)
     .join(', ')
@@ -58,7 +69,8 @@ if (!worker || !pdfium || !ortDirectory) {
       `checked root: ${target}\n` +
       `worker candidates: ${workerCandidates.join(', ')}\n` +
       `pdfium candidates: ${pdfiumCandidates.join(', ')}\n` +
-      `ONNX Runtime directories: ${ortDirectories.join(', ')}`
+      `ONNX Runtime directories: ${ortDirectories.join(', ')}\n` +
+      `7-Zip directory: ${sevenZipDirectory}`
   )
 }
 
@@ -66,3 +78,4 @@ console.log(`[tauri-assets] OCR Worker: ${worker}`)
 console.log(`[tauri-assets] PDFium: ${pdfium}`)
 console.log(`[tauri-assets] ONNX Runtime: ${ort[0]}`)
 console.log(`[tauri-assets] ONNX Runtime providers: ${ort[1]}`)
+console.log(`[tauri-assets] 7-Zip: ${sevenZip[0]}`)

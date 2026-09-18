@@ -1,8 +1,8 @@
 {
   "name": "gif-editor",
   "version": "0.5.0",
-  "displayName": "GIF 编辑器",
-  "description": "导入 GIF，按帧拆分，逐帧编辑图片，再合成导出 GIF",
+  "displayName": "旧版 GIF 编辑器（兼容入口）",
+  "description": "保留成熟 GIF 时间轴和旧项目导出；新工作流请使用“图片与音视频”。",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",

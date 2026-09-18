@@ -4,6 +4,7 @@ dist/
 release/
 artifacts/
 src-tauri/binaries/
+src-tauri/resources/7zip/
 src-tauri/target/
 src-tauri/cruciblebox-plugin-host/target/
 ocr-worker/target/

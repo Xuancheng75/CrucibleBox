@@ -63,6 +63,27 @@ function createContext(storage: MemoryPluginStorage): PluginContext {
       }
     },
     storage,
+    pluginData: storage,
+    capabilities: {
+      events: {
+        emitEvent: () => undefined,
+        onEvent: () => () => undefined
+      },
+      system: {
+        clipboard: {
+          read: async () => ({ text: '' }),
+          write: async () => ({ ok: true })
+        },
+        getSystemInfo: async () => ({
+          os: { name: '', version: '', hostname: '' },
+          cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
+          memory: { total: 0, available: 0, usage: 0 },
+          disks: [],
+          network: []
+        }),
+        registerShortcut: () => () => undefined
+      }
+    },
     api: {
       emitEvent: () => undefined,
       fetch: async () => new Response(),
@@ -95,22 +116,28 @@ afterEach(() => {
 })
 
 describe('production plugin storage consumers', () => {
-  it('preserves diary save, monthly listing, export, and delete behavior', async () => {
+  it('keeps legacy diary readable and rejects new writes', async () => {
     const storage = new MemoryPluginStorage()
-    await diaryPlugin.activate(createContext(storage))
-
-    await diaryPlugin.onMessage?.({
-      type: 'saveEntry',
-      date: '2026-08-10',
-      title: '标题',
-      content: '正文'
-    })
-    await diaryPlugin.onMessage?.({
-      type: 'saveEntry',
-      date: '2026-08-01',
+    await storage.set('entry:2026-08-01', {
+      entry_date: '2026-08-01',
       title: '月初',
       content: '第一篇'
     })
+    await storage.set('entry:2026-08-10', {
+      entry_date: '2026-08-10',
+      title: '标题',
+      content: '正文'
+    })
+    await diaryPlugin.activate(createContext(storage))
+
+    await expect(
+      diaryPlugin.onMessage?.({
+        type: 'saveEntry',
+        date: '2026-08-10',
+        title: '标题',
+        content: '正文'
+      })
+    ).resolves.toMatchObject({ ok: false, error: { code: 'READ_ONLY' } })
 
     await expect(
       diaryPlugin.onMessage?.({ type: 'getMonthEntries', year: 2026, month: 8 })
@@ -124,48 +151,36 @@ describe('production plugin storage consumers', () => {
       diaryPlugin.onMessage?.({ type: 'exportSingle', date: '2026-08-10' })
     ).resolves.toMatchObject({ content: expect.stringContaining('正文') })
 
-    await diaryPlugin.onMessage?.({ type: 'deleteEntry', date: '2026-08-10' })
     await expect(
-      diaryPlugin.onMessage?.({ type: 'getEntry', date: '2026-08-10' })
-    ).resolves.toEqual({ entry: null, draft: null })
+      diaryPlugin.onMessage?.({ type: 'deleteEntry', date: '2026-08-10' })
+    ).resolves.toMatchObject({ ok: false, error: { code: 'READ_ONLY' } })
   })
 
-  it('preserves turntable CRUD, ordering, and weighted winner behavior', async () => {
+  it('keeps legacy turntable readable and rejects option mutations', async () => {
     const storage = new MemoryPluginStorage()
+    await storage.set('items', [
+      { id: 2, label: 'B', weight: 3, color: '#222222', sort_order: 0, created_at: '' },
+      { id: 1, label: 'A', weight: 1, color: '#111111', sort_order: 1, created_at: '' }
+    ])
     await turntablePlugin.activate(createContext(storage))
 
-    const first = (await turntablePlugin.onMessage?.({
-      type: 'addItem',
-      payload: { label: 'A', weight: 1, color: '#111111' }
-    })) as { id: number }
-    const second = (await turntablePlugin.onMessage?.({
-      type: 'addItem',
-      payload: { label: 'B', weight: 3, color: '#222222' }
-    })) as { id: number }
-    await turntablePlugin.onMessage?.({
-      type: 'updateItem',
-      payload: { id: first.id, label: 'A+' }
-    })
-    await turntablePlugin.onMessage?.({
-      type: 'reorderItems',
-      payload: { ids: [second.id, first.id] }
-    })
+    await expect(
+      turntablePlugin.onMessage?.({
+        type: 'addItem',
+        payload: { label: 'A', weight: 1, color: '#111111' }
+      })
+    ).resolves.toMatchObject({ error: expect.stringContaining('兼容期') })
 
     await expect(turntablePlugin.onMessage?.({ type: 'getItems' })).resolves.toMatchObject([
-      { id: second.id, label: 'B', sort_order: 0 },
-      { id: first.id, label: 'A+', sort_order: 1 }
+      { id: 2, label: 'B', sort_order: 0 },
+      { id: 1, label: 'A', sort_order: 1 }
     ])
     vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((array) => {
       ;(array as Uint32Array)[0] = 0
       return array
     })
     await expect(turntablePlugin.onMessage?.({ type: 'spin' })).resolves.toMatchObject({
-      winner: { id: second.id }
+      winner: { id: 2 }
     })
-
-    await turntablePlugin.onMessage?.({ type: 'deleteItem', payload: { id: second.id } })
-    await expect(turntablePlugin.onMessage?.({ type: 'getItems' })).resolves.toMatchObject([
-      { id: first.id, sort_order: 0 }
-    ])
   })
 })

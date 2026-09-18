@@ -8,6 +8,7 @@
 
 mod app;
 mod archive;
+mod archive_service;
 mod backend_process;
 mod clipboard_monitor;
 mod commands;
@@ -32,6 +33,7 @@ mod journal;
 mod manifest;
 mod marketplace_download;
 mod marketplace_transport;
+mod network_policy;
 mod ocr_worker;
 mod pdf_parser;
 mod permissions;
@@ -90,6 +92,27 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // tauri-plugin-dialog（1.9.6：插件导入 zip/目录选择）
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let keys = shortcut.to_string();
+                        let _ = app.emit(
+                            "plugin:shortcut",
+                            serde_json::json!({ "keys": keys.clone() }),
+                        );
+                        if let Some(manager) =
+                            app.try_state::<Arc<backend_process::BackendProcessManager>>()
+                        {
+                            manager.broadcast_host_event(
+                                &format!("cruciblebox:shortcut:{keys}"),
+                                serde_json::Value::Null,
+                            );
+                        }
+                    }
+                })
+                .build(),
+        )
         // 插件 renderer 自定义协议（1.8.3）：http://cruciblebox-plugin.localhost/<token>/<res>
         // handler 经 app_handle.state 取 registry（setup 中 manage）
         .register_uri_scheme_protocol(plugin_session::PLUGIN_RENDERER_SCHEME, |ctx, request| {
@@ -145,6 +168,7 @@ fn main() {
 
             // 4) manage 状态（commands 以 State<Arc<Mutex<Db>>> 访问）+ 数据目录 + backend 管理器
             let db = Arc::new(Mutex::new(db));
+            network_policy::reload(&db);
             let backend = backend_process::BackendProcessManager::new(db.clone());
             let ocr_worker = Arc::new(ocr_worker::OcrWorkerManager::discover(
                 std::time::Duration::from_secs(15 * 60),
@@ -176,6 +200,7 @@ fn main() {
 
             // 4.2) 事件桥：backend 事件 → Tauri 全局事件（plugin:log/message/status-change）
             let app_handle = app.handle().clone();
+            envelope_host::configure_app(app_handle.clone());
             let emitter: AppEmitter = Arc::new(move |event, payload| {
                 let _ = app_handle.emit(event, payload);
             });
@@ -203,6 +228,7 @@ fn main() {
             commands::settings_get,
             commands::settings_set,
             commands::settings_get_all,
+            commands::network_diagnose,
             commands::app_get_version,
             commands::app_get_platform,
             commands::app_check_update,
@@ -217,6 +243,7 @@ fn main() {
             commands::plugin_uninstall,
             commands::plugin_install_preview,
             commands::marketplace_download_plugin,
+            commands::marketplace_cancel_task,
             commands::marketplace_catalog,
             commands::plugin_install_commit,
             commands::plugin_install_discard,

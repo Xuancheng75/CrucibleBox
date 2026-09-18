@@ -73,6 +73,9 @@ jobs:
       - name: Verify plugin frame runtime
         run: npm run verify:plugin-frame-runtime
 
+      - name: Prepare bundled 7-Zip runtime
+        run: npm run prepare:7zip
+
       # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
       - name: Build plugin host sidecar
         working-directory: src-tauri/cruciblebox-plugin-host
@@ -111,6 +114,9 @@ jobs:
           New-Item -ItemType Directory -Path 'src-tauri/binaries' -Force | Out-Null
           Copy-Item -LiteralPath (Join-Path $extract 'onnxruntime-win-x64-1.28.1/lib/onnxruntime.dll') -Destination 'src-tauri/binaries/onnxruntime.dll' -Force
           Copy-Item -LiteralPath (Join-Path $extract 'onnxruntime-win-x64-1.28.1/lib/onnxruntime_providers_shared.dll') -Destination 'src-tauri/binaries/onnxruntime_providers_shared.dll' -Force
+
+      - name: Stage bundled 7-Zip runtime
+        run: node scripts/prepare-7zip.mjs
 
       - name: Verify Tauri runtime assets
         run: node scripts/verify-tauri-runtime-assets.mjs --staged .

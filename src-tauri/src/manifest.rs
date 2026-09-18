@@ -30,6 +30,9 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "backendApiVersion",
     "rendererApiVersion",
     "minHostVersion",
+    "minimumHostVersion",
+    "trustLevel",
+    "capabilities",
     "permissions",
     "config",
 ];
@@ -53,7 +56,7 @@ const CONFIG_FIELD_TYPES: &[&str] = &["string", "number", "boolean", "select", "
 /// 插件 manifest（对等 PluginManifest 类型）
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Manifest {
-    pub manifest_version: Option<u8>, // 1 | 2
+    pub manifest_version: Option<u8>, // 1 | 2 | 3
     pub name: String,
     pub version: String,
     pub display_name: String,
@@ -66,6 +69,8 @@ pub struct Manifest {
     pub backend_api_version: Option<u8>,
     pub renderer_api_version: Option<u8>,
     pub min_host_version: Option<String>,
+    pub trust_level: String,
+    pub capabilities: serde_json::Value,
     pub permissions: Vec<String>,
     pub config: serde_json::Map<String, serde_json::Value>,
 }
@@ -97,7 +102,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     validate_string(&version, "manifest.version", 100, false)?;
     parse_semver(&version).map_err(|error| format!("manifest.version: {error}"))?;
 
-    // 规则 4：manifestVersion/backendApiVersion/rendererApiVersion 可选，必须为 1 或 2
+    // 规则 4：manifestVersion/backendApiVersion/rendererApiVersion 可选，支持 v1-v3
     let manifest_version = get_api_version(object, "manifestVersion", "manifest.manifestVersion")?;
     let backend_api_version =
         get_api_version(object, "backendApiVersion", "manifest.backendApiVersion")?;
@@ -105,13 +110,29 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         get_api_version(object, "rendererApiVersion", "manifest.rendererApiVersion")?;
     let min_host_version = get_optional_string(
         object,
-        "minHostVersion",
-        "manifest.minHostVersion",
+        if object.contains_key("minimumHostVersion") {
+            "minimumHostVersion"
+        } else {
+            "minHostVersion"
+        },
+        "manifest.minimumHostVersion",
         100,
         false,
     )?;
     if let Some(version) = &min_host_version {
         parse_semver(version).map_err(|error| format!("manifest.minHostVersion: {error}"))?;
+    }
+    let trust_level = get_optional_string(object, "trustLevel", "manifest.trustLevel", 16, false)?
+        .unwrap_or_else(|| "standard".into());
+    if !matches!(trust_level.as_str(), "standard" | "full") {
+        return Err("manifest.trustLevel: must be standard or full".into());
+    }
+    let capabilities = object
+        .get("capabilities")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !capabilities.is_object() {
+        return Err("manifest.capabilities: must be an object".into());
     }
 
     // 规则 5：backend 可选，必须 boolean
@@ -131,6 +152,12 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
                 .to_string(),
         );
     }
+    if manifest_version == Some(3)
+        && (renderer_api_version != Some(3)
+            || (backend != Some(false) && backend_api_version != Some(3)))
+    {
+        return Err("manifest: version 3 requires rendererApiVersion 3 and backendApiVersion 3 when backend is enabled".into());
+    }
 
     // 规则 6：displayName 必填 ≤100；description ≤2000 allowEmpty；author ≤200 allowEmpty；icon ≤512 allowEmpty
     let display_name = get_string(object, "displayName", "manifest.displayName")?;
@@ -149,7 +176,17 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let renderer = normalize_plugin_entry(&renderer_raw, "manifest.renderer")?;
 
     // 规则 8：permissions 必填数组，长度 ≤ ALL_PERMISSIONS.len()，已知集合内，不允许重复
-    let permissions = parse_permissions(object.get("permissions"))?;
+    let mut permissions = if manifest_version == Some(3) && object.get("permissions").is_none() {
+        Vec::new()
+    } else {
+        parse_permissions(object.get("permissions"))?
+    };
+    if manifest_version == Some(3) {
+        apply_capabilities(&capabilities, &mut permissions);
+        if trust_level == "full" && !permissions.iter().any(|value| value == "host:full-trust") {
+            permissions.push("host:full-trust".into());
+        }
+    }
 
     // 规则 9：config 可选，字段数 ≤100，key 匹配且非 FORBIDDEN_KEYS，字段 schema 校验
     let config = parse_config(object.get("config"))?;
@@ -168,6 +205,8 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         backend_api_version,
         renderer_api_version,
         min_host_version,
+        trust_level,
+        capabilities,
         permissions,
         config,
     })
@@ -213,17 +252,17 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
     parse_manifest(&text)
 }
 
-/// 安装策略：manifestVersion==2 或 allow_legacy_full_trust 通过，否则拒绝 v1
+/// 安装策略：Manifest v2/v3 或 allow_legacy_full_trust 通过，否则拒绝 v1
 /// （对等 assertPluginManifestInstallable）
 pub fn assert_manifest_installable(
     manifest: &Manifest,
     allow_legacy_full_trust: bool,
 ) -> Result<(), String> {
-    if manifest.manifest_version == Some(2) || allow_legacy_full_trust {
+    if matches!(manifest.manifest_version, Some(2) | Some(3)) || allow_legacy_full_trust {
         Ok(())
     } else {
         Err(
-            "manifest.manifestVersion: legacy v1 packages can no longer be installed; migrate this plugin to Manifest v2"
+            "manifest.manifestVersion: legacy v1 packages can no longer be installed; migrate this plugin to Manifest v3"
                 .to_string(),
         )
     }
@@ -434,7 +473,7 @@ fn get_optional_string(
     }
 }
 
-/// 可选 API 版本字段：必须为 1 或 2（对等 manifestVersion 等检查）
+/// 可选 API 版本字段：支持 1、2、3。
 fn get_api_version(
     object: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -445,13 +484,44 @@ fn get_api_version(
         Some(value) => {
             let number = value
                 .as_f64()
-                .ok_or_else(|| format!("{path}: must be 1 or 2"))?;
+                .ok_or_else(|| format!("{path}: must be 1, 2 or 3"))?;
             if number == 1.0 {
                 Ok(Some(1))
             } else if number == 2.0 {
                 Ok(Some(2))
+            } else if number == 3.0 {
+                Ok(Some(3))
             } else {
-                Err(format!("{path}: must be 1 or 2"))
+                Err(format!("{path}: must be 1, 2 or 3"))
+            }
+        }
+    }
+}
+
+fn apply_capabilities(value: &serde_json::Value, permissions: &mut Vec<String>) {
+    let Some(capabilities) = value.as_object() else {
+        return;
+    };
+    let mappings: &[(&str, &[&str])] = &[
+        ("storage", &["storage:read", "storage:write"]),
+        ("pluginData", &["storage:read", "storage:write"]),
+        ("fs", &["file:read", "file:write", "dialog"]),
+        ("network", &["network:fetch"]),
+        ("process", &["shell:exec"]),
+        ("archive", &["trusted:archive-extractor"]),
+        ("ui", &["dialog", "notification"]),
+        ("system", &["clipboard", "shortcut"]),
+    ];
+    for (capability, mapped) in mappings {
+        let enabled = capabilities
+            .get(*capability)
+            .is_some_and(|entry| entry.as_bool().unwrap_or(true));
+        if !enabled {
+            continue;
+        }
+        for permission in *mapped {
+            if !permissions.iter().any(|existing| existing == permission) {
+                permissions.push((*permission).to_string());
             }
         }
     }
@@ -1005,9 +1075,9 @@ mod tests {
         })
         .is_ok());
 
-        // manifestVersion 必须为 1 或 2
+        // manifestVersion 必须为 1、2 或 3
         let error = expect_err(parse_with(|value| {
-            value["manifestVersion"] = json!(3);
+            value["manifestVersion"] = json!(4);
         }));
         assert!(error.contains("manifest.manifestVersion"), "error: {error}");
 

@@ -1,8 +1,8 @@
 {
   "name": "diary",
   "version": "0.5.0",
-  "displayName": "日记",
-  "description": "支持 Markdown 与 LaTeX 的日记插件，内置月历视图，支持单篇及按月导出",
+  "displayName": "旧版日记（只读兼容）",
+  "description": "旧数据保留与导出入口；新内容请使用“笔记与效率”。",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",

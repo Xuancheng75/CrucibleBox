@@ -595,11 +595,10 @@ export async function installModel(
 export async function installRemoteModel(
   send: (message: unknown) => Promise<unknown>,
   url: string,
-  sha256: string,
   name?: string
 ): Promise<unknown> {
   const response = (await send(
-    omitUndefined({ type: 'document.models.install', url, sha256, name })
+    omitUndefined({ type: 'document.models.install', url, name })
   )) as {
     success?: boolean
     error?: string
@@ -611,11 +610,10 @@ export async function installRemoteModel(
 export async function updateRemoteModel(
   send: (message: unknown) => Promise<unknown>,
   url: string,
-  sha256: string,
   name: string
 ): Promise<unknown> {
   const response = (await send(
-    omitUndefined({ type: 'document.models.update', url, sha256, name })
+    omitUndefined({ type: 'document.models.update', url, name })
   )) as {
     success?: boolean
     error?: string

@@ -13,18 +13,8 @@
     "declarationMap": true,
     "sourceMap": true,
     "composite": true,
-    "paths": {
-      "@shared/*": ["./shared/*"],
-      "@database/*": ["./database/*"]
-    }
+    "paths": { "@shared/*": ["./shared/*"] }
   },
-  "include": [
-    "electron/**/*.ts",
-    "database/**/*.ts",
-    "plugin-system/**/*.ts",
-    "shared/**/*.ts",
-    "packages/openbox-rpc/src/**/*.ts",
-    "electron.vite.config.ts"
-  ],
+  "include": ["shared/**/*.ts", "packages/openbox-rpc/src/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "out", "dist"]
 }

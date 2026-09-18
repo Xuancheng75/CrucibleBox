@@ -1,0 +1,45 @@
+{
+  "name": "archive-extractor",
+  "version": "0.1.0",
+  "displayName": "旧版快速解压（兼容入口）",
+  "description": "使用内置 7-Zip 离线解压 ZIP、7z、RAR、TAR、GZ、BZ2、XZ 和 CAB 文件。",
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 2,
+  "backendApiVersion": 2,
+  "rendererApiVersion": 2,
+  "permissions": ["trusted:archive-extractor", "dialog"],
+  "config": {
+    "destinationMode": {
+      "type": "select",
+      "label": "默认解压位置",
+      "description": "同名归档默认解压到归档所在目录的同名文件夹。",
+      "default": "same",
+      "required": false,
+      "options": [
+        { "label": "归档旁边的同名文件夹", "value": "same" },
+        { "label": "每次选择目录", "value": "choose" }
+      ]
+    },
+    "conflictPolicy": {
+      "type": "select",
+      "label": "文件冲突",
+      "description": "询问会在开始前展示一次冲突摘要。",
+      "default": "ask",
+      "required": false,
+      "options": [
+        { "label": "询问", "value": "ask" },
+        { "label": "覆盖", "value": "overwrite" },
+        { "label": "跳过", "value": "skip" },
+        { "label": "自动重命名", "value": "rename" }
+      ]
+    },
+    "openAfterExtract": {
+      "type": "boolean",
+      "label": "完成后打开目录",
+      "default": true,
+      "required": false
+    }
+  }
+}

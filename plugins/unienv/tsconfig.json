@@ -15,6 +15,6 @@
     "newLine": "lf",
     "noEmit": true
   },
-  "include": ["src/**/*", "../../plugin-system/trusted-services/unienv/**/*.ts"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

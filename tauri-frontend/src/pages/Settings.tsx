@@ -14,7 +14,7 @@ import {
 } from 'antd'
 import { SettingOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
-import { tauriApi } from '../api/tauriApi'
+import { tauriApi, type NetworkDiagnostic } from '../api/tauriApi'
 import { formatUpdateError, retryUpdateCheck, retryUpdateDownload } from '../utils/update-check'
 import { useTaskStore } from '../store/task.store'
 
@@ -62,6 +62,8 @@ export default function Settings() {
   const [channel, setChannel] = useState<AppUpdateChannel>(loadChannel)
   const [proxyMode, setProxyMode] = useState<DownloadProxyMode>('auto')
   const [proxyUrl, setProxyUrl] = useState('')
+  const [networkDiagnostic, setNetworkDiagnostic] = useState<NetworkDiagnostic | null>(null)
+  const [diagnosingNetwork, setDiagnosingNetwork] = useState(false)
   const [checking, setChecking] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const updateRef = useRef<Update | null>(null)
@@ -69,6 +71,24 @@ export default function Settings() {
   const downloadProgressRef = useRef(0)
   const upsertTask = useTaskStore((state) => state.upsertTask)
   const patchTask = useTaskStore((state) => state.patchTask)
+
+  const diagnoseNetwork = async () => {
+    setDiagnosingNetwork(true)
+    setNetworkDiagnostic(null)
+    try {
+      await tauriApi.settings.set('downloadProxyMode', proxyMode)
+      await tauriApi.settings.set('downloadProxyUrl', proxyUrl.trim())
+      setNetworkDiagnostic(await tauriApi.network.diagnose())
+    } catch (error) {
+      setNetworkDiagnostic({
+        mode: proxyMode,
+        route: '配置不可用',
+        stages: [{ name: '配置', success: false, elapsedMs: 0, message: error instanceof Error ? error.message : String(error) }]
+      })
+    } finally {
+      setDiagnosingNetwork(false)
+    }
+  }
 
   const descriptionStyles = {
     label: {
@@ -387,7 +407,27 @@ export default function Settings() {
               onChange={(event) => setProxyUrl(event.target.value)}
               onBlur={() => void tauriApi.settings.set('downloadProxyUrl', proxyUrl.trim())}
             />
+            <Button loading={diagnosingNetwork} onClick={() => void diagnoseNetwork()}>
+              测试当前网络
+            </Button>
           </Space>
+          {networkDiagnostic && (
+            <Alert
+              type={networkDiagnostic.stages.every((stage) => stage.success) ? 'success' : 'warning'}
+              showIcon
+              message={`实际路由：${networkDiagnostic.route}`}
+              description={(
+                <>
+                  {networkDiagnostic.fallbackReason && <div>{networkDiagnostic.fallbackReason}</div>}
+                  {networkDiagnostic.stages.map((stage) => (
+                    <div key={stage.name}>
+                      {stage.success ? '✓' : '×'} {stage.name} · {stage.elapsedMs}ms · {stage.message}
+                    </div>
+                  ))}
+                </>
+              )}
+            />
+          )}
         </Space>
       </Card>
 

@@ -2,14 +2,14 @@
 
 > 本文件只描述**当前状态**与工作规范，不记录历史里程碑。
 > 历史阶段记录已归档至 `docs/history/AGENTS-history.md`；优化计划见 `docs/maintenance-plan.md`。
-> Electron 遗留层（1.9.1 起冻结）：`electron/`、`database/`、`plugin-system/` 已打 `ARCHIVED` 头标记，逐文件→Tauri 对等物/缺口见 `docs/electron-legacy-registry.md`，冻结快照 tag `electron-1.7.3-production`。
+> Electron 遗留层已在 2.1.0-beta.1 开发期从活动工作树移除；历史代码保留于 tag `electron-1.7.3-production` 和本地开发备份。
 
 ## 1. 项目简介
 
-- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 18 + Ant Design 5 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前开发与验证基线 **2.0.0**；Electron 43/React 19/Ant Design 6 为已冻结的历史运行线）。
+- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 18 + Ant Design 5 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前开发与验证基线 **2.1.0-beta.1**）。
 - 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/{cruciblebox-plugin-api,openbox-rpc}`）。
 - 插件模型：Manifest v2 + 自包含 browser renderer（跨源 sandboxed iframe + MessagePort RPC）+ 可选 backend（Rust sidecar 内嵌 quickjs-ng，帧协议 RPC v2）。UniEnv 为宿主固定摘要可信服务。
-- 当前基线：Rust workspace `src-tauri`（主 app + `cruciblebox-plugin-host` sidecar）；插件独立构建；数据库 schema v4；插件 SDK v2 保持兼容；自动更新通过 `tauri-stable` / `tauri-beta` 双端点并强制 minisign 签名。2.0 宿主新增插件市场、任务中心和插件身份视觉体系。
+- 当前基线：Rust workspace `src-tauri`（主 app + `cruciblebox-plugin-host` sidecar）；插件独立构建；数据库 schema v5；插件 SDK v3 并保持 v2 兼容；自动更新通过 `tauri-stable` / `tauri-beta` 双端点。2.1 beta 正式插件收敛为文档与知识库、开发环境管理、图片与音视频、数据与接口工具、笔记与效率。
 - 插件 SDK 独立化（1.9.0）：插件自包含工程（独立 build/clean/typecheck/test，无 `../../scripts` 隐式依赖），宿主只消费 `plugin.json + dist/main.js + dist/renderer.js`；`@openbox/ui` 已内联进 theme-manager（`plugins/theme-manager/src/theme-vars.ts`）。
 
 ## 2. 关键文件地图
@@ -19,15 +19,15 @@ Tauri 主进程（Rust，`src-tauri/src/`）：
 - `main.rs`：装配点（tauri-plugin-updater 注册、renderer 自定义协议、DB 初始化、L3 数据路径迁移、命令注册）。
 - `commands.rs`：核心 IPC 命令组（settings/app/plugin 读路径/session/db_status；`is_main_window` 校验 + settings key 白名单）。
 - `unienv_catalog.rs` / `unienv_versions.rs` / `unienv_install.rs` / `unienv_task.rs`：UniEnv 可信服务四件套——制品完整性目录（静态 SHA-256）、在线版本源（node/go/java 官方端点发现，8s 硬超时，ADR-0021）、安装原语（下载/解压/junction/进程）、任务管理（单飞/进度/取消）。
-- `db.rs`：rusqlite bundled 引擎（WAL + v1-v4 迁移 + legacy storage 迁移 + 日志清理；v4 修复 L3 迁移后的 installed_path 残留）。
+- `db.rs`：rusqlite bundled 引擎（WAL + v1-v5 迁移 + legacy storage 迁移 + 日志清理；v4 修复 L3 路径，v5 记录综合插件数据迁移）。
 - `data_dir.rs`：L3 数据路径迁移（`%APPDATA%\openbox` → `%APPDATA%\cruciblebox`，checkpoint + 原子 rename）。
 - `plugin_session.rs` / `plugin_protocol.rs`：renderer session registry + `cruciblebox-plugin` 协议 handler（path 型 `http://cruciblebox-plugin.localhost/<token>/index.html`）。
 - `capabilities/default.json`：ACL（core:default + updater:default）。
 - `cruciblebox-plugin-host/`（独立 crate）：插件 backend sidecar（quickjs-ng），帧协议 + 信封 v2 + CJS loader。
 
-Electron 遗留层（**已冻结**，勿改功能）：
+Electron 遗留层：
 
-- `electron/`、`database/`、`plugin-system/`：1.7.3 生产基线的 TS 实现，1.9.2 物理删除/迁移前仅作参照。详见 `docs/electron-legacy-registry.md`。
+- 活动工作树不再包含 `electron/`、`database/`、`plugin-system/`；需要追溯时查 `docs/electron-legacy-registry.md` 或冻结 tag。
 
 Tauri 前端（`tauri-frontend/`）：
 
@@ -45,7 +45,7 @@ Tauri 前端（`tauri-frontend/`）：
 构建与发布：
 
 - `scripts/`：插件打包/签名/校验/SBOM 脚本（与插件自包含构建器解耦）。
-- `.github/workflows/`：`ci.yml`（Electron verify + **Tauri verify 并行**）、`release.yml`（Electron v* 发布，冻结中）、`tauri-release.yml`（_*Tauri tauri-v* 发布链_*，首个 Tauri 正式版 v1.9.2）。
+- `.github/workflows/`：`ci.yml` 和 `tauri-release.yml` 是唯一活动验证与发布链。
 
 ## 3. 安全模型（详见 docs/security-model.md）
 
@@ -60,10 +60,7 @@ Tauri 前端（`tauri-frontend/`）：
 ## 4. 验证命令（提交前必须全绿）
 
 ```bash
-# Electron 遗留线（冻结中，改动 ARCHIVED 标记外需谨慎）：
-npm run check          # format:check + lint + typecheck(5 层) + test（宿主 + 插件 + 供应链）
-
-# Tauri/Rust 线（1.9.1 起新增门禁）：
+npm run check
 cd src-tauri && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 cd tauri-frontend && npm run build
 ```
@@ -87,4 +84,4 @@ cd tauri-frontend && npm run build
 
 - 活文档：`docs/architecture.md`、`docs/security-model.md`、`docs/plugin-sdk.md`、`docs/install-recovery.md`、`docs/release-runbook.md`、`docs/development.md`、`docs/electron-legacy-registry.md`、`docs/tauri-migration-plan.md`。
 - 历史与里程碑记录一律归档到 `docs/history/`，不写回活文档；不再新增阶段性 milestone 文档。
-- **Electron 遗留层冻结纪律**：`electron/`/`database/`/`plugin-system/` 内禁止功能性改动；如确需参考或迁移逻辑，只读，改动一律先查 `docs/electron-legacy-registry.md` 的等价物是否存在。
+- Electron 历史实现仅供追溯，不得重新接入活动构建链。

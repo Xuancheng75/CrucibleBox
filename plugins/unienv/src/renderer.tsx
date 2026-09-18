@@ -3,12 +3,10 @@ import {
   assertTaskCancellationAccepted,
   isTaskPollingAborted,
   pollTask,
-  readStartedTaskId
+  readStartedTaskId,
+  type TaskSnapshot,
+  type TaskStatus
 } from './renderer-task'
-import type {
-  TaskSnapshot,
-  TaskStatus
-} from '../../../plugin-system/trusted-services/unienv/task-manager'
 import {
   TOOL_VERSION_LIFECYCLE_AS_OF,
   type ToolId,
@@ -351,6 +349,15 @@ export default function UniEnvUI({
   const [taskSnapshots, setTaskSnapshots] = useState<Record<string, UiTaskSnapshot>>({})
   const [cancellingTaskIds, setCancellingTaskIds] = useState<Record<string, boolean>>({})
   const [selectedVersions, setSelectedVersions] = useState<Record<string, string | undefined>>({})
+  const [projectManifest, setProjectManifest] = useState(
+    '{\n  "node": "24.18.1",\n  "python": "3.14.7"\n}'
+  )
+  const [projectDiff, setProjectDiff] = useState<Record<string, unknown>[]>([])
+  const [environmentReport, setEnvironmentReport] = useState<Record<string, unknown> | null>(null)
+  const [offlinePath, setOfflinePath] = useState('')
+  const [offlineTool, setOfflineTool] = useState('node')
+  const [offlineVersion, setOfflineVersion] = useState('')
+  const [projectDirectory, setProjectDirectory] = useState('')
   const [toasts, setToasts] = useState<{ id: number; type: string; content: string }[]>([])
   const initialized = useRef(false)
   const mounted = useRef(false)
@@ -514,6 +521,80 @@ export default function UniEnvUI({
     [send, toast]
   )
 
+  const readProjectTools = useCallback((): Record<string, string> => {
+    const parsed = JSON.parse(projectManifest) as Record<string, unknown>
+    const tools = (
+      parsed.tools && typeof parsed.tools === 'object' ? parsed.tools : parsed
+    ) as Record<string, unknown>
+    return Object.fromEntries(
+      Object.entries(tools).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string'
+      )
+    )
+  }, [projectManifest])
+
+  const compareProject = useCallback(async () => {
+    try {
+      const response = (await send({ type: 'projectDiff', tools: readProjectTools() })) as {
+        items?: Record<string, unknown>[]
+      }
+      setProjectDiff(response.items ?? [])
+      toast('success', '项目环境差异已更新')
+    } catch (error) {
+      toast('error', `项目清单解析失败: ${(error as Error).message}`)
+    }
+  }, [readProjectTools, send, toast])
+
+  const installProject = useCallback(async () => {
+    try {
+      const taskId = readStartedTaskId(
+        await send({ type: 'installProject', tools: readProjectTools() })
+      )
+      setTaskSnapshots((prev) => ({
+        ...prev,
+        project: { taskId, status: 'queued' } as UiTaskSnapshot
+      }))
+      const completed = await monitorTask('project', taskId)
+      toast(
+        completed.status === 'succeeded' ? 'success' : 'error',
+        completed.result?.message || '项目环境任务结束'
+      )
+      await compareProject()
+    } catch (error) {
+      toast('error', `项目环境安装失败: ${(error as Error).message}`)
+    }
+  }, [compareProject, monitorTask, readProjectTools, send, toast])
+
+  const refreshEnvironmentReport = useCallback(async () => {
+    try {
+      setEnvironmentReport((await send({ type: 'environmentReport' })) as Record<string, unknown>)
+    } catch (error) {
+      toast('error', `环境报告读取失败: ${(error as Error).message}`)
+    }
+  }, [send, toast])
+
+  const installOffline = useCallback(async () => {
+    if (!offlinePath.trim() || !offlineVersion.trim()) {
+      toast('warning', '请填写离线 ZIP 路径和版本')
+      return
+    }
+    try {
+      const taskId = readStartedTaskId(
+        await send({
+          type: 'installOffline',
+          tool: offlineTool,
+          version: offlineVersion.trim(),
+          path: offlinePath.trim()
+        })
+      )
+      await monitorTask('offline', taskId)
+      toast('success', '离线运行时安装完成')
+      await refreshEnvironmentReport()
+    } catch (error) {
+      toast('error', `离线安装失败: ${(error as Error).message}`)
+    }
+  }, [monitorTask, offlinePath, offlineTool, offlineVersion, refreshEnvironmentReport, send, toast])
+
   const installTool = useCallback(
     async (toolId: string) => {
       const version = selectedVersions[toolId]
@@ -526,7 +607,7 @@ export default function UniEnvUI({
       if (requiresToolVersionConfirmation(toolId as ToolId, version)) {
         const confirmed = await api.confirm({
           title: lifecycle.status === 'eol' ? '确认安装已停止维护的版本' : '确认安装固定旧补丁',
-          message: `${toolName} ${version}：${lifecycle.note}\n\nUniEnv 会校验制品摘要，但摘要正确不代表该旧版本仍获得安全更新。仅在兼容旧项目时继续。`,
+          message: `${toolName} ${version}：${lifecycle.note}\n\n该版本可能不再获得安全更新，仅在兼容旧项目时继续。`,
           confirmLabel: '仍要安装',
           cancelLabel: '取消'
         })
@@ -590,7 +671,7 @@ export default function UniEnvUI({
       const name = tools.find((t) => t.id === toolId)?.displayName || toolId
       const confirmed = await api.confirm({
         title: '确认卸载工具',
-        message: `确定要卸载 ${name} 吗？此操作会移除由 UniEnv 管理的该工具版本。`,
+        message: `确定要卸载 ${name} 吗？此操作会移除由开发环境管理接管的当前版本入口。`,
         confirmLabel: '卸载',
         cancelLabel: '取消'
       })
@@ -939,6 +1020,21 @@ export default function UniEnvUI({
               })}
             </div>
           )}
+          <div style={{ paddingBottom: 8 }}>
+            <div
+              style={{
+                padding: '12px 16px 4px',
+                fontSize: FONT.sizeSm,
+                color: COLORS.textSecondary
+              }}
+            >
+              项目与诊断
+            </div>
+            <div style={menuItemStyle('workspace')} onClick={() => setActiveKey('workspace')}>
+              <span>🧰</span>
+              <span>项目环境与离线包</span>
+            </div>
+          </div>
         </div>
 
         {/* ====== 中间：状态看板 ====== */}
@@ -952,6 +1048,134 @@ export default function UniEnvUI({
         >
           {initializing && Object.keys(toolStatus).length === 0 ? (
             <Spinner tip="初始化中..." />
+          ) : activeKey === 'workspace' ? (
+            <div>
+              <h2 style={{ marginTop: 0 }}>项目环境与离线包</h2>
+              <div style={cardStyle}>
+                <h3 style={{ marginTop: 0 }}>项目版本清单</h3>
+                <p style={{ color: COLORS.textSecondary }}>
+                  粘贴工具到版本的 JSON 映射，或使用包含 tools
+                  字段的清单。可先查看差异，再一键补齐。
+                </p>
+                <textarea
+                  value={projectManifest}
+                  onChange={(event) => setProjectManifest(event.target.value)}
+                  style={{
+                    width: '100%',
+                    minHeight: 150,
+                    boxSizing: 'border-box',
+                    padding: 10,
+                    fontFamily: 'monospace'
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    style={{ ...btnDefault, width: 'auto' }}
+                    onClick={() => void compareProject()}
+                  >
+                    查看环境差异
+                  </button>
+                  <button
+                    style={{ ...btnPrimary, width: 'auto' }}
+                    onClick={() => void installProject()}
+                  >
+                    一键安装项目环境
+                  </button>
+                </div>
+                {projectDiff.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    {projectDiff.map((item) => (
+                      <div
+                        key={`${String(item.tool)}-${String(item.version)}`}
+                        style={{ padding: '6px 0', borderBottom: `1px solid ${COLORS.border}` }}
+                      >
+                        {String(item.tool)} {String(item.version)}：{String(item.status)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <TaskProgressPanel
+                  snapshot={taskSnapshots.project}
+                  cancelling={false}
+                  onCancel={() =>
+                    taskSnapshots.project && void cancelTask(taskSnapshots.project.taskId)
+                  }
+                />
+              </div>
+
+              <div style={cardStyle}>
+                <h3 style={{ marginTop: 0 }}>离线 ZIP 安装</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 8 }}>
+                  <select
+                    value={offlineTool}
+                    onChange={(event) => setOfflineTool(event.target.value)}
+                  >
+                    {tools.map((tool) => (
+                      <option key={tool.id} value={tool.id}>
+                        {tool.displayName}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    value={offlineVersion}
+                    onChange={(event) => setOfflineVersion(event.target.value)}
+                    placeholder="版本，例如 24.18.1"
+                  />
+                  <input
+                    value={offlinePath}
+                    onChange={(event) => setOfflinePath(event.target.value)}
+                    placeholder="本地 ZIP 完整路径"
+                    style={{ gridColumn: '1 / span 2' }}
+                  />
+                </div>
+                <button
+                  style={{ ...btnPrimary, width: 'auto', marginTop: 10 }}
+                  onClick={() => void installOffline()}
+                >
+                  从离线包安装
+                </button>
+              </div>
+
+              <div style={cardStyle}>
+                <h3 style={{ marginTop: 0 }}>环境健康报告</h3>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                  <button
+                    style={{ ...btnDefault, width: 'auto' }}
+                    onClick={() => void refreshEnvironmentReport()}
+                  >
+                    刷新报告
+                  </button>
+                  <input
+                    value={projectDirectory}
+                    onChange={(event) => setProjectDirectory(event.target.value)}
+                    placeholder="可选：项目目录"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    style={{ ...btnPrimary, width: 'auto' }}
+                    onClick={() =>
+                      void send({
+                        type: 'openTerminal',
+                        directory: projectDirectory.trim() || undefined
+                      })
+                    }
+                  >
+                    打开临时开发终端
+                  </button>
+                </div>
+                {environmentReport && (
+                  <pre
+                    style={{
+                      whiteSpace: 'pre-wrap',
+                      overflowWrap: 'anywhere',
+                      fontSize: FONT.sizeSm
+                    }}
+                  >
+                    {JSON.stringify(environmentReport, null, 2)}
+                  </pre>
+                )}
+              </div>
+            </div>
           ) : isComboActive && activeCombo ? (
             /* ---- 组合包详情 ---- */
             <div>

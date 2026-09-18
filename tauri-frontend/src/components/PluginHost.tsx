@@ -149,9 +149,12 @@ export function PluginHost({
       const safePaths = paths.filter((path): path is string => typeof path === 'string')
       if (safePaths.length > 0) bridgeRef.current?.sendFilesDropped(safePaths)
     }
-    window.addEventListener('cruciblebox:document-files-dropped', handleDocumentDrop)
-    return () =>
-      window.removeEventListener('cruciblebox:document-files-dropped', handleDocumentDrop)
+    const events = [
+      'cruciblebox:document-files-dropped',
+      'cruciblebox:archive-files-dropped'
+    ] as const
+    events.forEach((eventName) => window.addEventListener(eventName, handleDocumentDrop))
+    return () => events.forEach((eventName) => window.removeEventListener(eventName, handleDocumentDrop))
   }, [pluginId])
 
   const connectFrame = useCallback(() => {

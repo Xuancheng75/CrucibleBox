@@ -49,6 +49,21 @@ function context(storage: MemoryStorage): PluginContext {
     id: 'turntable-id',
     config: {},
     storage,
+    pluginData: storage,
+    capabilities: {
+      events: { emitEvent() {}, onEvent: () => () => undefined },
+      system: {
+        clipboard: { read: async () => ({ text: '' }), write: async () => ({ ok: true }) },
+        getSystemInfo: async () => ({
+          os: { name: '', version: '', hostname: '' },
+          cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
+          memory: { total: 0, available: 0, usage: 0 },
+          disks: [],
+          network: []
+        }),
+        registerShortcut: () => () => undefined
+      }
+    },
     database: { query: async () => [], execute: async () => undefined },
     logger: { debug() {}, error() {}, info() {}, warn() {} },
     api: {
@@ -122,32 +137,20 @@ describe('winner geometry', () => {
 })
 
 describe('turntable persistence', () => {
-  it('serializes concurrent edits and preserves atomic order across restart', async () => {
+  it('preserves legacy option order across restart without accepting edits', async () => {
     const storage = new MemoryStorage()
+    storage.values.set('items', [item(3, 1), item(1, 1), item(2, 1)])
     await turntablePlugin.activate(context(storage))
-    const added = await Promise.all(
-      ['A', 'B', 'C'].map((label) =>
-        turntablePlugin.onMessage?.({
-          type: 'addItem',
-          payload: { label, weight: 1, color: '' }
-        })
-      )
-    )
-    expect(added.map((value) => (value as TurntableItem).id)).toEqual([1, 2, 3])
     await expect(
       turntablePlugin.onMessage?.({ type: 'reorderItems', payload: { ids: [3, 1, 2] } })
-    ).resolves.toMatchObject([
-      { id: 3, sort_order: 0 },
-      { id: 1, sort_order: 1 },
-      { id: 2, sort_order: 2 }
-    ])
+    ).resolves.toEqual({ error: '旧版转盘处于兼容期，请在“笔记与效率”中继续维护选项。' })
 
     await turntablePlugin.deactivate()
     await turntablePlugin.activate(context(storage))
     await expect(turntablePlugin.onMessage?.({ type: 'getItems' })).resolves.toMatchObject([
-      { id: 3, sort_order: 0 },
-      { id: 1, sort_order: 1 },
-      { id: 2, sort_order: 2 }
+      { id: 1, sort_order: 0 },
+      { id: 2, sort_order: 1 },
+      { id: 3, sort_order: 2 }
     ])
   })
 
@@ -157,7 +160,7 @@ describe('turntable persistence', () => {
     await turntablePlugin.activate(context(storage))
     await expect(
       turntablePlugin.onMessage?.({ type: 'reorderItems', payload: { ids: [2] } })
-    ).resolves.toEqual({ error: '排序必须包含且仅包含全部现有选项' })
+    ).resolves.toEqual({ error: '旧版转盘处于兼容期，请在“笔记与效率”中继续维护选项。' })
 
     vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((array) => {
       ;(array as Uint32Array)[0] = 0

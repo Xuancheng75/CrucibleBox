@@ -4,7 +4,7 @@
 > 发布基线维护。
 > Electron 43 历史架构（1.5.23 ~ 1.7.3 生产线）已冻结并归档至 `docs/history/` 与
 > `docs/electron-legacy-registry.md`（快照 tag `electron-1.7.3-production`）。
-> 插件生态契约（Manifest v2 / renderer RPC / backend RPC / 主题 / UniEnv）跨两条线保留。
+> 插件生态契约以 Manifest/API v3 为当前基线，并继续兼容 v2。
 
 ## 总览
 
@@ -115,7 +115,7 @@ renderer，运行时不扩大协议资源白名单。
 
 Rust core 使用 **rusqlite（bundled SQLite 3.53.x）**，与 better-sqlite3 文件格式零迁移兼容。
 `src-tauri/src/db.rs` 对等实现：WAL + `foreign_keys=ON` + v1-v3 迁移（`BEGIN IMMEDIATE` 事务内
-`user_version`）+ legacy sql.js 插件存储迁移 + 30 天日志清理。schema v3 含 `plugins.sort_order`。
+`user_version`）+ legacy sql.js 插件存储迁移 + 30 天日志清理。schema v3 含 `plugins.sort_order`，v5 记录旧插件向综合插件的数据复制状态。
 
 引擎或 migration 失败会回滚、关闭数据库并在窗口创建前终止启动（`show_fatal_error` 用户提示）；
 宿主不会以缺表或半迁移状态继续运行。

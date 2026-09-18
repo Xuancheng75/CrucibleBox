@@ -1500,7 +1500,7 @@ fn hex_string(bytes: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
                 nibbles.push(0);
             }
             let mut decoded = Vec::with_capacity(nibbles.len() / 2);
-            for pair in nibbles.chunks_exact(2) {
+            for pair in nibbles.as_chunks::<2>().0 {
                 decoded.push((pair[0] << 4) | pair[1]);
             }
             return Some((decode_pdf_bytes(&decoded), cursor));
@@ -1516,7 +1516,12 @@ fn hex_string(bytes: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
 fn decode_pdf_bytes(bytes: &[u8]) -> Vec<u8> {
     let utf16_without_bom = bytes.len() >= 2
         && bytes.len().is_multiple_of(2)
-        && bytes.chunks_exact(2).take(8).any(|pair| pair[0] == 0);
+        && bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .take(8)
+            .any(|pair| pair[0] == 0);
     if (bytes.starts_with(&[0xfe, 0xff]) && bytes.len() >= 2) || utf16_without_bom {
         let mut result = String::new();
         let payload = if bytes.starts_with(&[0xfe, 0xff]) {
@@ -1524,7 +1529,7 @@ fn decode_pdf_bytes(bytes: &[u8]) -> Vec<u8> {
         } else {
             bytes
         };
-        for pair in payload.chunks_exact(2) {
+        for pair in payload.as_chunks::<2>().0 {
             let code = u16::from_be_bytes([pair[0], pair[1]]);
             if let Some(character) = char::from_u32(code as u32) {
                 result.push(character);
@@ -1794,6 +1799,31 @@ mod tests {
         );
         assert_eq!(page_count, page_array_count as u64);
         assert_eq!(page_count, 10);
+    }
+
+    #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_GENERAL_FIXTURE_PDF"]
+    fn general_fixture_parses_and_chunks() {
+        let path = std::env::var("DOCUMENT_ENGINE_GENERAL_FIXTURE_PDF").unwrap();
+        let mut output = parse_file(&path).unwrap();
+        let document = output.get_mut("document").unwrap();
+        let page_count = document["metadata"]["pageCount"]
+            .as_u64()
+            .unwrap_or_default();
+        assert!(page_count > 0);
+        let sanitization = crate::document_text::sanitize_document(document);
+        crate::document_quality::annotate_native_text_quality(document);
+        crate::document_structure::rebuild(document);
+        crate::document_engine_service::enrich_formula_blocks(document);
+        let quality =
+            crate::document_quality::report(document, sanitization.invalid_control_chars_removed);
+        let chunks = crate::document_chunker::chunk_document(document, None).unwrap();
+        eprintln!(
+            "general fixture: pages={} route={} quality={} chunks={}",
+            page_count, output["route"], quality, chunks["count"]
+        );
+        assert_eq!(quality["invalidControlChars"], 0);
+        assert!(chunks["count"].as_u64().unwrap_or_default() > 0);
     }
 
     #[test]

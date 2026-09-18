@@ -1,8 +1,8 @@
 {
   "name": "document-engine",
-  "version": "0.10.0",
+  "version": "0.11.0-beta.1",
   "private": true,
-  "description": "CrucibleBox Document Engine 插件 — 统一本地文档处理基础设施",
+  "description": "CrucibleBox 文档与知识库插件 — 综合文件处理、OCR 与 RAG 预处理",
   "main": "dist/main.js",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",

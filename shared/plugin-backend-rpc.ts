@@ -45,7 +45,10 @@ const HOST_METHODS = new Set<PluginBackendHostMethod>([
   'event.emit',
   'event.subscribe',
   'event.unsubscribe',
-  'trusted.invoke'
+  'trusted.invoke',
+  'clipboard.read',
+  'clipboard.write',
+  'system.info'
 ])
 
 const WORKER_METHODS = new Set<PluginBackendWorkerMethod>([
@@ -186,6 +189,15 @@ function validateParams(method: PluginBackendRpcMethod, value: unknown): void {
     case 'file.read': {
       const params = exactObject(value, ['path'])
       boundedString(params.path, 32768)
+      return
+    }
+    case 'clipboard.read':
+    case 'system.info':
+      exactObject(value, [])
+      return
+    case 'clipboard.write': {
+      const params = exactObject(value, ['text'])
+      boundedString(params.text, 8 * 1024 * 1024)
       return
     }
     case 'file.write': {

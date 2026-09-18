@@ -55,7 +55,7 @@ describe('Ant Design 6 migration boundary', () => {
       const manifest = JSON.parse(
         readFileSync(join(projectRoot, 'plugins', plugin, 'plugin.json'), 'utf8')
       ) as { rendererApiVersion?: number }
-      expect(manifest.rendererApiVersion, plugin).toBe(2)
+      expect([2, 3], plugin).toContain(manifest.rendererApiVersion)
       expect(
         readFileSync(join(projectRoot, 'plugins', plugin, 'dist', 'renderer.js'))
       ).not.toHaveLength(0)

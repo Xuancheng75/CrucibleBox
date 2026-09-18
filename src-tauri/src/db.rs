@@ -192,6 +192,139 @@ impl Db {
         }
     }
 
+    /// 将已安装旧插件的数据复制到 2.1 综合插件。复制使用独立前缀并写完成标记，
+    /// 旧命名空间保持不变；重复安装或升级不会制造重复记录。
+    pub fn migrate_consolidated_plugin_data(
+        &self,
+        target_plugin_id: &str,
+        target_name: &str,
+    ) -> Result<Vec<(String, i64)>, String> {
+        let sources: &[&str] = match target_name {
+            "document-engine" => &["archive-extractor"],
+            "media-toolkit" => &["gif-editor"],
+            "developer-toolkit" => &["json-toolkit"],
+            "productivity-toolkit" => &[
+                "diary",
+                "clipboard-manager",
+                "dice-roller",
+                "turntable",
+                "exchange-rates",
+            ],
+            _ => return Ok(Vec::new()),
+        };
+        let guard = self.conn.lock().unwrap();
+        guard
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        let result = (|| -> rusqlite::Result<Vec<(String, i64)>> {
+            let mut summary = Vec::new();
+            for source_name in sources {
+                let Some(source_id) = plugin_id_by_name(&guard, source_name)? else {
+                    summary.push((source_name.to_string(), 0));
+                    continue;
+                };
+                let already: Option<i64> = guard
+                    .query_row(
+                        "SELECT copied_records FROM plugin_consolidation_migrations
+                         WHERE target_plugin_id = ?1 AND source_plugin_id = ?2",
+                        params![target_plugin_id, source_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(count) = already {
+                    summary.push((source_name.to_string(), count));
+                    continue;
+                }
+                let copied = guard.execute(
+                    "INSERT OR IGNORE INTO plugin_storage(plugin_id, key, value, updated_at)
+                     SELECT ?1, 'legacy:' || ?2 || ':' || key, value, updated_at
+                     FROM plugin_storage WHERE plugin_id = ?3",
+                    params![target_plugin_id, source_name, source_id],
+                )? as i64;
+
+                if target_name == "productivity-toolkit" && *source_name == "diary" {
+                    let mut statement = guard.prepare(
+                        "SELECT value FROM plugin_storage
+                         WHERE plugin_id = ?1 AND key LIKE 'entry:%' ORDER BY key",
+                    )?;
+                    let notes = statement
+                        .query_map([&source_id], |row| row.get::<_, String>(0))?
+                        .filter_map(Result::ok)
+                        .filter_map(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                        .enumerate()
+                        .map(|(index, entry)| {
+                            let date = entry["entry_date"].as_str().unwrap_or_default();
+                            serde_json::json!({
+                                "id": format!("legacy-diary-{date}-{index}"),
+                                "title": entry["title"].as_str().unwrap_or("日记"),
+                                "content": entry["content"].as_str().unwrap_or_default(),
+                                "tags": ["日记", "已迁移"],
+                                "date": date,
+                                "updatedAt": 0,
+                                "versions": []
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if !notes.is_empty() {
+                        insert_migrated_value(
+                            &guard,
+                            target_plugin_id,
+                            "notes",
+                            &serde_json::Value::Array(notes),
+                        )?;
+                    }
+                }
+                if target_name == "productivity-toolkit" && *source_name == "clipboard-manager" {
+                    let history: Option<String> = guard
+                        .query_row(
+                            "SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = 'history'",
+                            [&source_id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if let Some(history) = history {
+                        let clips = serde_json::from_str::<serde_json::Value>(&history)
+                            .ok()
+                            .and_then(|value| value.as_array().cloned())
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|item| serde_json::json!({
+                                "id": item["id"],
+                                "text": item["text"],
+                                "createdAt": item.get("createdAt").or_else(|| item.get("timestamp")).cloned().unwrap_or_else(|| serde_json::json!(0)),
+                                "pinned": item["pinned"].as_bool().unwrap_or(false),
+                                "tags": item["tags"].as_array().cloned().unwrap_or_default()
+                            }))
+                            .collect::<Vec<_>>();
+                        insert_migrated_value(
+                            &guard,
+                            target_plugin_id,
+                            "clips",
+                            &serde_json::Value::Array(clips),
+                        )?;
+                    }
+                }
+                guard.execute(
+                    "INSERT INTO plugin_consolidation_migrations
+                     (target_plugin_id, source_plugin_id, copied_records) VALUES (?1, ?2, ?3)",
+                    params![target_plugin_id, source_id, copied],
+                )?;
+                summary.push((source_name.to_string(), copied));
+            }
+            Ok(summary)
+        })();
+        match result {
+            Ok(summary) => {
+                guard.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                Ok(summary)
+            }
+            Err(error) => {
+                let _ = guard.execute_batch("ROLLBACK");
+                Err(error.to_string())
+            }
+        }
+    }
+
     /// log.write：插件日志入库
     pub fn log_write(&self, plugin_id: &str, level: &str, message: &str) -> rusqlite::Result<()> {
         let guard = self.conn.lock().unwrap();
@@ -506,9 +639,23 @@ impl Db {
     pub fn plugin_delete(&self, id: &str) -> Result<(), String> {
         let guard = self.conn.lock().unwrap();
         guard
-            .execute("DELETE FROM plugins WHERE id = ?1", [id])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        let result = (|| -> rusqlite::Result<()> {
+            guard.execute(
+                "DELETE FROM plugin_consolidation_migrations WHERE target_plugin_id = ?1",
+                [id],
+            )?;
+            guard.execute("DELETE FROM plugins WHERE id = ?1", [id])?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => guard.execute_batch("COMMIT").map_err(|e| e.to_string()),
+            Err(error) => {
+                let _ = guard.execute_batch("ROLLBACK");
+                Err(error.to_string())
+            }
+        }
     }
 }
 
@@ -608,7 +755,7 @@ fn pragma_i64(conn: &Connection, name: &str) -> rusqlite::Result<i64> {
 // 迁移（对等 database/index.ts MIGRATIONS 数组，v1..=v3）
 // ---------------------------------------------------------------------------
 
-const MIGRATIONS_COUNT: i64 = 4;
+const MIGRATIONS_COUNT: i64 = 5;
 
 fn run_migrations(db: &Db) -> rusqlite::Result<()> {
     let mut version = db.version().unwrap_or(0);
@@ -641,6 +788,7 @@ fn migrate_one(db: &Db, version: i64) -> rusqlite::Result<()> {
         1 => migrate_v2(&guard),
         2 => migrate_v3(&guard),
         3 => migrate_v4(&guard),
+        4 => migrate_v5(&guard),
         _ => Ok(()),
     }
 }
@@ -769,6 +917,45 @@ fn migrate_v4(conn: &Connection) -> rusqlite::Result<()> {
          WHERE installed_path LIKE '%/openbox/%'",
         [],
     )?;
+    Ok(())
+}
+
+/// v5：记录 2.1 综合插件的数据迁移状态。旧插件数据仍保留在原命名空间，
+/// 新插件安装完成后由安装事务复制，因而中断后可以继续执行。
+fn migrate_v5(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS plugin_consolidation_migrations (
+          target_plugin_id TEXT NOT NULL,
+          source_plugin_id TEXT NOT NULL,
+          copied_records INTEGER NOT NULL DEFAULT 0,
+          applied_at DATETIME DEFAULT (datetime('now', 'localtime')),
+          PRIMARY KEY (target_plugin_id, source_plugin_id)
+        );
+        "#,
+    )?;
+    // 主题与系统信息已经并入宿主；保留旧设置快照供兼容期导出。
+    for source in ["theme-manager", "system-info"] {
+        let Some(source_id) = plugin_id_by_name(conn, source)? else {
+            continue;
+        };
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value)
+             SELECT 'legacyPluginData:' || ?1 || ':' || key, value
+             FROM plugin_storage WHERE plugin_id = ?2",
+            params![source, source_id],
+        )?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM plugin_storage WHERE plugin_id = ?1",
+            [&source_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO plugin_consolidation_migrations
+             (target_plugin_id, source_plugin_id, copied_records) VALUES ('host', ?1, ?2)",
+            params![source_id, count],
+        )?;
+    }
     Ok(())
 }
 
@@ -929,11 +1116,11 @@ mod tests {
     }
 
     #[test]
-    fn fresh_db_migrates_to_v4() {
+    fn fresh_db_migrates_to_current_schema() {
         let path = temp_db("fresh");
         let db = Db::open(&path).unwrap();
         let status = db.status().unwrap();
-        assert_eq!(status.version, 4);
+        assert_eq!(status.version, MIGRATIONS_COUNT);
         assert_eq!(status.journal_mode.to_lowercase(), "wal");
         assert!(status.foreign_keys);
     }
@@ -964,7 +1151,7 @@ mod tests {
             .unwrap();
         }
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.status().unwrap().version, 4);
+        assert_eq!(db.status().unwrap().version, MIGRATIONS_COUNT);
         let guard = db.conn.lock().unwrap();
         let get = |id: &str| -> String {
             guard
@@ -1004,11 +1191,11 @@ mod tests {
     }
 
     #[test]
-    fn idempotent_reopen_keeps_v4() {
+    fn idempotent_reopen_keeps_current_schema() {
         let path = temp_db("reopen");
         drop(Db::open(&path).unwrap());
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.status().unwrap().version, 4);
+        assert_eq!(db.status().unwrap().version, MIGRATIONS_COUNT);
     }
 
     #[test]

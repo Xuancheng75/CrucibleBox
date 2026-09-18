@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 
-export type HostTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type HostTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'waiting-user'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 export interface HostTask {
   id: string

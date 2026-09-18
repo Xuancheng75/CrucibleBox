@@ -492,6 +492,9 @@ impl InstallManager {
                 "addedPermissions": added,
                 "removedPermissions": removed,
                 "legacyFullTrust": manifest.permissions.iter().any(|p| p == "trusted:unienv"),
+                "trustLevel": manifest.trust_level,
+                "fullTrust": manifest.permissions.iter().any(|p| p == "host:full-trust"),
+                "capabilities": manifest.capabilities,
             }
         }))
     }
@@ -575,6 +578,10 @@ impl InstallManager {
         if let Err(e) = lock(&self.db).plugin_create(&row) {
             self.rollback_fresh(install);
             return Err(e);
+        }
+        if let Err(error) = lock(&self.db).migrate_consolidated_plugin_data(&id, name) {
+            self.rollback_fresh(install);
+            return Err(format!("旧插件数据迁移失败: {error}"));
         }
         let committed = Journal {
             phase: "committed".into(),
@@ -667,6 +674,17 @@ impl InstallManager {
                 Err(rollback_error) => {
                     self.block(name);
                     Err(format!("{e}; rollback failed: {rollback_error}"))
+                }
+            };
+        }
+        if let Err(error) = lock(&self.db).migrate_consolidated_plugin_data(&id, name) {
+            return match self.rollback_upgrade(install, &previous_metadata) {
+                Ok(()) => Err(format!("旧插件数据迁移失败: {error}")),
+                Err(rollback_error) => {
+                    self.block(name);
+                    Err(format!(
+                        "旧插件数据迁移失败: {error}; rollback failed: {rollback_error}"
+                    ))
                 }
             };
         }

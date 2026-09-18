@@ -7,7 +7,11 @@ export interface PluginIdentity {
 
 const OFFICIAL_IDENTITIES: Record<string, Omit<PluginIdentity, 'publisher'>> = {
   'document-engine': { category: '文档与 AI', accent: '#2563eb', accentAlt: '#06b6d4' },
+  'archive-extractor': { category: '文件工具', accent: '#0f766e', accentAlt: '#14b8a6' },
   unienv: { category: '开发环境', accent: '#7c3aed', accentAlt: '#ec4899' },
+  'media-toolkit': { category: '图像与媒体', accent: '#db2777', accentAlt: '#8b5cf6' },
+  'developer-toolkit': { category: '开发工具', accent: '#0891b2', accentAlt: '#2563eb' },
+  'productivity-toolkit': { category: '效率工具', accent: '#059669', accentAlt: '#f59e0b' },
   diary: { category: '记录与写作', accent: '#c2410c', accentAlt: '#f59e0b' },
   'gif-editor': { category: '图像与媒体', accent: '#db2777', accentAlt: '#8b5cf6' },
   'clipboard-manager': { category: '效率工具', accent: '#059669', accentAlt: '#22c55e' },

@@ -7,7 +7,7 @@ import { useAppStore } from '../store/app.store'
 
 export interface GlobalDropState {
   dragActive: boolean
-  dragTarget: 'plugin' | 'document' | 'mixed'
+  dragTarget: 'plugin' | 'document' | 'archive' | 'mixed'
 }
 
 /**
@@ -68,6 +68,8 @@ export function useGlobalPluginDrop(): GlobalDropState {
           const app = useAppStore.getState()
           const documentActive =
             app.currentPage === 'pluginView' && app.activePluginId === 'document-engine'
+          const archiveActive =
+            app.currentPage === 'pluginView' && app.activePluginId === 'archive-extractor'
           const resolved =
             documentActive && payload.type === 'enter'
               ? resolveDocumentDropPaths(paths)
@@ -75,6 +77,8 @@ export function useGlobalPluginDrop(): GlobalDropState {
           const target =
             payload.type === 'over'
               ? undefined
+              : archiveActive
+                ? 'archive'
               : resolved
                 ? resolved.pluginZips.length > 0 && resolved.documents.length > 0
                   ? 'mixed'
@@ -105,6 +109,19 @@ export function useGlobalPluginDrop(): GlobalDropState {
         const app = useAppStore.getState()
         const documentActive =
           app.currentPage === 'pluginView' && app.activePluginId === 'document-engine'
+        const archiveActive =
+          app.currentPage === 'pluginView' && app.activePluginId === 'archive-extractor'
+        if (archiveActive) {
+          const archivePaths = paths.map((path) => path.trim()).filter(Boolean)
+          if (archivePaths.length > 0) {
+            window.dispatchEvent(
+              new CustomEvent('cruciblebox:archive-files-dropped', {
+                detail: { pluginId: 'archive-extractor', paths: archivePaths }
+              })
+            )
+          }
+          return
+        }
         if (documentActive) {
           const resolved = resolveDocumentDropPaths(paths)
           if (!resolved) return

@@ -32,6 +32,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 事件发射回调类型（event, payload）——main.rs setup 注入 app.emit
 type Emitter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+type EventRouter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
 pub struct BackendProcess {
     plugin_id: String,
@@ -49,6 +50,8 @@ pub struct BackendProcess {
     on_crash: Arc<dyn Fn(&str) + Send + Sync>,
     /// 事件发射回调（Manager 注入；plugin:log / plugin:message 经它广播）
     emitter: Emitter,
+    /// 将插件事件转发给所有已激活 backend；订阅过滤在各 sidecar 内完成。
+    event_router: EventRouter,
 }
 
 impl BackendProcess {
@@ -62,6 +65,7 @@ impl BackendProcess {
         entry_main: String,
         on_crash: Arc<dyn Fn(&str) + Send + Sync>,
         emitter: Emitter,
+        event_router: EventRouter,
     ) -> Result<Arc<BackendProcess>, String> {
         // token：32 位随机 [A-Za-z0-9_-]
         let token = crate::rand_token::random_token_alnum(32)?;
@@ -112,6 +116,7 @@ impl BackendProcess {
             expected_stop: std::sync::atomic::AtomicBool::new(false),
             on_crash,
             emitter,
+            event_router,
         });
 
         // 读线程：独占 ChildStdout
@@ -236,9 +241,9 @@ impl BackendProcess {
         }
         // 2) 权限校验（宿主权威边界）
         if method == "trusted.invoke" {
-            // 宿主固定可信服务（unienv / document-engine 等）共用 trusted.invoke，
-            // 接受任一 trusted:* 权限（见 PermissionGuard::assert_trusted_service）。
-            if let Err(e) = self.permissions.assert_trusted_service() {
+            // trusted.invoke 共用 host 方法，但权限必须按 service 精确匹配。
+            let service = params.get("service").and_then(Value::as_str).unwrap_or("");
+            if let Err(e) = self.permissions.assert_trusted_service(service) {
                 let _ = self.send_host_response(&request_id, Err(e));
                 return;
             }
@@ -260,7 +265,13 @@ impl BackendProcess {
             "[host-method] done {method} rid={request_id} ok={}",
             result.is_ok()
         );
+        let succeeded = result.is_ok();
         let _ = self.send_host_response(&request_id, result);
+        if succeeded && method == "event.emit" {
+            if let Some(event) = params.get("event").and_then(Value::as_str) {
+                (self.event_router)(event, params.get("data").cloned().unwrap_or(Value::Null));
+            }
+        }
     }
 
     /// 响应写回 stdin（与 worker 请求共用 stdin 锁，帧原子写）
@@ -279,7 +290,7 @@ impl BackendProcess {
             Err(msg) => json!({
                 "v": 2, "kind": "response", "token": self.token,
                 "requestId": request_id, "ok": false,
-                "error": { "code": "NOT_ALLOWED", "message": msg },
+                "error": { "code": rpc_error_code(&msg), "message": msg },
             }),
         };
         let bytes = serde_json::to_vec(&payload)
@@ -379,6 +390,22 @@ impl BackendProcess {
             let _ = child.wait();
         }
         eprintln!("[backend] {reason}: killed {}", self.plugin_id);
+    }
+}
+
+fn rpc_error_code(message: &str) -> &'static str {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("permission denied") || normalized == "not_allowed" {
+        "NOT_ALLOWED"
+    } else if normalized.contains("timeout") || normalized.contains("timed out") {
+        "TIMEOUT"
+    } else if normalized.contains("invalid")
+        || normalized.contains("missing")
+        || normalized.contains("must be")
+    {
+        "INVALID_MESSAGE"
+    } else {
+        "INTERNAL_ERROR"
     }
 }
 
@@ -563,6 +590,36 @@ impl BackendProcessManager {
             .unwrap_or_else(|| Arc::new(|_, _| {}))
     }
 
+    fn event_router(&self) -> EventRouter {
+        let weak = self
+            .self_weak
+            .get()
+            .expect("BackendProcessManager::new must set self_weak")
+            .clone();
+        Arc::new(move |event, data| {
+            if let Some(manager) = weak.upgrade() {
+                manager.broadcast_host_event(event, data);
+            }
+        })
+    }
+
+    /// 向所有已激活插件投递宿主事件。sidecar 的订阅表决定是否调用处理器。
+    pub fn broadcast_host_event(&self, event: &str, data: Value) {
+        let processes: Vec<Arc<BackendProcess>> =
+            self.processes.lock().unwrap().values().cloned().collect();
+        for process in processes {
+            let event = event.to_string();
+            let data = data.clone();
+            std::thread::spawn(move || {
+                if let Err(error) =
+                    process.request("host.event", json!({ "event": event, "data": data }))
+                {
+                    eprintln!("[backend] host event delivery failed: {error}");
+                }
+            });
+        }
+    }
+
     /// 惰性 spawn：返回已激活进程（若不存在则创建）
     /// 注入 on_crash 回调：读线程 EOF（非 dispose）时上报，触发崩溃恢复策略。
     pub fn ensure_activated(
@@ -599,6 +656,7 @@ impl BackendProcessManager {
                 record.entry_main,
                 self.crash_callback(),
                 self.emitter(),
+                self.event_router(),
             )?;
             // initialize
             if let Err(error) = proc.request(
@@ -917,6 +975,7 @@ mod tests {
             "dist/main.js".into(),
             Arc::new(|_pid: &str| {}), // 测试：崩溃回调 no-op
             Arc::new(|_event: &str, _payload: serde_json::Value| {}), // 测试：发射回调 no-op
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
         )
         .expect("spawn sidecar");
 
@@ -996,6 +1055,7 @@ mod tests {
             plugin_dir.clone(),
             "dist/main.js".into(),
             Arc::new(|_pid: &str| {}),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
             Arc::new(|_event: &str, _payload: serde_json::Value| {}),
         )
         .expect("spawn diary sidecar");
@@ -1194,6 +1254,7 @@ mod tests {
             "dist/main.js".into(),
             Arc::new(|pid: &str| panic!("sidecar crashed during unienv sequence: {pid}")),
             Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
         )
         .expect("spawn unienv sidecar");
 
@@ -1332,6 +1393,7 @@ mod tests {
             plugin_dir.clone(),
             "dist/main.js".into(),
             Arc::new(|pid: &str| panic!("sidecar crashed during document-engine sequence: {pid}")),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
             Arc::new(|_event: &str, _payload: serde_json::Value| {}),
         )
         .expect("spawn document-engine sidecar");

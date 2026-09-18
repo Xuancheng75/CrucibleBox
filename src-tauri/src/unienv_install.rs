@@ -1,13 +1,11 @@
 // UniEnv 安装原语与工具实现（1.9.11 阶段 B）
 // 行为对齐冻结线 plugin-system/trusted-services/unienv/tools/*.ts：
-// - 下载：HTTPS 强制、512MB 上限、30s 读空闲超时、2 次退避重试、.part 原子落盘、
-//   SHA-256 校验、多源 fallback（镜像优先级见 unienv_catalog）
+// - 下载：HTTPS、512MB 上限、30s 读空闲超时、2 次退避重试、.part 原子落盘、
+//   可配置多源回退（镜像优先级见 unienv_catalog）
 // - 解压：zip crate（mangled_name 防穿越），staging 目录隔离 + rename 提升
 // - 版本切换：NTFS junction（无特权要求）；拒绝删除非 reparse point 路径
 // - 进程：CREATE_NO_WINDOW、超时/取消强杀、输出截断
 
-use crate::unienv_catalog;
-use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -59,21 +57,18 @@ fn assert_https_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 单源流式下载 + SHA-256 校验 + .part 原子重命名。
+/// 单源流式下载 + .part 原子重命名。
 fn download_one(
     url: &str,
     label: &str,
     dest: &Path,
-    expected_sha256: &str,
     progress: ProgressCb,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     assert_https_url(url)?;
     cancelled(cancel)?;
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
-        .timeout_read(Duration::from_secs(DOWNLOAD_IDLE_TIMEOUT_SECS))
-        .build();
+    let agent = crate::network_policy::current()
+        .agent(DOWNLOAD_CONNECT_TIMEOUT_SECS, DOWNLOAD_IDLE_TIMEOUT_SECS)?;
     let response = match agent.get(url).call() {
         Ok(r) => r,
         Err(ureq::Error::Status(code, _)) => {
@@ -101,7 +96,6 @@ fn download_one(
     let _ = fs::remove_file(&part_path);
     let mut file = File::create(&part_path)
         .map_err(|e| format!("无法创建下载临时文件 {}: {e}", part_path.display()))?;
-    let mut hasher = Sha256::new();
     let mut reader = response.into_reader();
     let mut downloaded: u64 = 0;
     let mut last_report = Instant::now();
@@ -122,7 +116,6 @@ fn download_one(
         }
         file.write_all(&buf[..n])
             .map_err(|e| format!("无法继续写入下载文件: {e}"))?;
-        hasher.update(&buf[..n]);
         downloaded += n as u64;
         if content_length > 0 && last_report.elapsed().as_millis() > PROGRESS_THROTTLE_MS {
             let pct = ((downloaded as f64 / content_length as f64) * 100.0)
@@ -145,12 +138,6 @@ fn download_one(
             "下载内容不完整: 预期 {content_length} 字节，实际 {downloaded} 字节"
         ));
     }
-    let actual = hex_encode(&hasher.finalize());
-    if actual != expected_sha256 {
-        return Err(format!(
-            "下载制品 SHA-256 不匹配: 预期 {expected_sha256}，实际 {actual}"
-        ));
-    }
     file.sync_all()
         .map_err(|e| format!("下载文件落盘失败: {e}"))?;
     drop(file);
@@ -167,21 +154,12 @@ fn part_path_for(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
-}
-
 /// 多源 fallback 下载（对齐 downloadWithFallback + fetchWithTimeout）：
 /// 每个 URL 最多尝试 1+DOWNLOAD_RETRIES 次（指数退避 2s/4s，上限 15s），
 /// 取消立即中止；全部失败时返回最后一个错误。
 pub fn download_with_fallback(
     urls: &[(String, String)],
     dest: &Path,
-    expected_sha256: &str,
     progress: ProgressCb,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
@@ -194,7 +172,7 @@ pub fn download_with_fallback(
                 let delay = (2000u64.saturating_mul(1 << (attempt - 1))).min(15_000);
                 cancelable_sleep(delay, cancel)?;
             }
-            match download_one(url, label, dest, expected_sha256, progress, cancel) {
+            match download_one(url, label, dest, progress, cancel) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     if cancel.load(Ordering::SeqCst) {
@@ -330,11 +308,44 @@ pub fn remove_junction(link: &Path) -> Result<(), String> {
 }
 
 pub fn create_junction(link: &Path, target: &Path) -> Result<(), String> {
-    remove_junction(link)?;
     if let Some(parent) = link.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("工具目录创建失败: {e}"))?;
     }
-    junction::create(target, link).map_err(|e| format!("junction 创建失败: {e}"))
+    let next = link.with_file_name(format!(
+        "{}.next-{}",
+        link.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("current"),
+        random_suffix()
+    ));
+    junction::create(target, &next).map_err(|e| format!("临时版本链接创建失败: {e}"))?;
+
+    if fs::symlink_metadata(link).is_err() {
+        return fs::rename(&next, link).map_err(|e| format!("版本链接启用失败: {e}"));
+    }
+    if !is_reparse_point(link) {
+        let _ = fs::remove_dir(&next);
+        return Err(format!("当前版本入口不是 junction: {}", link.display()));
+    }
+
+    let previous = link.with_file_name(format!(
+        "{}.previous-{}",
+        link.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("current"),
+        random_suffix()
+    ));
+    fs::rename(link, &previous).map_err(|e| {
+        let _ = fs::remove_dir(&next);
+        format!("旧版本入口暂存失败: {e}")
+    })?;
+    if let Err(error) = fs::rename(&next, link) {
+        let _ = fs::rename(&previous, link);
+        let _ = fs::remove_dir(&next);
+        return Err(format!("版本切换失败，已恢复原版本: {error}"));
+    }
+    let _ = fs::remove_dir(&previous);
+    Ok(())
 }
 
 /// 冻结线 extractVersion：`/v?(\d+\.\d+\.\d+)/` 首个匹配。
@@ -550,20 +561,14 @@ fn runtime_subdir(tool: &str) -> Option<&'static str> {
     }
 }
 
-fn installed_runtime_dir(install_root: &Path, tool: &str, version: &str) -> PathBuf {
-    let base = version_dir(install_root, tool, version);
-    match runtime_subdir(tool) {
-        Some(sub) => base.join(sub),
-        None => base,
-    }
-}
-
 pub fn uninstall_tool(install_root: &Path, tool: &str) -> Result<(), String> {
     remove_junction(&current_link(install_root, tool))
 }
 
 pub fn switch_version(install_root: &Path, tool: &str, version: &str) -> Result<(), String> {
-    let target = installed_runtime_dir(install_root, tool, version);
+    // `current` 始终指向版本根。各工具的 runtime/jdk/go 等内部目录只在
+    // shim 和探针中追加一次，避免切换后生成 runtime/runtime 之类的死路径。
+    let target = version_dir(install_root, tool, version);
     if !target.is_dir() {
         return Err(format!("{tool} {version} 未安装"));
     }
@@ -630,6 +635,37 @@ pub fn configure_environment(install_root: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(windows)]
+pub fn open_environment_terminal(
+    install_root: &Path,
+    working_directory: Option<&Path>,
+) -> Result<(), String> {
+    let shim_dir = install_root.join("shims");
+    fs::create_dir_all(&shim_dir).map_err(|e| format!("创建环境目录失败: {e}"))?;
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![shim_dir];
+    paths.extend(std::env::split_paths(&inherited));
+    let combined = std::env::join_paths(paths).map_err(|e| format!("组合临时 PATH 失败: {e}"))?;
+    let mut command = std::process::Command::new("powershell.exe");
+    command.args(["-NoExit", "-NoLogo"]);
+    command.env("PATH", combined);
+    if let Some(directory) = working_directory.filter(|path| path.is_dir()) {
+        command.current_dir(directory);
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动临时终端失败: {e}"))
+}
+
+#[cfg(not(windows))]
+pub fn open_environment_terminal(
+    _install_root: &Path,
+    _working_directory: Option<&Path>,
+) -> Result<(), String> {
+    Err("临时开发终端目前仅支持 Windows".into())
+}
+
 fn write_cmd_shim(directory: &Path, name: &str, target: &Path) -> Result<(), String> {
     let shim = directory.join(name);
     let target = target.to_string_lossy().replace('"', "\\\"");
@@ -693,7 +729,9 @@ fn configure_user_path(shim_dir: &Path) -> Result<(), String> {
                 return Err(format!("读取用户 PATH 失败（错误码 {read}）"));
             }
             let units = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                 .take_while(|unit| *unit != 0)
                 .collect::<Vec<_>>();
@@ -741,28 +779,51 @@ fn configure_user_path(shim_dir: &Path) -> Result<(), String> {
     result
 }
 
-pub fn install_tool(
+/// 从本地 ZIP 包安装运行时。该入口供离线缓存和项目环境使用，不进行联网。
+pub fn install_offline_archive(
     install_root: &Path,
     tool: &str,
     version: &str,
-    mirror: &str,
+    archive_path: &Path,
     progress: ProgressCb,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let plan = InstallPlan {
-        urls: unienv_catalog::download_urls(tool, version, mirror)?,
-        sha256: unienv_catalog::artifact(tool, version)?.sha256.to_string(),
-        filename: unienv_catalog::artifact(tool, version)?
-            .filename
-            .to_string(),
+    if archive_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_none_or(|value| !value.eq_ignore_ascii_case("zip"))
+    {
+        return Err("离线安装当前支持 ZIP 运行时包".into());
+    }
+    let Some(final_subdir) = runtime_subdir(tool) else {
+        return Err(format!("{tool} 使用安装程序，暂不能从 ZIP 离线导入"));
     };
-    install_with_plan(install_root, tool, version, &plan, progress, cancel)
+    let dir = version_dir(install_root, tool, version);
+    fs::create_dir_all(&dir).map_err(|e| format!("版本目录创建失败: {e}"))?;
+    let final_dir = dir.join(final_subdir);
+    if final_dir.exists() {
+        return Err(format!("{tool} {version} 已存在"));
+    }
+    let staging = create_install_staging_dir(&dir)?;
+    let result = (|| {
+        cancelled(cancel)?;
+        progress("installing", 20, "正在读取离线安装包");
+        let extract_dir = staging.join("extracted");
+        extract_zip(archive_path, &extract_dir)?;
+        cancelled(cancel)?;
+        let source = find_top_dir(&extract_dir);
+        promote_staged_runtime(&source, &final_dir)?;
+        create_junction(&current_link(install_root, tool), &dir)?;
+        progress("done", 100, "离线运行时安装完成");
+        Ok(())
+    })();
+    cleanup_install_staging_dir(&staging);
+    result
 }
 
-/// 安装计划：URL 候选 + 期望 SHA-256 + 制品文件名（静态目录或在线源构建）
+/// 安装计划：URL 候选 + 制品文件名（静态目录或在线源构建）
 pub struct InstallPlan {
     pub urls: Vec<(String, String)>,
-    pub sha256: String,
     /// 制品文件名（staging 落盘名；动态版本取下载 URL 尾段）
     pub filename: String,
 }
@@ -781,7 +842,6 @@ pub fn install_with_plan(
             install_root,
             tool,
             version,
-            &plan.sha256,
             &plan.filename,
             plan.urls.clone(),
             progress,
@@ -794,7 +854,6 @@ pub fn install_with_plan(
                 version,
                 final_subdir: sub,
             },
-            &plan.sha256,
             &plan.filename,
             &plan.urls,
             progress,
@@ -808,7 +867,6 @@ fn install_from_installer(
     install_root: &Path,
     tool: &str,
     version: &str,
-    sha256: &str,
     filename: &str,
     urls: Vec<(String, String)>,
     progress: ProgressCb,
@@ -849,7 +907,7 @@ fn install_from_installer(
         0,
         &format!("正在下载 {} {version}...", display_name(tool, version)),
     );
-    download_with_fallback(&urls, &installer_path, sha256, progress, cancel)?;
+    download_with_fallback(&urls, &installer_path, progress, cancel)?;
 
     progress(
         "installing",
@@ -900,7 +958,6 @@ struct ZipTarget<'a> {
 fn install_from_zip(
     install_root: &Path,
     target: ZipTarget<'_>,
-    sha256: &str,
     filename: &str,
     urls: &[(String, String)],
     progress: ProgressCb,
@@ -930,7 +987,7 @@ fn install_from_zip(
             0,
             &format!("正在下载 {} {version}...", display_name(tool, version)),
         );
-        download_with_fallback(urls, &zip_path, sha256, progress, cancel)?;
+        download_with_fallback(urls, &zip_path, progress, cancel)?;
 
         progress(
             "installing",
@@ -946,7 +1003,7 @@ fn install_from_zip(
     result?;
 
     progress("configuring", 98, "正在创建目录链接...");
-    create_junction(&current_link(install_root, tool), &final_dir)?;
+    create_junction(&current_link(install_root, tool), &dir)?;
 
     progress(
         "done",

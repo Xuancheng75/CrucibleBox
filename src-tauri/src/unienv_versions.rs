@@ -1,11 +1,5 @@
-// UniEnv 在线版本发现（1.9.12）
-// 产品决策：node/go/java/ruby/zig/deno/bun 上游提供权威 SHA-256，开放
-// 「在线新版本」安装；python/git/rust/php 继续使用内置目录（新版本等待
-// 插件更新）。
-//
-// 安全边界：所有元数据与制品均走 HTTPS；下载后按上游声明的 SHA-256 校验，
-// 校验失败即失败（fail-closed 语义不变，只是摘要来源从编译期固定改为运行期
-// 官方端点声明）。网络不可达时静默回退内置目录。
+// 开发环境管理在线版本发现。版本目录与 Windows x64 下载资产直接来自上游
+// 发布接口；网络不可达时返回内置目录，不以摘要字段是否存在阻断新版本。
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -23,7 +17,6 @@ const HARD_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug)]
 pub struct OnlineArtifact {
-    pub sha256: String,
     /// (url, label) 按优先级排列
     pub urls: UrlCandidates,
 }
@@ -41,7 +34,7 @@ fn list_cache() -> &'static Mutex<HashMap<String, CacheEntry>> {
 
 /// (url, label) 候选列表类型别名（clippy type-complexity）
 pub type UrlCandidates = Vec<(String, String)>;
-type ArtifactCache = HashMap<(String, String), (Instant, OnlineArtifact)>;
+type ArtifactCache = HashMap<(String, String, String), (Instant, OnlineArtifact)>;
 
 fn artifact_cache() -> &'static Mutex<ArtifactCache> {
     static CACHE: OnceLock<Mutex<ArtifactCache>> = OnceLock::new();
@@ -49,10 +42,7 @@ fn artifact_cache() -> &'static Mutex<ArtifactCache> {
 }
 
 fn http_get_text(url: &str) -> Result<String, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .build();
+    let agent = crate::network_policy::current().agent(HTTP_TIMEOUT_SECS, HTTP_TIMEOUT_SECS)?;
     let response = agent
         .get(url)
         .set(
@@ -167,9 +157,10 @@ pub fn online_artifact_bounded(
     }
 }
 
-/// 安装期解析：在线版本的下载 URL 列表与 SHA-256。带 10 分钟制品级缓存。
+/// 安装期解析在线版本的下载 URL 列表，带 10 分钟制品级缓存。
 pub fn online_artifact(tool: &str, version: &str, mirror: &str) -> Result<OnlineArtifact, String> {
-    let key = (tool.to_string(), version.to_string());
+    // 镜像是缓存键的一部分，切换下载源后不能复用上一下载源的 URL。
+    let key = (tool.to_string(), version.to_string(), mirror.to_string());
     {
         let cache = artifact_cache().lock().unwrap();
         if let Some((at, artifact)) = cache.get(&key) {
@@ -232,24 +223,6 @@ fn fetch_node_versions() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn node_shasum(base_url: &str, version: &str) -> Result<String, String> {
-    let url = format!("{base_url}/v{version}/SHASUMS256.txt");
-    let text = http_get_text(&url)?;
-    let needle = format!("node-v{version}-win-x64.zip");
-    for line in text.lines() {
-        // 格式：<hex>  two-spaces  <filename>
-        if let Some((hash, name)) = line.split_once("  ") {
-            if name.trim() == needle {
-                let hash = hash.trim().to_lowercase();
-                if hash.len() == 64 {
-                    return Ok(hash);
-                }
-            }
-        }
-    }
-    Err(format!("SHASUMS256.txt lacks {needle}"))
-}
-
 fn node_artifact(version: &str, mirror: &str) -> Result<OnlineArtifact, String> {
     let mut ordered_bases: Vec<&(&str, &str)> = NODE_MIRROR_BASES
         .iter()
@@ -260,7 +233,6 @@ fn node_artifact(version: &str, mirror: &str) -> Result<OnlineArtifact, String> 
             ordered_bases.push(b);
         }
     }
-    let sha256 = node_shasum(ordered_bases[0].1, version)?;
     let filename = format!("node-v{version}-win-x64.zip");
     let urls = ordered_bases
         .iter()
@@ -271,11 +243,11 @@ fn node_artifact(version: &str, mirror: &str) -> Result<OnlineArtifact, String> 
             )
         })
         .collect();
-    Ok(OnlineArtifact { sha256, urls })
+    Ok(OnlineArtifact { urls })
 }
 
 // ---------------------------------------------------------------------------
-// go：https://go.dev/dl/?mode=json&include=all（files[].sha256 权威）
+// Go：https://go.dev/dl/?mode=json&include=all
 // ---------------------------------------------------------------------------
 
 const GO_JSON_SOURCES: &[&str] = &[
@@ -341,11 +313,6 @@ fn go_artifact(version: &str, mirror: &str) -> Result<OnlineArtifact, String> {
                 .get("filename")
                 .and_then(Value::as_str)
                 .ok_or("go file missing filename")?;
-            let sha256 = f
-                .get("sha256")
-                .and_then(Value::as_str)
-                .ok_or("go file missing sha256")?
-                .to_lowercase();
             let mut urls = Vec::new();
             if mirror == "aliyun" {
                 urls.push((
@@ -358,14 +325,14 @@ fn go_artifact(version: &str, mirror: &str) -> Result<OnlineArtifact, String> {
                 "Go (Google中国)".into(),
             ));
             urls.push((format!("https://go.dev/dl/{filename}"), "Go (官方)".into()));
-            return Ok(OnlineArtifact { sha256, urls });
+            return Ok(OnlineArtifact { urls });
         }
     }
     Err(format!("go {version} not found in dl json"))
 }
 
 // ---------------------------------------------------------------------------
-// java：Adoptium v3 latest-per-feature（package.checksum 权威）
+// Java：Adoptium v3 latest-per-feature
 // ---------------------------------------------------------------------------
 
 const JAVA_FEATURES: &[u32] = &[17, 21, 25];
@@ -424,13 +391,7 @@ fn java_artifact(version: &str) -> Result<OnlineArtifact, String> {
             .get("link")
             .and_then(Value::as_str)
             .ok_or("java package missing link")?;
-        let sha256 = package
-            .get("checksum")
-            .and_then(Value::as_str)
-            .map(str::to_lowercase)
-            .ok_or("java package missing checksum")?;
         return Ok(OnlineArtifact {
-            sha256,
             urls: vec![(link.to_string(), "JDK (官方)".into())],
         });
     }
@@ -438,8 +399,7 @@ fn java_artifact(version: &str) -> Result<OnlineArtifact, String> {
 }
 
 // ---------------------------------------------------------------------------
-// 扩展运行时：RubyInstaller、Deno、Bun 使用 GitHub Release 的 digest，
-// Zig 使用官方 download index.json 的 shasum。摘要来自发布方，缺失时拒绝安装。
+// 扩展运行时：RubyInstaller、Deno、Bun 使用 GitHub Release，Zig 使用官方目录。
 // ---------------------------------------------------------------------------
 
 fn fetch_github_versions(repo: &str, prefix: &str) -> Result<Vec<String>, String> {
@@ -497,19 +457,11 @@ fn github_binary_artifact(
         if !predicate(name) {
             continue;
         }
-        let digest = asset
-            .get("digest")
-            .and_then(Value::as_str)
-            .and_then(|v| v.strip_prefix("sha256:"))
-            .map(str::to_lowercase)
-            .filter(|v| v.len() == 64)
-            .ok_or_else(|| format!("GitHub asset {name} has no SHA-256 digest"))?;
         let browser_download_url = asset
             .get("browser_download_url")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("GitHub asset {name} has no download URL"))?;
         return Ok(OnlineArtifact {
-            sha256: digest,
             urls: vec![(browser_download_url.to_string(), format!("{label} (官方)"))],
         });
     }
@@ -574,14 +526,7 @@ fn zig_artifact(version: &str) -> Result<OnlineArtifact, String> {
         .get("tarball")
         .and_then(Value::as_str)
         .ok_or("Zig tarball URL missing")?;
-    let sha256 = target
-        .get("shasum")
-        .and_then(Value::as_str)
-        .map(str::to_lowercase)
-        .filter(|v| v.len() == 64)
-        .ok_or("Zig tarball SHA-256 missing")?;
     Ok(OnlineArtifact {
-        sha256,
         urls: vec![(tarball.to_string(), "Zig (官方)".into())],
     })
 }

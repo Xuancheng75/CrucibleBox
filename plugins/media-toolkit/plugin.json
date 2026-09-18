@@ -1,0 +1,17 @@
+{
+  "name": "media-toolkit",
+  "version": "0.1.0-beta.1",
+  "displayName": "图片与音视频",
+  "description": "图片批处理、动画时间轴、视频抽帧和轻量音视频工作流。",
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "backend": false,
+  "manifestVersion": 3,
+  "rendererApiVersion": 3,
+  "minimumHostVersion": "2.1.0-beta.1",
+  "trustLevel": "standard",
+  "capabilities": { "fs": true, "tasks": true, "ui": true, "pluginData": true },
+  "permissions": ["dialog"],
+  "config": {}
+}

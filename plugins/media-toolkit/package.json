@@ -1,0 +1,25 @@
+{
+  "name": "cruciblebox-plugin-media-toolkit",
+  "version": "0.1.0-beta.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && esbuild src/main.ts --bundle --format=cjs --platform=node --target=node18 --outfile=dist/main.js --external:cruciblebox-plugin-api && esbuild src/renderer-entry.tsx --bundle --format=iife --platform=browser --target=es2022 --outfile=dist/renderer.js --jsx=automatic --minify",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --configLoader runner",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "cruciblebox-plugin-api": "file:../../packages/cruciblebox-plugin-api"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

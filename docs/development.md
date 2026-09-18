@@ -12,7 +12,7 @@
 项目级 `.npmrc` 固定 `https://registry.npmjs.org/`；根 lockfile 不接受其他 registry
 主机。认证信息、代理和私有镜像不得写入仓库配置。
 
-根工程和 `plugins/*` 子工程组成 npm workspaces，当前插件目录包含 11 个正式插件；根目录的 `package-lock.json`
+根工程和 `plugins/*` 子工程组成 npm workspaces。2.1 正式市场包含五个综合插件：文档与知识库、开发环境管理、图片与音视频、数据与接口工具、笔记与效率；旧插件目录保留一个兼容周期。根目录的 `package-lock.json`
 是唯一依赖锁定事实源。所有安装命令都从仓库根执行。
 
 ## 首次安装
@@ -48,7 +48,7 @@ cargo test --workspace --locked
 
 ## Document Engine 0.10.0
 
-> 维护状态（2026-09-05）：Document Engine 0.10.0 功能冻结，暂停 OCR、公式、布局和格式转换增强；已知限制与条件性恢复路线见 [Document Engine 当前状态、能力边界与后续路线](document-engine-status.md)。
+> 2.1 beta 已将该插件升级并更名为“文档与知识库”，继续扩展 OCR、解析、PDF 和知识库预处理。
 
 - 统一流水线为 Layout Analysis → Native/OCR 文字来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式块与布局元数据 → Document IR v3。
 - 格式转换和 Chunk 切分只消费 IR，不得再次触发 OCR；PDF 物理拆分直接操作原始页并输出真实 PDF。
@@ -58,9 +58,9 @@ cargo test --workspace --locked
 - Hybrid Chunk 继续使用现有约 450–500 token 目标及既有 `target=512/min=180/max=800` 配置；本版本只修正 section/title、非法字符及公式/表格/图片元数据，不调整长度算法。
 - 默认模型随插件离线分发，`ppocrv4-mobile-zh-en` 作为兼容 profile 保留；新增模型或流水线字段时必须同步缓存版本、协议文档、插件目录和 trusted policy。
 
-## UniEnv 0.11.0
+## 开发环境管理 0.12.0-beta.1
 
-> 维护状态（2026-09-05）：UniEnv 功能冻结，暂停新增工具链、版本源、安装策略和界面能力；架构、权限、安装事务、已知限制与条件性恢复路线见 [UniEnv 当前状态、能力边界与维护冻结说明](unienv-status.md)。
+> 2.1 beta 已恢复维护，修正镜像路由、在线版本发现和版本根切换，并加入项目环境、离线包和诊断。
 
 - UniEnv 仍是宿主持有摘要的 trusted service，负责目录、官方版本发现、下载校验、解压、junction/版本切换、进程和任务管理。
 - 维护冻结不等于删除已有安装能力；仅安全、崩溃、数据损坏、构建阻断和严重回归可进入必要维护评估。

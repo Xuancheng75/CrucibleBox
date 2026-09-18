@@ -1,5 +1,17 @@
 [
   {
+    "id": "media-toolkit",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "developer-toolkit",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
+    "id": "productivity-toolkit",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
+  },
+  {
     "id": "diary",
     "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
   },
@@ -52,5 +64,9 @@
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
     ]
+  },
+  {
+    "id": "archive-extractor",
+    "runtimeFiles": ["plugin.json", "dist/main.js", "dist/renderer.js"]
   }
 ]

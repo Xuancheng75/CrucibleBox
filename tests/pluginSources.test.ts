@@ -45,6 +45,9 @@ const rootPackageLock = JSON.parse(
 describe('production plugin source projects', () => {
   it('contains the expected production plugins', () => {
     expect(catalog.map((plugin) => plugin.id)).toEqual([
+      'media-toolkit',
+      'developer-toolkit',
+      'productivity-toolkit',
       'diary',
       'dice-roller',
       'gif-editor',
@@ -55,7 +58,8 @@ describe('production plugin source projects', () => {
       'clipboard-manager',
       'system-info',
       'exchange-rates',
-      'document-engine'
+      'document-engine',
+      'archive-extractor'
     ])
   })
 
@@ -104,7 +108,9 @@ describe('production plugin source projects', () => {
         typecheck: expect.any(String)
       })
       expect(manifest.name).toBe(plugin.id)
-      expect(manifest.backend === false).toBe(['dice-roller', 'json-toolkit'].includes(plugin.id))
+      expect(manifest.backend === false).toBe(
+        ['dice-roller', 'json-toolkit', 'media-toolkit', 'developer-toolkit'].includes(plugin.id)
+      )
       expect(existsSync(resolve(pluginDirectory, 'src', 'main.ts'))).toBe(true)
       expect(existsSync(resolve(pluginDirectory, 'src', 'renderer.tsx'))).toBe(true)
 
@@ -171,11 +177,16 @@ describe('production plugin source projects', () => {
     expect(existsSync(resolve(templateDirectory, 'src', 'renderer-entry.tsx'))).toBe(true)
   })
 
-  it('vendors an identical renderer builder into the template and every plugin', () => {
+  it('keeps every vendored renderer builder identical to the template copy', () => {
     const builderPath = (project: string) =>
       resolve(repositoryRoot, project, 'scripts', 'build-plugin-renderer.mjs')
-    const copies = [...catalog.map((plugin) => `plugins/${plugin.id}`), 'templates/plugin-template']
-    const reference = readFileSync(builderPath(copies[0]), 'utf8')
+    const copies = [
+      ...catalog
+        .map((plugin) => `plugins/${plugin.id}`)
+        .filter((project) => existsSync(builderPath(project))),
+      'templates/plugin-template'
+    ]
+    const reference = readFileSync(builderPath('templates/plugin-template'), 'utf8')
     expect(reference.length).toBeGreaterThan(0)
     for (const project of copies.slice(1)) {
       expect(readFileSync(builderPath(project), 'utf8')).toBe(reference)

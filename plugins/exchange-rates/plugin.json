@@ -1,8 +1,8 @@
 {
   "name": "exchange-rates",
   "version": "0.3.0",
-  "displayName": "实时汇率",
-  "description": "查询实时汇率，支持币种交换、常用货币收藏与自动缓存。",
+  "displayName": "旧版汇率（只读兼容）",
+  "description": "旧汇率收藏和数据导出入口；常用换算已合并到“笔记与效率”。",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",

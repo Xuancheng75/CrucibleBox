@@ -90,14 +90,14 @@ src-tauri/                 # Tauri 主进程（Rust）
   src/plugin_protocol.rs   # cruciblebox-plugin 协议 handler
   cruciblebox-plugin-host/ # 插件 backend sidecar crate（quickjs-ng）
 tauri-frontend/            # React 渲染层（App / PluginHost / themeCache）
-plugins/                   # 11 个正式插件（自包含工程）
+plugins/                   # 5 个正式综合插件及兼容期旧插件（自包含工程）
 shared/                    # 跨进程共享契约（types / themes / RPC）
 electron/ database/ plugin-system/   # Electron 冻结线（1.7.3，只读参照）
 ```
 
 ## 插件 backend（Rust sidecar）
 
-生产插件声明 `backendApiVersion: 2`。backend 运行于独立 `cruciblebox-plugin-host` 进程
+新插件声明 `backendApiVersion: 3`，v2 插件继续兼容。backend 运行于独立 `cruciblebox-plugin-host` 进程
 （quickjs-ng 内嵌，纯 JS + 宿主注入 ctx），经 stdin/stdout 长度前缀帧 + 信封 v2
 （token/requestId/预算/方法白名单）与宿主通信。宿主侧对每个 host 方法做 PermissionGuard
 逐调用校验（storage/log/db 已实现；dialog/network/file/shortcut/trusted 暂回 NOT_ALLOWED）。
@@ -107,7 +107,7 @@ digest 钉死），发布插件只包含受限代理。架构、兼容规则和�
 
 ## 插件渲染隔离
 
-生产插件使用 `rendererApiVersion: 2`。每次打开插件时，宿主签发唯一 origin（Windows path 型
+新插件使用 `rendererApiVersion: 3`，帧协议继续兼容 v2。每次打开插件时，宿主签发唯一 origin（Windows path 型
 `http://cruciblebox-plugin.localhost/<token>/index.html`），在 sandboxed iframe 中加载自包含
 browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题、通知和 backend 消息能力。
 插件 frame 无 Node/Rust 访问能力，不能访问宿主 DOM 或宿主进程面。契约与构建说明见

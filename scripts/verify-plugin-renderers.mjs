@@ -2,6 +2,9 @@ import { readFile, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const PLUGINS = [
+  'media-toolkit',
+  'developer-toolkit',
+  'productivity-toolkit',
   'diary',
   'dice-roller',
   'gif-editor',
@@ -12,7 +15,8 @@ const PLUGINS = [
   'clipboard-manager',
   'system-info',
   'exchange-rates',
-  'document-engine'
+  'document-engine',
+  'archive-extractor'
 ]
 const FORBIDDEN = [
   ['CommonJS require', /\brequire\s*\(/],

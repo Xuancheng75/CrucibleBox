@@ -3,7 +3,6 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const MAX_LIST_ENTRIES: usize = 10_000;
 const CACHE_SCHEMA_VERSION: u32 = 1;
@@ -236,10 +235,6 @@ pub fn install_remote(
 ) -> Result<PathBuf, String> {
     validate_model_name(name)?;
     validate_model_url(url)?;
-    if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("必须提供 64 位 SHA-256 模型校验值".into());
-    }
     std::fs::create_dir_all(root).map_err(|error| format!("创建模型目录失败: {error}"))?;
     let target = root.join(name);
     if target.exists() && !overwrite {
@@ -247,11 +242,7 @@ pub fn install_remote(
     }
     let part = root.join(format!(".{name}.download"));
     let _ = std::fs::remove_file(&part);
-    let agent = ureq::AgentBuilder::new()
-        .try_proxy_from_env(true)
-        .timeout_connect(Duration::from_secs(15))
-        .timeout_read(Duration::from_secs(60))
-        .build();
+    let agent = crate::network_policy::current().agent(15, 60)?;
     let response = agent
         .get(url)
         .call()
@@ -267,7 +258,7 @@ pub fn install_remote(
     let mut reader = response.into_reader();
     let mut file =
         std::fs::File::create(&part).map_err(|error| format!("创建模型临时文件失败: {error}"))?;
-    let mut digest = Sha256::new();
+    let mut digest = (!expected_sha256.is_empty()).then(Sha256::new);
     let mut bytes = 0u64;
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -283,16 +274,18 @@ pub fn install_remote(
         }
         std::io::Write::write_all(&mut file, &buffer[..read])
             .map_err(|error| format!("写入模型临时文件失败: {error}"))?;
-        digest.update(&buffer[..read]);
+        if let Some(digest) = digest.as_mut() {
+            digest.update(&buffer[..read]);
+        }
     }
     file.sync_all()
         .map_err(|error| format!("刷新模型临时文件失败: {error}"))?;
-    let actual = format!("{:x}", digest.finalize());
-    if !actual.eq_ignore_ascii_case(expected_sha256) {
-        let _ = std::fs::remove_file(&part);
-        return Err(format!(
-            "模型 SHA-256 校验失败：期望 {expected_sha256}，实际 {actual}"
-        ));
+    if let Some(digest) = digest {
+        let actual = format!("{:x}", digest.finalize());
+        if !actual.eq_ignore_ascii_case(expected_sha256) {
+            let _ = std::fs::remove_file(&part);
+            return Err("模型文件与目录记录不一致".into());
+        }
     }
     if overwrite && target.exists() {
         std::fs::remove_file(&target).map_err(|error| format!("替换旧模型失败: {error}"))?;

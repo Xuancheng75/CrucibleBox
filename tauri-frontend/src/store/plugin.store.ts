@@ -7,6 +7,8 @@ import { useTaskStore } from './task.store'
 export interface PendingInstall {
   source: 'zip' | 'directory'
   path: string
+  taskId?: string
+  title?: string
 }
 
 export interface InstallQueueState {
@@ -45,7 +47,11 @@ export interface PluginState {
   activeInstallPath: null | string
 
   fetchPlugins: () => Promise<void>
-  installPlugin: (source: 'zip' | 'directory', path: string) => Promise<boolean>
+  installPlugin: (
+    source: 'zip' | 'directory',
+    path: string,
+    task?: { id: string; title?: string }
+  ) => Promise<boolean>
   commitInstall: () => Promise<boolean>
   discardInstall: () => Promise<void>
   uninstallPlugin: (id: string) => Promise<boolean>
@@ -76,6 +82,7 @@ type PluginStoreSet = (
 ) => void
 
 let pluginsFetchSequence = 0
+let pluginsFetchPromise: Promise<void> | null = null
 let activeInstallTaskId: string | null = null
 
 async function runBatchLifecycle(
@@ -151,41 +158,44 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   batchFailures: [],
 
   fetchPlugins: async () => {
+    if (pluginsFetchPromise) return pluginsFetchPromise
     const requestSequence = ++pluginsFetchSequence
-    set({ loading: true, error: null })
+    pluginsFetchPromise = (async () => {
+      set({ loading: true, error: null })
+      try {
+        const plugins = await tauriApi.plugin.list()
+        if (requestSequence !== pluginsFetchSequence) return
+        set({
+          plugins,
+          activePlugins: Object.fromEntries(
+            plugins.filter((p) => p.enabled).map((p) => [p.id, PluginLifecycleStatus.Active])
+          ),
+          loading: false
+        })
+      } catch (err) {
+        if (requestSequence !== pluginsFetchSequence) return
+        set({ error: toErrorMessage(err, '插件列表加载失败'), loading: false })
+      }
+    })()
     try {
-      const plugins = await Promise.race([
-        tauriApi.plugin.list(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('请求超时，请检查主进程连接')), 5000)
-        )
-      ])
-      if (requestSequence !== pluginsFetchSequence) return
-      set({
-        plugins,
-        activePlugins: Object.fromEntries(
-          plugins.filter((p) => p.enabled).map((p) => [p.id, PluginLifecycleStatus.Active])
-        ),
-        loading: false
-      })
-    } catch (err) {
-      if (requestSequence !== pluginsFetchSequence) return
-      set({ error: toErrorMessage(err, '请求超时，请检查主进程连接'), loading: false })
+      await pluginsFetchPromise
+    } finally {
+      pluginsFetchPromise = null
     }
   },
 
-  installPlugin: async (source, path) => {
+  installPlugin: async (source, path, task) => {
     if (
       get().batchOperationBusy ||
       get().reorderBusy ||
       Object.keys(get().pluginOperationBusy).length > 0
     )
       return false
-    const taskId = `plugin-install-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const taskId = task?.id ?? `plugin-install-${Date.now()}-${Math.random().toString(16).slice(2)}`
     activeInstallTaskId = taskId
     useTaskStore.getState().upsertTask({
       id: taskId,
-      title: '准备安装插件',
+      title: task?.title ?? '准备安装插件',
       detail: path,
       source: 'host',
       status: 'running',
@@ -200,7 +210,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         set({ installPreview: result, activeInstallPath: path, loading: false })
         useTaskStore.getState().patchTask(taskId, {
           title: result.data?.isUpgrade ? '等待确认插件升级' : '等待确认插件安装',
-          status: 'queued',
+          status: 'waiting-user',
           progress: 35
         })
         return true
@@ -494,7 +504,11 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     if (get().installPreview) return // 待确认的预览阻塞队列
     const [head, ...rest] = installQueue
     set({ queueProcessing: true })
-    const ok = await get().installPlugin(head.source, head.path)
+    const ok = await get().installPlugin(
+      head.source,
+      head.path,
+      head.taskId ? { id: head.taskId, title: head.title } : undefined
+    )
     set({ installQueue: rest, queueProcessing: false })
     if (ok) {
       // 预览已就绪，等用户在确认弹窗中 commit/discard 后再驱动下一项

@@ -9,7 +9,6 @@
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -48,7 +47,8 @@ pub fn settings_get(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let db = lock(&db);
+    let db_state = db.inner().clone();
+    let db = lock(&db_state);
     let guard = db.conn().lock().unwrap();
     let v: Option<String> = guard
         .query_row("SELECT value FROM settings WHERE key = ?1", [&key], |row| {
@@ -71,7 +71,20 @@ pub fn settings_set(
     if !ALLOWED_SETTINGS_KEYS.contains(&key.as_str()) {
         return Err(format!("setting key not allowed: {key}"));
     }
-    let db = lock(&db);
+    if key == "downloadProxyMode" {
+        crate::network_policy::validate(
+            &value,
+            crate::network_policy::current().proxy_url.as_deref(),
+        )?;
+    }
+    if key == "downloadProxyUrl" {
+        crate::network_policy::validate(
+            &crate::network_policy::current().mode,
+            Some(value.as_str()),
+        )?;
+    }
+    let db_state = db.inner().clone();
+    let db = lock(&db_state);
     let guard = db.conn().lock().unwrap();
     guard
         .execute(
@@ -80,8 +93,21 @@ pub fn settings_set(
             rusqlite::params![key, value],
         )
         .map_err(|e| e.to_string())?;
+    drop(guard);
+    drop(db);
+    crate::network_policy::reload(&db_state);
     // 对等 TS：set 成功恒返回 true（含同值更新）
     Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn network_diagnose(
+    window: WebviewWindow,
+) -> Result<crate::network_policy::NetworkDiagnostic, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    Ok(crate::network_policy::diagnose())
 }
 
 #[tauri::command(async)]
@@ -138,6 +164,7 @@ pub struct AppUpdateMetadata {
     pub date: Option<String>,
     pub body: Option<String>,
     pub raw_json: serde_json::Value,
+    pub network_route: String,
 }
 
 /// 2.0 update-channel entry point.  The JS updater API only accepts headers
@@ -167,6 +194,7 @@ pub async fn app_check_update(
         .endpoints(vec![endpoint])
         .map_err(|error| error.to_string())?;
     let network_policy = marketplace_network_policy(&db);
+    let network_route = network_policy.route();
     if network_policy.mode == "direct" {
         builder = builder.no_proxy();
     } else if let Some(proxy_url) = network_policy
@@ -189,6 +217,7 @@ pub async fn app_check_update(
         date: update.date.map(|date| date.to_string()),
         body: update.body.clone(),
         raw_json: update.raw_json.clone(),
+        network_route: network_route.clone(),
         rid: webview.resources_table().add(update),
     }))
 }
@@ -489,6 +518,7 @@ struct MarketplaceCatalogResponse {
     source: String,
     stale: bool,
     fetched_at: u64,
+    network_route: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -498,7 +528,6 @@ struct MarketplaceCatalogPlugin {
     id: String,
     version: String,
     artifact: String,
-    sha256: String,
     size: u64,
     url: String,
     #[serde(default)]
@@ -533,50 +562,42 @@ struct MarketplaceCatalogCache {
 
 static MARKETPLACE_CATALOG_CACHE: OnceLock<Mutex<Option<MarketplaceCatalogCache>>> =
     OnceLock::new();
+static MARKETPLACE_CANCELLED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
 
 fn marketplace_catalog_cache() -> &'static Mutex<Option<MarketplaceCatalogCache>> {
     MARKETPLACE_CATALOG_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-#[derive(Clone)]
-struct MarketplaceNetworkPolicy {
-    mode: String,
-    proxy_url: Option<String>,
+fn marketplace_cancelled() -> &'static Mutex<std::collections::HashSet<String>> {
+    MARKETPLACE_CANCELLED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
-impl MarketplaceNetworkPolicy {
-    fn cache_key(&self) -> String {
-        match &self.proxy_url {
-            Some(proxy) => format!("{}:{proxy}", self.mode),
-            None => self.mode.clone(),
-        }
-    }
-
-    fn use_native_transport(&self) -> bool {
-        self.mode != "manual"
-    }
-
-    fn use_system_proxy(&self) -> bool {
-        self.mode != "direct"
-    }
+fn marketplace_is_cancelled(task_id: Option<&str>) -> bool {
+    task_id.is_some_and(|id| {
+        marketplace_cancelled()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(id)
+    })
 }
+
+#[tauri::command]
+pub fn marketplace_cancel_task(window: WebviewWindow, task_id: String) -> Result<bool, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    marketplace_cancelled()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(task_id);
+    Ok(true)
+}
+
+type MarketplaceNetworkPolicy = crate::network_policy::NetworkPolicy;
 
 fn marketplace_network_policy(db: &Arc<Mutex<Db>>) -> MarketplaceNetworkPolicy {
-    let db = lock(db);
-    let guard = db.conn().lock().unwrap();
-    let read = |key: &str| -> Option<String> {
-        guard
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-                row.get(0)
-            })
-            .ok()
-    };
-    let mode = read("downloadProxyMode")
-        .filter(|mode| matches!(mode.as_str(), "auto" | "system" | "manual" | "direct"))
-        .unwrap_or_else(|| "auto".into());
-    let proxy_url =
-        read("downloadProxyUrl").filter(|url| !url.trim().is_empty() && url.len() <= 2048);
-    MarketplaceNetworkPolicy { mode, proxy_url }
+    crate::network_policy::reload(db);
+    crate::network_policy::current()
 }
 
 fn marketplace_agent(
@@ -584,23 +605,7 @@ fn marketplace_agent(
     read_secs: u64,
     policy: &MarketplaceNetworkPolicy,
 ) -> Result<ureq::Agent, String> {
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(connect_secs))
-        .timeout_read(std::time::Duration::from_secs(read_secs));
-    if policy.mode == "direct" {
-        builder = builder.try_proxy_from_env(false);
-    } else if let Some(proxy_url) = policy
-        .proxy_url
-        .as_deref()
-        .filter(|_| policy.mode == "manual" || policy.mode == "auto")
-    {
-        let proxy =
-            ureq::Proxy::new(proxy_url).map_err(|error| format!("手动代理地址无效：{error}"))?;
-        builder = builder.try_proxy_from_env(false).proxy(proxy);
-    } else {
-        builder = builder.try_proxy_from_env(true);
-    }
-    Ok(builder.build())
+    policy.agent(connect_secs, read_secs)
 }
 
 fn marketplace_catalog_urls(channel: &str) -> Vec<String> {
@@ -641,12 +646,14 @@ fn marketplace_catalog_response(
     source: String,
     stale: bool,
     fetched_at: u64,
+    network_route: String,
 ) -> MarketplaceCatalogResponse {
     MarketplaceCatalogResponse {
         catalog,
         source,
         stale,
         fetched_at,
+        network_route,
     }
 }
 
@@ -670,6 +677,7 @@ fn fetch_marketplace_catalog(
                 cached.source.clone(),
                 false,
                 cached.fetched_at,
+                policy.route(),
             ));
         }
     }
@@ -677,12 +685,12 @@ fn fetch_marketplace_catalog(
     let mut catalog_errors = Vec::new();
 
     #[cfg(windows)]
-    if policy.use_native_transport() {
+    if policy.mode != "manual" && !policy.uses_manual_proxy() {
         for catalog_url in marketplace_catalog_urls(&channel) {
             match crate::marketplace_transport::get_text(
                 &catalog_url,
                 MARKETPLACE_MAX_CATALOG_BYTES,
-                policy.use_system_proxy(),
+                policy.uses_system_proxy(),
             ) {
                 Ok(catalog_text) => match serde_json::from_str::<MarketplaceCatalog>(&catalog_text)
                 {
@@ -707,6 +715,7 @@ fn fetch_marketplace_catalog(
                             catalog_url.to_string(),
                             false,
                             fetched_at,
+                            policy.route(),
                         ));
                     }
                     Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
@@ -774,6 +783,7 @@ fn fetch_marketplace_catalog(
                         catalog_url.to_string(),
                         false,
                         fetched_at,
+                        policy.route(),
                     ));
                 }
                 Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
@@ -791,6 +801,7 @@ fn fetch_marketplace_catalog(
             cached.source.clone(),
             true,
             cached.fetched_at,
+            policy.route(),
         ));
     }
     Err(format!(
@@ -818,9 +829,8 @@ pub fn marketplace_catalog(
     serde_json::to_value(catalog).map_err(|error| format!("序列化插件目录失败: {error}"))
 }
 
-/// Download a first-party plugin bundle from the signed release catalog.
-/// Installation still goes through plugin_install_preview/commit, so this
-/// command only materializes a digest-verified ZIP in a bounded temp folder.
+/// Download a first-party plugin bundle and hand the resulting ZIP to the
+/// normal installation flow.
 #[tauri::command(async)]
 pub fn marketplace_download_plugin(
     window: WebviewWindow,
@@ -828,6 +838,7 @@ pub fn marketplace_download_plugin(
     id: String,
     channel: Option<String>,
     priority: Option<String>,
+    task_id: Option<String>,
 ) -> Result<String, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
@@ -867,21 +878,26 @@ pub fn marketplace_download_plugin(
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let target = root.join(&plugin.artifact);
     let partial = root.join(format!(".{}.part", plugin.artifact));
+    if marketplace_is_cancelled(task_id.as_deref()) {
+        let _ = std::fs::remove_file(&partial);
+        return Err("CANCELLED".into());
+    }
 
-    if let Ok((size, digest)) = sha256_file(&target) {
-        if size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256) {
+    if let Ok(metadata) = std::fs::metadata(&target) {
+        if metadata.len() == plugin.size {
             emit_marketplace_progress(
                 &window,
                 &plugin.artifact,
                 plugin.size,
                 plugin.size,
                 "cached",
+                task_id.as_deref(),
             );
             return Ok(target.to_string_lossy().into_owned());
         }
     }
-    if let Ok((size, digest)) = sha256_file(&partial) {
-        if size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256) {
+    if let Ok(metadata) = std::fs::metadata(&partial) {
+        if metadata.len() == plugin.size {
             if target.exists() {
                 let _ = std::fs::remove_file(&target);
             }
@@ -893,6 +909,7 @@ pub fn marketplace_download_plugin(
                 plugin.size,
                 plugin.size,
                 "cached",
+                task_id.as_deref(),
             );
             return Ok(target.to_string_lossy().into_owned());
         }
@@ -901,6 +918,10 @@ pub fn marketplace_download_plugin(
     let mut last_download_error = String::from("下载插件失败");
     let mut download_completed = false;
     for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
+        if marketplace_is_cancelled(task_id.as_deref()) {
+            let _ = std::fs::remove_file(&partial);
+            return Err("CANCELLED".into());
+        }
         let partial_size = std::fs::metadata(&partial)
             .ok()
             .map(|metadata| metadata.len())
@@ -917,14 +938,18 @@ pub fn marketplace_download_plugin(
         // direct and owns transport retry/resume. Existing partial files stay
         // on the compatibility path so the byte-range verifier remains
         // available for recovery.
-        if partial_size == 0 && policy.mode != "manual" {
+        if partial_size == 0
+            && task_id.is_none()
+            && policy.mode != "manual"
+            && !policy.uses_manual_proxy()
+        {
             let bits_result = crate::marketplace_download::download_with_bits(
                 &plugin.url,
                 &partial,
                 &plugin.artifact,
                 plugin.size,
                 priority.as_deref() != Some("normal"),
-                policy.use_system_proxy(),
+                policy.uses_system_proxy(),
                 |downloaded, total| {
                     emit_marketplace_progress(
                         &window,
@@ -932,20 +957,21 @@ pub fn marketplace_download_plugin(
                         downloaded,
                         total,
                         "downloading",
+                        task_id.as_deref(),
                     );
                 },
             );
             match bits_result {
                 Ok(()) => {
-                    let verified = sha256_file(&partial).ok().is_some_and(|(size, digest)| {
-                        size == plugin.size && digest.eq_ignore_ascii_case(&plugin.sha256)
-                    });
-                    if verified {
+                    if std::fs::metadata(&partial)
+                        .ok()
+                        .is_some_and(|metadata| metadata.len() == plugin.size)
+                    {
                         download_completed = true;
                         break;
                     }
                     let _ = std::fs::remove_file(&partial);
-                    last_download_error = "BITS 下载完成但插件包完整性校验失败".into();
+                    last_download_error = "BITS 下载结果大小与目录记录不一致".into();
                     continue;
                 }
                 Err(error) => {
@@ -1012,29 +1038,16 @@ pub fn marketplace_download_plugin(
             Ok(file) => file,
             Err(error) => return Err(format!("无法创建下载临时文件：{error}")),
         };
-        let mut hasher = Sha256::new();
         let mut total = offset;
-        if resumed {
-            let mut existing = match std::fs::File::open(&partial) {
-                Ok(file) => file,
-                Err(error) => return Err(format!("无法读取断点文件：{error}")),
-            };
-            let mut existing_buffer = [0_u8; 64 * 1024];
-            loop {
-                let read = existing
-                    .read(&mut existing_buffer)
-                    .map_err(|error| format!("无法读取断点文件：{error}"))?;
-                if read == 0 {
-                    break;
-                }
-                hasher.update(&existing_buffer[..read]);
-            }
-        }
         let mut buffer = [0_u8; 64 * 1024];
         let mut read_error = None;
         let mut last_progress_bytes = total;
         let mut last_progress_at = Instant::now();
         loop {
+            if marketplace_is_cancelled(task_id.as_deref()) {
+                let _ = std::fs::remove_file(&partial);
+                return Err("CANCELLED".into());
+            }
             let read = match reader.read(&mut buffer) {
                 Ok(read) => read,
                 Err(error) => {
@@ -1050,7 +1063,6 @@ pub fn marketplace_download_plugin(
                 read_error = Some("下载内容超过目录声明大小".into());
                 break;
             }
-            hasher.update(&buffer[..read]);
             if let Err(error) = file.write_all(&buffer[..read]) {
                 read_error = Some(error.to_string());
                 break;
@@ -1065,6 +1077,7 @@ pub fn marketplace_download_plugin(
                     total,
                     plugin.size,
                     "downloading",
+                    task_id.as_deref(),
                 );
                 last_progress_bytes = total;
                 last_progress_at = Instant::now();
@@ -1081,10 +1094,8 @@ pub fn marketplace_download_plugin(
             last_download_error = format!("保存插件包失败：{error}");
             continue;
         }
-        if total != plugin.size
-            || !format!("{:x}", hasher.finalize()).eq_ignore_ascii_case(&plugin.sha256)
-        {
-            last_download_error = "插件包完整性校验失败".into();
+        if total != plugin.size {
+            last_download_error = "插件包大小与目录记录不一致".into();
             let _ = std::fs::remove_file(&partial);
             continue;
         }
@@ -1098,23 +1109,21 @@ pub fn marketplace_download_plugin(
         std::fs::remove_file(&target).map_err(|error| error.to_string())?;
     }
     std::fs::rename(&partial, &target).map_err(|error| error.to_string())?;
-    Ok(target.to_string_lossy().into_owned())
-}
-
-fn sha256_file(path: &std::path::Path) -> Result<(u64, String), String> {
-    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut total = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        total += read as u64;
-        hasher.update(&buffer[..read]);
+    emit_marketplace_progress(
+        &window,
+        &plugin.artifact,
+        plugin.size,
+        plugin.size,
+        "downloaded",
+        task_id.as_deref(),
+    );
+    if let Some(task_id) = task_id.as_deref() {
+        marketplace_cancelled()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(task_id);
     }
-    Ok((total, format!("{:x}", hasher.finalize())))
+    Ok(target.to_string_lossy().into_owned())
 }
 
 fn emit_marketplace_progress(
@@ -1123,6 +1132,7 @@ fn emit_marketplace_progress(
     downloaded: u64,
     total: u64,
     stage: &str,
+    task_id: Option<&str>,
 ) {
     let _ = window.emit(
         "marketplace:progress",
@@ -1133,6 +1143,27 @@ fn emit_marketplace_progress(
             "stage": stage
         }),
     );
+    if let Some(task_id) = task_id {
+        let percent = if total == 0 {
+            0
+        } else {
+            downloaded.saturating_mul(70).saturating_div(total).min(70)
+        };
+        let _ = window.emit(
+            "host:task",
+            serde_json::json!({
+                "id": task_id,
+                "source": "marketplace",
+                "status": "running",
+                "progress": percent,
+                "detail": match stage {
+                    "cached" => "使用已下载文件",
+                    "downloaded" => "下载完成，准备安装",
+                    _ => "正在下载插件",
+                }
+            }),
+        );
+    }
 }
 
 /// 安装预览：校验来源 + manifest + 升级策略，返回 installToken（对等 previewInstall）。
@@ -1248,9 +1279,12 @@ pub fn create_renderer_session(
         return Err("plugin manifest renderer entry mismatch".into());
     }
     let api_version = manifest.renderer_api_version.unwrap_or(1);
-    if api_version != 1 && api_version != 2 {
+    if !matches!(api_version, 1..=3) {
         return Err("unsupported rendererApiVersion".into());
     }
+    // Manifest v3 keeps the proven renderer wire protocol v2. v3 expands
+    // declared capabilities and trust metadata, not the frame encoding.
+    let runtime_api_version = if api_version == 3 { 2 } else { api_version };
     let permissions: Vec<String> = serde_json::from_str(&permissions_json).unwrap_or_default();
 
     // runtimePath：dev 态仓库 out/；打包态 exe 目录/resources/out/（tauri.conf resources）。
@@ -1288,7 +1322,7 @@ pub fn create_renderer_session(
             plugin_directory: installed_path,
             renderer_entry: entry_renderer,
             runtime_path: runtime_path.to_string_lossy().into_owned(),
-            renderer_api_version: api_version,
+            renderer_api_version: runtime_api_version,
             permissions,
             owner_webview_label: "main".into(),
         })?
@@ -1388,12 +1422,16 @@ mod tests {
     #[test]
     fn stable_marketplace_catalog_uses_the_versioned_release() {
         let urls = marketplace_catalog_urls("stable");
+        let base_version = env!("CARGO_PKG_VERSION")
+            .split('-')
+            .next()
+            .expect("package version has a core version");
         assert_eq!(urls.len(), 1);
         assert_eq!(
             urls[0],
             format!(
                 "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v{}/plugins.json",
-                env!("CARGO_PKG_VERSION")
+                base_version
             )
         );
         assert!(!urls[0].contains("tauri-stable"));

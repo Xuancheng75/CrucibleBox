@@ -118,6 +118,10 @@ async function handleMessage(message: unknown): Promise<unknown> {
   if (!message || typeof message !== 'object') return { error: '消息格式无效' }
   const msg = message as { type?: unknown; payload?: unknown }
 
+  if (['addItem', 'updateItem', 'deleteItem', 'reorderItems'].includes(String(msg.type))) {
+    return { error: '旧版转盘处于兼容期，请在“笔记与效率”中继续维护选项。' }
+  }
+
   switch (msg.type) {
     case 'getItems': {
       const store = currentStorage()

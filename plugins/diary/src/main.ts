@@ -209,6 +209,9 @@ const plugin: PluginMain = {
 
   async onMessage(message: unknown) {
     const msg = message as DiaryMessage
+    if (['saveEntry', 'saveDraft', 'discardDraft', 'deleteEntry'].includes(msg.type)) {
+      return { ok: false, error: { code: 'READ_ONLY', message: '旧版日记处于只读兼容期，请在“笔记与效率”中继续编辑。' } }
+    }
     switch (msg.type) {
       case 'getMonthEntries':
         return await handleGetMonthEntries(msg)

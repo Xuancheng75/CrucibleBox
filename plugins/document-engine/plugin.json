@@ -1,16 +1,24 @@
 {
   "name": "document-engine",
-  "version": "0.10.0",
-  "displayName": "Document Engine",
+  "version": "0.11.0-beta.1",
+  "displayName": "文档与知识库",
   "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的 OCR、解析结果导出、真实 PDF 拆分、AI/RAG 文本分块、格式转换、批量任务、缓存和模型管理",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
-  "manifestVersion": 2,
-  "backendApiVersion": 2,
-  "rendererApiVersion": 2,
-  "minHostVersion": "2.0.0",
+  "manifestVersion": 3,
+  "backendApiVersion": 3,
+  "rendererApiVersion": 3,
+  "minimumHostVersion": "2.1.0-beta.1",
+  "trustLevel": "standard",
   "permissions": ["trusted:document-engine", "dialog"],
+  "capabilities": {
+    "fs": { "read": true, "write": true },
+    "tasks": true,
+    "events": true,
+    "ui": true,
+    "pluginData": true
+  },
   "config": {
     "modelDirectory": {
       "type": "string",

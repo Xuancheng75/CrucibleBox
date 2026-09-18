@@ -1,0 +1,17 @@
+{
+  "name": "developer-toolkit",
+  "version": "0.1.0-beta.1",
+  "displayName": "数据与接口工具",
+  "description": "结构化数据转换、文本编码、差异查询和 HTTP 接口调试。",
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "backend": false,
+  "manifestVersion": 3,
+  "rendererApiVersion": 3,
+  "minimumHostVersion": "2.1.0-beta.1",
+  "trustLevel": "standard",
+  "capabilities": { "network": true, "pluginData": true, "ui": true },
+  "permissions": ["network:fetch"],
+  "config": {}
+}

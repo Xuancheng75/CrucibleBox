@@ -26,7 +26,8 @@ fn category_from_extension(ext: &str) -> Category {
         "pdf" => Category::Pdf,
         "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff" => Category::Image,
         "docx" | "pptx" | "xlsx" => Category::Office,
-        "md" | "markdown" | "html" | "htm" | "txt" | "text" => Category::Text,
+        "md" | "markdown" | "html" | "htm" | "txt" | "text" | "json" | "xml" | "csv" | "tsv"
+        | "eml" | "epub" => Category::Text,
         _ => Category::Unknown,
     }
 }

@@ -25,8 +25,8 @@ for (const [serviceName, policy] of Object.entries(policies)) {
   if (
     manifest.name !== policy.name ||
     manifest.version !== policy.version ||
-    manifest.manifestVersion !== 2 ||
-    manifest.backendApiVersion !== 2 ||
+    ![2, 3].includes(manifest.manifestVersion) ||
+    manifest.backendApiVersion !== manifest.manifestVersion ||
     JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)
   ) {
     throw new Error(`${serviceName}: manifest does not match the trusted-service policy`)

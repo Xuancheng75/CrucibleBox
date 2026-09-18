@@ -12,7 +12,7 @@ export interface ConfigField {
 }
 
 export interface PluginManifest {
-  manifestVersion?: 1 | 2
+  manifestVersion?: 1 | 2 | 3
   name: string
   version: string
   displayName: string
@@ -22,8 +22,27 @@ export interface PluginManifest {
   main: string
   renderer: string
   backend?: boolean
-  backendApiVersion?: 1 | 2
-  rendererApiVersion?: 1 | 2
+  backendApiVersion?: 1 | 2 | 3
+  rendererApiVersion?: 1 | 2 | 3
+  minimumHostVersion?: string
+  trustLevel?: 'standard' | 'full'
+  capabilities?: Partial<
+    Record<
+      | 'storage'
+      | 'fs'
+      | 'network'
+      | 'process'
+      | 'archive'
+      | 'tasks'
+      | 'events'
+      | 'ui'
+      | 'system'
+      | 'crypto'
+      | 'credentials'
+      | 'pluginData',
+      boolean | Record<string, unknown>
+    >
+  >
   permissions: Permission[]
   config?: Record<string, ConfigField>
 }
@@ -153,6 +172,11 @@ export interface PluginContext {
   logger: PluginLogger
   database: PluginDatabaseAPI
   storage: PluginStorageAPI
+  pluginData: PluginStorageAPI
+  capabilities: {
+    events: Pick<PluginHostAPI, 'emitEvent' | 'onEvent'>
+    system: Pick<PluginHostAPI, 'clipboard' | 'getSystemInfo' | 'registerShortcut'>
+  }
   api: PluginHostAPI
 }
 

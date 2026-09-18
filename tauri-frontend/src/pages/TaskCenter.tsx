@@ -3,12 +3,15 @@ import { CheckCircleOutlined, ClearOutlined, ClockCircleOutlined } from '@ant-de
 import { useTaskStore, type HostTaskStatus } from '../store/task.store'
 import { useAppStore } from '../store/app.store'
 import PluginLogs from './PluginLogs'
+import { tauriApi } from '../api/tauriApi'
 
 const { Title, Text } = Typography
 
 const STATUS_META: Record<HostTaskStatus, { label: string; color: string }> = {
   queued: { label: '等待中', color: 'default' },
   running: { label: '进行中', color: 'processing' },
+  paused: { label: '已暂停', color: 'warning' },
+  'waiting-user': { label: '等待确认', color: 'gold' },
   completed: { label: '已完成', color: 'success' },
   failed: { label: '失败', color: 'error' },
   cancelled: { label: '已取消', color: 'warning' }
@@ -53,6 +56,18 @@ export default function TaskCenter() {
                 )}
               </div>
               <Tag color={meta.color}>{meta.label}</Tag>
+              {task.source === 'marketplace' && task.status === 'running' && (
+                <Button
+                  size="small"
+                  danger
+                  onClick={() => {
+                    useTaskStore.getState().patchTask(task.id, { status: 'cancelled', detail: '正在取消下载' })
+                    void tauriApi.plugin.marketplaceCancel(task.id)
+                  }}
+                >
+                  取消
+                </Button>
+              )}
             </div>
             {typeof task.progress === 'number' && (
               <Progress

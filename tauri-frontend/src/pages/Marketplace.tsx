@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Checkbox, Drawer, Dropdown, Empty, Input, Space, Tag, Typography, theme } from 'antd'
+import { Alert, Button, Checkbox, Drawer, Dropdown, Empty, Input, Progress, Space, Tag, Typography, theme } from 'antd'
 import {
   CheckOutlined,
   DownloadOutlined,
@@ -65,6 +65,7 @@ export default function Marketplace() {
   const [channelReady, setChannelReady] = useState(false)
   const [catalogSource, setCatalogSource] = useState('内置目录')
   const [catalogStale, setCatalogStale] = useState(false)
+  const [networkRoute, setNetworkRoute] = useState('')
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
   const [newPluginCount, setNewPluginCount] = useState(0)
   const [updateCount, setUpdateCount] = useState(0)
@@ -73,6 +74,7 @@ export default function Marketplace() {
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchResult, setBatchResult] = useState<string | null>(null)
   const activeDownloadTaskRef = useRef<string | null>(null)
+  const tasks = useTaskStore((state) => state.tasks)
 
   useEffect(() => {
     let active = true
@@ -125,7 +127,6 @@ export default function Marketplace() {
             description: entry.description ?? base?.description ?? '',
             highlights,
             ...(entry.artifact ? { artifact: entry.artifact } : {}),
-            ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
             ...(typeof entry.size === 'number' ? { size: entry.size } : {}),
             ...(entry.url ? { url: entry.url } : {}),
             ...(entry.icon ? { icon: entry.icon } : {}),
@@ -136,6 +137,7 @@ export default function Marketplace() {
       setRemoteCatalog(merged)
       setCatalogSource(payload.source)
       setCatalogStale(payload.stale)
+      setNetworkRoute(payload.networkRoute)
       setLastCheckedAt(payload.fetchedAt ? payload.fetchedAt * 1000 : Date.now())
       await fetchPlugins()
       const installed = usePluginStore.getState().plugins
@@ -221,20 +223,21 @@ export default function Marketplace() {
     const taskId = `marketplace-${plugin.id}-${Date.now()}`
     activeDownloadTaskRef.current = taskId
     setDownloadingId(plugin.id)
-    useTaskStore.getState().upsertTask({ id: taskId, title: `下载 ${plugin.name}`, detail: `直连官方 Release · 通道 ${channel}`, source: 'marketplace', status: 'running', progress: 0 })
+    useTaskStore.getState().upsertTask({ id: taskId, title: `获取 ${plugin.name}`, detail: `${networkRoute || '统一网络策略'} · 通道 ${channel}`, source: 'marketplace', status: 'running', progress: 0 })
     try {
-      const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'foreground')
-      useTaskStore.getState().patchTask(taskId, { title: `校验 ${plugin.name}`, progress: 70 })
-      const prepared = await installPlugin('zip', path)
+      const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'foreground', taskId)
+      useTaskStore.getState().patchTask(taskId, { title: `准备 ${plugin.name}`, progress: 70 })
+      const prepared = await installPlugin('zip', path, { id: taskId, title: `安装 ${plugin.name}` })
       const installError = usePluginStore.getState().error
-      useTaskStore.getState().patchTask(taskId, prepared
-        ? { status: 'completed', progress: 100, detail: '下载和校验完成，等待安装确认' }
-        : { status: 'failed', error: installError ?? '插件安装预检失败' })
+      if (!prepared) useTaskStore.getState().patchTask(taskId, { status: 'failed', error: installError ?? '插件安装预检失败' })
       if (!prepared) setDownloadError(installError ?? '插件安装预检失败，请查看任务中心后重试。')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      useTaskStore.getState().patchTask(taskId, { status: 'failed', error: message })
-      setDownloadError(message)
+      const cancelled = message.includes('CANCELLED')
+      useTaskStore.getState().patchTask(taskId, cancelled
+        ? { status: 'cancelled', detail: '下载已取消' }
+        : { status: 'failed', error: message })
+      if (!cancelled) setDownloadError(message)
     } finally {
       setDownloadingId(null)
       activeDownloadTaskRef.current = null
@@ -273,7 +276,7 @@ export default function Marketplace() {
     setBatchBusy(true)
     setBatchResult(null)
     setDownloadError(null)
-    const paths: string[] = []
+    const downloads: Array<{ path: string; taskId: string; plugin: MarketplacePlugin }> = []
     const failures: string[] = []
     for (const plugin of items) {
       const taskId = `marketplace-${action}-${plugin.id}-${Date.now()}`
@@ -287,30 +290,38 @@ export default function Marketplace() {
         progress: 0
       })
       try {
-        const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'normal')
-        paths.push(path)
+        const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'normal', taskId)
+        downloads.push({ path, taskId, plugin })
         useTaskStore.getState().patchTask(taskId, {
-          title: `校验 ${plugin.name}`,
-          status: 'completed',
-          progress: 100,
-          detail: '下载和校验完成，等待安装确认'
+          title: `安装 ${plugin.name}`,
+          status: 'queued',
+          progress: 70,
+          detail: '已下载，等待进入安装确认'
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        failures.push(`${plugin.name}: ${message}`)
-        useTaskStore.getState().patchTask(taskId, { status: 'failed', error: message })
+        const cancelled = message.includes('CANCELLED')
+        if (!cancelled) failures.push(`${plugin.name}: ${message}`)
+        useTaskStore.getState().patchTask(taskId, cancelled
+          ? { status: 'cancelled', detail: '下载已取消' }
+          : { status: 'failed', error: message })
       }
     }
     setDownloadingId(null)
     activeDownloadTaskRef.current = null
-    if (paths.length > 0) {
-      usePluginStore.getState().enqueueInstalls(paths.map((path) => ({ source: 'zip' as const, path })))
+    if (downloads.length > 0) {
+      usePluginStore.getState().enqueueInstalls(downloads.map(({ path, taskId, plugin }) => ({
+        source: 'zip' as const,
+        path,
+        taskId,
+        title: `安装 ${plugin.name}`
+      })))
     }
     if (failures.length > 0) {
-      setBatchResult(`已下载 ${paths.length}/${items.length} 个；失败 ${failures.length} 个。失败项可在任务中心重试。`)
+      setBatchResult(`已下载 ${downloads.length}/${items.length} 个；失败 ${failures.length} 个。失败项可在任务中心重试。`)
       setDownloadError(failures.join('\n'))
     } else {
-      setBatchResult(`已下载并校验 ${paths.length} 个插件，正在逐个等待安装确认。`)
+      setBatchResult(`已下载 ${downloads.length} 个插件，正在逐个等待安装确认。`)
     }
     setSelectedIds(new Set())
     setBatchBusy(false)
@@ -441,6 +452,7 @@ export default function Marketplace() {
             const identity = pluginIdentity(plugin.id)
             const installedVersion = installed?.version
             const updateAvailable = Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
+            const pluginTask = tasks.find((task) => task.source === 'marketplace' && task.id.includes(`-${plugin.id}-`) && ['queued', 'running', 'paused', 'waiting-user'].includes(task.status))
             return (
               <Dropdown
                 key={plugin.id}
@@ -502,6 +514,9 @@ export default function Marketplace() {
                   >
                     {plugin.description}
                   </Paragraph>
+                  {pluginTask && typeof pluginTask.progress === 'number' && (
+                    <Progress percent={pluginTask.progress} size="small" showInfo={false} />
+                  )}
                   <Button
                     className="ob-market-card-action"
                     size="small"

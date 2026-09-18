@@ -38,6 +38,10 @@ const plugin: PluginMain = {
     if (!ctx) return { error: 'not activated' }
     const msg = message as { type: string; id?: string; text?: string }
 
+    if (['clipboard:changed', 'deleteItem', 'togglePin', 'clearAll'].includes(msg.type)) {
+      return { error: '旧版剪贴板处于只读兼容期，请在“笔记与效率”中继续管理。' }
+    }
+
     switch (msg.type) {
       case 'clipboard:changed': {
         // 宿主侧 clipboard_monitor 广播的事件
@@ -71,11 +75,6 @@ const plugin: PluginMain = {
       case 'copyToClipboard': {
         if (msg.text === undefined) return { error: 'missing text' }
         await ctx.api.clipboard.write(msg.text)
-        // Clipboard monitors are intentionally debounced by the host.  Add
-        // explicit copies immediately so a fast copy-and-open flow never
-        // loses the item before the native change event arrives.
-        lastText = msg.text
-        if (msg.text) await enqueueHistoryMutation(() => addToHistory(msg.text!))
         return { ok: true }
       }
       default:

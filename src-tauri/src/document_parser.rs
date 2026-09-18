@@ -51,6 +51,36 @@ pub fn parse_file(path: &str) -> Result<Value, String> {
             number: 1,
             text: html_to_text(&decode_text(&bytes)?),
         }],
+        "json" => {
+            let text = decode_text(&bytes)?;
+            let value: Value =
+                serde_json::from_str(&text).map_err(|error| format!("JSON 解析失败: {error}"))?;
+            vec![ParsedPage {
+                number: 1,
+                text: serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?,
+            }]
+        }
+        "xml" => vec![ParsedPage {
+            number: 1,
+            text: html_to_text(&decode_text(&bytes)?),
+        }],
+        "csv" | "tsv" => vec![ParsedPage {
+            number: 1,
+            text: decode_text(&bytes)?,
+        }],
+        "eml" => {
+            let text = decode_text(&bytes)?;
+            let body = text
+                .split_once("\r\n\r\n")
+                .or_else(|| text.split_once("\n\n"))
+                .map(|(_, body)| body)
+                .unwrap_or(&text);
+            vec![ParsedPage {
+                number: 1,
+                text: body.to_string(),
+            }]
+        }
+        "epub" => parse_epub(&bytes)?,
         "docx" => parse_docx(&bytes)?,
         "pptx" => parse_pptx(&bytes)?,
         "xlsx" => parse_xlsx(&bytes)?,
@@ -63,9 +93,50 @@ pub fn parse_file(path: &str) -> Result<Value, String> {
         "docx" => "docx",
         "pptx" => "pptx",
         "xlsx" => "xlsx",
+        "json" => "json",
+        "xml" => "xml",
+        "csv" | "tsv" => "table",
+        "eml" => "email",
+        "epub" => "epub",
         _ => "unknown",
     };
     Ok(build_result(path, &bytes, &extension, kind, pages))
+}
+
+fn parse_epub(bytes: &[u8]) -> Result<Vec<ParsedPage>, String> {
+    let mut archive = ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|error| format!("EPUB 打开失败: {error}"))?;
+    let mut names = (0..archive.len())
+        .filter_map(|index| {
+            archive
+                .by_index(index)
+                .ok()
+                .map(|file| file.name().to_string())
+        })
+        .filter(|name| {
+            name.ends_with(".xhtml") || name.ends_with(".html") || name.ends_with(".htm")
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    let mut pages = Vec::new();
+    for name in names {
+        let mut entry = archive.by_name(&name).map_err(|error| error.to_string())?;
+        let mut text = String::new();
+        entry
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        let text = html_to_text(&text);
+        if !text.trim().is_empty() {
+            pages.push(ParsedPage {
+                number: pages.len() + 1,
+                text,
+            });
+        }
+    }
+    if pages.is_empty() {
+        return Err("EPUB 中没有可读取的正文".into());
+    }
+    Ok(pages)
 }
 
 fn build_result(
@@ -191,14 +262,18 @@ fn build_result(
 fn decode_text(bytes: &[u8]) -> Result<String, String> {
     if bytes.starts_with(&[0xff, 0xfe]) {
         let utf16 = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
         return String::from_utf16(&utf16.collect::<Vec<_>>())
             .map_err(|error| format!("UTF-16LE 文档解码失败: {error}"));
     }
     if bytes.starts_with(&[0xfe, 0xff]) {
         let utf16 = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]));
         return String::from_utf16(&utf16.collect::<Vec<_>>())
             .map_err(|error| format!("UTF-16BE 文档解码失败: {error}"));

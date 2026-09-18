@@ -1,11 +1,7 @@
-# CrucibleBox 插件 SDK v2
+# CrucibleBox 插件 SDK v3
 
 > 当前规范（替代 plugin-sdk-migration.md；模板在 `templates/plugin-template`）。
-> 契约版本：Manifest v2（`manifestVersion: 2`）、backend API v2（`backendApiVersion: 2`）、renderer API v2（`rendererApiVersion: 2`）。
->
-> **SDK v2 已冻结（1.7.0 起）**：本契约不再原位修改。任何 API 变更必须作为 **v3 提案**处理——
-> 在 `packages/cruciblebox-plugin-api` 发布新的 major 版本（`3.0.0`），升级模板与全部插件声明，
-> 并同步本文档的契约版本。CI 通过 6 插件对冻结类型的构建兼容矩阵（`typecheck:plugins`）强制约束。
+> 当前契约：Manifest/API v3；宿主继续兼容 Manifest/API v2。v3 renderer 沿用稳定的 v2 帧协议，新增能力声明、最低宿主版本和信任级别。
 
 ## 1. Manifest 契约
 
@@ -17,15 +13,26 @@
   "author": "cruciblebox",
   "main": "dist/main.js", // 必须存在；renderer-only 时宿主只校验不加载
   "renderer": "dist/renderer.js",
-  "manifestVersion": 2,
-  "backendApiVersion": 2, // "backend": false 时可省略
-  "rendererApiVersion": 2,
+  "manifestVersion": 3,
+  "backendApiVersion": 3, // "backend": false 时可省略
+  "rendererApiVersion": 3,
+  "minimumHostVersion": "2.1.0-beta.1",
+  "trustLevel": "standard",
+  "capabilities": {
+    "storage": true,
+    "network": true,
+    "events": true,
+    "ui": true
+  },
   "permissions": ["storage:read", "storage:write"], // 只声明实际使用的权限
   "config": {}
 }
 ```
 
-- 必填：`manifestVersion: 2`、`backendApiVersion: 2`、`rendererApiVersion: 2`；未知版本关闭失败。
+- 新插件使用 `manifestVersion: 3`、`backendApiVersion: 3`、`rendererApiVersion: 3`；v2 插件无需修改即可继续运行。
+- `minimumHostVersion` 声明最低宿主版本；`minHostVersion` 仅为 v2 兼容保留。
+- `trustLevel` 为 `standard` 或 `full`。`full` 自动申请 `host:full-trust`，安装和升级确认页显示高风险提示。
+- `capabilities` 支持 `storage/fs/network/process/archive/tasks/events/ui/system/crypto/credentials/pluginData`；已实现能力映射为宿主权限。
 - `permissions`：只声明实际使用的权限；升级时预览列出新增/移除权限并二次确认；迁移不删配置/存储/目录。
 - `backend: false`（renderer-only）：不创建 utility process，但仍参与启停/配置重启/退出清理/活跃查询；`main` 为必需占位入口；向 renderer-only 发送 backend 消息得确定性错误。
 - 旧 v1 兼容：已安装 v1 包由 Legacy Full Trust 适配器运行，但宿主**不再接受**新 v1 安装或升级（1.5.23 起）。
@@ -46,7 +53,8 @@
 
 - 仍导出 `activate(ctx)` / `deactivate()` / `onMessage(handler)`。
 - 全部能力走**异步 SDK**（`Promise`）：`ctx.database.query/execute`、`ctx.storage.get/set/delete/list/batch`、`ctx.logger`、`ctx.api.*`（notify/dialog/fetch/readFile/writeFile/registerShortcut/onEvent/emitEvent/invokeTrustedService）。
-- 长任务：立即返回 taskId，由 renderer 轮询或显式取消；不阻塞 RPC。
+- 长任务：立即返回 taskId，由宿主事件推送进度和终态；重连时读取一次任务快照。
+- v3 增加 `ctx.pluginData`（插件私有存储别名）以及 `ctx.capabilities.events/system` 分组入口；v2 的 `ctx.storage`、`ctx.api` 保持可用。
 - `ctx.api.fetch`：30s 超时、响应 ≤50MB；`ctx.api.registerShortcut`：全局快捷键（`Permission.Shortcut`）。
 - 权限在**主进程统一断言**（`PermissionGuard`），子进程侧为 RPC 代理。
 - 生命周期纪律：
@@ -64,7 +72,9 @@
 
 ## 5. 权限清单（Permission 枚举）
 
-`database:read/write`（旧）、`storage:read/write`、`shell:exec`（旧，未授予新插件）、`network:fetch`、`notification`、`clipboard`、`dialog`、`shortcut`、`file:read/write`、`theme:write`、`trusted:unienv`（仅宿主固定摘要第一方实现）。
+Manifest v3 优先使用 `capabilities`，`permissions` 用于精确补充和 v2 兼容。
+
+`database:read/write`（旧）、`storage:read/write`、`shell:exec`、`network:fetch`、`notification`、`clipboard`、`dialog`、`shortcut`、`file:read/write`、`theme:write`、三个第一方可信服务权限，以及 `host:full-trust`。
 
 > 高权限能力（进程/下载/解压/环境修改）**不扩大通用插件能力**：应设计宿主持有的固定服务 + 操作白名单 + 输入协议 + 资源预算 + 摘要策略（UniEnv 即此模式）。
 

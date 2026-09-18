@@ -1,15 +1,15 @@
 {
   "unienv": {
     "name": "unienv",
-    "version": "0.11.0",
-    "digest": "75d84102ff8db835e60021d76d611a0a995ebdbb0e14cfdc28c71f21ccca3c92",
+    "version": "0.12.0-beta.1",
+    "digest": "ce4f61a0f74149663797cdd5eb285cdcd296400d6080b74a20d0f0b4de839d6c",
     "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.10.0",
+    "version": "0.11.0-beta.1",
     "permissions": ["trusted:document-engine", "dialog"],
-    "digest": "e1d7bba1695ed2fc35ef6b48db72a6a463a8450d9c2a0df8e60a21c8b1de0a85",
+    "digest": "8433ead3e74d6605552c70148b8486e6e8deccd61f1743c818a0b2a53af054b2",
     "files": [
       "dist/main.js",
       "dist/renderer.js",
@@ -21,5 +21,12 @@
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
       "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
     ]
+  },
+  "archive-extractor": {
+    "name": "archive-extractor",
+    "version": "0.1.0",
+    "permissions": ["trusted:archive-extractor", "dialog"],
+    "digest": "40b685224eb357742642ead1be6f71dde73f072fd67a3a8f452322f74f209931",
+    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
   }
 }
