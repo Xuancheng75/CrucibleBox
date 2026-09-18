@@ -48,8 +48,8 @@ const sevenZipDirectory = staged
   ? join(target, 'src-tauri', 'resources', '7zip')
   : join(target, 'resources', '7zip')
 const sevenZip = [
-  firstFile([join(sevenZipDirectory, '7z.exe')]),
-  firstFile([join(sevenZipDirectory, '7z.dll')]),
+  firstFile([join(sevenZipDirectory, '7za.exe')]),
+  firstFile([join(sevenZipDirectory, '7za.dll')]),
   firstFile([join(sevenZipDirectory, 'License.txt')])
 ]
 if (!worker || !pdfium || !ortDirectory || sevenZip.some((file) => !file)) {
@@ -58,8 +58,8 @@ if (!worker || !pdfium || !ortDirectory || sevenZip.some((file) => !file)) {
     !pdfium && 'pdfium.dll',
     !ort[0] && 'onnxruntime.dll',
     !ort[1] && 'onnxruntime_providers_shared.dll',
-    !sevenZip[0] && '7zip/7z.exe',
-    !sevenZip[1] && '7zip/7z.dll',
+    !sevenZip[0] && '7zip/7za.exe',
+    !sevenZip[1] && '7zip/7za.dll',
     !sevenZip[2] && '7zip/License.txt'
   ]
     .filter(Boolean)
