@@ -19,7 +19,7 @@
     "noEmit": true,
     "paths": {
       "@cruciblebox/next-api": ["./vendor/next-api/src/index.d.ts"],
-      "@cruciblebox/plugin-ui": ["./vendor/plugin-ui/dist/index.d.ts"]
+      "@cruciblebox/plugin-ui": ["./vendor/plugin-ui/src/index.tsx"]
     }
   },
   "include": ["src/**/*", "tests/**/*", "scripts/**/*"],

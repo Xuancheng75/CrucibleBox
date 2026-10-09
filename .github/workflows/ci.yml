@@ -77,8 +77,8 @@ jobs:
       - name: Measure controlled document worker performance
         shell: pwsh
         run: |
-          $env:DOCUMENT_WORKER_PERF_RESULT = 'artifacts/document-runtime/performance.json'
-          $env:DOCUMENT_WORKER_STRESS_RESULT = 'artifacts/document-runtime/stress-2000-pages.json'
+          $env:DOCUMENT_WORKER_PERF_RESULT = Join-Path $env:GITHUB_WORKSPACE 'artifacts/document-runtime/performance.json'
+          $env:DOCUMENT_WORKER_STRESS_RESULT = Join-Path $env:GITHUB_WORKSPACE 'artifacts/document-runtime/stress-2000-pages.json'
           cargo test --release --manifest-path workers/document/Cargo.toml --test performance -- --ignored --nocapture --test-threads=1
 
       - name: Upload controlled document worker performance evidence

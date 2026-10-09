@@ -51,7 +51,7 @@ export async function exportSource(id, destination) {
     if (info.isDirectory()) {
       await mkdir(to, { recursive: true })
       for (const name of await readdir(from))
-        if (name !== 'node_modules') await copy(join(from, name), join(to, name))
+        if (!['node_modules', 'dist'].includes(name)) await copy(join(from, name), join(to, name))
     } else if (info.isFile()) {
       await copyFile(from, to)
       const bytes = await readFile(to)
