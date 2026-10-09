@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Badge, Button, Layout, theme } from 'antd'
 import { ClockCircleOutlined } from '@ant-design/icons'
 import IconRail from '../components/IconRail'
@@ -5,32 +6,39 @@ import CommandPalette from '../components/CommandPalette'
 import { useAppStore } from '../store/app.store'
 import { useThemeStore } from '../store/theme.store'
 import { useTaskStore } from '../store/task.store'
+import type { AppPage } from '../app-pages'
 
 const { Header, Sider, Content } = Layout
 
-const PAGE_META: Record<string, { title: string; subtitle: string; hud: string }> = {
-  home: { title: '工作台', subtitle: '启动与管理工作台中的工具插件', hud: 'WORKBENCH' },
-  marketplace: { title: '插件市场', subtitle: '发现和获取新的工具能力', hud: 'MARKET' },
-  tasks: { title: '任务中心', subtitle: '统一查看下载、安装与后台任务', hud: 'TASKS' },
-  logs: { title: '插件日志', subtitle: '查看插件运行日志', hud: 'TRACE LOG' },
-  settings: { title: '设置', subtitle: '应用信息与运行环境', hud: 'SYSTEM CFG' },
-  pluginView: { title: '插件详情', subtitle: '插件运行界面', hud: 'PLUGIN LINK' }
+const PAGE_META: Record<AppPage, { title: string; hud: string }> = {
+  home: { title: '工作台', hud: 'WORKBENCH' },
+  marketplace: { title: '插件市场', hud: 'MARKET' },
+  tasks: { title: '任务中心', hud: 'TASKS' },
+  logs: { title: '插件日志', hud: 'TRACE LOG' },
+  settings: { title: '设置', hud: 'SETTINGS' },
+  pluginView: { title: '插件页面', hud: 'PLUGIN' }
 }
 
 interface MainLayoutProps {
   children: React.ReactNode
+  appVersion: string
 }
 
-export default function MainLayout({ children }: MainLayoutProps) {
+export default function MainLayout({ children, appVersion }: MainLayoutProps) {
   const { token } = theme.useToken()
-  const currentPage = useAppStore((s) => s.currentPage)
-  const setCurrentPage = useAppStore((s) => s.setCurrentPage)
-  const themeName = useThemeStore((s) => s.theme.name)
-  const pageMeta = PAGE_META[currentPage] ?? PAGE_META.home
-  const selectedNavigationPage = currentPage === 'pluginView' ? 'home' : currentPage
+  const currentPage = useAppStore((state) => state.currentPage)
+  const setCurrentPage = useAppStore((state) => state.setCurrentPage)
+  const themeName = useThemeStore((state) => state.theme.name)
   const activeTaskCount = useTaskStore(
-    (state) => state.tasks.filter((task) => ['queued', 'running', 'paused', 'waiting-user'].includes(task.status)).length
+    (state) =>
+      state.tasks.filter((task) =>
+        ['queued', 'running', 'paused', 'waiting-user'].includes(task.status)
+      ).length
   )
+  const [compact, setCompact] = useState(false)
+  const railWidth = compact ? 56 : 176
+  const selectedNavigationPage = currentPage === 'pluginView' ? 'home' : currentPage
+  const pageMeta = PAGE_META[currentPage] ?? PAGE_META.home
 
   return (
     <Layout
@@ -44,24 +52,28 @@ export default function MainLayout({ children }: MainLayoutProps) {
     >
       <Sider
         className="ob-rail-shell"
-        width={72}
+        width={railWidth}
+        collapsedWidth={56}
         style={{
-          background: token.colorBgContainer,
-          borderRight: `1px solid ${token.colorBorder}`,
-          // Keep the rail anchored to the viewport.  `sticky` can still move
-          // with an intermediate flex scrolling context in compact windows.
           position: 'fixed',
           left: 0,
           top: 0,
+          zIndex: 20,
           height: '100dvh',
           minHeight: 0,
-          zIndex: 20,
           flexShrink: 0,
-          overflow: 'hidden',
-          alignSelf: 'flex-start'
+          background: token.colorPrimaryBg,
+          borderRight: `1px solid ${token.colorBorder}`,
+          overflow: 'hidden'
         }}
       >
-        <IconRail selectedKey={selectedNavigationPage} onChange={setCurrentPage} />
+        <IconRail
+          appVersion={appVersion}
+          selectedKey={selectedNavigationPage}
+          onChange={setCurrentPage}
+          compact={compact}
+          onCompactChange={() => setCompact((value) => !value)}
+        />
       </Sider>
       <Layout
         className="ob-app-main-layout"
@@ -70,40 +82,25 @@ export default function MainLayout({ children }: MainLayoutProps) {
           minWidth: 0,
           minHeight: 0,
           overflow: 'hidden',
-          marginLeft: 72
+          marginLeft: railWidth
         }}
       >
         <Header
           className="ob-app-header"
           style={{
-            // 1.9.13：不透明背景 + 分隔线。此前 transparent 使滚动内容穿透顶栏
-            // 与标题文字重叠（cyber/neon 有 !important 背景不受影响）。
-            background: token.colorBgLayout,
-            borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            padding: '0 28px',
+            height: 48,
+            minHeight: 48,
+            padding: '0 22px',
             display: 'flex',
             alignItems: 'center',
-            gap: 20,
-            height: 64,
-            position: 'sticky',
-            top: 0,
+            gap: 18,
+            background: token.colorBgContainer,
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
+            position: 'relative',
             zIndex: 10
           }}
         >
-          <div style={{ flexShrink: 0, minWidth: 0 }}>
-            <span
-              className="ob-brand-wordmark"
-              style={{
-                fontSize: 22,
-                fontWeight: 800,
-                color: token.colorPrimary,
-                letterSpacing: 0.5,
-                whiteSpace: 'nowrap'
-              }}
-            >
-              CrucibleBox
-            </span>
-          </div>
+          <span className="cbx-header-location">{pageMeta.title}</span>
           <div style={{ flex: 1 }} />
           <Badge count={activeTaskCount} size="small">
             <Button
@@ -115,35 +112,28 @@ export default function MainLayout({ children }: MainLayoutProps) {
               任务
             </Button>
           </Badge>
-          <div
-            className="ob-theme-status"
-            style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}
-          >
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: token.colorPrimary,
-                boxShadow: `0 0 8px ${token.colorPrimary}`
-              }}
-            />
-            <span style={{ fontSize: 13, color: token.colorTextSecondary }}>{themeName}</span>
-          </div>
+          <span className="cbx-header-theme">
+            <span aria-hidden="true" />
+            {themeName}
+          </span>
         </Header>
         <Content
           className="ob-main-content"
           data-hud={pageMeta.hud}
           style={{
-            margin: '0 28px 28px',
-            padding: 4,
             minHeight: 0,
             flex: 1,
-            overflow: 'auto',
+            padding: '20px 22px 22px',
+            overflow: currentPage === 'home' ? 'hidden' : 'auto',
             overscrollBehavior: 'contain'
           }}
         >
-          <div className="ob-main-surface">{children}</div>
+          <div
+            className="ob-main-surface"
+            style={{ height: currentPage === 'home' ? '100%' : undefined }}
+          >
+            {children}
+          </div>
         </Content>
       </Layout>
       <CommandPalette />

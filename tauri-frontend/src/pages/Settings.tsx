@@ -38,7 +38,6 @@ const UPDATE_CHECK_TIMEOUT_MS = 30_000
 const UPDATE_CHECK_ATTEMPTS = 3
 const UPDATE_CHECK_RETRY_DELAY_MS = 1_000
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 5 * 60_000
-const UPDATE_TASK_ID = 'app-update-download'
 
 function loadChannel(): AppUpdateChannel {
   try {
@@ -63,6 +62,8 @@ export default function Settings() {
   const [proxyMode, setProxyMode] = useState<DownloadProxyMode>('auto')
   const [proxyUrl, setProxyUrl] = useState('')
   const [networkDiagnostic, setNetworkDiagnostic] = useState<NetworkDiagnostic | null>(null)
+  const [faultHistory, setFaultHistory] = useState<{ path: string; text: string } | null>(null)
+  const [faultError, setFaultError] = useState<string | null>(null)
   const [diagnosingNetwork, setDiagnosingNetwork] = useState(false)
   const [checking, setChecking] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -210,9 +211,10 @@ export default function Settings() {
   const handleDownload = useCallback(async () => {
     const update = updateRef.current
     if (!update || downloading) return
+    const updateTaskId = `app-update-${Date.now()}-${Math.random().toString(16).slice(2)}`
     setDownloading(true)
     upsertTask({
-      id: UPDATE_TASK_ID,
+      id: updateTaskId,
       title: '下载 CrucibleBox 更新',
       detail: `更新通道：${channel === 'beta' ? '测试版' : '稳定版'}`,
       source: 'update',
@@ -263,7 +265,7 @@ export default function Settings() {
                     : null
                 if (percent !== null) {
                   downloadProgressRef.current = Math.max(downloadProgressRef.current, percent)
-                  patchTask(UPDATE_TASK_ID, {
+                  patchTask(updateTaskId, {
                     progress: downloadProgressRef.current,
                     detail: `已下载 ${downloadProgressRef.current}%`
                   })
@@ -296,7 +298,7 @@ export default function Settings() {
         progressPercent: 100,
         message: null
       }))
-      patchTask(UPDATE_TASK_ID, { status: 'completed', progress: 100, detail: '下载完成' })
+      patchTask(updateTaskId, { status: 'completed', progress: 100, detail: '下载完成' })
     } catch (e) {
       const message = formatUpdateError(e)
       setUpdateState((current) => ({
@@ -304,7 +306,7 @@ export default function Settings() {
         phase: 'error',
         message
       }))
-      patchTask(UPDATE_TASK_ID, { status: 'failed', error: message, detail: '下载失败' })
+      patchTask(updateTaskId, { status: 'failed', error: message, detail: '下载失败' })
     } finally {
       setDownloading(false)
     }
@@ -402,7 +404,7 @@ export default function Settings() {
               aria-label="手动代理地址"
               value={proxyUrl}
               disabled={proxyMode !== 'manual' && proxyMode !== 'auto'}
-              placeholder="例如 http://127.0.0.1:7890"
+              placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:7890"
               style={{ width: 320 }}
               onChange={(event) => setProxyUrl(event.target.value)}
               onBlur={() => void tauriApi.settings.set('downloadProxyUrl', proxyUrl.trim())}
@@ -522,6 +524,28 @@ export default function Settings() {
               </Button>
             )}
           </Space>
+        </Space>
+      </Card>
+      <Card className="ob-surface-card ob-settings-card" title="本地故障记录" style={{ marginTop: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Text type="secondary">仅记录版本、运行阶段和插件标识，不记录文档内容，也不会自动上传。</Text>
+          <Space>
+            <Button onClick={() => void tauriApi.app.faultHistory().then((result) => { setFaultHistory(result); setFaultError(null) }).catch((error) => setFaultError(String(error)))}>查看记录</Button>
+            <Button disabled={!faultHistory} onClick={() => {
+              if (!faultHistory) return
+              const url = URL.createObjectURL(new Blob([faultHistory.text], { type: 'text/plain;charset=utf-8' }))
+              const anchor = document.createElement('a')
+              anchor.href = url
+              anchor.download = 'CrucibleBox-故障记录.txt'
+              anchor.click()
+              window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+            }}>导出记录</Button>
+          </Space>
+          {faultError && <Alert type="error" message={faultError} />}
+          {faultHistory && <>
+            <Text type="secondary">保存位置：{faultHistory.path}</Text>
+            <pre style={{ maxHeight: 240, overflow: 'auto', padding: 12, border: `1px solid ${token.colorBorder}`, whiteSpace: 'pre-wrap' }}>{faultHistory.text || '暂无记录'}</pre>
+          </>}
         </Space>
       </Card>
     </div>

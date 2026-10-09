@@ -1,14 +1,15 @@
 {
-  "name": "turntable",
-  "version": "0.3.0",
-  "displayName": "旧版转盘（兼容入口）",
-  "description": "旧选项保留入口；新的权重抽取和随机分组请使用“笔记与效率”。",
+  "id": "turntable",
+  "version": "0.5.0-alpha.1",
+  "displayName": "随机决策",
+  "description": "转盘权重抽取、转盘动画、结果历史与骰子投掷。",
   "author": "CrucibleBox",
-  "main": "dist/main.js",
+  "category": "效率工具",
+  "manifestVersion": 5,
+  "sdkApiVersion": 5,
+  "wireVersion": 3,
+  "dataSchemaVersion": 1,
   "renderer": "dist/renderer.js",
-  "manifestVersion": 2,
-  "backendApiVersion": 2,
-  "rendererApiVersion": 2,
   "permissions": ["storage:read", "storage:write", "notification"],
   "config": {
     "themeColor": {

@@ -16,21 +16,32 @@ use crate::unienv_task::{TaskContext, TaskManager, INSTALLATION_RESOURCE};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 const MAX_INSTALL_PATH_LENGTH: usize = 240;
 const MAX_CUSTOM_COMBOS: usize = 20;
 const MAX_COMBO_ITEMS: usize = 10;
 
-fn tasks() -> &'static Arc<TaskManager> {
-    static TASKS: OnceLock<Arc<TaskManager>> = OnceLock::new();
-    TASKS.get_or_init(|| Arc::new(TaskManager::default()))
-}
+type RecoveryCache = std::collections::BTreeMap<PathBuf, Result<(), String>>;
 
-static RECOVERY_DONE: AtomicBool = AtomicBool::new(false);
-static STARTUP_ERROR: OnceLock<String> = OnceLock::new();
-static INLINE_MUTATION: Mutex<Option<String>> = Mutex::new(None);
+/// Explicit host-owned service state; one instance per application composition.
+pub struct Service {
+    tasks: Arc<TaskManager>,
+    recovery: Mutex<RecoveryCache>,
+    inline_mutation: Mutex<Option<String>>,
+}
+impl Service {
+    pub fn new(runtime: Arc<crate::task_runtime::TaskRuntime>) -> Self {
+        Self {
+            tasks: Arc::new(TaskManager::with_runtime("unienv", runtime)),
+            recovery: Mutex::new(std::collections::BTreeMap::new()),
+            inline_mutation: Mutex::new(None),
+        }
+    }
+    pub fn set_observer(&self, observer: Arc<dyn Fn(Value) + Send + Sync>) {
+        self.tasks.set_observer(observer);
+    }
+}
 
 fn err(code: &str, message: String) -> Value {
     json!({ "error": message, "code": code })
@@ -322,17 +333,10 @@ fn parse_custom_combos(value: Option<&Value>) -> Result<Vec<ComboPack>, String> 
 /// 从插件 config_data 现读配置；记录缺失/解析失败时回退默认值。
 fn load_config(db: &Db, plugin_id: &str) -> UniEnvConfig {
     let raw = db
-        .conn()
-        .lock()
+        .plugin_find_by_id(plugin_id)
         .ok()
-        .and_then(|conn| {
-            conn.query_row(
-                "SELECT config_data FROM plugins WHERE id = ?1",
-                [plugin_id],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-        })
+        .flatten()
+        .map(|record| record.config_data)
         .unwrap_or_else(|| "{}".into());
     let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
     let mirror = parsed
@@ -548,35 +552,33 @@ fn all_version_roots(install_root: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// activate 时执行一次；失败记录到 STARTUP_ERROR 并让后续写操作 fail-closed。
-fn ensure_recovery(db: &Db, plugin_id: &str) {
-    if RECOVERY_DONE.swap(true, Ordering::SeqCst) {
-        return;
-    }
+/// Per-root recovery completes before writes are admitted; failures remain fail-closed.
+fn ensure_recovery(context: &Service, db: &Db, plugin_id: &str) -> Result<(), Value> {
     let cfg = load_config(db, plugin_id);
-    match unienv_install::recover_interrupted_staging(&all_version_roots(&cfg.install_root)) {
-        Ok(removed) if !removed.is_empty() => {
-            eprintln!(
-                "[unienv] cleaned {} interrupted staging dir(s)",
-                removed.len()
-            );
-        }
-        Ok(_) => {}
-        Err(message) => {
-            eprintln!("[unienv] startup recovery failed: {message}");
-            let _ = STARTUP_ERROR.set(message);
-        }
+    let mut recovery = context
+        .recovery
+        .lock()
+        .map_err(|_| err("startup-recovery-failed", "恢复状态不可用".into()))?;
+    if let Some(result) = recovery.get(&cfg.install_root) {
+        return result
+            .clone()
+            .map_err(|message| err("startup-recovery-failed", message));
     }
-}
-
-fn assert_recovery_ready() -> Result<(), Value> {
-    if let Some(error) = STARTUP_ERROR.get() {
+    if recovery.len() >= 32 {
         return Err(err(
             "startup-recovery-failed",
-            format!("启动恢复未完成，拒绝修改环境: {error}"),
+            "恢复路径数量超过预算".into(),
         ));
     }
-    Ok(())
+    // Hold the recovery gate until filesystem recovery has finished. No DB lock is held.
+    let result = unienv_install::recover_interrupted_staging(&all_version_roots(&cfg.install_root))
+        .map(|removed| {
+            if !removed.is_empty() {
+                eprintln!("[unienv] recovered {} staging directories", removed.len());
+            }
+        });
+    recovery.insert(cfg.install_root, result.clone());
+    result.map_err(|message| err("startup-recovery-failed", message))
 }
 
 fn require_windows() -> Result<(), Value> {
@@ -595,41 +597,52 @@ fn require_windows() -> Result<(), Value> {
 
 /// 轻量内联互斥：仅串行化 inline 写操作（install/installCombo 启动瞬间与
 /// uninstall/switchVersion 执行期）。installation 单飞由 TaskManager resourceKey 负责。
-fn try_begin_inline(label: &str) -> Result<InlineMutationGuard, Value> {
-    {
-        let current = INLINE_MUTATION.lock().unwrap();
-        if let Some(active) = current.as_ref() {
-            return Err(err(
-                "mutation-conflict",
-                format!("另一个写操作正在执行: {active}"),
-            ));
-        }
+fn claim_inline(slot: &Mutex<Option<String>>, label: &str) -> Result<(), Value> {
+    let mut current = slot
+        .lock()
+        .map_err(|_| err("mutation-conflict", "写操作状态不可用".into()))?;
+    if let Some(active) = current.as_ref() {
+        return Err(err(
+            "mutation-conflict",
+            format!("另一个写操作正在执行: {active}"),
+        ));
     }
-    *INLINE_MUTATION.lock().unwrap() = Some(label.to_string());
-    Ok(InlineMutationGuard)
+    *current = Some(label.to_owned());
+    Ok(())
+}
+fn try_begin_inline<'a>(
+    context: &'a Service,
+    label: &str,
+) -> Result<InlineMutationGuard<'a>, Value> {
+    claim_inline(&context.inline_mutation, label)?;
+    Ok(InlineMutationGuard {
+        slot: &context.inline_mutation,
+    })
 }
 
 /// 内联写操作完整守卫（对等 assertNoInlineMutation + assertNoInstallationTask）：
 /// 额外拒绝在安装任务运行期间执行 uninstall/switchVersion。
-fn guard_inline_mutation(label: &str) -> Result<InlineMutationGuard, Value> {
-    if let Some(active) = tasks().active_task(INSTALLATION_RESOURCE) {
+fn guard_inline_mutation<'a>(
+    context: &'a Service,
+    label: &str,
+) -> Result<InlineMutationGuard<'a>, Value> {
+    let guard = try_begin_inline(context, label)?;
+    if let Some(active) = context.tasks.active_task(INSTALLATION_RESOURCE) {
         return Err(err("task-conflict", format!("安装任务正在执行: {active}")));
     }
-    try_begin_inline(label)
+    Ok(guard)
 }
 
-struct InlineMutationGuard;
+struct InlineMutationGuard<'a> {
+    slot: &'a Mutex<Option<String>>,
+}
 
-impl Drop for InlineMutationGuard {
+impl Drop for InlineMutationGuard<'_> {
     fn drop(&mut self) {
-        *INLINE_MUTATION.lock().unwrap() = None;
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = None;
+        }
     }
-}
-
-/// install/installCombo 启动后立即释放 inline 守卫（任务自身由 installation
-/// resourceKey 单飞保护）；uninstall/switchVersion 由 InlineMutationGuard::drop 释放。
-fn end_inline() {
-    *INLINE_MUTATION.lock().unwrap() = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +674,18 @@ struct InstallRequest {
     version: String,
 }
 
+fn publish_install_step(
+    ctx: &TaskContext,
+    path: &Path,
+    publish: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    ctx.publish_step(|| {
+        publish()?;
+        Ok(json!({"path":path.to_string_lossy()}))
+    })
+    .map(|_| ())
+}
+
 fn run_install_executor(ctx: &TaskContext, request: InstallRequest) -> Result<Value, String> {
     let InstallRequest {
         install_root,
@@ -684,6 +709,10 @@ fn run_install_executor(ctx: &TaskContext, request: InstallRequest) -> Result<Va
         &plan,
         &progress_adapter(ctx, None),
         ctx.cancel_flag(),
+        unienv_install::Publication {
+            reserve: &|path, publish| publish_install_step(ctx, path, publish),
+            context: Some(ctx.runtime_context()),
+        },
     )?;
     if auto_configure_environment {
         unienv_install::configure_environment(Path::new(&install_root))?;
@@ -806,6 +835,10 @@ fn run_combo_executor(ctx: &TaskContext, request: ComboInstallRequest) -> Result
                     &plan,
                     &adapter,
                     ctx.cancel_flag(),
+                    unienv_install::Publication {
+                        reserve: &|path, publish| publish_install_step(ctx, path, publish),
+                        context: Some(ctx.runtime_context()),
+                    },
                 )
             });
         match install {
@@ -864,6 +897,10 @@ fn run_offline_executor(
         Path::new(&archive_path),
         &progress_adapter(ctx, None),
         ctx.cancel_flag(),
+        unienv_install::Publication {
+            reserve: &|path, publish| publish_install_step(ctx, path, publish),
+            context: Some(ctx.runtime_context()),
+        },
     )?;
     if auto_configure_environment {
         unienv_install::configure_environment(Path::new(&install_root))?;
@@ -968,7 +1005,7 @@ fn tool_field(request: &Value) -> Result<String, Value> {
 
 /// 处理 unienv 'message' 操作。返回值始终是可序列化响应对象
 /// （协议级错误以 { error, code } 内联返回，对齐冻结线 toErrorResponse 形状）。
-fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
+fn handle_message(context: &Service, db: &Db, plugin_id: &str, payload: &Value) -> Value {
     let request = match payload {
         Value::Object(_) => payload,
         _ => return err("invalid-value", "message payload must be an object".into()),
@@ -1067,7 +1104,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             json!({ "items": rows })
         }
         "installProject" => {
-            if let Err(e) = preflight_mutation(db, plugin_id) {
+            if let Err(e) = preflight_mutation(context, db, plugin_id) {
                 return e;
             }
             let cfg = load_config(db, plugin_id);
@@ -1095,14 +1132,15 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             if items.is_empty() {
                 return err("invalid-value", "项目工具清单为空".into());
             }
-            if let Err(e) = try_begin_inline("项目环境安装") {
-                return e;
-            }
+            let inline_guard = match try_begin_inline(context, "项目环境安装") {
+                Ok(guard) => guard,
+                Err(e) => return e,
+            };
             let install_root = cfg.install_root.to_string_lossy().into_owned();
             let mirror = cfg.download_mirror.clone();
             let mirror_fallback = cfg.mirror_fallback;
             let auto = cfg.auto_configure_environment;
-            let start = tasks().start(
+            let start = context.tasks.start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
                     run_combo_executor(
@@ -1119,14 +1157,14 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     )
                 }),
             );
-            end_inline();
+            drop(inline_guard);
             match start {
                 Ok(task_id) => json!({ "success": true, "taskId": task_id }),
                 Err(conflict) => err("task-conflict", conflict),
             }
         }
         "installOffline" => {
-            if let Err(e) = preflight_mutation(db, plugin_id) {
+            if let Err(e) = preflight_mutation(context, db, plugin_id) {
                 return e;
             }
             let tool = match tool_field(request) {
@@ -1149,18 +1187,19 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             if !Path::new(&archive_path).is_file() {
                 return err("invalid-path", "离线包文件不存在".into());
             }
-            if let Err(e) = try_begin_inline("离线安装") {
-                return e;
-            }
+            let inline_guard = match try_begin_inline(context, "离线安装") {
+                Ok(guard) => guard,
+                Err(e) => return e,
+            };
             let install_root = cfg.install_root.to_string_lossy().into_owned();
             let auto = cfg.auto_configure_environment;
-            let start = tasks().start(
+            let start = context.tasks.start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
                     run_offline_executor(ctx, install_root, tool, version, archive_path, auto)
                 }),
             );
-            end_inline();
+            drop(inline_guard);
             match start {
                 Ok(task_id) => json!({ "success": true, "taskId": task_id }),
                 Err(conflict) => err("task-conflict", conflict),
@@ -1178,7 +1217,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             detect_tool(&cfg.install_root.to_string_lossy(), &tool)
         }
         "install" => {
-            if let Err(e) = preflight_mutation(db, plugin_id) {
+            if let Err(e) = preflight_mutation(context, db, plugin_id) {
                 return e;
             }
             let tool = match tool_field(request) {
@@ -1199,14 +1238,16 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             {
                 return err("invalid-path", message);
             }
-            if let Err(e) = try_begin_inline(&format!("安装 {tool} {version}")) {
-                return e;
-            }
+            let inline_guard = match try_begin_inline(context, &format!("安装 {tool} {version}"))
+            {
+                Ok(guard) => guard,
+                Err(e) => return e,
+            };
             let install_root = cfg.install_root.to_string_lossy().into_owned();
             let mirror = cfg.download_mirror.clone();
             let mirror_fallback = cfg.mirror_fallback;
             let online = cfg.online_versions && crate::unienv_versions::provider_supports(&tool);
-            let start = tasks().start(
+            let start = context.tasks.start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
                     run_install_executor(
@@ -1223,7 +1264,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     )
                 }),
             );
-            end_inline();
+            drop(inline_guard);
             match start {
                 Ok(task_id) => {
                     json!({ "success": true, "taskId": task_id, "message": "安装任务已创建" })
@@ -1232,7 +1273,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         "installCombo" => {
-            if let Err(e) = preflight_mutation(db, plugin_id) {
+            if let Err(e) = preflight_mutation(context, db, plugin_id) {
                 return e;
             }
             let combo_id = match str_field(request, "comboId", 64) {
@@ -1250,13 +1291,14 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     return err("invalid-path", message);
                 }
             }
-            if let Err(e) = try_begin_inline(&format!("组合包 {combo_id}")) {
-                return e;
-            }
+            let inline_guard = match try_begin_inline(context, &format!("组合包 {combo_id}")) {
+                Ok(guard) => guard,
+                Err(e) => return e,
+            };
             let install_root = cfg.install_root.to_string_lossy().into_owned();
             let mirror = cfg.download_mirror.clone();
             let mirror_fallback = cfg.mirror_fallback;
-            let start = tasks().start(
+            let start = context.tasks.start(
                 INSTALLATION_RESOURCE,
                 Box::new(move |ctx| {
                     run_combo_executor(
@@ -1273,7 +1315,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     )
                 }),
             );
-            end_inline();
+            drop(inline_guard);
             match start {
                 Ok(task_id) => {
                     json!({ "success": true, "taskId": task_id, "message": "组合安装任务已创建" })
@@ -1287,7 +1329,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: taskId".into()),
                 Err(e) => return e,
             };
-            match tasks().get(&task_id) {
+            match context.tasks.get(&task_id) {
                 Some(snapshot) => snapshot,
                 None => err("task-not-found", "未找到指定任务".into()),
             }
@@ -1298,14 +1340,14 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: taskId".into()),
                 Err(e) => return e,
             };
-            if tasks().cancel(&task_id) {
+            if context.tasks.cancel(&task_id) {
                 json!({ "success": true, "taskId": task_id })
             } else {
                 err("task-not-cancellable", "任务不存在或已结束".into())
             }
         }
         "uninstall" => {
-            if let Err(e) = preflight_mutation(db, plugin_id) {
+            if let Err(e) = preflight_mutation(context, db, plugin_id) {
                 return e;
             }
             let tool = match tool_field(request) {
@@ -1314,7 +1356,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             };
             let cfg = load_config(db, plugin_id);
             let label = format!("卸载 {}", display_name(&tool));
-            let guard = match guard_inline_mutation(&label) {
+            let guard = match guard_inline_mutation(context, &label) {
                 Ok(g) => g,
                 Err(e) => return e,
             };
@@ -1328,7 +1370,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         "switchVersion" => {
-            if let Err(e) = preflight_mutation(db, plugin_id) {
+            if let Err(e) = preflight_mutation(context, db, plugin_id) {
                 return e;
             }
             let tool = match tool_field(request) {
@@ -1349,7 +1391,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 return err("invalid-path", message);
             }
             let label = format!("切换 {}", display_name(&tool));
-            let guard = match guard_inline_mutation(&label) {
+            let guard = match guard_inline_mutation(context, &label) {
                 Ok(g) => g,
                 Err(e) => return e,
             };
@@ -1357,7 +1399,26 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             drop(guard);
             match result {
                 Ok(()) => {
-                    json!({ "success": true, "message": format!("已切换到 {} {version}", display_name(&tool)) })
+                    if cfg.auto_configure_environment {
+                        if let Err(message) =
+                            unienv_install::configure_environment(&cfg.install_root)
+                        {
+                            return json!({
+                                "error": format!("版本已切换到 {} {version}，但 Windows 终端环境更新失败：{message}", display_name(&tool)),
+                                "code": "environment-configure-failed",
+                                "versionSwitched": true
+                            });
+                        }
+                    }
+                    let terminal_note = if cfg.auto_configure_environment {
+                        "；新开的终端会使用此版本，已打开的终端请重新打开"
+                    } else {
+                        ""
+                    };
+                    json!({
+                        "success": true,
+                        "message": format!("已切换到 {} {version}{terminal_note}", display_name(&tool))
+                    })
                 }
                 Err(message) => err("switch-failed", message),
             }
@@ -1417,10 +1478,9 @@ pub(crate) fn dispatch_online_versions(
 }
 
 /// 写操作公共前置：Windows 限定 + 启动恢复 + fail-closed 断言。
-fn preflight_mutation(db: &Db, plugin_id: &str) -> Result<(), Value> {
+fn preflight_mutation(context: &Service, db: &Db, plugin_id: &str) -> Result<(), Value> {
     require_windows()?;
-    ensure_recovery(db, plugin_id);
-    assert_recovery_ready()
+    ensure_recovery(context, db, plugin_id)
 }
 
 /// builtin 优先、custom 兜底的组合包查找（对齐 getCombos(...).find）。
@@ -1520,6 +1580,7 @@ fn detect_tool(install_root: &str, tool: &str) -> Value {
 /// 统一入口：envelope_host::host_dispatch 分发 "trusted.invoke" 时调用。
 /// params: { service, operation, payload? }。仅接受 service == "unienv"。
 pub fn dispatch(
+    context: &Service,
     db: &Db,
     plugin_id: &str,
     service: &str,
@@ -1530,28 +1591,79 @@ pub fn dispatch(
         return Err(format!("unknown trusted service: {service}"));
     }
     if operation == "activate" {
-        ensure_recovery(db, plugin_id);
+        ensure_recovery(context, db, plugin_id).map_err(|value| value.to_string())?;
         return Ok(Value::Null);
     }
     if operation == "deactivate" {
-        tasks().cancel_all_active();
+        context.tasks.cancel_all_active();
         return Ok(Value::Null);
     }
     if operation != "message" {
         return Err(format!("unknown trusted operation: {operation}"));
     }
     let payload = payload.ok_or_else(|| "message operation requires payload".to_string())?;
-    Ok(handle_message(db, plugin_id, payload))
+    Ok(handle_message(context, db, plugin_id, payload))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_service_mutation_guards_are_scoped_and_release_on_drop() {
+        let first = Service::new(crate::task_runtime::TaskRuntime::memory());
+        let second = Service::new(crate::task_runtime::TaskRuntime::memory());
+        let held = try_begin_inline(&first, "first install").unwrap();
+        assert!(try_begin_inline(&first, "conflicting install").is_err());
+        let independent = try_begin_inline(&second, "second composition").unwrap();
+        drop(held);
+        assert!(try_begin_inline(&first, "retry after release").is_ok());
+        drop(independent);
+        assert!(try_begin_inline(&second, "retry after release").is_ok());
+    }
+    #[test]
+    fn concurrent_inline_claim_has_one_owner_until_release() {
+        let slot = Arc::new(Mutex::new(None));
+        let enter = Arc::new(std::sync::Barrier::new(9));
+        let claimed = Arc::new(std::sync::Barrier::new(9));
+        let release = Arc::new(std::sync::Barrier::new(9));
+        let wins = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workers = (0..8)
+            .map(|i| {
+                let (slot, enter, claimed, release, wins) = (
+                    slot.clone(),
+                    enter.clone(),
+                    claimed.clone(),
+                    release.clone(),
+                    wins.clone(),
+                );
+                std::thread::spawn(move || {
+                    enter.wait();
+                    if claim_inline(&slot, &format!("mutation-{i}")).is_ok() {
+                        wins.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    claimed.wait();
+                    release.wait();
+                })
+            })
+            .collect::<Vec<_>>();
+        enter.wait();
+        claimed.wait();
+        assert_eq!(wins.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(claim_inline(&slot, "another").is_err());
+        release.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        *slot.lock().unwrap() = None;
+        assert!(claim_inline(&slot, "retry").is_ok());
+    }
+
     use super::*;
     use serde_json::json;
 
     struct TempDb {
         dir: PathBuf,
         db: Db,
+        service: Service,
     }
 
     impl TempDb {
@@ -1566,7 +1678,11 @@ mod tests {
             ));
             std::fs::create_dir_all(&dir).unwrap();
             let db = Db::open(&dir.join("test.db")).unwrap();
-            TempDb { dir, db }
+            TempDb {
+                dir,
+                db,
+                service: Service::new(crate::task_runtime::TaskRuntime::memory()),
+            }
         }
     }
 
@@ -1580,6 +1696,7 @@ mod tests {
     fn list_tools_returns_meta() {
         let t = TempDb::new("meta");
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1598,6 +1715,7 @@ mod tests {
     fn list_versions_known_and_unknown() {
         let t = TempDb::new("versions");
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1607,6 +1725,7 @@ mod tests {
         .unwrap();
         assert!(out.as_array().unwrap().contains(&json!("1.26.5")));
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1637,6 +1756,7 @@ mod tests {
             )
             .unwrap();
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1655,6 +1775,7 @@ mod tests {
     fn install_rejects_unknown_version_before_task_start() {
         let t = TempDb::new("badver");
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1663,13 +1784,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out["code"], "unknown-version");
-        assert!(tasks().active_task(INSTALLATION_RESOURCE).is_none());
+        assert!(t.service.tasks.active_task(INSTALLATION_RESOURCE).is_none());
     }
 
     #[test]
     fn get_task_unknown_returns_not_found() {
         let t = TempDb::new("gettask");
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1684,6 +1806,7 @@ mod tests {
     fn cancel_task_unknown_returns_not_cancellable() {
         let t = TempDb::new("cancel");
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1698,6 +1821,7 @@ mod tests {
     fn unknown_type_errors() {
         let t = TempDb::new("unknowntype");
         let out = dispatch(
+            &t.service,
             &t.db,
             "unienv",
             "unienv",
@@ -1711,7 +1835,7 @@ mod tests {
     #[test]
     fn wrong_operation_rejected() {
         let t = TempDb::new("op");
-        assert!(dispatch(&t.db, "unienv", "unienv", "other", None).is_err());
+        assert!(dispatch(&t.service, &t.db, "unienv", "unienv", "other", None).is_err());
     }
 
     #[test]

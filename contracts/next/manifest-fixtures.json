@@ -1,0 +1,353 @@
+[
+  {
+    "name": "storage-backend",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "renderer-only",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "permissions": []
+    },
+    "valid": true
+  },
+  {
+    "name": "legacy-owner-field",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ],
+      "name": "legacy"
+    },
+    "valid": false
+  },
+  {
+    "name": "bad-id",
+    "manifest": {
+      "id": "../other",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-permission",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "host:full-trust"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "duplicate-permission",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:read"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "null-backend",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": null,
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "entry-traversal",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "../renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "wrong-api",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 4,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "leading-zero-version",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "01.2.3",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "bad-prerelease",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.2.3-beta..1",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "numeric-prerelease-zero",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.2.3-beta.01",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "build-metadata",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.2.3+build",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "numeric-overflow",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "9007199254740992.0.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "empty-display-name",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-permissions",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js"
+    },
+    "valid": false
+  },
+  {
+    "name": "integer-manifest-in-decimal-json",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5.0,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "storage:read",
+        "storage:write"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "browser-downloads-capability",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "browser:downloads"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "unknown-browser-capability",
+    "manifest": {
+      "id": "next-demo-note",
+      "version": "1.0.0-alpha.0",
+      "displayName": "next-demo-note",
+      "manifestVersion": 5,
+      "sdkApiVersion": 5,
+      "wireVersion": 3,
+      "dataSchemaVersion": 1,
+      "renderer": "dist/renderer.js",
+      "backend": "dist/main.js",
+      "permissions": [
+        "browser:clipboard"
+      ]
+    },
+    "valid": false
+  }
+]

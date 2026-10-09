@@ -1,10 +1,12 @@
 import { useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import type { PluginRenderProps } from 'cruciblebox-plugin-api'
+import DataConversionTab from './DataConversionTab'
 
-type TabId = 'json' | 'diff' | 'base64' | 'url' | 'timestamp' | 'uuid' | 'regex' | 'hash'
+type TabId = 'convert' | 'json' | 'diff' | 'base64' | 'url' | 'timestamp' | 'uuid' | 'regex' | 'hash'
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: 'convert', label: '格式转换' },
   { id: 'json', label: 'JSON' },
   { id: 'diff', label: 'JSON 对比' },
   { id: 'base64', label: 'Base64' },
@@ -525,11 +527,11 @@ function HashTab() {
 }
 
 export default function JsonToolkitPlugin(_props: PluginRenderProps) {
-  const [activeTab, setActiveTab] = useState<TabId>('json')
+  const [activeTab, setActiveTab] = useState<TabId>('convert')
 
   return (
     <div style={s.page}>
-      <h2 style={{ margin: '0 0 16px', fontSize: 20 }}>JSON/文本工具箱</h2>
+      <h2 style={{ margin: '0 0 16px', fontSize: 20 }}>数据格式转换</h2>
       <div style={s.tabs}>
         {TABS.map((tab) => (
           <button
@@ -541,6 +543,7 @@ export default function JsonToolkitPlugin(_props: PluginRenderProps) {
           </button>
         ))}
       </div>
+      {activeTab === 'convert' && <DataConversionTab />}
       {activeTab === 'json' && <JsonTab />}
       {activeTab === 'diff' && <JsonDiffTab />}
       {activeTab === 'base64' && <Base64Tab />}

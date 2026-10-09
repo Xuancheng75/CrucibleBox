@@ -1,6 +1,7 @@
 /* ===== 日记插件全局样式（跟随工具箱主题） ===== */
 .diary-app {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color: var(--ob-color-text, #333);
   height: 100%;
   display: flex;
@@ -29,8 +30,8 @@
   --d-error-bg: var(--ob-color-error-bg, #fff2f0);
   --d-danger: var(--ob-color-error, #ff4d4f);
   --d-code: var(--ob-color-error, #d4380d);
-  --d-on-primary: #fff;
-  --d-focus-ring: rgba(24, 144, 255, 0.1);
+  --d-on-primary: var(--ob-color-primary-contrast, #fff);
+  --d-focus-ring: color-mix(in srgb, var(--d-primary, #1890ff) 12%, transparent);
   --d-overlay: rgba(0, 0, 0, 0.45);
 }
 
@@ -589,8 +590,13 @@
   animation: save-pulse 1.5s ease-in-out infinite;
 }
 @keyframes save-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 var(--d-focus-ring, rgba(24, 144, 255, 0.4)); }
-  50% { box-shadow: 0 0 0 4px var(--d-focus-ring, rgba(24, 144, 255, 0.1)); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--d-focus-ring, rgba(24, 144, 255, 0.4));
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--d-focus-ring, rgba(24, 144, 255, 0.1));
+  }
 }
 
 /* ===== 离开确认弹窗 ===== */
@@ -637,4 +643,24 @@
   background: var(--d-primary-hover, #40a9ff);
   border-color: var(--d-primary-hover, #40a9ff);
   color: var(--d-on-primary, #fff);
+}
+
+/* Section navigation shares the host accent and focus treatment. */
+.diary-app > nav > button {
+  border: 1px solid var(--d-border);
+  border-radius: var(--ob-radius, 6px);
+  padding: 6px 14px;
+  background: var(--d-bg);
+  color: var(--d-text);
+  font: inherit;
+  cursor: pointer;
+}
+.diary-app > nav > button[aria-current='page'] {
+  border-color: var(--d-primary);
+  background: var(--d-primary);
+  color: var(--d-on-primary);
+}
+.diary-app > nav > button:focus-visible {
+  outline: 2px solid var(--d-primary);
+  outline-offset: 2px;
 }

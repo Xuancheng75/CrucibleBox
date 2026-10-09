@@ -3,7 +3,7 @@
 // 设计：Rust 侧提供两个 JS 全局——
 //   __cjsResolve(fromDir, specifier) -> 绝对路径（防逃逸：仅允许 pluginDir 内）| null
 //   __cjsLoad(absPath) -> 文件内容 | null
-// JS 侧 require() 负责模块缓存与执行（new Function 注入 module/exports/require）。
+// Next-only QuickJS CommonJS module wrapper; it does not load legacy renderer code.
 
 use std::path::{Component, Path, PathBuf};
 

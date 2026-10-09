@@ -130,16 +130,68 @@ impl RendererSessionRegistry {
         }
     }
 
+    #[cfg(test)]
     pub fn create(&mut self, input: CreateSessionInput) -> Result<RendererSession, String> {
+        if input.renderer_api_version != 1 && input.renderer_api_version != 2 {
+            return Err("rendererApiVersion must be 1 or 2".into());
+        }
+        self.create_internal(input)
+    }
+
+    pub fn create_next_with_lease(
+        &mut self,
+        input: CreateSessionInput,
+        manifest_json: &str,
+        lease_ms: u64,
+    ) -> Result<RendererSession, String> {
+        if !(cruciblebox_next_protocol::MIN_LEASE_MS..=cruciblebox_next_protocol::MAX_LEASE_MS)
+            .contains(&lease_ms)
+        {
+            return Err("SESSION_DENIED".into());
+        }
+        let issued = self.create_next(input, manifest_json)?;
+        if let Some(record) = self.sessions.get_mut(&issued.token) {
+            record.expires_at_ms = record.created_at_ms + lease_ms;
+        }
+        self.snapshot(&issued.token)
+            .session
+            .ok_or("session creation failed".into())
+    }
+
+    /// Only a host-verified installed Next record may use this issuer.
+    pub fn create_next(
+        &mut self,
+        input: CreateSessionInput,
+        manifest_json: &str,
+    ) -> Result<RendererSession, String> {
+        let manifest =
+            cruciblebox_next_protocol::validate_manifest(manifest_json).map_err(str::to_owned)?;
+        if input.renderer_api_version != 5
+            || input.owner_webview_label != "main"
+            || input.plugin_name != manifest.id
+            || input.renderer_entry != manifest.renderer
+            || input.permissions != manifest.permissions
+        {
+            return Err("Next session metadata does not match verified installation".into());
+        }
+        let issued = self.create_internal(input)?;
+        // sandbox=allow-scripts has opaque message origin even though its resource URL is HTTP.
+        if let Some(record) = self.sessions.get_mut(&issued.token) {
+            record.origin = "null".into();
+        }
+        Ok(self
+            .snapshot(&issued.token)
+            .session
+            .ok_or("session creation failed")?)
+    }
+
+    fn create_internal(&mut self, input: CreateSessionInput) -> Result<RendererSession, String> {
         // Sessions are short-lived capability records. Prune abandoned
         // issued/active entries before allocating another one so repeated
         // plugin navigation cannot grow the registry without a bound.
         self.cleanup_expired();
         if input.plugin_id.is_empty() || input.plugin_id != input.plugin_id.trim() {
             return Err("pluginId must be a non-empty trimmed string".into());
-        }
-        if input.renderer_api_version != 1 && input.renderer_api_version != 2 {
-            return Err("rendererApiVersion must be 1 or 2".into());
         }
         if !input.renderer_entry.ends_with(".js")
             || input.renderer_entry.contains('\\')
@@ -358,6 +410,39 @@ mod tests {
             permissions: vec!["theme:read".into()],
             owner_webview_label: "main".into(),
         }
+    }
+
+    #[test]
+    fn next_issuer_binds_verified_manifest_and_rotates_client_tokens() {
+        let mut registry = RendererSessionRegistry::new(DEFAULT_TTL);
+        let manifest = r#"{"id":"next-demo-note","version":"1.0.0","displayName":"Note","manifestVersion":5,"sdkApiVersion":5,"wireVersion":3,"dataSchemaVersion":1,"renderer":"dist/renderer.js","permissions":[]}"#;
+        let mut input = make_input("next-demo-note");
+        input.renderer_api_version = 5;
+        input.permissions.clear();
+        assert!(registry.create(input).is_err());
+        let make = || {
+            let mut input = make_input("next-demo-note");
+            input.renderer_api_version = 5;
+            input.permissions.clear();
+            input
+        };
+        let a = registry.create_next(make(), manifest).unwrap();
+        let b = registry.create_next(make(), manifest).unwrap();
+        assert_ne!(a.token, b.token);
+        assert_ne!(a.handshake_token, b.handshake_token);
+        assert_eq!(a.origin, "null");
+        assert_eq!(a.renderer_api_version, 5);
+        assert!(a
+            .index_url
+            .starts_with("http://cruciblebox-plugin.localhost/"));
+        assert!(!registry.get_active(&a.token, "main").ok);
+        assert!(registry.consume_index(&a.token, "main").ok);
+        assert!(registry.get_active(&a.token, "main").ok);
+        assert!(!registry.get_active(&a.token, "other").ok);
+        let mut forged = make();
+        forged.permissions.push("storage:write".into());
+        assert!(registry.create_next(forged, manifest).is_err());
+        assert!(registry.create_next(make(), "{}").is_err());
     }
 
     #[test]

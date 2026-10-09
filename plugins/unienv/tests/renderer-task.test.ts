@@ -129,3 +129,21 @@ describe('pollTask', () => {
     vi.useRealTimers()
   })
 })
+
+it('stops polling interrupted tasks without retrying or losing partial output references', async () => {
+  const fetchTask = vi
+    .fn()
+    .mockResolvedValue({ ...snapshot('interrupted'), resultRefs: ['C:/output/part.txt'] })
+  const onSnapshot = vi.fn()
+  const result = await pollTask({
+    taskId: 'task-1',
+    signal: new AbortController().signal,
+    fetchTask,
+    onSnapshot
+  })
+  expect(result.status).toBe('interrupted')
+  expect(fetchTask).toHaveBeenCalledTimes(1)
+  expect(onSnapshot).toHaveBeenCalledWith(
+    expect.objectContaining({ resultRefs: ['C:/output/part.txt'] })
+  )
+})

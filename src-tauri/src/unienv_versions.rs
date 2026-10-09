@@ -42,7 +42,9 @@ fn artifact_cache() -> &'static Mutex<ArtifactCache> {
 }
 
 fn http_get_text(url: &str) -> Result<String, String> {
-    let agent = crate::network_policy::current().agent(HTTP_TIMEOUT_SECS, HTTP_TIMEOUT_SECS)?;
+    let agent = crate::network_policy::current()
+        .agent_for_url(url, HTTP_TIMEOUT_SECS, HTTP_TIMEOUT_SECS)?
+        .0;
     let response = agent
         .get(url)
         .set(

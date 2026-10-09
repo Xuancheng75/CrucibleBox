@@ -181,3 +181,9 @@ describe('document-engine plugin contract', () => {
     expect(chunk.token_count).toBeGreaterThanOrEqual(0)
   })
 })
+
+it('treats restart interruption as terminal', () => {
+  expect(
+    isTerminalTask({ taskId: 'recovered', resourceKey: 'convert', status: 'interrupted' })
+  ).toBe(true)
+})

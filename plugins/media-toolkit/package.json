@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox-plugin-media-toolkit",
-  "version": "0.1.0-beta.1",
+  "version": "0.2.0-beta.2",
   "private": true,
   "type": "module",
   "scripts": {

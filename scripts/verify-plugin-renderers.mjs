@@ -1,8 +1,10 @@
 import { readFile, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { validateManifest } from '../packages/cruciblebox-next-api/src/index.mjs'
 
 const PLUGINS = [
   'media-toolkit',
+  'audio-video-processor',
   'developer-toolkit',
   'productivity-toolkit',
   'diary',
@@ -35,8 +37,16 @@ for (const plugin of PLUGINS) {
   for (const [label, pattern] of FORBIDDEN) {
     if (pattern.test(source)) issues.push(label)
   }
-  if (!source.includes('__OPENBOX_PLUGIN_RUNTIME__')) issues.push('runtime registration marker')
-  if (!source.includes('.mount(')) issues.push('runtime mount call')
+  const manifestRaw = await readFile(resolve('plugins', plugin, 'plugin.json'), 'utf8')
+  if (JSON.parse(manifestRaw).manifestVersion === 5) {
+    validateManifest(manifestRaw)
+    if (!/\bexport\s*(?:function\s+mount|\{[^}]*\b(?:as\s+)?mount\b)/.test(source))
+      issues.push('Next mount export')
+    if (source.includes('__OPENBOX_PLUGIN_RUNTIME__')) issues.push('legacy runtime registration')
+  } else {
+    if (!source.includes('__OPENBOX_PLUGIN_RUNTIME__')) issues.push('runtime registration marker')
+    if (!source.includes('.mount(')) issues.push('runtime mount call')
+  }
   if (metadata.size < 100_000) issues.push('bundled React/ReactDOM payload')
 
   if (issues.length > 0) {

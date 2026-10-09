@@ -1,38 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { theme } from 'antd'
-import {
-  AppstoreOutlined,
-  ClockCircleOutlined,
-  FileTextOutlined,
-  SettingOutlined,
-  ShopOutlined
-} from '@ant-design/icons'
+import { useEffect, useMemo, useState } from 'react'
+import { AppstoreOutlined, ClockCircleOutlined, FileTextOutlined, SettingOutlined, ShopOutlined } from '@ant-design/icons'
+import { message } from 'antd'
 import { useAppStore } from '../store/app.store'
 import { usePluginStore } from '../store/plugin.store'
-
-interface PageItem {
-  key: string
-  label: string
-  icon: React.ReactNode
-  action: () => void
-}
+import { tauriApi, type UserPluginTag, type PluginCommandContribution } from '../api/tauriApi'
+import SearchDialog, { type SearchResult } from './SearchDialog'
 
 export default function CommandPalette() {
-  const { token } = theme.useToken()
-  const open = useAppStore((s) => s.commandOpen)
-  const setOpen = useAppStore((s) => s.setCommandOpen)
-  const setCurrentPage = useAppStore((s) => s.setCurrentPage)
-  const setActivePluginId = useAppStore((s) => s.setActivePluginId)
-  const setActivityTab = useAppStore((s) => s.setActivityTab)
-  const plugins = usePluginStore((s) => s.plugins)
+  const open = useAppStore((state) => state.commandOpen)
+  const setOpen = useAppStore((state) => state.setCommandOpen)
+  const setCurrentPage = useAppStore((state) => state.setCurrentPage)
+  const setActivePluginId = useAppStore((state) => state.setActivePluginId)
+  const setActivityTab = useAppStore((state) => state.setActivityTab)
+  const plugins = usePluginStore((state) => state.plugins)
   const [query, setQuery] = useState('')
-  const [index, setIndex] = useState(0)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [userTags, setUserTags] = useState<UserPluginTag[]>([])
+  const [pluginCommands, setPluginCommands] = useState<PluginCommandContribution[]>([])
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
         setOpen(!open)
       }
     }
@@ -40,218 +28,38 @@ export default function CommandPalette() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [open, setOpen])
 
+  useEffect(() => { if (open) setQuery('') }, [open])
+
   useEffect(() => {
-    if (open) {
-      setQuery('')
-      setIndex(0)
-      setTimeout(() => inputRef.current?.focus(), 0)
-    }
+    if (!open) return
+    let active = true
+    void tauriApi.plugin.tags.list().then((tags) => { if (active) setUserTags(tags) }).catch(() => { if (active) setUserTags([]) })
+    void tauriApi.plugin.commandContributions().then((commands) => { if (active) setPluginCommands(commands) }).catch(() => { if (active) setPluginCommands([]) })
+    return () => { active = false }
   }, [open])
 
-  const results = useMemo(() => {
-    const pageItems: PageItem[] = [
-      {
-        key: 'home',
-        label: '工作台',
-        icon: <AppstoreOutlined />,
-        action: () => setCurrentPage('home')
-      },
-      {
-        key: 'marketplace',
-        label: '插件市场',
-        icon: <ShopOutlined />,
-        action: () => setCurrentPage('marketplace')
-      },
-      {
-        key: 'tasks',
-        label: '任务中心',
-        icon: <ClockCircleOutlined />,
-        action: () => {
-          setActivityTab('tasks')
-          setCurrentPage('tasks')
-        }
-      },
-      {
-        key: 'logs',
-        label: '插件日志',
-        icon: <FileTextOutlined />,
-        action: () => {
-          setActivityTab('logs')
-          setCurrentPage('tasks')
-        }
-      },
-      {
-        key: 'settings',
-        label: '设置',
-        icon: <SettingOutlined />,
-        action: () => setCurrentPage('settings')
-      }
+  const results = useMemo((): SearchResult[] => {
+    const pages = [
+      { key: 'home', label: '工作台', icon: <AppstoreOutlined />, run: () => setCurrentPage('home') },
+      { key: 'marketplace', label: '插件市场', icon: <ShopOutlined />, run: () => setCurrentPage('marketplace') },
+      { key: 'tasks', label: '任务中心', icon: <ClockCircleOutlined />, run: () => { setActivityTab('tasks'); setCurrentPage('tasks') } },
+      { key: 'logs', label: '插件日志', icon: <FileTextOutlined />, run: () => { setActivityTab('logs'); setCurrentPage('tasks') } },
+      { key: 'settings', label: '设置', icon: <SettingOutlined />, run: () => setCurrentPage('settings') }
     ]
-
-    const q = query.trim().toLowerCase()
-    const filtered = q
-      ? plugins.filter((p) =>
-          `${p.displayName} ${p.name} ${p.description}`.toLowerCase().includes(q)
-        )
-      : plugins
-
-    const groups: {
-      type: 'plugin' | 'page'
-      label: string
-      icon: React.ReactNode
-      run: () => void
-    }[] = []
-    groups.push(
-      ...filtered.map((p) => ({
-        type: 'plugin' as const,
-        label: p.displayName,
-        icon: <AppstoreOutlined />,
-        run: () => {
-          setActivePluginId(p.id)
-          setCurrentPage('pluginView')
-        }
-      }))
-    )
-    groups.push(
-      ...pageItems
-        .filter((item) => !q || item.label.toLowerCase().includes(q))
-        .map((item) => ({
-          type: 'page' as const,
-          label: item.label,
-          icon: item.icon,
-          run: item.action
+    const needle = query.trim().toLowerCase()
+    return [
+      ...plugins.filter((plugin) => !needle || `${plugin.displayName} ${plugin.name} ${plugin.description} ${userTags.filter((tag) => tag.pluginIds.includes(plugin.id)).map((tag) => tag.name).join(' ')}`.toLowerCase().includes(needle))
+        .map((plugin) => ({ key: `plugin-${plugin.id}`, label: plugin.displayName, icon: <AppstoreOutlined />, kind: '插件', run: () => { setActivePluginId(plugin.id); setCurrentPage('pluginView') } })),
+      ...pages.filter((page) => !needle || page.label.toLowerCase().includes(needle))
+        .map((page) => ({ ...page, key: `page-${page.key}`, kind: '页面' })),
+      ...pluginCommands.filter((command) => !needle || `${command.title} ${command.keywords.join(' ')}`.toLowerCase().includes(needle))
+        .map((command) => ({
+          key: `command-${command.pluginId}-${command.id}`, label: command.title,
+          icon: <AppstoreOutlined />, kind: '插件命令',
+          run: () => { void tauriApi.plugin.sendMessage(command.pluginId, { type: 'command.execute', commandId: command.id }).catch((error) => message.error(String(error))) }
         }))
-    )
-    return groups
-  }, [query, plugins, setActivePluginId, setActivityTab, setCurrentPage])
+    ]
+  }, [query, plugins, userTags, pluginCommands, setActivePluginId, setActivityTab, setCurrentPage])
 
-  if (!open) return null
-
-  const close = () => setOpen(false)
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setIndex((i) => Math.min(i + 1, results.length - 1))
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setIndex((i) => Math.max(i - 1, 0))
-    } else if (e.key === 'Enter' && results[index]) {
-      results[index].run()
-      close()
-    } else if (e.key === 'Escape') {
-      close()
-    }
-  }
-
-  return (
-    <div
-      onClick={close}
-      role="presentation"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 1000,
-        background: 'rgba(0, 0, 0, 0.45)',
-        backdropFilter: 'blur(4px)',
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        paddingTop: '12vh'
-      }}
-    >
-      <div
-        className="ob-palette"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="命令面板"
-        style={{
-          width: 560,
-          maxWidth: 'calc(100vw - 48px)',
-          background: token.colorBgElevated,
-          borderRadius: 12,
-          border: `1px solid ${token.colorBorder}`,
-          boxShadow: token.boxShadowSecondary,
-          overflow: 'hidden',
-          animation: 'ob-palette-in 0.15s ease-out'
-        }}
-      >
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value)
-            setIndex(0)
-          }}
-          onKeyDown={onKeyDown}
-          placeholder="搜索插件或功能…"
-          aria-label="搜索插件或功能"
-          aria-controls="ob-command-results"
-          aria-activedescendant={results[index] ? `ob-command-option-${index}` : undefined}
-          style={{
-            width: '100%',
-            padding: '14px 18px',
-            border: 'none',
-            outline: 'none',
-            fontSize: 15,
-            background: 'transparent',
-            color: token.colorText,
-            borderBottom: `1px solid ${token.colorBorderSecondary}`
-          }}
-        />
-        <div
-          id="ob-command-results"
-          role="listbox"
-          style={{ maxHeight: 360, overflow: 'auto', padding: 6 }}
-        >
-          {results.length === 0 ? (
-            <div
-              style={{
-                padding: '24px 18px',
-                textAlign: 'center',
-                fontSize: 13,
-                color: token.colorTextTertiary
-              }}
-            >
-              无匹配结果
-            </div>
-          ) : (
-            results.map((item, i) => (
-              <div
-                id={`ob-command-option-${i}`}
-                key={`${item.type}-${item.label}`}
-                role="option"
-                aria-selected={i === index}
-                onClick={() => {
-                  item.run()
-                  close()
-                }}
-                onMouseEnter={() => setIndex(i)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '9px 12px',
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  fontSize: 14,
-                  color: token.colorText,
-                  background: i === index ? token.colorPrimaryBg : 'transparent'
-                }}
-              >
-                <span style={{ color: token.colorPrimary, fontSize: 15 }}>{item.icon}</span>
-                <span style={{ flex: 1 }}>{item.label}</span>
-                {item.type === 'plugin' ? (
-                  <span style={{ fontSize: 11, color: token.colorTextTertiary }}>插件</span>
-                ) : (
-                  <span style={{ fontSize: 11, color: token.colorTextTertiary }}>页面</span>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  )
+  return <SearchDialog open={open} onClose={() => setOpen(false)} query={query} onQueryChange={setQuery} results={results} title="命令面板" />
 }

@@ -24,10 +24,23 @@ const TOKEN_CSS_VARS: Record<keyof ThemeTokens, string> = {
   fontFamily: '--ob-font-family'
 }
 
+function primaryContrast(color: string): string {
+  const normalized = color.replace(/^#/, '')
+  const hex = normalized.length === 3 ? [...normalized].map((c) => c + c).join('') : normalized
+  if (!/^[a-f\d]{6}$/i.test(hex)) return '#ffffff'
+  const channels = [0, 2, 4].map((offset) => {
+    const value = parseInt(hex.slice(offset, offset + 2), 16) / 255
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  })
+  const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+  return (luminance + 0.05) / 0.05 > 1.05 / (luminance + 0.05) ? '#000000' : '#ffffff'
+}
+
 export function themeToCssVars(theme: ToolboxTheme): Record<string, string> {
   const vars: Record<string, string> = {
     '--ob-mode': theme.mode,
     '--ob-theme-id': theme.id,
+    '--ob-color-primary-contrast': primaryContrast(theme.tokens.colorPrimary),
     '--ob-color-success-border': theme.tokens.colorSuccess,
     '--ob-color-warning-border': theme.tokens.colorWarning,
     '--ob-color-error-border': theme.tokens.colorError
@@ -45,6 +58,7 @@ export function getThemeCssVarKeys(): string[] {
   return [
     '--ob-mode',
     '--ob-theme-id',
+    '--ob-color-primary-contrast',
     '--ob-color-success-border',
     '--ob-color-warning-border',
     '--ob-color-error-border',

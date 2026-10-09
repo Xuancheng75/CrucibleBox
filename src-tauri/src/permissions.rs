@@ -6,18 +6,18 @@ use std::collections::HashSet;
 
 /// 对等 shared/types/permissions.ts 的 16 个权限串
 pub const ALL_PERMISSIONS: &[&str] = &[
-    "database:read",
-    "database:write",
-    "storage:read",
-    "storage:write",
+    DATABASE_READ,
+    DATABASE_WRITE,
+    STORAGE_READ,
+    STORAGE_WRITE,
     "shell:exec",
-    "network:fetch",
-    "notification",
+    NETWORK_FETCH,
+    NOTIFICATION,
     "clipboard",
-    "dialog",
-    "shortcut",
-    "file:read",
-    "file:write",
+    DIALOG,
+    SHORTCUT,
+    FILE_READ,
+    FILE_WRITE,
     "theme:write",
     "trusted:unienv",
     "trusted:document-engine",
@@ -95,15 +95,17 @@ impl PermissionGuard {
 }
 
 /// host 方法 → 所需权限映射（1.9.2-a 实现面；None = 无权限门禁，如日志/事件天然限本插件）
+#[cfg(test)]
 pub fn permission_for_host_method(method: &str) -> Option<&'static str> {
     match method {
-        "db.query" => Some(DATABASE_READ),
-        "db.execute" => Some(DATABASE_WRITE),
         "storage.get" | "storage.list" => Some(STORAGE_READ),
         "storage.set" | "storage.delete" | "storage.batch" => Some(STORAGE_WRITE),
         "notification.show" => Some(NOTIFICATION),
         "dialog.open" => Some(DIALOG),
         "network.fetch" => Some(NETWORK_FETCH),
+        "process.run" | "process.start" | "process.getTask" | "process.cancel" => {
+            Some("shell:exec")
+        }
         "file.read" => Some(FILE_READ),
         "file.write" => Some(FILE_WRITE),
         "shortcut.register" | "shortcut.unregister" => Some(SHORTCUT),
@@ -117,11 +119,11 @@ pub fn permission_for_host_method(method: &str) -> Option<&'static str> {
 /// 判断 host 方法是否为已实现面（未实现 → NOT_ALLOWED）
 /// v1.9.15：扩展实现面，新增 network.fetch / notification.show / file.read / file.write /
 /// clipboard.read / clipboard.write / system.info
+#[cfg(test)]
 pub fn is_host_method_implemented(method: &str) -> bool {
     matches!(
         method,
-        "db.query"
-            | "db.execute"
+        "plugin.root"
             | "storage.get"
             | "storage.set"
             | "storage.delete"
@@ -133,6 +135,10 @@ pub fn is_host_method_implemented(method: &str) -> bool {
             | "event.unsubscribe"
             | "trusted.invoke"
             | "network.fetch"
+            | "process.run"
+            | "process.start"
+            | "process.getTask"
+            | "process.cancel"
             | "notification.show"
             | "dialog.open"
             | "file.read"
@@ -183,7 +189,9 @@ mod tests {
 
     #[test]
     fn permission_mapping() {
-        assert_eq!(permission_for_host_method("db.query"), Some(DATABASE_READ));
+        assert_eq!(permission_for_host_method("db.query"), None);
+        assert!(!is_host_method_implemented("db.query"));
+        assert!(!is_host_method_implemented("db.execute"));
         assert_eq!(
             permission_for_host_method("storage.set"),
             Some(STORAGE_WRITE)

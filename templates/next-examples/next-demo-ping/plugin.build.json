@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "renderer": "src/renderer.mjs",
+  "workers": [
+    {
+      "source": "src/worker.mjs",
+      "target": "dist/workers/echo.js"
+    }
+  ],
+  "assets": [
+    {
+      "source": "assets/message.json",
+      "target": "dist/assets/message.json"
+    }
+  ]
+}

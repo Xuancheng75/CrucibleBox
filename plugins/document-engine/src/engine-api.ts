@@ -21,6 +21,14 @@ export interface EngineStatus {
   }
   models?: {
     directory?: string
+    formula?: {
+      profile?: string | null
+      lowMemoryReady?: boolean
+      highPrecisionReady?: boolean
+      deepReady?: boolean
+      standardReady?: boolean
+      memoryBudgetBytes?: number
+    }
     default?: {
       id?: string
       version?: string
@@ -97,6 +105,7 @@ export interface OcrProgress {
 }
 
 export interface OcrBlock {
+  type?: 'text' | 'formula'
   text: string
   polygon: [[number, number], [number, number], [number, number], [number, number]]
   bbox: [number, number, number, number]
@@ -115,6 +124,32 @@ export interface OcrResult {
     device: string
     modelProfile?: string
   }
+}
+
+export interface OcrPreview {
+  width: number
+  height: number
+  dataUrl: string
+}
+
+export async function getOcrPreview(
+  send: (message: unknown) => Promise<unknown>,
+  path: string
+): Promise<OcrPreview> {
+  const response = await send({ type: 'document.ocr.preview', path })
+  if (!response || typeof response !== 'object') {
+    throw new Error(backendErrorMessage(response, '图片预览不可用'))
+  }
+  const preview = response as Partial<OcrPreview>
+  if (
+    !Number.isFinite(preview.width) ||
+    !Number.isFinite(preview.height) ||
+    typeof preview.dataUrl !== 'string' ||
+    !preview.dataUrl.startsWith('data:image/jpeg;base64,')
+  ) {
+    throw new Error(backendErrorMessage(response, '图片预览不可用'))
+  }
+  return preview as OcrPreview
 }
 
 export interface DocumentBlock {
@@ -289,6 +324,7 @@ function isModelCatalogEntry(value: unknown): value is ModelCatalogEntry {
 }
 
 export interface DocumentTaskSnapshot {
+  resultRefs?: string[]
   taskId: string
   resourceKey: string
   status: 'queued' | 'running' | 'paused' | 'succeeded' | 'failed' | 'cancelled' | string
@@ -328,7 +364,7 @@ export function isDocumentProgressMessage(value: unknown): value is DocumentProg
 }
 
 export function isTerminalTask(snapshot: DocumentTaskSnapshot): boolean {
-  return ['succeeded', 'failed', 'cancelled'].includes(snapshot.status)
+  return ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(snapshot.status)
 }
 
 export async function getStatus(
@@ -371,7 +407,9 @@ export async function startParse(
   path: string,
   options?: { outputDirectory?: string }
 ): Promise<TaskAccepted> {
-  const response = (await send(omitUndefined({ type: 'document.parse', path, options }))) as Partial<TaskAccepted> & {
+  const response = (await send(
+    omitUndefined({ type: 'document.parse', path, options })
+  )) as Partial<TaskAccepted> & {
     error?: string
     code?: string
   }
@@ -400,6 +438,69 @@ export async function startPdfSplit(
   if (typeof response.taskId !== 'string' || response.taskId.length === 0) {
     throw new Error(response.error ?? response.code ?? 'PDF 拆分任务启动失败')
   }
+  return { taskId: response.taskId, status: response.status ?? 'queued' }
+}
+
+export async function startPdfMerge(
+  send: (message: unknown) => Promise<unknown>,
+  paths: string[],
+  outputPath: string
+): Promise<TaskAccepted> {
+  const response = (await send({
+    type: 'document.pdf.merge',
+    paths,
+    outputPath
+  })) as Partial<TaskAccepted> & { error?: string; code?: string }
+  if (!response.taskId) throw new Error(response.error ?? response.code ?? 'PDF 合并任务启动失败')
+  return { taskId: response.taskId, status: response.status ?? 'queued' }
+}
+
+export async function startPdfReorder(
+  send: (message: unknown) => Promise<unknown>,
+  path: string,
+  pages: number[],
+  outputPath: string
+): Promise<TaskAccepted> {
+  const response = (await send({
+    type: 'document.pdf.reorder',
+    path,
+    pages,
+    outputPath
+  })) as Partial<TaskAccepted> & { error?: string; code?: string }
+  if (!response.taskId) throw new Error(response.error ?? response.code ?? 'PDF 重排任务启动失败')
+  return { taskId: response.taskId, status: response.status ?? 'queued' }
+}
+
+export async function startPdfRotate(
+  send: (message: unknown) => Promise<unknown>,
+  path: string,
+  pages: number[],
+  degrees: 90 | 180 | 270,
+  outputPath: string
+): Promise<TaskAccepted> {
+  const response = (await send({
+    type: 'document.pdf.rotate',
+    path,
+    pages,
+    degrees,
+    outputPath
+  })) as Partial<TaskAccepted> & { error?: string; code?: string }
+  if (!response.taskId) throw new Error(response.error ?? response.code ?? 'PDF 旋转任务启动失败')
+  return { taskId: response.taskId, status: response.status ?? 'queued' }
+}
+
+export async function startPdfExtractImages(
+  send: (message: unknown) => Promise<unknown>,
+  path: string,
+  outputDirectory: string
+): Promise<TaskAccepted> {
+  const response = (await send({
+    type: 'document.pdf.extractImages',
+    path,
+    outputDirectory
+  })) as Partial<TaskAccepted> & { error?: string; code?: string }
+  if (!response.taskId)
+    throw new Error(response.error ?? response.code ?? 'PDF 图片提取任务启动失败')
   return { taskId: response.taskId, status: response.status ?? 'queued' }
 }
 
@@ -577,6 +678,18 @@ export async function installModelBundle(
   return response
 }
 
+export async function importFormulaAddon(
+  send: (message: unknown) => Promise<unknown>,
+  sourcePath: string
+): Promise<TaskAccepted> {
+  const response = (await send({ type: 'document.models.importFormulaAddon', sourcePath })) as
+    (Partial<TaskAccepted> & { error?: string }) | null
+  if (!response || typeof response.taskId !== 'string' || !response.taskId) {
+    throw new Error(response?.error ?? '高精度公式附加包导入失败')
+  }
+  return { taskId: response.taskId, status: response.status ?? 'queued' }
+}
+
 export async function installModel(
   send: (message: unknown) => Promise<unknown>,
   sourcePath: string,
@@ -597,9 +710,7 @@ export async function installRemoteModel(
   url: string,
   name?: string
 ): Promise<unknown> {
-  const response = (await send(
-    omitUndefined({ type: 'document.models.install', url, name })
-  )) as {
+  const response = (await send(omitUndefined({ type: 'document.models.install', url, name }))) as {
     success?: boolean
     error?: string
   }
@@ -612,9 +723,7 @@ export async function updateRemoteModel(
   url: string,
   name: string
 ): Promise<unknown> {
-  const response = (await send(
-    omitUndefined({ type: 'document.models.update', url, name })
-  )) as {
+  const response = (await send(omitUndefined({ type: 'document.models.update', url, name }))) as {
     success?: boolean
     error?: string
   }

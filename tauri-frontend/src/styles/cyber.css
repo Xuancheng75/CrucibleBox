@@ -118,6 +118,12 @@
   -webkit-backdrop-filter: blur(12px) saturate(118%);
 }
 
+[data-ob-theme='cyber'] .ob-market-card,
+[data-ob-theme='cyber'] .ob-search-btn,
+[data-ob-theme='cyber'] .ob-search-dialog {
+  border-radius: 0 !important;
+}
+
 [data-ob-theme='cyber'] .ob-modal-surface {
   border-color: rgba(0, 229, 255, 0.2) !important;
   background: var(--ob-color-bg-container) !important;

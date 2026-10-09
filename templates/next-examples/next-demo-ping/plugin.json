@@ -1,0 +1,13 @@
+{
+  "id": "next-demo-ping",
+  "version": "1.0.0-alpha.5",
+  "displayName": "next-demo-ping",
+  "manifestVersion": 5,
+  "sdkApiVersion": 5,
+  "wireVersion": 3,
+  "dataSchemaVersion": 1,
+  "renderer": "dist/renderer.js",
+  "permissions": [
+    "browser:downloads"
+  ]
+}

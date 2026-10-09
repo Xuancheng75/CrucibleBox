@@ -1,0 +1,37 @@
+{
+  "name": "@cruciblebox/plugin-ui",
+  "version": "0.1.0-beta.3",
+  "description": "Standalone UI primitives for CrucibleBox plugin renderers",
+  "type": "module",
+  "sideEffects": true,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./style.css": "./dist/style.css"
+  },
+  "peerDependencies": {
+    "react": "^18.3.0 || ^19.0.0"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && node scripts/build.mjs && tsc -p tsconfig.json && node -e \"require('fs').copyFileSync('dist/index.d.ts','dist/index.d.cts')\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "esbuild": "0.25.12",
+    "typescript": "6.0.3"
+  }
+}

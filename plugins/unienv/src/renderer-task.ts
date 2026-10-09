@@ -1,4 +1,5 @@
-export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type TaskStatus =
+  'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'interrupted'
 
 export interface TaskSnapshot<TResult = unknown, TProgress = unknown> {
   taskId: string
@@ -15,8 +16,16 @@ export interface TaskSnapshot<TResult = unknown, TProgress = unknown> {
 export const TASK_POLL_INTERVAL_MS = 1_000
 export const TASK_POLL_TIMEOUT_MS = 90 * 60 * 1_000
 
-const TERMINAL_STATUSES = new Set<TaskStatus>(['succeeded', 'failed', 'cancelled'])
-const TASK_STATUSES = new Set<TaskStatus>(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+const TERMINAL_STATUSES = new Set<TaskStatus>(['succeeded', 'failed', 'cancelled', 'interrupted'])
+const TASK_STATUSES = new Set<TaskStatus>([
+  'queued',
+  'running',
+  'paused',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'interrupted'
+])
 
 export interface PollTaskOptions<TResult = unknown, TProgress = unknown> {
   taskId: string

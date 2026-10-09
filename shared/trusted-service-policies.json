@@ -1,32 +1,50 @@
 {
   "unienv": {
     "name": "unienv",
-    "version": "0.12.0-beta.1",
-    "digest": "ce4f61a0f74149663797cdd5eb285cdcd296400d6080b74a20d0f0b4de839d6c",
-    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
+    "version": "0.13.0-alpha.1",
+    "digest": "20d6f434e8ea35fae2c74609b4ecdaa76b6045ce170189b089dc0d71c99f24b0",
+    "files": ["dist/renderer.js", "plugin.json"],
+    "permissions": [
+      "trusted:unienv",
+      "dialog",
+      "notification",
+      "storage:read",
+      "storage:write",
+      "tasks:read",
+      "tasks:control"
+    ],
+    "manifestVersion": 5
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.11.0-beta.1",
-    "permissions": ["trusted:document-engine", "dialog"],
-    "digest": "8433ead3e74d6605552c70148b8486e6e8deccd61f1743c818a0b2a53af054b2",
-    "files": [
-      "dist/main.js",
-      "dist/renderer.js",
-      "plugin.json",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
-    ]
+    "version": "0.12.0-alpha.1",
+    "permissions": [
+      "trusted:document-engine",
+      "dialog",
+      "notification",
+      "storage:read",
+      "storage:write",
+      "tasks:read",
+      "tasks:control"
+    ],
+    "digest": "8d55521ab68b263fe1153aca81faffd9acc6054aaefaf41c608d66553990ceb7",
+    "files": ["dist/renderer.js", "plugin.json"],
+    "manifestVersion": 5
   },
   "archive-extractor": {
     "name": "archive-extractor",
-    "version": "0.1.0",
-    "permissions": ["trusted:archive-extractor", "dialog"],
-    "digest": "cf85530ee34819175157401ae694f8534baa9fa6b2f1c1e6e026c29f40d67fee",
-    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
+    "version": "0.3.0-alpha.1",
+    "permissions": [
+      "trusted:archive-extractor",
+      "dialog",
+      "notification",
+      "storage:read",
+      "storage:write",
+      "tasks:read",
+      "tasks:control"
+    ],
+    "digest": "69dbc6cc36fabbd498176644b12c2d73ae9b1366aa845abd5153debc0891b16e",
+    "files": ["dist/renderer.js", "plugin.json"],
+    "manifestVersion": 5
   }
 }

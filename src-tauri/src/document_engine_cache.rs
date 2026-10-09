@@ -242,7 +242,9 @@ pub fn install_remote(
     }
     let part = root.join(format!(".{name}.download"));
     let _ = std::fs::remove_file(&part);
-    let agent = crate::network_policy::current().agent(15, 60)?;
+    let agent = crate::network_policy::current()
+        .agent_for_url(url, 15, 60)?
+        .0;
     let response = agent
         .get(url)
         .call()

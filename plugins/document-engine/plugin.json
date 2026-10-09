@@ -1,24 +1,23 @@
 {
-  "name": "document-engine",
-  "version": "0.11.0-beta.1",
+  "id": "document-engine",
+  "version": "0.12.0-alpha.1",
   "displayName": "文档与知识库",
   "description": "本地文档处理基础设施：支持最多 2000 页 PDF 的 OCR、解析结果导出、真实 PDF 拆分、AI/RAG 文本分块、格式转换、批量任务、缓存和模型管理",
   "author": "CrucibleBox",
-  "main": "dist/main.js",
+  "manifestVersion": 5,
+  "sdkApiVersion": 5,
+  "wireVersion": 3,
+  "dataSchemaVersion": 1,
   "renderer": "dist/renderer.js",
-  "manifestVersion": 3,
-  "backendApiVersion": 3,
-  "rendererApiVersion": 3,
-  "minimumHostVersion": "2.1.0-beta.1",
-  "trustLevel": "standard",
-  "permissions": ["trusted:document-engine", "dialog"],
-  "capabilities": {
-    "fs": { "read": true, "write": true },
-    "tasks": true,
-    "events": true,
-    "ui": true,
-    "pluginData": true
-  },
+  "permissions": [
+    "trusted:document-engine",
+    "dialog",
+    "notification",
+    "storage:read",
+    "storage:write",
+    "tasks:read",
+    "tasks:control"
+  ],
   "config": {
     "modelDirectory": {
       "type": "string",
@@ -26,16 +25,30 @@
       "description": "PaddleOCR ONNX 模型与字典目录；留空使用内置轻量模型",
       "default": ""
     },
+    "formulaAddonDirectory": {
+      "type": "string",
+      "label": "高精度公式附加包目录",
+      "description": "选择已解压的高精度附加包根目录（内含 python 与 models）；不改变默认正文 OCR 模型",
+      "default": ""
+    },
     "modelProfile": {
       "type": "select",
       "label": "OCR 模型方案",
-      "description": "默认使用 PP-OCRv6-small-det + 通用 PP-OCRv5_mobile_rec；英文模型仅在明确选择时使用",
+      "description": "快速档只识别文字，无法识别公式。标准档使用 UniMERNet，需安装对应公式运行时；固定九式严格匹配 4/9，结果仍需核对。深度档延期开发。",
       "default": "auto",
       "options": [
-        { "label": "自动（推荐）", "value": "auto" },
-        { "label": "PP-OCRv5 中英混排方案", "value": "ppocrv6-small-det-v5-mobile-rec" },
-        { "label": "PP-OCRv5 英文优化方案", "value": "ppocrv6-small-det-v5-en-rec" },
-        { "label": "PP-OCRv4 兼容方案", "value": "ppocrv4-mobile-zh-en" }
+        {
+          "label": "快速（无法识别公式）",
+          "value": "fast"
+        },
+        {
+          "label": "标准（需 UniMERNet 运行时）",
+          "value": "standard"
+        },
+        {
+          "label": "旧公式方案（需逐式核对）",
+          "value": "auto"
+        }
       ]
     },
     "textRecognitionMode": {
@@ -44,9 +57,18 @@
       "description": "自动/中文混排使用通用 PP-OCRv5；英文优化模式需明确选择",
       "default": "auto",
       "options": [
-        { "label": "自动（中英混排）", "value": "auto" },
-        { "label": "中文/混排", "value": "mixed" },
-        { "label": "英文优化", "value": "english" }
+        {
+          "label": "自动（中英混排）",
+          "value": "auto"
+        },
+        {
+          "label": "中文/混排",
+          "value": "mixed"
+        },
+        {
+          "label": "英文优化",
+          "value": "english"
+        }
       ]
     },
     "dictionaryPath": {
@@ -73,9 +95,18 @@
       "description": "自动模式优先使用 Windows DirectML（NVIDIA GPU），不可用时回退 CPU",
       "default": "auto",
       "options": [
-        { "label": "自动 (Auto)", "value": "auto" },
-        { "label": "CPU", "value": "cpu" },
-        { "label": "GPU (DirectML)", "value": "gpu" }
+        {
+          "label": "自动 (Auto)",
+          "value": "auto"
+        },
+        {
+          "label": "CPU",
+          "value": "cpu"
+        },
+        {
+          "label": "GPU (DirectML)",
+          "value": "gpu"
+        }
       ]
     }
   }

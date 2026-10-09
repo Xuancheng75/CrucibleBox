@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { PluginRenderProps } from 'cruciblebox-plugin-api'
+import type { DecisionRenderProps } from './next-service'
 import type { TurntableItem, SpinResult } from './types'
 import { secureRandomUnit, targetRotationForWinner } from './turntable-domain'
+import { wheelLabelColorFor } from './wheel-label-color'
 
 const CANVAS_SIZE = 340
 const CENTER = CANVAS_SIZE / 2
@@ -43,7 +44,8 @@ function drawText(
   radius: number,
   text: unknown,
   startAngle: number,
-  endAngle: number
+  endAngle: number,
+  backgroundColor: string
 ): void {
   const midAngle = startAngle + (endAngle - startAngle) / 2
   const textRadius = radius * 0.6
@@ -53,7 +55,7 @@ function drawText(
   ctx.rotate(midAngle)
   ctx.textAlign = 'right'
   ctx.textBaseline = 'middle'
-  ctx.fillStyle = '#fff'
+  ctx.fillStyle = wheelLabelColorFor(backgroundColor, cssVar('--ob-color-primary-contrast', '#fff'))
   ctx.font = 'bold 14px sans-serif'
 
   const safeText = typeof text === 'string' ? text : String(text ?? '')
@@ -91,11 +93,7 @@ function normalizeItem(item: unknown, index: number): TurntableItem | null {
 
   const raw = item as Partial<TurntableItem> & { name?: unknown; title?: unknown }
   const fallbackLabel =
-    typeof raw.name === 'string'
-      ? raw.name
-      : typeof raw.title === 'string'
-        ? raw.title
-        : ''
+    typeof raw.name === 'string' ? raw.name : typeof raw.title === 'string' ? raw.title : ''
   const label = typeof raw.label === 'string' ? raw.label : fallbackLabel
   const weight = Number(raw.weight)
 
@@ -116,10 +114,12 @@ function normalizeItems(value: unknown): TurntableItem[] {
 }
 
 function isErrorResult(value: unknown): value is { error: string } {
-  return !!value && typeof value === 'object' && typeof (value as { error?: unknown }).error === 'string'
+  return (
+    !!value && typeof value === 'object' && typeof (value as { error?: unknown }).error === 'string'
+  )
 }
 
-export default function TurntablePlugin({ config, api }: PluginRenderProps) {
+export default function TurntablePlugin({ config, api }: DecisionRenderProps) {
   const [items, setItems] = useState<TurntableItem[]>([])
   const [spinning, setSpinning] = useState(false)
   const [rotation, setRotation] = useState(0)
@@ -138,7 +138,7 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
   const spinDuration = (config.spinDuration as number) || 4
 
   const loadItems = useCallback(async () => {
-    const result = await api.sendToBackend({ type: 'getItems' })
+    const result = await api.execute({ type: 'getItems' })
     setItems(normalizeItems(result))
   }, [api])
 
@@ -146,55 +146,67 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
     loadItems()
   }, [loadItems])
 
-  const drawCanvas = useCallback((rotAngle: number) => {
-    const canvas = canvasRef.current
-    if (!canvas || items.length === 0) return
+  const drawCanvas = useCallback(
+    (rotAngle: number) => {
+      const canvas = canvasRef.current
+      if (!canvas || items.length === 0) return
 
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
 
-    const dpr = window.devicePixelRatio || 1
-    canvas.width = CANVAS_SIZE * dpr
-    canvas.height = CANVAS_SIZE * dpr
-    ctx.scale(dpr, dpr)
+      const dpr = window.devicePixelRatio || 1
+      canvas.width = CANVAS_SIZE * dpr
+      canvas.height = CANVAS_SIZE * dpr
+      ctx.scale(dpr, dpr)
 
-    ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE)
+      ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE)
 
-    ctx.save()
-    ctx.translate(CENTER, CENTER)
-    ctx.rotate(rotAngle)
-    ctx.translate(-CENTER, -CENTER)
+      ctx.save()
+      ctx.translate(CENTER, CENTER)
+      ctx.rotate(rotAngle)
+      ctx.translate(-CENTER, -CENTER)
 
-    const totalWeight = items.reduce((s, i) => s + i.weight, 0)
-    if (totalWeight <= 0) return
+      const totalWeight = items.reduce((s, i) => s + i.weight, 0)
+      if (totalWeight <= 0) return
 
-    let currentAngle = -Math.PI / 2
-    for (const item of items) {
-      const sectorAngle = (item.weight / totalWeight) * Math.PI * 2
-      const endAngle = currentAngle + sectorAngle
-      drawSector(ctx, CENTER, CENTER, RADIUS, currentAngle, endAngle, item.color || '#1677ff')
-      drawText(ctx, CENTER, CENTER, RADIUS, item.label, currentAngle, endAngle)
-      currentAngle = endAngle
-    }
+      let currentAngle = -Math.PI / 2
+      for (const item of items) {
+        const sectorAngle = (item.weight / totalWeight) * Math.PI * 2
+        const endAngle = currentAngle + sectorAngle
+        drawSector(ctx, CENTER, CENTER, RADIUS, currentAngle, endAngle, item.color || '#1677ff')
+        drawText(
+          ctx,
+          CENTER,
+          CENTER,
+          RADIUS,
+          item.label,
+          currentAngle,
+          endAngle,
+          item.color || '#1677ff'
+        )
+        currentAngle = endAngle
+      }
 
-    ctx.restore()
+      ctx.restore()
 
-    ctx.beginPath()
-    ctx.arc(CENTER, CENTER, 30, 0, Math.PI * 2)
-    ctx.fillStyle = cssVar('--ob-color-bg-container', '#fff')
-    ctx.fill()
-    ctx.strokeStyle = cssVar('--ob-color-border-secondary', '#ddd')
-    ctx.lineWidth = 3
-    ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(CENTER, CENTER, 30, 0, Math.PI * 2)
+      ctx.fillStyle = cssVar('--ob-color-bg-container', '#fff')
+      ctx.fill()
+      ctx.strokeStyle = cssVar('--ob-color-border-secondary', '#ddd')
+      ctx.lineWidth = 3
+      ctx.stroke()
 
-    drawPointer(ctx, CENTER, CENTER, RADIUS)
+      drawPointer(ctx, CENTER, CENTER, RADIUS)
 
-    ctx.beginPath()
-    ctx.arc(CENTER, CENTER, RADIUS, 0, Math.PI * 2)
-    ctx.strokeStyle = cssVar('--ob-color-border-secondary', '#ddd')
-    ctx.lineWidth = 4
-    ctx.stroke()
-  }, [items])
+      ctx.beginPath()
+      ctx.arc(CENTER, CENTER, RADIUS, 0, Math.PI * 2)
+      ctx.strokeStyle = cssVar('--ob-color-border-secondary', '#ddd')
+      ctx.lineWidth = 4
+      ctx.stroke()
+    },
+    [items]
+  )
 
   useEffect(() => {
     drawCanvas(rotation)
@@ -214,7 +226,8 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
     setWinner(null)
     setResultVisible(false)
 
-    const result = await api.sendToBackend({ type: 'spin', payload: { noRepeat } }) as SpinResult | { error: string }
+    const result = (await api.execute({ type: 'spin', payload: { noRepeat } })) as
+      SpinResult | { error: string }
 
     if (isErrorResult(result)) {
       api.notify('转盘抽奖', result.error as string)
@@ -295,7 +308,7 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
     if (!form.label.trim()) return
 
     if (editingItem) {
-      const updated = await api.sendToBackend({
+      const updated = await api.execute({
         type: 'updateItem',
         payload: { id: editingItem.id, label: form.label.trim(), weight: form.weight }
       })
@@ -305,12 +318,12 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
       }
       const normalized = normalizeItem(updated, items.length)
       if (normalized) {
-        setItems(prev => prev.map(i => i.id === editingItem.id ? normalized : i))
+        setItems((prev) => prev.map((i) => (i.id === editingItem.id ? normalized : i)))
       } else {
         await loadItems()
       }
     } else {
-      const added = await api.sendToBackend({
+      const added = await api.execute({
         type: 'addItem',
         payload: { label: form.label.trim(), weight: form.weight, color: '' }
       })
@@ -320,7 +333,7 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
       }
       const normalized = normalizeItem(added, items.length)
       if (normalized) {
-        setItems(prev => [...prev, normalized])
+        setItems((prev) => [...prev, normalized])
       } else {
         await loadItems()
       }
@@ -331,12 +344,16 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
   }
 
   const handleDelete = async (id: number) => {
-    await api.sendToBackend({ type: 'deleteItem', payload: { id } })
-    setItems(prev => prev.filter(i => i.id !== id))
+    await api.execute({ type: 'deleteItem', payload: { id } })
+    setItems((prev) => prev.filter((i) => i.id !== id))
   }
 
   const mainBg = { background: 'var(--ob-color-bg-layout, #f5f5f5)', borderRadius: 12, padding: 20 }
-  const sectionBg = { background: 'var(--ob-color-bg-container, #fff)', borderRadius: 8, padding: 16 }
+  const sectionBg = {
+    background: 'var(--ob-color-bg-container, #fff)',
+    borderRadius: 8,
+    padding: 16
+  }
 
   return (
     <div style={{ ...mainBg, minHeight: '100%' }}>
@@ -363,33 +380,60 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
                 border: 'none',
                 borderRadius: 8,
                 cursor: spinning || items.length < 2 ? 'not-allowed' : 'pointer',
-                background: spinning ? 'var(--ob-color-text-tertiary, #ccc)' : 'var(--ob-color-error, #ff4d4f)',
-                color: '#fff',
+                background: spinning
+                  ? 'var(--ob-color-text-tertiary, #ccc)'
+                  : 'var(--ob-color-primary, #1677ff)',
+                color: 'var(--ob-color-primary-contrast, #fff)',
                 transition: 'background 0.3s'
               }}
             >
               {spinning ? '旋转中...' : '开始抽奖'}
             </button>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 13, color: 'var(--ob-color-text-secondary, #666)' }}>
-              <input type="checkbox" checked={noRepeat} onChange={(event) => setNoRepeat(event.target.checked)} />
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                marginTop: 10,
+                fontSize: 13,
+                color: 'var(--ob-color-text-secondary, #666)'
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={noRepeat}
+                onChange={(event) => setNoRepeat(event.target.checked)}
+              />
               避免连续抽中同一选项
             </label>
 
             {resultVisible && winner && (
-              <div style={{
-                marginTop: 12,
-                padding: '12px 16px',
-                background: 'var(--ob-color-warning-bg, #fff7e6)',
-                border: '1px solid var(--ob-color-warning, #ffd591)',
-                borderRadius: 8,
-                textAlign: 'center' as const
-              }}>
-                <div style={{ fontSize: 13, color: 'var(--ob-color-text-secondary, #666)', marginBottom: 4 }}>恭喜中奖</div>
-                <div style={{
-                  fontSize: 22,
-                  fontWeight: 700,
-                  color: winner.color
-                }}>
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '12px 16px',
+                  background: 'var(--ob-color-warning-bg, #fff7e6)',
+                  border: '1px solid var(--ob-color-warning, #ffd591)',
+                  borderRadius: 8,
+                  textAlign: 'center' as const
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: 'var(--ob-color-text-secondary, #666)',
+                    marginBottom: 4
+                  }}
+                >
+                  恭喜中奖
+                </div>
+                <div
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 700,
+                    color: winner.color
+                  }}
+                >
                   {winner.label}
                 </div>
               </div>
@@ -407,12 +451,14 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
 
         <div style={{ flex: 1, minWidth: 320 }}>
           <div style={sectionBg}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 16
-            }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 16
+              }}
+            >
               <h3 style={{ margin: 0, fontSize: 16, color: 'var(--ob-color-text, #333)' }}>
                 选项列表
               </h3>
@@ -425,7 +471,7 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
                   borderRadius: 6,
                   cursor: 'pointer',
                   background: 'var(--ob-color-primary, #1677ff)',
-                  color: '#fff'
+                  color: 'var(--ob-color-primary-contrast, #fff)'
                 }}
               >
                 添加选项
@@ -433,40 +479,124 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
             </div>
 
             {items.length === 0 ? (
-              <div style={{ padding: '40px 0', textAlign: 'center' as const, color: 'var(--ob-color-text-tertiary, #999)', fontSize: 14 }}>
+              <div
+                style={{
+                  padding: '40px 0',
+                  textAlign: 'center' as const,
+                  color: 'var(--ob-color-text-tertiary, #999)',
+                  fontSize: 14
+                }}
+              >
                 暂无选项，点击“添加选项”开始添加
               </div>
             ) : (
               <div style={{ overflowX: 'auto' as const }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
                   <thead>
-                    <tr style={{ borderBottom: '2px solid var(--ob-color-border-secondary, #f0f0f0)' }}>
-                      <th style={{ padding: '8px 12px', textAlign: 'left' as const, color: 'var(--ob-color-text-secondary, #666)', fontWeight: 600, width: 40 }}></th>
-                      <th style={{ padding: '8px 12px', textAlign: 'left' as const, color: 'var(--ob-color-text-secondary, #666)', fontWeight: 600 }}>选项名称</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'center' as const, color: 'var(--ob-color-text-secondary, #666)', fontWeight: 600, width: 80 }}>权重</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'center' as const, color: 'var(--ob-color-text-secondary, #666)', fontWeight: 600, width: 80 }}>概率</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'center' as const, color: 'var(--ob-color-text-secondary, #666)', fontWeight: 600, width: 100 }}>操作</th>
+                    <tr
+                      style={{
+                        borderBottom: '2px solid var(--ob-color-border-secondary, #f0f0f0)'
+                      }}
+                    >
+                      <th
+                        style={{
+                          padding: '8px 12px',
+                          textAlign: 'left' as const,
+                          color: 'var(--ob-color-text-secondary, #666)',
+                          fontWeight: 600,
+                          width: 40
+                        }}
+                      ></th>
+                      <th
+                        style={{
+                          padding: '8px 12px',
+                          textAlign: 'left' as const,
+                          color: 'var(--ob-color-text-secondary, #666)',
+                          fontWeight: 600
+                        }}
+                      >
+                        选项名称
+                      </th>
+                      <th
+                        style={{
+                          padding: '8px 12px',
+                          textAlign: 'center' as const,
+                          color: 'var(--ob-color-text-secondary, #666)',
+                          fontWeight: 600,
+                          width: 80
+                        }}
+                      >
+                        权重
+                      </th>
+                      <th
+                        style={{
+                          padding: '8px 12px',
+                          textAlign: 'center' as const,
+                          color: 'var(--ob-color-text-secondary, #666)',
+                          fontWeight: 600,
+                          width: 80
+                        }}
+                      >
+                        概率
+                      </th>
+                      <th
+                        style={{
+                          padding: '8px 12px',
+                          textAlign: 'center' as const,
+                          color: 'var(--ob-color-text-secondary, #666)',
+                          fontWeight: 600,
+                          width: 100
+                        }}
+                      >
+                        操作
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map(item => {
+                    {items.map((item) => {
                       const totalWeight = items.reduce((s, i) => s + i.weight, 0)
-                      const pct = totalWeight > 0 ? ((item.weight / totalWeight) * 100).toFixed(1) : '0.0'
+                      const pct =
+                        totalWeight > 0 ? ((item.weight / totalWeight) * 100).toFixed(1) : '0.0'
                       return (
-                        <tr key={item.id} style={{ borderBottom: '1px solid var(--ob-color-border-secondary, #f0f0f0)' }}>
+                        <tr
+                          key={item.id}
+                          style={{
+                            borderBottom: '1px solid var(--ob-color-border-secondary, #f0f0f0)'
+                          }}
+                        >
                           <td style={{ padding: '10px 12px', textAlign: 'center' as const }}>
-                            <span style={{
-                              display: 'inline-block',
-                              width: 16,
-                              height: 16,
-                              borderRadius: 4,
-                              background: item.color,
-                              verticalAlign: 'middle'
-                            }} />
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                width: 16,
+                                height: 16,
+                                borderRadius: 4,
+                                background: item.color,
+                                verticalAlign: 'middle'
+                              }}
+                            />
                           </td>
-                          <td style={{ padding: '10px 12px', color: 'var(--ob-color-text, #333)' }}>{item.label}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'center' as const, color: 'var(--ob-color-text, #333)' }}>{item.weight}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'center' as const, color: 'var(--ob-color-text-secondary, #666)' }}>{pct}%</td>
+                          <td style={{ padding: '10px 12px', color: 'var(--ob-color-text, #333)' }}>
+                            {item.label}
+                          </td>
+                          <td
+                            style={{
+                              padding: '10px 12px',
+                              textAlign: 'center' as const,
+                              color: 'var(--ob-color-text, #333)'
+                            }}
+                          >
+                            {item.weight}
+                          </td>
+                          <td
+                            style={{
+                              padding: '10px 12px',
+                              textAlign: 'center' as const,
+                              color: 'var(--ob-color-text-secondary, #666)'
+                            }}
+                          >
+                            {pct}%
+                          </td>
                           <td style={{ padding: '10px 12px', textAlign: 'center' as const }}>
                             <button
                               onClick={() => openEditModal(item)}
@@ -507,7 +637,16 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
             )}
 
             {items.length > 0 && (
-              <div style={{ marginTop: 12, padding: '8px 12px', background: 'var(--ob-color-success-bg, #f6ffed)', borderRadius: 6, fontSize: 13, color: 'var(--ob-color-success, #52c41a)' }}>
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '8px 12px',
+                  background: 'var(--ob-color-success-bg, #f6ffed)',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  color: 'var(--ob-color-success, #52c41a)'
+                }}
+              >
                 共 {items.length} 个选项，合计权重 {items.reduce((s, i) => s + i.weight, 0)}
               </div>
             )}
@@ -516,39 +655,52 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
       </div>
 
       {modalOpen && (
-        <div style={{
-          position: 'fixed' as const,
-          top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.45)',
-          zIndex: 1000,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center'
-        }}
+        <div
+          style={{
+            position: 'fixed' as const,
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.45)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
           onClick={() => setModalOpen(false)}
         >
-          <div style={{
-            background: 'var(--ob-color-bg-container, #fff)',
-            borderRadius: 12,
-            padding: 24,
-            width: 400,
-            maxWidth: '90vw',
-            boxShadow: '0 6px 30px rgba(0,0,0,0.15)'
-          }}
-            onClick={e => e.stopPropagation()}
+          <div
+            style={{
+              background: 'var(--ob-color-bg-container, #fff)',
+              borderRadius: 12,
+              padding: 24,
+              width: 400,
+              maxWidth: '90vw',
+              boxShadow: '0 6px 30px rgba(0,0,0,0.15)'
+            }}
+            onClick={(e) => e.stopPropagation()}
           >
             <h3 style={{ margin: '0 0 20px', fontSize: 18, color: 'var(--ob-color-text, #333)' }}>
               {editingItem ? '编辑选项' : '添加选项'}
             </h3>
 
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', marginBottom: 6, fontSize: 14, color: 'var(--ob-color-text, #333)', fontWeight: 500 }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: 6,
+                  fontSize: 14,
+                  color: 'var(--ob-color-text, #333)',
+                  fontWeight: 500
+                }}
+              >
                 选项名称
               </label>
               <input
                 type="text"
                 value={form.label}
-                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
                 placeholder="请输入选项名称"
                 style={{
                   width: '100%',
@@ -563,7 +715,15 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
             </div>
 
             <div style={{ marginBottom: 20 }}>
-              <label style={{ display: 'block', marginBottom: 6, fontSize: 14, color: 'var(--ob-color-text, #333)', fontWeight: 500 }}>
+              <label
+                style={{
+                  display: 'block',
+                  marginBottom: 6,
+                  fontSize: 14,
+                  color: 'var(--ob-color-text, #333)',
+                  fontWeight: 500
+                }}
+              >
                 权重（数值越大，概率越高）
               </label>
               <input
@@ -571,7 +731,9 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
                 value={form.weight}
                 min={0.1}
                 step={0.1}
-                onChange={e => setForm(f => ({ ...f, weight: Math.max(0.1, parseFloat(e.target.value) || 1) }))}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, weight: Math.max(0.1, parseFloat(e.target.value) || 1) }))
+                }
                 style={{
                   width: '100%',
                   padding: '8px 12px',
@@ -608,8 +770,10 @@ export default function TurntablePlugin({ config, api }: PluginRenderProps) {
                   border: 'none',
                   borderRadius: 6,
                   cursor: form.label.trim() ? 'pointer' : 'not-allowed',
-                  background: form.label.trim() ? 'var(--ob-color-primary, #1677ff)' : 'var(--ob-color-text-tertiary, #ccc)',
-                  color: '#fff'
+                  background: form.label.trim()
+                    ? 'var(--ob-color-primary, #1677ff)'
+                    : 'var(--ob-color-text-tertiary, #ccc)',
+                  color: 'var(--ob-color-primary-contrast, #fff)'
                 }}
               >
                 {editingItem ? '保存' : '添加'}

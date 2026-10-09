@@ -1,3 +1,4 @@
+import { validateManifest } from '../packages/cruciblebox-next-api/src/index.mjs'
 import { readFileSync, readdirSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -54,8 +55,10 @@ describe('Ant Design 6 migration boundary', () => {
     for (const plugin of productionPlugins) {
       const manifest = JSON.parse(
         readFileSync(join(projectRoot, 'plugins', plugin, 'plugin.json'), 'utf8')
-      ) as { rendererApiVersion?: number }
-      expect([2, 3], plugin).toContain(manifest.rendererApiVersion)
+      ) as { rendererApiVersion?: number; manifestVersion?: number }
+      if (manifest.manifestVersion === 5)
+        expect(validateManifest(JSON.stringify(manifest)).sdkApiVersion).toBe(5)
+      else expect([2, 3, 4], plugin).toContain(manifest.rendererApiVersion)
       expect(
         readFileSync(join(projectRoot, 'plugins', plugin, 'dist', 'renderer.js'))
       ).not.toHaveLength(0)

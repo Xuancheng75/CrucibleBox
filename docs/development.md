@@ -1,206 +1,85 @@
 # 开发、构建与验证
 
-> 当前可编辑运行线：Tauri 2 / Rust / React，开发与验证基线为 **2.0.1**。
-> 根目录 Electron 1.7.3 仅为冻结参照，不接受功能性改动。
+> 当前开发线：CrucibleBox 2.1.0-beta.4（Tauri 2.11.x、Rust、React 18、Ant Design 5、WebView2）。
+> Next beta.1 契约已冻结；本文不表示 beta.3 全计划、OCR 准确率、安装器或发布验收全部完成。
+> Electron 源码已退出活动工作树；历史材料仅用于追溯。
 
-## 环境
+## 环境与安装
 
-- Windows x64（M1 已验证平台）
-- Node.js 24.15.0（见 `.nvmrc`）
-- npm 11.12.1（由根 `packageManager` 固定）
+- Windows 10/11 x64。
+- Node.js 版本由根目录 .nvmrc 固定，npm 版本由根目录 package.json 的 packageManager 固定。
+- Rust CI 使用 Windows MSVC 工具链；document worker 按目标工具链构建并固定运行时摘要。
+- 根工程与插件使用根目录 package-lock.json；Tauri 前端使用 tauri-frontend/package-lock.json。
 
-项目级 `.npmrc` 固定 `https://registry.npmjs.org/`；根 lockfile 不接受其他 registry
-主机。认证信息、代理和私有镜像不得写入仓库配置。
+从仓库根目录安装：
 
-根工程和 `plugins/*` 子工程组成 npm workspaces。2.1 正式市场包含五个综合插件：文档与知识库、开发环境管理、图片与音视频、数据与接口工具、笔记与效率；旧插件目录保留一个兼容周期。根目录的 `package-lock.json`
-是唯一依赖锁定事实源。所有安装命令都从仓库根执行。
+    npm ci
+    npm ci --prefix tauri-frontend
 
-## 首次安装
+不要在旧终端里验证 UniEnv 刚切换的 PATH：环境广播只影响之后启动的进程。切换后新开 CMD 或 PowerShell，再运行 python --version 和 where.exe python。
 
-```powershell
-npm ci
-```
+## 常用验证
 
-`npm ci` 会一次安装宿主和所有插件依赖，并为冻结的 Electron 版本重建
-`better-sqlite3`；失败会直接中止。
+    npm run check
+    npm run build
+    npm run verify:next-independent
+    npm run test:next
 
-## Tauri 日常开发
+    cd src-tauri
+    cargo fmt --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --locked
 
-```powershell
-cd tauri-frontend
-npm install
-npm run build
+    cd ..\tauri-frontend
+    npm run build
 
-cd ..\src-tauri
-cargo fmt --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-```
+npm run check 覆盖格式、lint、TypeScript、宿主与插件测试、供应链测试和 Next 契约/SDK 测试。npm run build 构建插件、frame runtime 与 Tauri 前端。CI 另行验证 document worker、Next 独立构建、sidecar、原生任务流程和运行时安装。
 
-根目录 `npm run check` 只作为冻结 Electron 兼容与供应链参照门禁。自动修改代码只能显式运行格式化命令。
+插件在 plugins/<id>/ 内独立构建。涉及 shared/trusted-service-policies.json 固定摘要的可信服务改动，完成构建后运行 npm run update:trusted-policy，再以 npm run verify:trusted-services 复核。
 
-## 2.0 页面与状态约定
+## Next 插件与数据
 
-- 页面在 `tauri-frontend/src/app-pages.ts` 注册，侧边栏、命令面板和页面标题必须同步提供入口。
-- 长任务写入统一任务中心；插件安装至少包含预检、等待确认、提交、完成/失败四个阶段。
-- 插件卡片身份由 `plugin-identity.ts` 维护。第一方插件发布者统一为 `CrucibleBox`，不得再用单字母作为唯一辨识。
-- 工作台和设置卡片使用主题边框、圆角和切角，不添加宿主默认阴影；主题可覆盖几何风格，但不能露出底层矩形轮廓。
+契约唯一来源是 contracts/next/contract.json，状态为 frozen：Manifest/API 5、wire 3、data 1。生成 TypeScript/Rust 产物后，运行 npm run test:next 检查生成结果、SDK 与 CLI。七个官方插件为文档与知识库、主题管理、开发环境管理、日记与笔记、随机决策、GIF 动画编辑、压缩与解压缩；官方目录及构建白名单由 contracts/next/official-plugins.json 与其校验器管理。
 
-## Document Engine 0.10.0
+Next 插件经宿主 capability API 访问其命名空间数据。生产 SQL 与数据库连接由 src-tauri/crates/repository 持有；src-tauri/src/db.rs 是宿主适配层。卸载、重装与迁移保留用户配置、storage 原值和文件；回滚旧程序时必须恢复与之配对的数据库。不得通过清理工作树或回滚数据库来制造测试基线。
 
-> 2.1 beta 已将该插件升级并更名为“文档与知识库”，继续扩展 OCR、解析、PDF 和知识库预处理。
+## 文档 worker 与可选运行时
 
-- 统一流水线为 Layout Analysis → Native/OCR 文字来源选择 → Unicode/XML-safe normalization → TOC/章节树/区域识别 → 公式块与布局元数据 → Document IR v3。
-- 格式转换和 Chunk 切分只消费 IR，不得再次触发 OCR；PDF 物理拆分直接操作原始页并输出真实 PDF。
-- 文本进入 IR 前必须清除 XML 1.0 非法控制字符并修复字体编码断词；DOCX 输出前后均做 XML 解析检查，`invalidControlChars` 与 `invalidXmlChars` 必须为 0。
-- 章节识别必须区分 chapter/section、编号段落、习题编号和正文；TOC entry 只能作为候选信息，不能进入正文 heading stack。Formula/Table/Image 区域不因存在 Text Layer 而跳过。
-- Chunk 任务输出逐行 JSONL 与 manifest JSON；任务快照只返回受限元数据，完整结果通过输出路径读取，避免 IPC payload 超限。
-- Hybrid Chunk 继续使用现有约 450–500 token 目标及既有 `target=512/min=180/max=800` 配置；本版本只修正 section/title、非法字符及公式/表格/图片元数据，不调整长度算法。
-- 默认模型随插件离线分发，`ppocrv4-mobile-zh-en` 作为兼容 profile 保留；新增模型或流水线字段时必须同步缓存版本、协议文档、插件目录和 trusted policy。
+基础宿主不要求 PDFium 或 document-worker。PDFium 与 Document IR 由 workers/document 进程执行；宿主校验运行时目录及摘要，并通过统一任务 runtime 发布有界结果。OCR worker、模型和公式识别是独立资源与质量门禁，worker 隔离不代表 OCR 精度提高。
 
-## 开发环境管理 0.12.0-beta.1
+本地打包固定摘要文档运行时：
 
-> 2.1 beta 已恢复维护，修正镜像路由、在线版本发现和版本根切换，并加入项目环境、离线包和诊断。
+    npm run package:document-runtime -- --output <新输出目录> --target-dir <worker 构建目录> --pin-source shared/document-runtime-catalog.json
 
-- UniEnv 仍是宿主持有摘要的 trusted service，负责目录、官方版本发现、下载校验、解压、junction/版本切换、进程和任务管理。
-- 维护冻结不等于删除已有安装能力；仅安全、崩溃、数据损坏、构建阻断和严重回归可进入必要维护评估。
+Windows CI 对同一合成 PDF、同一 PDFium parser 比较直接调用与独立 worker 调用，保留各 45 次样本的 JSON 证据 30 天。该比较只测解析延迟及引用 IPC 开销，不代表真实文档、OCR、内存峰值或整应用性能；新增 CI 留存步骤需在后续真实 GitHub Actions 运行中复核。
 
-## 插件市场开发约定
+## UniEnv 版本切换
 
-- 2.0.1 使用应用内置展示目录，并从当前宿主对应的正式 Release（例如 `tauri-v2.0.1/plugins.json`）获取权威下载地址和摘要；不接入 GitHub Marketplace，也不实现账户注册、登录或上传。
-- 市场数据与安装执行分离：目录只描述插件，安装仍复用既有预检、权限确认、staging、journal 和原子替换流程。
-- 市场主页保持双栏布局，必须显示图标、名称、版本、发布者、简介及“获取/打开”状态；详情页展示权限和长描述。
-- 测试版优先从当前 beta Release（例如 `tauri-v2.0.1-beta.1/plugins.json`）获取目录并回退到对应稳定 Release；正式版从当前正式 Release（例如 `tauri-v2.0.1/plugins.json`）获取目录；下载必须支持重试、重定向校验、临时文件和 SHA-256 校验。
-- beta5 起市场在官方 GitHub Release 单一来源上支持手动刷新、目录进程内缓存、离线使用最近一次可用目录、未知官方插件动态展示、下载临时文件的 Range 断点续传、批量下载和全部更新；宿主会透传导入/预检失败的后端详情。下载仍不使用镜像源。
-- beta6 起 Windows 优先使用 WinHTTP 自动代理/WPAD 获取目录，BITS 优先处理新插件包下载；ureq 仍作为兼容回退。下载任务不再撑大市场卡片或左侧布局，批量操作使用普通优先级。
-- 在线获取仅接受 CrucibleBox 仓库的 HTTPS Release 地址，限制目录/包体大小并校验 SHA-256；不能直接执行仓库源代码。后续若引入第三方远程目录，必须再增加目录级签名和密钥轮换机制。
+UniEnv 的 current junction 指向所选运行时，命令 shim 通过它启动 Python 等工具。启用自动环境配置时，版本切换会将 UniEnv shim 目录置于用户 PATH 前端、移除重复 shim 项并广播环境变更；新开的终端应解析到当前版本。已经打开的终端保留原环境，应关闭并重新打开。自动配置关闭时，切换只改变 UniEnv 内部活动版本，不承诺修改全局 PATH。
 
-## 稳定版与测试版
+## 构建与发布
 
-- `stable` 读取 `tauri-stable/latest.json`，只发布正式版本；`beta` 读取 `tauri-beta/latest.json`，允许 `-beta.N` / `-rc.N`。
-- 通道是持久化设置，检查更新时必须显式传给 Rust updater；禁止仅切换界面标签却继续访问同一端点。
-- 两个滚动元数据互不覆盖。所有安装包仍要求 minisign 签名、SHA-512 元数据和 HTTPS。
+    npm run build
+    npm run package:base
+    npm run verify:tauri-runtime
 
-## 生产构建
+正式 Tauri 发布由 .github/workflows/tauri-release.yml 的 tauri-v* tag 路径驱动；安装器、升级签名、配对回滚和原生 UI 验收以相应 CI 与发布证据为准。工作树构建成功不等同于正式安装器或 beta.3 全计划验收通过。
 
-```powershell
-npm run build
-```
+## 当前明确的验收边界
 
-此命令先清理并构建插件目录中的所有插件，再构建 Electron 主进程、preload 和 React renderer。
-插件不会被隐式打入宿主 ASAR。
+- Document IR、PDFium worker、统一任务与数据迁移有本地及 CI 自动化证据；各业务插件的真实 WebView2 交互仍以安装包验收为准。
+- 公式 OCR 深度档的严格匹配门槛、真实长文档压力和整应用受控性能/内存对照未由 worker 延迟基准替代。
+- 全量 Rust、前端、插件、供应链与原生安装流程门禁必须按 AGENTS.md 和当前 .github/workflows/ci.yml 执行；未运行的门禁需在交付记录中明确标出。
 
-## 插件产物
+### 文档运行时集成测试
 
-```powershell
-npm run package:plugins
-npm run verify:plugins
-```
+默认宿主测试不依赖已安装的可选 document runtime。parse_pdf_task_returns_unified_document 和 convert_task_writes_markdown_output 因需要真实外部运行时默认忽略，必须单独执行；CI 和发布流水线均执行以下入口。先构建独立运行时包，再在 PowerShell 设置路径：
 
-确定性 ZIP 和 `manifest.json` 输出到 `artifacts/plugins/`。发布文件集合由
-`scripts/plugin-catalog.json` 显式定义；验证器会拒绝额外文件、缺失入口、版本漂移、
-路径穿越、与当前 `dist` 不一致的内容或清单摘要漂移。
+    $runtime = (Resolve-Path '<运行时输出目录>/0.1.0').Path
+    $env:DOCUMENT_WORKER_ACCEPTANCE_EXE = Join-Path $runtime 'document-worker.exe'
+    $env:DOCUMENT_WORKER_ACCEPTANCE_PDFIUM = Join-Path $runtime 'pdfium.dll'
+    cargo test --manifest-path src-tauri/Cargo.toml parse_pdf_task_returns_unified_document -- --ignored --nocapture
+    cargo test --manifest-path src-tauri/Cargo.toml convert_task_writes_markdown_output -- --ignored --nocapture
+    cargo test --manifest-path src-tauri/Cargo.toml native_document_artifacts_publish_durably_and_survive_restart -- --ignored --nocapture
 
-当前 1.5.23 artifacts manifest 的 SHA-256：
-
-| 插件          | 版本   | SHA-256                                                            |
-| ------------- | ------ | ------------------------------------------------------------------ |
-| Diary         | 0.4.11 | `bba0677ab738600d031950152e6089207e4760d659fad8aeae68c94625a1984f` |
-| Dice Roller   | 0.1.6  | `c10e29b2fdebf1e8f246629f62b7dcc6843758f8f0a12f2cc19335666d005e14` |
-| GIF Editor    | 0.3.8  | `55c682e02f5a93c6afeb3f99753ba48a7264be2dc5d19b3329552858685424f7` |
-| Theme Manager | 0.1.12 | `6e27a3c1739cf896114a6ab5f6f8e526fd8803bfecd35dc9ff2f5ac26f4338c5` |
-| Turntable     | 0.1.10 | `b49d47af187add2e5821ada86cb8b84149d3ec2311c3392ccfa3ba536b666898` |
-| UniEnv        | 0.5.7  | `73e0fc5be810402b0223831c57ec801d554bb7917db65493353f916f1d46822f` |
-
-正式发布还需设置仓库外 Ed25519 私钥/公钥和 key ID；`npm run release` 会在构建后强制签名、
-验签并生成七份 CycloneDX SBOM。详见 `docs/release-runbook.md`。
-
-## 插件数据
-
-新插件使用 `ctx.storage.get/set/delete/list`，并按需要声明 `storage:read`、`storage:write`。命名空间
-由宿主绑定到插件 ID，插件请求中不传 namespace。`ctx.database` 只用于旧 SDK 兼容；生产插件和新模板
-不得再创建全局表或发送原始 SQL。schema v2 的 Diary/Turntable 兼容迁移见
-`docs/adr-0007-plugin-storage.md`。当前数据库 schema v3 增加 `plugins.sort_order`（列表排序），
-v2→v3 迁移按既有显示顺序稳定回填，链路详见 `docs/architecture.md` 的插件排序一节。
-
-## 桌面打包与冒烟
-
-```powershell
-npm run package:dir
-npm run smoke:packaged
-```
-
-`package:dir` 生成用于 CI 和本地验证的未签名 unpacked 应用：
-`release/win-unpacked/CrucibleBox.exe`。`smoke:packaged` 使用临时用户数据目录、隐藏
-窗口启动它；临时数据库预置 schema v1 的 Diary/Turntable 数据，验证逐字节备份、事务迁移、旧表保留、
-renderer/backend 后自动退出并清理。
-
-正式安装包使用：
-
-```powershell
-npm run release
-```
-
-默认本地成品使用 `npm run package`（electron-builder，生成 NSIS 安装器），无需 GitHub 仓库、
-GitHub Token、插件发布密钥或 Windows 证书；`npm run smoke:installer` 在随机临时目录完成真实
-静默安装、packaged 启动与静默卸载冒烟。
-
-插件清单签名与 Windows 安装器签名是两层独立控制。第一方插件仍使用仓库外 Ed25519 密钥；Windows
-安装器按当前产品决策保持未签名，并在设置页和发布说明中明确 Unknown publisher/SmartScreen 限制。
-
-## M1 完整验收序列
-
-```powershell
-npm run check
-npm run build
-npm run package:plugins
-npm run verify:plugins
-npm run package:dir
-npm run smoke:packaged
-```
-
-所有测试使用工程数据或临时目录；本里程碑不读取、迁移或覆盖现有用户数据库。
-
-## M1.2 UniEnv 验收
-
-UniEnv 0.4.0 的任务协议、输入/路径边界、无 Shell 进程执行、可取消下载及安全 staging
-详见 `docs/install-recovery.md`。插件自身为 9 个测试文件、116 项测试；制品白名单包含 15
-个 manifest/runtime 文件，构建只生成可发布 JS，不再产生未打包的 `.d.ts`/`.map` 或
-悬空 `sourceMappingURL`。
-
-M2.10 已为全部受支持的 Python、Node.js、Git、Go 与 Temurin JDK Windows x64 制品固定官方 URL、
-文件名和 SHA-256；下载在原子提升前流式校验，镜像也必须提供逐字节相同制品。来源与失败语义见
-`docs/install-recovery.md`（可信服务一节）与 `docs/security-model.md`。
-
-所有安装测试使用 fake spawn/fetch 和临时目录，未执行真实安装器。真实 Windows VM 的安装、取消、
-切换与回滚 E2E 已在一次性 Windows VM 中完成并通过（1.5.23 基线，用户确认范围）；当前 UniEnv
-版本为 0.5.7、11 个测试文件 132 项。
-
-M2.11 增加静态版本生命周期目录。下拉框把目录首选置顶并显示"维护分支的旧补丁 / 已停止维护 / 旧版"；
-单项与组合安装在创建任务前再次确认。状态依据日期和官方来源见 UniEnv 插件的制品目录设计
-（`plugins/unienv/src/`，历史细节见 `docs/history/plugin-platform-m2.11.md`）。
-
-M2.12 为 Node.js 24.18.1、Git 2.54.0、Go 1.26.5 以及 Temurin 17.0.20、21.0.12、25.0.4
-固定官方 Windows x64 制品和 SHA-256，并升级内置组合。当前维护制品使用成功状态且不显示旧版二次确认；
-旧目录和 Python 3.12.5 兼容项继续保留。依据与边界见 `plugins/unienv/src/` 的制品目录
-（历史细节见 `docs/history/plugin-platform-m2.12.md`）。
-
-M2.13 增加 Python 3.14.7 当前官方 Windows x64 安装器并设为目录首选。Install Manager 26.3 的
-MSIX/Store 注册、自动更新与全局别名属于显式系统集成，不在后台静默部署；过渡与 3.16 前迁移要求见
-`plugins/unienv/src/` 的制品目录（历史细节见 `docs/history/plugin-platform-m2.13.md`）。
-
-## 当前已知门禁边界
-
-- 根工程与正式插件 `npm audit` 当前为 0 漏洞；CI 每次重新查询 advisory 服务，不能替代持续升级。
-- renderer 已按工作台、日志、设置和插件详情拆分；当前总 JS 2,790,229 B、静态入口 1,091,990 B、
-  默认首页启动闭包 2,018,469 B，分别受 3.4 MB、1.3 MB 和 2.3 MB 上限保护。
-- CI 仅在 Windows x64 执行 check/build/audit、unpacked 打包、Electron ABI 和 GUI 冒烟。macOS、Linux
-  与 Windows ARM64 不在当前支持范围。
-
-## Windows GitHub release and automatic update
-
-`package:dir` produces an unsigned unpacked smoke artifact. Formal releases use the public repository's version-tag
-workflow in `.github/workflows/release.yml`. The Windows runner creates the NSIS installer, `latest.yml` or `beta.yml`
-and blockmap; validates metadata SHA-512, Electron fuses, native ABI and packaged startup; then publishes SBOMs,
-SHA-256 checksums and provenance. No Windows certificate is required. The plugin Ed25519 private key must remain in
-GitHub Secrets and must never enter the repository. See `docs/release-runbook.md`.
+运行时安装/重启验收另设 DOCUMENT_RUNTIME_ACCEPTANCE_DIRECTORY，执行 pinned_document_runtime_installs_and_runs_without_ocr_resources。该测试不依赖上述 worker 路径覆盖。各命令失败时停止，不以最后一个成功结果替代前面失败。

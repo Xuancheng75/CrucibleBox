@@ -5,16 +5,17 @@
 > **运行线**：Tauri 2.11.x（Rust core + WebView2）。Electron 43 历史运行线已冻结
 > （tag `electron-1.7.3-production`，`docs/electron-legacy-registry.md` 为逐文件映射）。
 > 迁移复盘：`docs/tauri-migration-review.md`。
+> **当前状态**：宿主集成基线为 2.1.0-beta.4；独立 Next beta.1 契约已冻结为 Manifest/API 5、wire 3、data 1。Next 官方七插件为文档与知识库、主题管理、开发环境管理、日记与笔记、随机决策、GIF 动画编辑、压缩与解压缩。Next 旧 v2-v4 执行与 SQL RPC 已退役；原始用户数据、旧包及程序/数据库配对回滚保留。架构进展不等于 OCR 精度或 beta.3 全计划完成。
 
 ## 功能特性
 
 - **插件系统与市场**：既可导入 `.zip`/插件目录，也可从侧边栏的双栏插件市场浏览官方插件；列表、详情与安装状态统一呈现，backend 运行于独立 **Rust sidecar**（quickjs-ng）
-- **2.0 工作台**：现代化导航、可辨识的插件专属图标/分类/发布者信息、全局任务中心、清晰的运行状态反馈，以及测试版角标
-- **权限模型**：每位插件声明所需权限（网络、文件、数据库、剪贴板、通知、快捷键等），由宿主侧 `PermissionGuard` 逐调用门控；插件为可信代码，权限声明用于功能控制
+- **2.1 工作台**：现代化导航、可辨识的插件专属图标/分类/发布者信息、全局任务中心、清晰的运行状态反馈，以及测试版角标
+- **权限模型**：插件按契约声明权限并由宿主校验；Next 插件只通过有界 capability API 访问命名空间 storage、主题、对话框、通知和任务，不提供 SQL 或任意本地路径接口。插件按可信代码管理，renderer 隔离不等于 backend 恶意代码沙箱
 - **命令系统**：插件可注册全局命令，通过 `Cmd/Ctrl+Shift+P` 唤起
 - **全局快捷键**：插件可注册系统级快捷键（如 `Cmd/Ctrl+I` 唤起插件导入）
 - **主题系统**：内置 16 套明暗、护眼、极简、暖色与赛博风格预设，运行时切换并下发 CSS 变量，插件可实时感知主题变化
-- **插件排序**：普通模式长按卡片约半秒拖动排序，或使用卡片操作区的上移/下移按钮（键盘可操作）；批量管理模式支持像手机多选应用一样拖动整组插件；顺序持久化于数据库 schema v3 `plugins.sort_order`，插件激活顺序跟随列表
+- **插件排序**：普通模式长按卡片拖动排序，批量管理模式支持多选组拖动；顺序持久化于当前数据库 schema v10，插件激活顺序跟随列表
 - **批量插件管理**：主页批量管理支持批量启用、批量禁用、批量删除和多选组拖拽，操作按插件串行执行并汇总失败项
 - **生命周期恢复**：导入、升级、启停、卸载和崩溃恢复按插件单飞，目录替换使用可恢复事务，避免频繁操作导致进程或会话残留
 - **双更新通道**：稳定版与测试版分别读取独立签名元数据，测试版不会覆盖稳定版；请求有超时、重试和状态复位
@@ -25,56 +26,48 @@
 ## 技术栈
 
 - **Tauri 2.11.x**（Rust core：rusqlite / sidecar 进程管理 / renderer 会话）+ WebView2
-- React 18 + Ant Design 5 + zustand（`tauri-frontend/`）；根目录 Electron 冻结线继续使用 React 19 + Ant Design 6
+- React 18 + Ant Design 5 + zustand（tauri-frontend/）
 - **rusqlite（bundled SQLite 3.53.x）**——与 better-sqlite3 文件格式零迁移兼容
 - 插件 backend：**quickjs-ng**（Rust sidecar，独立进程 + 帧协议）
-- Vitest 单元测试（Electron 冻结线）/ **cargo test + clippy + fmt**（Tauri 线）
+- Vitest（宿主、插件与 Next SDK）/ cargo test + clippy + fmt（Rust/Tauri）
 
 ## 快速开始
 
 ```bash
-# Tauri 线（当前正式基线 2.0.1）
-cd src-tauri && cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
+# Tauri 线（当前本地集成基线 2.1.0-beta.4）
+npm run check
+cd src-tauri && cargo fmt --check && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked
 cd tauri-frontend && npm install && npm run build
 npm run build:frame              # 插件 frame runtime（out/plugin-frame/runtime.js）
 
 # 插件（独立自包含工程，1.9.0 起）
 cd plugins/<id> && npm run clean && npm run build
 
-# 发布链（Electron 冻结线脚本仍可用作插件打包/签名参考）
-npm run package:plugins && npm run generate:sbom
+# Tauri Next 官方插件产物
+npm run package:plugins:tauri && npm run verify:plugins:tauri
 ```
 
 ## 插件开发
 
-插件是一个包含 `plugin.json` 清单的目录或压缩包，**自包含工程**（独立 build/test/发布，宿主只消费 dist）。结构示例：
+新架构使用冻结的 Next beta.1 契约。Manifest/API 为 5、wire 为 3、data schema 为 1；新插件在各自目录 vendor 精确版本 SDK 5.0.0-beta.1 和独立构建 CLI 1.0.0-beta.1。
 
-```jsonc
+```json
 {
-  "name": "demo",
-  "version": "1.0.0",
+  "id": "example-plugin",
+  "version": "0.1.0",
   "displayName": "示例插件",
-  "description": "一个示例插件",
+  "description": "Next beta.1 renderer-only 插件",
   "author": "CrucibleBox",
-  "main": "dist/main.js",
+  "manifestVersion": 5,
+  "sdkApiVersion": 5,
+  "wireVersion": 3,
+  "dataSchemaVersion": 1,
   "renderer": "dist/renderer.js",
-  "manifestVersion": 2,
-  "backendApiVersion": 2,
-  "rendererApiVersion": 2,
-  "permissions": ["storage:read", "storage:write", "notification"],
-  "config": {
-    "greeting": { "label": "问候语", "type": "string", "default": "你好" }
-  }
+  "permissions": ["storage:read", "storage:write"]
 }
 ```
 
-- `main`：backend 插件入口（CommonJS，导出 `activate(ctx)/deactivate()/onMessage()`），由 **Rust sidecar**（quickjs-ng，无 Node builtin）加载，经 stdin/stdout 帧协议 + 信封 v2 与宿主通信
-- `renderer`：自包含 browser renderer（IIFE，React 内联），在跨源 sandboxed iframe + MessagePort RPC 中运行
-- **信任模型**：backend 是**可信代码**；sidecar 进程 + 最小能力面 + 宿主侧 PermissionGuard 提供故障隔离与纵深控制，但权限声明不是恶意代码安全边界。安装插件时会弹出确认框展示插件名/版本/作者，由你确认其可信后才写入。
-- 新插件使用 `ctx.storage` 与 `storage:read/write`；`database:read/write` 只用于旧 SDK 兼容
-- `file:read/write` 表示整个文件系统能力，请谨慎授予
-- 再次导入更高版本的同一插件即可完成更新（保留其 ID、配置与启用状态）
-- **脚手架/版本/签名**：`cli/bin/openbox` —— `create-plugin` / `bump` / `sign`（Ed25519）
+renderer 导出 ESM mount(context)，只使用 SDK 声明的能力；没有 Node、宿主 DOM、SQL 或任意文件路径 API。Next backend 可选，入口使用 dist/main.js 字符串并在受限 QuickJS sidecar 中运行。官方目录以 contracts/next/official-plugins.json 为准。七个官方 Next 插件可独立构建、测试和打包；其他既有插件包与用户数据保留，未要求迁移的包不会因此被删除。完整契约见 docs/plugin-sdk.md。
 
 ## 目录结构
 
@@ -82,45 +75,35 @@ npm run package:plugins && npm run generate:sbom
 src-tauri/                 # Tauri 主进程（Rust）
   src/main.rs              # 装配点（updater/协议/DB/L3 迁移/命令注册/退出清理）
   src/commands.rs          # IPC 命令组（settings/app/plugin 读写/session/日志）
-  src/db.rs                # rusqlite 引擎 + v1-v3 迁移 + storage/log 读写层
+  src/db.rs                # repository 宿主适配；v1-v10 迁移在独立 crate 内
   src/backend_process.rs   # 插件 backend sidecar 管理器（spawn/崩溃恢复/权限）
   src/envelope_host.rs     # host 方法分发（storage/log/db）
   src/permissions.rs       # PermissionGuard（15 权限）
   src/plugin_session.rs    # renderer session registry
   src/plugin_protocol.rs   # cruciblebox-plugin 协议 handler
-  cruciblebox-plugin-host/ # 插件 backend sidecar crate（quickjs-ng）
+  crates/                  # repository、Next contract/data、Document 与统一任务核心
+  cruciblebox-plugin-host/ # Next backend sidecar crate（QuickJS，wire 3）
+workers/document/          # PDFium 与 Document IR 的独立按需 worker
 tauri-frontend/            # React 渲染层（App / PluginHost / themeCache）
-plugins/                   # 5 个正式综合插件及兼容期旧插件（自包含工程）
+plugins/                   # 2.1 beta 聚合插件与旧插件源码（自包含工程）
 shared/                    # 跨进程共享契约（types / themes / RPC）
-electron/ database/ plugin-system/   # Electron 冻结线（1.7.3，只读参照）
+旧 Electron 源码不在活动工作树；历史参照见 docs/electron-legacy-registry.md。
 ```
 
-## 插件 backend（Rust sidecar）
+## 插件 backend（Next beta.1）
 
-新插件声明 `backendApiVersion: 3`，v2 插件继续兼容。backend 运行于独立 `cruciblebox-plugin-host` 进程
-（quickjs-ng 内嵌，纯 JS + 宿主注入 ctx），经 stdin/stdout 长度前缀帧 + 信封 v2
-（token/requestId/预算/方法白名单）与宿主通信。宿主侧对每个 host 方法做 PermissionGuard
-逐调用校验（storage/log/db 已实现；dialog/network/file/shortcut/trusted 暂回 NOT_ALLOWED）。
-UniEnv 的进程、文件、下载和解压实现属于宿主固定摘要可信服务（`trusted-service-policies.json`，
-digest 钉死），发布插件只包含受限代理。架构、兼容规则和构建方式见 `docs/security-model.md`
-与 `docs/plugin-sdk.md`。
+Next backend 是可选能力，使用 Manifest/API 5、wire 3 和 Next sidecar。受限 CJS loader 只解析插件包内文件，没有 Node builtin、数据库连接或任意文件读写；host capability 仍由宿主逐请求授权。七个官方 Next 插件当前为 renderer-only，GIF 包含单独声明的 renderer worker。
+
+v2-v4 旧 backend 执行入口、旧 loader 与 SQL RPC 已从生产路径退役。旧安装包、用户文件、配置和 storage 原值保留用于迁移诊断；需要回滚时必须使用 scripts/next-paired-rollback.mjs 配对恢复旧程序与旧数据库。
 
 ## 插件渲染隔离
 
-新插件使用 `rendererApiVersion: 3`，帧协议继续兼容 v2。每次打开插件时，宿主签发唯一 origin（Windows path 型
-`http://cruciblebox-plugin.localhost/<token>/index.html`），在 sandboxed iframe 中加载自包含
-browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题、通知和 backend 消息能力。
-插件 frame 无 Node/Rust 访问能力，不能访问宿主 DOM 或宿主进程面。契约与构建说明见
-`docs/plugin-sdk.md` 与 `docs/security-model.md`。
+Next 插件在 sandboxed iframe 中运行，通过专用 MessagePort 和 opaque origin 与宿主通信。wire 3 单帧上限 64 KiB、每会话最多 32 个在途请求；大结果经有界分块引用传输。宿主绑定会话身份、storage owner、任务 owner 和权限。具体约束与 fixture 见 docs/plugin-sdk.md 和 docs/security-model.md。
 
 ## 发布与诊断
 
-- **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2
-  downloadBootstrapper 兜底）+ tauri-plugin-updater（minisign 强制签名 JSON）+ cargo-cyclonedx
-  Rust SBOM + GitHub artifact attestation。首个 Tauri 正式版为 **v1.9.2**；当前开发与
-  验证基线为 **v2.0.1**，稳定/测试通道分别发布到 `tauri-stable` / `tauri-beta` 滚动元数据。
-- 插件发布会生成确定性 ZIP、逐文件 SHA-256 清单，并支持仓库外 Ed25519 密钥的强制签名验签；
-  宿主和 11 个正式插件可生成 CycloneDX SBOM。
+- **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器 + tauri-plugin-updater（minisign 强制签名 JSON）+ SBOM 与 GitHub artifact attestation。首个 Tauri 正式版为 v1.9.2；当前本地集成基线为 2.1.0-beta.4。稳定/测试通道分别使用 `tauri-stable` / `tauri-beta`。
+- 插件发布会生成 ZIP、逐文件 SHA-256 清单及 SBOM。Next 官方插件另以独立 renderer-only 包和冻结 catalog 验证；文档 worker/PDFium 是独立固定摘要运行时。
 - 运行时在 `%APPDATA%\cruciblebox\logs` 写诊断信息（进程内存探针已于 1.9.3 移除）。
 - 完整发布环境变量和验收步骤见 `docs/release-runbook.md`。
 
@@ -128,7 +111,7 @@ browser renderer，并通过受校验的 MessagePort RPC 提供配置、主题�
 
 - 当前模块、进程、数据流和信任边界：`docs/architecture.md`（Tauri 2 基线）
 - 安全模型与信任边界：`docs/security-model.md`（Tauri 基线）
-- 插件 SDK v2 契约与私有存储：`docs/plugin-sdk.md`
+- Next beta.1 冻结插件契约与命名空间存储：`docs/plugin-sdk.md`
 - 安装事务与崩溃恢复：`docs/install-recovery.md`
 - 发布与自动更新 runbook：`docs/release-runbook.md`
 - Tauri 迁移计划与复盘：`docs/tauri-migration-plan.md` / `docs/tauri-migration-review.md`
@@ -146,22 +129,15 @@ updater JSON + plugin signatures + CycloneDX SBOMs + SHA-256 checksums + GitHub 
 attestation. Windows installers are currently unsigned and can display Unknown publisher or
 SmartScreen warnings.
 
-## 当前验证基线（2.0.1）
+## 当前架构与验证基线
 
-- Tauri 线：`cargo test --workspace --locked`、`cargo clippy --workspace --all-targets --locked -D warnings`、
-  `cargo fmt --check`、`tauri-frontend` vite build；插件独立 `clean && build`（11/11）。
-- 版本一致性：Tauri 版本以 `src-tauri/tauri.conf.json` 为唯一来源，运行
-  `npm run verify:tauri-version` 校验 Cargo、前端 package/lockfile 与发布制品；根目录
-  `package.json` 的 `1.7.3` 仅属于冻结 Electron 遗留线。
-- 数据库 schema v4（rusqlite bundled WAL）；`%APPDATA%\cruciblebox` 数据路径（L3 已迁移）。
-- 2.0 宿主包含插件市场、任务中心、插件身份视觉体系和扁平化主题表面；市场仅从 CrucibleBox GitHub Release 官方目录下载安装，Windows 优先使用 WinHTTP 自动代理/WPAD 与 BITS，支持手动刷新、稳定/测试通道、进程内目录缓存、离线回退、断点续传、进度显示、批量下载和全部更新，并严格校验插件 ID、来源 URL、声明大小和 SHA-256，再复用既有安装确认与可恢复事务；不接入镜像源、GitHub Marketplace 或账户系统。
-- 正式插件清单以 `scripts/plugin-catalog.json` 为准，目前包含 Document Engine（0.10.0，支持最多 2000 页 PDF、PDFium 原生文字优先、统一文本清洗、TOC 隔离、章节树、公式块、DOCX XML 校验、Markdown/TXT/JSON 导出、真实 PDF 物理拆分、JSONL 文本分块、可选择输出文件夹与 ModelScope 镜像校验的内置 CPU OCR 默认模型）、
-  Diary、Dice Roller、GIF Editor、Theme Manager、Turntable、UniEnv、JSON/文本工具箱、
-  剪贴板管理器、系统信息面板和实时汇率，共 11 个；UniEnv（0.11.0）额外提供 Ruby、Zig、Deno、Bun 及现代 TypeScript/Ruby Web/Zig 原生组合包，并提供 Rust/PHP 多版本选择。第一方插件清单发布者统一为 `CrucibleBox`。
-- 插件 backend 宿主集成：惰性 spawn / 30s 超时 / 按插件激活单飞 / 崩溃 backoff+隔离 / PermissionGuard /
-  storage/log/db host 方法（e2e：真实 sidecar + gif-editor dist 全链路）。
-- Electron 冻结线测试（宿主 36 文件 263 项 + 六插件 199 项 + 供应链 16 项）作为参照保留。
-- 历史发布文档已归档至 `docs/history/`，记录的是当时状态。
+Tauri 宿主本地集成基线为 2.1.0-beta.4；Next 架构契约冻结为 beta.1。Next 官方范围为文档与知识库、主题管理、开发环境管理、日记与笔记、随机决策、GIF 动画编辑、压缩与解压缩。其源码迁移和独立构建不代表 beta.3 完整发布验收，也不改变 OCR 准确率门槛。
+
+- 当前数据库 schema v10；repository crate 独占生产连接、SQL、事务迁移和 WAL checkpoint。Next 卸载/重装保留原始配置、storage、迁移标记和插件目录；旧程序回滚必须配对恢复旧数据库。
+- PDFium 与 Document IR 在 document-worker 独立进程，使用按需固定摘要包；基础宿主不要求 OCR worker。OCR 模型、公式精度、长文档和安装器 UI 有各自门禁。
+- Next SDK、CLI、两个示例和七个官方插件按根生成契约独立验证。旧插件不因官方目录收敛而删除。
+- 基础检查：`npm run check`；Rust：`cd src-tauri && cargo fmt --check && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked`；前端：`cd tauri-frontend && npm run build`。
+- worker 验收与性能对照见 `.github/workflows/ci.yml`；发布包由 `.github/workflows/tauri-release.yml` 按 MSVC 目标同次构建 worker、pin catalog 并验收安装、PDF 解析和任务恢复。
 
 ## License
 

@@ -1,4 +1,4 @@
-import type { PluginRenderProps } from 'cruciblebox-plugin-api'
+import type { DiaryRenderProps } from '../next-service'
 import {
   isDiaryMutationResult,
   type DiaryDraft,
@@ -6,9 +6,9 @@ import {
   type DiaryMutationResult
 } from '../diary-domain'
 
-let currentApi: PluginRenderProps['api'] | null = null
+let currentApi: DiaryRenderProps['api'] | null = null
 
-export function setApi(api: PluginRenderProps['api']) {
+export function setApi(api: DiaryRenderProps['api']) {
   currentApi = api
 }
 
@@ -38,7 +38,7 @@ function mutationResult(value: unknown): DiaryMutationResult {
 }
 
 export async function getMonthEntries(year: number, month: number): Promise<DiaryMonthEntry[]> {
-  const response = (await api().sendToBackend({
+  const response = (await api().execute({
     type: 'getMonthEntries',
     year,
     month
@@ -47,7 +47,7 @@ export async function getMonthEntries(year: number, month: number): Promise<Diar
 }
 
 export async function getEntry(date: string): Promise<DiaryLoadResult> {
-  const response = (await api().sendToBackend({ type: 'getEntry', date })) as {
+  const response = (await api().execute({ type: 'getEntry', date })) as {
     entry?: DiaryEntry | null
     draft?: DiaryDraft | null
     error?: string
@@ -61,9 +61,7 @@ export async function saveEntry(
   title: string,
   content: string
 ): Promise<DiaryMutationResult> {
-  return mutationResult(
-    await api().sendToBackend({ type: 'saveEntry', date, title, content })
-  )
+  return mutationResult(await api().execute({ type: 'saveEntry', date, title, content }))
 }
 
 export async function saveDraft(
@@ -71,21 +69,19 @@ export async function saveDraft(
   title: string,
   content: string
 ): Promise<DiaryMutationResult> {
-  return mutationResult(
-    await api().sendToBackend({ type: 'saveDraft', date, title, content })
-  )
+  return mutationResult(await api().execute({ type: 'saveDraft', date, title, content }))
 }
 
 export async function discardDraft(date: string): Promise<DiaryMutationResult> {
-  return mutationResult(await api().sendToBackend({ type: 'discardDraft', date }))
+  return mutationResult(await api().execute({ type: 'discardDraft', date }))
 }
 
 export async function deleteEntry(date: string): Promise<DiaryMutationResult> {
-  return mutationResult(await api().sendToBackend({ type: 'deleteEntry', date }))
+  return mutationResult(await api().execute({ type: 'deleteEntry', date }))
 }
 
 export async function exportSingle(date: string): Promise<string> {
-  const response = (await api().sendToBackend({ type: 'exportSingle', date })) as {
+  const response = (await api().execute({ type: 'exportSingle', date })) as {
     content?: string
     error?: string
   }
@@ -94,7 +90,7 @@ export async function exportSingle(date: string): Promise<string> {
 }
 
 export async function exportMonth(year: number, month: number): Promise<string> {
-  const response = (await api().sendToBackend({ type: 'exportMonth', year, month })) as {
+  const response = (await api().execute({ type: 'exportMonth', year, month })) as {
     content?: string
     error?: string
   }

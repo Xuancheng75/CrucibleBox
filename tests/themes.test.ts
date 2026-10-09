@@ -260,3 +260,19 @@ describe('themeToCssVars', () => {
     expect(keys).toContain('--ob-font-family')
   })
 })
+
+it('primary button text follows beta3 theme contrast rather than fixed white', () => {
+  const cyber = themeToCssVars(PRESET_THEMES.find((theme) => theme.id === 'cyber')!)
+  const light = themeToCssVars({
+    ...DEFAULT_THEME,
+    tokens: { ...DEFAULT_THEME.tokens, colorPrimary: '#123456' }
+  })
+  expect(cyber['--ob-color-primary-contrast']).toBe('#000000')
+  expect(light['--ob-color-primary-contrast']).toBe('#ffffff')
+  expect(getThemeCssVarKeys()).toContain('--ob-color-primary-contrast')
+})
+
+test('all beta3 preset font stacks survive render-only normalization', () => {
+  for (const theme of PRESET_THEMES)
+    expect(normalizeTheme(theme)?.tokens.fontFamily).toBe(theme.tokens.fontFamily)
+})

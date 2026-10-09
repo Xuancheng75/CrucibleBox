@@ -25,7 +25,7 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   [Permission.DatabaseWrite]: '写入数据库',
   [Permission.StorageRead]: '读取插件私有存储',
   [Permission.StorageWrite]: '写入插件私有存储',
-  [Permission.ShellExec]: '执行系统命令',
+  [Permission.ShellExec]: '运行本地程序（安装或升级时需确认）',
   [Permission.NetworkFetch]: '发起网络请求',
   [Permission.Notification]: '发送系统通知',
   [Permission.Clipboard]: '读写剪贴板',

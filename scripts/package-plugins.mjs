@@ -1,3 +1,4 @@
+import { artifactRuntimeMetadata } from './plugin-runtime-metadata.mjs'
 import AdmZip from 'adm-zip'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -9,7 +10,15 @@ import { readTauriVersion } from './tauri-version.mjs'
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
 const outputDirectory = resolve(repositoryRoot, 'artifacts', 'plugins')
-const catalog = JSON.parse(readFileSync(resolve(scriptDirectory, 'plugin-catalog.json'), 'utf8'))
+const catalog = JSON.parse(
+  readFileSync(
+    resolve(
+      scriptDirectory,
+      process.argv.includes('--next') ? 'next-plugin-catalog.json' : 'plugin-catalog.json'
+    ),
+    'utf8'
+  )
+)
 const hostPackage = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'))
 // Electron 发布链默认继续使用根 package.json（1.7.3 冻结线）；Tauri 工作流显式传入
 // --tauri，避免两条发布线互相污染版本清单。
@@ -49,15 +58,15 @@ for (const plugin of catalog) {
     displayName: manifest.displayName,
     description: manifest.description ?? '',
     publisher: manifest.author || 'CrucibleBox',
+    category: manifest.category ?? '第三方插件',
+    tags: Array.isArray(manifest.tags) ? manifest.tags : [],
+    keywords: Array.isArray(manifest.keywords) ? manifest.keywords : [],
     ...(manifest.icon ? { icon: manifest.icon } : {}),
     version: manifest.version,
     artifact: `${plugin.id}-${manifest.version}.zip`,
     sha256: digest,
     size: statSync(outputPath).size,
-    manifestVersion: manifest.manifestVersion ?? 1,
-    backend: manifest.backend !== false,
-    backendApiVersion: manifest.backend === false ? null : (manifest.backendApiVersion ?? 1),
-    rendererApiVersion: manifest.rendererApiVersion ?? 1,
+    ...artifactRuntimeMetadata(manifest),
     ...(manifest.minHostVersion ? { minHostVersion: manifest.minHostVersion } : {}),
     files
   })

@@ -1,0 +1,24 @@
+{
+  "name": "@cruciblebox/plugin-build",
+  "version": "1.0.0-beta.1",
+  "type": "module",
+  "bin": {
+    "cruciblebox-plugin-build": "./cli.mjs"
+  },
+  "files": [
+    "cli.mjs",
+    "README.md"
+  ],
+  "dependencies": {
+    "esbuild": "0.25.12",
+    "adm-zip": "0.6.0",
+    "@cruciblebox/next-api": "5.0.0-beta.1"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

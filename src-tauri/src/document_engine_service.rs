@@ -13,55 +13,395 @@
 
 use crate::db::Db;
 use crate::document_engine_task::{
-    TaskContext, TaskManager, RESOURCE_BATCH, RESOURCE_CHUNK, RESOURCE_CONVERT, RESOURCE_OCR,
-    RESOURCE_PARSE, RESOURCE_SPLIT,
+    TaskContext, TaskManager, RESOURCE_BATCH, RESOURCE_CHUNK, RESOURCE_CONVERT, RESOURCE_MODELS,
+    RESOURCE_OCR, RESOURCE_PARSE, RESOURCE_SPLIT,
 };
 use crate::ocr_worker::{OcrWorkerManager, OcrWorkerRequest};
+use base64::Engine as _;
+use image::codecs::jpeg::JpegEncoder;
+use image::ImageReader;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
-fn tasks() -> &'static Arc<TaskManager> {
-    static TASKS: OnceLock<Arc<TaskManager>> = OnceLock::new();
-    TASKS.get_or_init(|| Arc::new(TaskManager::default()))
+pub struct Service {
+    tasks: Arc<TaskManager>,
+    retry_requests: Mutex<HashMap<String, Value>>,
+    worker: Option<Arc<OcrWorkerManager>>,
+    resources: Option<PathBuf>,
+    document_worker: Mutex<Arc<cruciblebox_document_worker::client::Client>>,
+    document_runtime: Arc<cruciblebox_document_worker::runtime::Store>,
+    gpu_status: std::sync::OnceLock<Value>,
+}
+impl Service {
+    #[cfg(test)]
+    pub fn new(runtime: Arc<crate::task_runtime::TaskRuntime>) -> Self {
+        Self::with_worker(runtime, None, None, None)
+    }
+    pub fn with_worker(
+        runtime: Arc<crate::task_runtime::TaskRuntime>,
+        worker: Option<Arc<OcrWorkerManager>>,
+        resources: Option<PathBuf>,
+        runtime_root: Option<PathBuf>,
+    ) -> Self {
+        let root = runtime_root
+            .unwrap_or_else(|| std::env::temp_dir().join("cruciblebox-document-runtime-tests"));
+        let document_runtime = cruciblebox_document_worker::runtime::Store::new(root.clone());
+        let catalog: cruciblebox_document_worker::runtime::Catalog =
+            serde_json::from_str(include_str!("../../shared/document-runtime-catalog.json"))
+                .expect("embedded document runtime catalog");
+        let client = match document_runtime.lease(&catalog) {
+            Ok(lease) => cruciblebox_document_worker::client::Client::leased(
+                lease,
+                root.join("jobs"),
+                std::time::Duration::from_secs(15 * 60),
+            ),
+            Err(_) => cruciblebox_document_worker::client::Client::new(
+                root.join("unavailable/document-worker.exe"),
+                None,
+                root.join("jobs"),
+                std::time::Duration::from_secs(15 * 60),
+            ),
+        };
+        #[cfg(test)]
+        let client = if let Some(exe) = std::env::var_os("DOCUMENT_WORKER_ACCEPTANCE_EXE") {
+            cruciblebox_document_worker::client::Client::new(
+                exe.into(),
+                std::env::var_os("DOCUMENT_WORKER_ACCEPTANCE_PDFIUM").map(PathBuf::from),
+                root.join("jobs"),
+                std::time::Duration::from_secs(15 * 60),
+            )
+        } else {
+            client
+        };
+        let document_worker = Mutex::new(Arc::new(client));
+        Self {
+            document_worker,
+            document_runtime,
+            tasks: Arc::new(TaskManager::with_runtime(runtime)),
+            retry_requests: Mutex::new(HashMap::new()),
+            worker,
+            resources,
+            gpu_status: std::sync::OnceLock::new(),
+        }
+    }
+    fn document_client(&self) -> Arc<cruciblebox_document_worker::client::Client> {
+        self.document_worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    fn install_document_runtime(&self, source: &Path) -> Result<Value, String> {
+        let catalog: cruciblebox_document_worker::runtime::Catalog =
+            serde_json::from_str(include_str!("../../shared/document-runtime-catalog.json"))
+                .map_err(|e| e.to_string())?;
+        let lease = self.document_runtime.install(source, &catalog)?;
+        let identity = lease.identity.clone();
+        let jobs = std::env::temp_dir().join("cruciblebox-document-jobs");
+        let client = cruciblebox_document_worker::client::Client::leased(
+            lease,
+            jobs,
+            std::time::Duration::from_secs(15 * 60),
+        );
+        *self
+            .document_worker
+            .lock()
+            .map_err(|_| "DOCUMENT_RUNTIME_STATE_UNAVAILABLE")? = Arc::new(client);
+        Ok(json!({"installed":true,"version":catalog.version,"identity":identity}))
+    }
+    pub fn set_emitter(&self, emitter: Emitter) {
+        self.tasks.set_progress_emitter(emitter);
+    }
+    pub fn set_observer(&self, observer: Arc<dyn Fn(Value) + Send + Sync>) {
+        self.tasks.set_observer(observer);
+    }
 }
 
 type Emitter = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
-static OCR_WORKER: OnceLock<Arc<OcrWorkerManager>> = OnceLock::new();
-static EVENT_EMITTER: OnceLock<Emitter> = OnceLock::new();
-static RETRY_REQUESTS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
 const DEFAULT_MODEL_ID: &str = "ppocrv6-small-det-v5-mobile-rec";
-const PIPELINE_VERSION: &str = "document-ir-v4-layout-math-structure-v2";
-const OCR_CONFIG_VERSION: &str = "ocr-config-v4-language-profile";
+const FAST_MODEL_PROFILE: &str = "onnx-text-fast";
+const FORMULA_MODEL_PROFILE: &str = "onnx-doclayout-m-rapidlatex";
+const FORMULANET_MODEL_PROFILE: &str = "onnx-doclayout-m-formulanet-plus-s";
+const PIPELINE_VERSION: &str = "document-ir-v5-preserve-rapidocr-order";
+const OCR_CONFIG_VERSION: &str = "ocr-config-v5-rapidocr-formula";
 const LAYOUT_MODEL_VERSION: &str = "ppdoclayout-m-v1";
-const FORMULA_DETECTION_VERSION: &str = "layout-formula-region-v1";
+const FORMULA_DETECTION_VERSION: &str = "layout-formula-region-v2";
 
-fn worker_manager() -> Option<&'static Arc<OcrWorkerManager>> {
-    OCR_WORKER.get()
+fn ocr_preview(path: &Path) -> Result<Value, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| format!("预览文件不可读取：{error}"))?;
+    if !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
+        return Err("预览仅支持不超过 32MB 的图片文件".into());
+    }
+    let reader = ImageReader::open(path)
+        .and_then(|reader| reader.with_guessed_format())
+        .map_err(|error| format!("图片格式不可读取：{error}"))?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|error| format!("图片尺寸不可读取：{error}"))?;
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 40_000_000 {
+        return Err("预览图片尺寸超出限制".into());
+    }
+    let image = ImageReader::open(path)
+        .and_then(|reader| reader.with_guessed_format())
+        .map_err(|error| format!("图片格式不可读取：{error}"))?
+        .decode()
+        .map_err(|error| format!("图片解码失败：{error}"))?;
+    for longest_edge in [720, 560, 420, 320] {
+        let thumbnail = image.thumbnail(longest_edge, longest_edge).to_rgb8();
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, 68)
+            .encode(
+                thumbnail.as_raw(),
+                thumbnail.width(),
+                thumbnail.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(|error| format!("图片预览编码失败：{error}"))?;
+        if encoded.len() <= 160 * 1024 {
+            return Ok(json!({
+                "width": width,
+                "height": height,
+                "dataUrl": format!(
+                    "data:image/jpeg;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(encoded)
+                ),
+            }));
+        }
+    }
+    Err("图片预览仍超出通信预算".into())
 }
 
-/// Injected by `main.rs` during Tauri setup.  Keeping the service dispatcher
-/// free of an AppHandle also keeps it unit-testable and host-call compatible.
-pub fn configure_worker_manager(manager: Arc<OcrWorkerManager>) {
-    let _ = OCR_WORKER.set(manager);
+fn formula_python(cfg: &DocumentEngineConfig) -> Option<PathBuf> {
+    std::env::var_os("CRUCIBLEBOX_FORMULA_ONNX_PYTHON")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            cfg.resources
+                .as_ref()
+                .map(|root| root.join("formula-ocr/python/python.exe"))
+                .filter(|path| path.is_file())
+        })
 }
 
-pub fn configure_emitter(emitter: Emitter) {
-    let _ = EVENT_EMITTER.set(emitter);
+fn formula_model_directory(cfg: &DocumentEngineConfig) -> PathBuf {
+    if let Some(path) = std::env::var_os("CRUCIBLEBOX_FORMULA_ONNX_MODELS")
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.join("formula-onnx/pp_formulanet_plus_s.onnx")
+                .is_file()
+        })
+    {
+        return path;
+    }
+    let configured = PathBuf::from(&cfg.model_directory);
+    if configured
+        .join("formula-onnx/pp_formulanet_plus_s.onnx")
+        .is_file()
+    {
+        return configured;
+    }
+    cfg.resources
+        .as_ref()
+        .map(|root| root.join("formula-ocr/models"))
+        .filter(|path| {
+            path.join("formula-onnx/pp_formulanet_plus_s.onnx")
+                .is_file()
+        })
+        .unwrap_or(configured)
 }
 
-fn emitter() -> Option<&'static Emitter> {
-    EVENT_EMITTER.get()
+fn paddle_formula_directory(cfg: &DocumentEngineConfig) -> PathBuf {
+    if let Some(path) = std::env::var_os("CRUCIBLEBOX_PADDLE_FORMULA_MODELS")
+        .map(PathBuf::from)
+        .filter(|path| path.join("paddle-formula/PP-DocLayout-M").is_dir())
+    {
+        return path;
+    }
+    let configured = PathBuf::from(&cfg.model_directory);
+    let separate_addon = configured.join("high/models");
+    if separate_addon
+        .join("paddle-formula/PP-DocLayout-M")
+        .is_dir()
+    {
+        return separate_addon;
+    }
+    if !cfg.formula_addon_directory.is_empty() {
+        let addon = PathBuf::from(&cfg.formula_addon_directory);
+        let models = addon.join("models");
+        return if models.is_dir() { models } else { addon };
+    }
+    if configured.join("paddle-formula/PP-DocLayout-M").is_dir() {
+        return configured;
+    }
+    cfg.resources
+        .as_ref()
+        .map(|root| root.join("formula-ocr/high/models"))
+        .filter(|path| path.join("paddle-formula/PP-DocLayout-M").is_dir())
+        .unwrap_or(configured)
 }
 
-fn retry_requests() -> &'static Mutex<HashMap<String, Value>> {
-    RETRY_REQUESTS.get_or_init(|| Mutex::new(HashMap::new()))
+fn high_precision_runtime_ready(cfg: &DocumentEngineConfig) -> bool {
+    let models = paddle_formula_directory(cfg);
+    if !models
+        .join("paddle-formula/PP-DocLayout-M/inference.pdiparams")
+        .is_file()
+        || !models
+            .join("paddle-formula/PP-FormulaNet_plus-L/inference.pdiparams")
+            .is_file()
+    {
+        return false;
+    }
+    let addon = models.parent();
+    let python = std::env::var_os("CRUCIBLEBOX_FORMULA_PYTHON")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| addon.map(|root| root.join("python/python.exe")))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            cfg.resources
+                .as_ref()
+                .map(|root| root.join("formula-ocr/high/python/python.exe"))
+                .filter(|path| path.is_file())
+        });
+    let script = std::env::var_os("CRUCIBLEBOX_FORMULA_WORKER_SCRIPT")
+        .map(PathBuf::from)
+        .or_else(|| {
+            cfg.resources
+                .as_ref()
+                .map(|root| root.join("formula-ocr/high/formula-ocr-worker.py"))
+                .filter(|path| path.is_file())
+        })
+        .or_else(|| addon.map(|root| root.join("formula-ocr-worker.py")));
+    python.is_some() && script.is_some_and(|path| path.is_file())
 }
 
-fn remember_retry(task_id: &str, request: &Value) {
-    if let Ok(mut requests) = retry_requests().lock() {
+fn unimernet_runtime_ready(cfg: &DocumentEngineConfig) -> bool {
+    let models = paddle_formula_directory(cfg);
+    if !models
+        .join("paddle-formula/PP-DocLayout-M/inference.pdiparams")
+        .is_file()
+        || !models
+            .join("paddle-formula/UniMERNet/inference.pdiparams")
+            .is_file()
+    {
+        return false;
+    }
+    let addon = models.parent();
+    let python = std::env::var_os("CRUCIBLEBOX_FORMULA_PYTHON")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| addon.map(|root| root.join("python/python.exe")))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            cfg.resources
+                .as_ref()
+                .map(|root| root.join("formula-ocr/high/python/python.exe"))
+                .filter(|path| path.is_file())
+        });
+    let script = std::env::var_os("CRUCIBLEBOX_FORMULA_WORKER_SCRIPT")
+        .map(PathBuf::from)
+        .or_else(|| addon.map(|root| root.join("formula-ocr-worker.py")));
+    python.is_some() && script.is_some_and(|path| path.is_file())
+}
+
+const HIGH_FORMULA_ADDON_SHA256: &str =
+    "16dd075ba1852452c5a1c08cd29835d09d08effcf9410ef68d1b6a85ce3dff14";
+const HIGH_FORMULA_ADDON_BYTES: u64 = 972_509_504;
+
+fn install_high_formula_addon(
+    cfg: &DocumentEngineConfig,
+    archive: &Path,
+    ctx: &TaskContext,
+) -> Result<Value, String> {
+    ctx.update_progress("formula-addon", 5, "验证附加包", None);
+    if !archive.is_file() || archive.extension().and_then(|v| v.to_str()) != Some("7z") {
+        return Err("请选择 CrucibleBox 高精度公式 .7z 附加包".into());
+    }
+    if std::fs::metadata(archive)
+        .map_err(|error| format!("读取附加包大小失败：{error}"))?
+        .len()
+        != HIGH_FORMULA_ADDON_BYTES
+    {
+        return Err("附加包大小或 SHA-256 不匹配，拒绝安装".into());
+    }
+    let hash = crate::document_engine_cache::file_hash(archive)?;
+    if !hash.eq_ignore_ascii_case(HIGH_FORMULA_ADDON_SHA256) {
+        return Err("附加包 SHA-256 不匹配，拒绝安装".into());
+    }
+    ctx.check_cancelled()?;
+    let seven_zip = cfg
+        .resources
+        .as_ref()
+        .map(|root| root.join("7zip/7za.exe"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/7zip/7za.exe")
+        });
+    if !seven_zip.is_file() {
+        return Err("安装包缺少 7-Zip 解压器".into());
+    }
+    let model_root = PathBuf::from(&cfg.model_directory);
+    std::fs::create_dir_all(&model_root).map_err(|error| format!("模型目录不可写：{error}"))?;
+    let target = model_root.join("high");
+    if target.exists() {
+        return Err("高精度附加包目录已存在；请先检查现有目录，不自动覆盖".into());
+    }
+    let staging = model_root.join(format!(".high-import-{}", ctx.task_id()));
+    std::fs::create_dir(&staging).map_err(|error| format!("无法建立附加包暂存目录：{error}"))?;
+    let install = (|| -> Result<Value, String> {
+        ctx.update_progress("formula-addon", 20, "解压高精度附加包", None);
+        let mut child = std::process::Command::new(&seven_zip)
+            .arg("x")
+            .arg("-y")
+            .arg("-bd")
+            .arg("-bso0")
+            .arg(format!("-o{}", staging.display()))
+            .arg(archive)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| format!("无法启动附加包解压器：{error}"))?;
+        loop {
+            if ctx.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("附加包导入已取消".into());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(Some(status)) => return Err(format!("附加包解压失败：{status}")),
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                Err(error) => return Err(format!("等待解压器失败：{error}")),
+            }
+        }
+        ctx.check_cancelled()?;
+        let extracted = staging.join("formula-high-addon");
+        for relative in [
+            "python/python.exe",
+            "formula-ocr-worker.py",
+            "models/paddle-formula/PP-DocLayout-M/inference.pdiparams",
+            "models/paddle-formula/PP-FormulaNet_plus-L/inference.pdiparams",
+        ] {
+            if !extracted.join(relative).is_file() {
+                return Err(format!("附加包缺少 {relative}"));
+            }
+        }
+        ctx.update_progress("formula-addon", 90, "提交高精度附加包", None);
+        std::fs::rename(&extracted, &target).map_err(|error| format!("附加包提交失败：{error}"))?;
+        ctx.update_progress("formula-addon", 100, "高精度附加包已就绪", None);
+        Ok(json!({
+            "addonDirectory": target,
+            "warning": "该模型单页实测超过 3.4GB，且公式仍需逐式校对；须主动选择 L 模式。"
+        }))
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    install
+}
+
+fn remember_retry(context: &Service, task_id: &str, request: &Value) {
+    if let Ok(mut requests) = context.retry_requests.lock() {
         requests.insert(task_id.to_string(), request.clone());
         if requests.len() > 100 {
             let stale = requests.keys().next().cloned();
@@ -350,38 +690,35 @@ fn install_model_bundle(
 // 配置（从插件 config_data 现读；缺失回退默认值）
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DocumentEngineConfig {
     pub model_directory: String,
+    pub formula_addon_directory: String,
     pub dictionary_path: String,
     pub model_profile: String,
     pub text_recognition_mode: String,
     pub cache_directory: String,
     pub output_directory: String,
     pub device: String,
+    /// Host-supplied resource root; never read from plugin configuration JSON.
+    resources: Option<PathBuf>,
+}
+
+fn load_config_for_service(context: &Service, db: &Db, plugin_id: &str) -> DocumentEngineConfig {
+    let mut config = load_config(db, plugin_id);
+    config.resources = context.resources.clone();
+    config
 }
 
 fn load_config(db: &Db, plugin_id: &str) -> DocumentEngineConfig {
     let raw = db
-        .conn()
-        .lock()
+        .plugin_find_by_id(plugin_id)
         .ok()
-        .and_then(|conn| {
-            conn.query_row(
-                "SELECT config_data FROM plugins WHERE id = ?1",
-                [plugin_id],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-        })
+        .flatten()
+        .map(|record| record.config_data)
         .unwrap_or_else(|| "{}".into());
     let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
-    let app_data = db
-        .conn()
-        .lock()
-        .ok()
-        .and_then(|_| std::env::var("APPDATA").ok())
-        .unwrap_or_else(|| "C:\\".into());
+    let app_data = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\".into());
     let base = PathBuf::from(&app_data)
         .join("cruciblebox")
         .join("document-engine");
@@ -392,6 +729,12 @@ fn load_config(db: &Db, plugin_id: &str) -> DocumentEngineConfig {
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| base.join("models").to_string_lossy().into_owned());
     DocumentEngineConfig {
+        resources: None,
+        formula_addon_directory: parsed
+            .get("formulaAddonDirectory")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         dictionary_path: parsed
             .get("dictionaryPath")
             .and_then(Value::as_str)
@@ -512,16 +855,20 @@ fn chapter_ranges_from_document(document: &Value) -> Vec<(usize, usize)> {
 }
 
 fn export_parsed_result(
+    _document_worker: &cruciblebox_document_worker::client::Client,
     mut result: Value,
     path: &str,
     output_directory: &Path,
+    ctx: &crate::document_engine_task::TaskContext,
 ) -> Result<Value, String> {
-    let bundle = crate::document_converter::export_document_bundle(
+    let bundle = crate::document_converter::export_document_bundle_with_publication(
+        _document_worker,
         result
             .get("document")
             .ok_or_else(|| "解析器未返回 Document".to_string())?,
         output_directory,
         &document_stem(path),
+        Some(ctx.runtime_context()),
     )?;
     result["outputs"] = bundle;
     result["outputDirectory"] = json!(output_directory.to_string_lossy());
@@ -534,6 +881,7 @@ fn export_parsed_result(
 /// page render + OCR pass every time.  Cache the raw unified document before
 /// exporting operation-specific files so every consumer can share it.
 fn parse_document_with_cache(
+    _document_worker: &cruciblebox_document_worker::client::Client,
     path: &str,
     cfg: &DocumentEngineConfig,
     manager: Option<&OcrWorkerManager>,
@@ -566,10 +914,11 @@ fn parse_document_with_cache(
     }
 
     ctx.update_progress("classify", 8, "判断页面类型", None);
-    let mut parsed = crate::document_parser::parse_file(path)?;
+    let mut parsed =
+        crate::document_parser::parse_file(_document_worker, path, ctx.runtime_context())?;
     if parsed["requiresOcr"].as_bool().unwrap_or(false) {
         let manager = manager.ok_or_else(|| "扫描 PDF 需要已配置 OCR Worker".to_string())?;
-        parsed = merge_ocr_pages(parsed, path, manager, ctx, plugin_id, cfg, None)?;
+        parsed = merge_ocr_pages(_document_worker, parsed, path, manager, ctx, plugin_id, cfg)?;
     }
     let sanitization = crate::document_text::sanitize_document(&mut parsed["document"]);
     let native_quality =
@@ -660,6 +1009,38 @@ fn restore_reading_order(blocks: &mut [Value], page_width: u32) {
     });
 }
 
+/// RapidOCR already orders recognized text. Keep that sequence, especially for
+/// tables and headers, and place formula candidates into it by page position.
+fn insert_formulas_into_ocr_order(blocks: &mut Vec<Value>) {
+    let mut formulas = Vec::new();
+    let mut text = Vec::new();
+    for block in blocks.drain(..) {
+        if block["type"] == "formula" {
+            formulas.push(block);
+        } else {
+            text.push(block);
+        }
+    }
+    formulas.sort_by(|left, right| {
+        let left_bbox = block_bbox(left).unwrap_or([0.0; 4]);
+        let right_bbox = block_bbox(right).unwrap_or([0.0; 4]);
+        left_bbox[1]
+            .total_cmp(&right_bbox[1])
+            .then_with(|| left_bbox[0].total_cmp(&right_bbox[0]))
+    });
+    for formula in formulas {
+        let bbox = block_bbox(&formula).unwrap_or([0.0; 4]);
+        let center_y = (bbox[1] + bbox[3]) / 2.0;
+        let position = text.iter().position(|block| {
+            let other = block_bbox(block).unwrap_or([0.0; 4]);
+            other[1] > center_y
+                || (other[1] <= center_y && other[3] >= center_y && other[0] > bbox[0])
+        });
+        text.insert(position.unwrap_or(text.len()), formula);
+    }
+    *blocks = text;
+}
+
 fn rebuild_document_structure(document: &mut Value) {
     crate::document_structure::rebuild(document);
     if let Some(pages) = document.get_mut("pages").and_then(Value::as_array_mut) {
@@ -671,44 +1052,7 @@ fn rebuild_document_structure(document: &mut Value) {
     }
 }
 
-pub(crate) fn enrich_formula_blocks(document: &mut Value) {
-    if let Some(pages) = document.get_mut("pages").and_then(Value::as_array_mut) {
-        for page in pages {
-            let page_number = page["number"].as_u64().unwrap_or(1);
-            if let Some(blocks) = page.get_mut("blocks").and_then(Value::as_array_mut) {
-                for block in blocks {
-                    if block["type"] != "formula" {
-                        continue;
-                    }
-                    let plain_text = block["plainText"]
-                        .as_str()
-                        .or_else(|| block["rawText"].as_str())
-                        .or_else(|| block["content"].as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let result = crate::formula_ocr::recognize_text(&plain_text);
-                    block["plainText"] = json!(plain_text);
-                    block["content"] = json!(result.latex.clone());
-                    block["latex"] = json!(result.latex);
-                    block["rawLatex"] = json!(result.raw_latex);
-                    block["normalizedLatex"] = json!(result.normalized_latex);
-                    block["formulaEngine"] = json!(result.engine);
-                    block["formulaModelVersion"] = json!(result.model_version);
-                    block["formulaConfidence"] = json!(result.confidence);
-                    block["displayOrInline"] = block["displayOrInline"]
-                        .as_str()
-                        .map_or_else(|| json!(result.display_or_inline), |mode| json!(mode));
-                    block["region"] = json!("formula");
-                    block["source"] = block["source"]
-                        .as_str()
-                        .map_or_else(|| json!("native/pdf/formula_ocr"), |source| json!(source));
-                    block["page"] = json!(page_number);
-                    crate::document_math::enrich_block(block);
-                }
-            }
-        }
-    }
-}
+pub(crate) use cruciblebox_document::enrichment::enrich_formula_blocks;
 
 fn refresh_semantic_metadata(document: &mut Value) {
     let existing_has_images = document["metadata"]["hasImages"].as_bool().unwrap_or(false);
@@ -744,24 +1088,13 @@ fn refresh_semantic_metadata(document: &mut Value) {
     document["metadata"]["tableBlockCount"] = json!(table_count);
 }
 
-fn emit_progress(plugin_id: &str, task_id: &str, progress: &Value) {
-    if let Some(emitter) = emitter() {
-        emitter(
-            "plugin:message",
-            json!({
-                "pluginId": plugin_id,
-                "message": {
-                    "type": "document.progress",
-                    "taskId": task_id,
-                    "progress": progress,
-                },
-            }),
-        );
-    }
-}
-
 fn ocr_model_version(cfg: &DocumentEngineConfig) -> String {
-    let directory = PathBuf::from(&cfg.model_directory);
+    let directory =
+        if effective_formula_profile(cfg).is_some_and(|profile| profile.starts_with("onnx-")) {
+            formula_model_directory(cfg)
+        } else {
+            PathBuf::from(&cfg.model_directory)
+        };
     let profile = ocr_worker_profile(cfg);
     let legacy = profile.contains("v4");
     let english = profile.contains("en-rec");
@@ -805,14 +1138,59 @@ fn ocr_model_version(cfg: &DocumentEngineConfig) -> String {
             )
         })
         .collect::<Vec<_>>();
+    let formula_parts = if effective_formula_profile(cfg) == Some(FORMULANET_MODEL_PROFILE) {
+        let formula_directory = formula_model_directory(cfg);
+        ["PP-DocLayout-M.onnx", "pp_formulanet_plus_s.onnx"]
+            .iter()
+            .map(|name| {
+                format!(
+                    "{name}:{}",
+                    crate::document_engine_cache::file_hash(
+                        &formula_directory.join("formula-onnx").join(name)
+                    )
+                    .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    } else if matches!(
+        effective_formula_profile(cfg),
+        Some("pp-doclayout-m-formulanet-plus-l" | "pp-doclayout-m-unimernet")
+    ) {
+        let formula_directory = paddle_formula_directory(cfg);
+        let formula_name = if effective_formula_profile(cfg) == Some("pp-doclayout-m-unimernet") {
+            "UniMERNet"
+        } else {
+            "PP-FormulaNet_plus-L"
+        };
+        ["PP-DocLayout-M", formula_name]
+            .iter()
+            .map(|name| {
+                format!(
+                    "{name}:{}",
+                    crate::document_engine_cache::file_hash(
+                        &formula_directory
+                            .join("paddle-formula")
+                            .join(name)
+                            .join("inference.pdiparams")
+                    )
+                    .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    } else {
+        String::new()
+    };
     format!(
-        "ocr-worker-v4:{}:{}:{}:{}:{}:{}",
+        "ocr-worker-v5:{}:{}:{}:{}:{}:{}:{}",
         ocr_worker_profile(cfg),
         cfg.text_recognition_mode,
         LAYOUT_MODEL_VERSION,
         FORMULA_DETECTION_VERSION,
-        OCR_CONFIG_VERSION,
-        parts.join("|")
+        effective_formula_profile(cfg).unwrap_or(OCR_CONFIG_VERSION),
+        parts.join("|"),
+        formula_parts
     )
 }
 
@@ -828,6 +1206,9 @@ fn ocr_language_for_config(cfg: &DocumentEngineConfig) -> &'static str {
 
 fn ocr_worker_profile(cfg: &DocumentEngineConfig) -> String {
     let configured = cfg.model_profile.trim();
+    if formula_model_enabled(cfg) {
+        return DEFAULT_MODEL_ID.into();
+    }
     if !configured.is_empty() && !configured.eq_ignore_ascii_case("auto") {
         if configured.eq_ignore_ascii_case("english") || configured.eq_ignore_ascii_case("en") {
             return "ppocrv6-small-det-v5-en-rec".into();
@@ -839,6 +1220,135 @@ fn ocr_worker_profile(cfg: &DocumentEngineConfig) -> String {
     } else {
         DEFAULT_MODEL_ID.into()
     }
+}
+
+fn effective_formula_profile(cfg: &DocumentEngineConfig) -> Option<&str> {
+    let selected = cfg.model_profile.as_str();
+    if selected.eq_ignore_ascii_case("standard") {
+        return Some("pp-doclayout-m-unimernet");
+    }
+    if selected.eq_ignore_ascii_case("fast") || selected.eq_ignore_ascii_case(FAST_MODEL_PROFILE) {
+        return Some(FAST_MODEL_PROFILE);
+    }
+    if selected.eq_ignore_ascii_case(FORMULA_MODEL_PROFILE) {
+        return Some(FORMULA_MODEL_PROFILE);
+    }
+    if selected.eq_ignore_ascii_case(FORMULANET_MODEL_PROFILE) {
+        return Some(FORMULANET_MODEL_PROFILE);
+    }
+    if selected.eq_ignore_ascii_case("pp-doclayout-m-formulanet-s") {
+        return Some("pp-doclayout-m-formulanet-s");
+    }
+    if selected.eq_ignore_ascii_case("pp-doclayout-m-formulanet-plus-s") {
+        return Some("pp-doclayout-m-formulanet-plus-s");
+    }
+    if selected.eq_ignore_ascii_case("pp-doclayout-m-formulanet-plus-l") {
+        return Some("pp-doclayout-m-formulanet-plus-l");
+    }
+    if selected.eq_ignore_ascii_case("pp-doclayout-m-unimernet") {
+        return Some("pp-doclayout-m-unimernet");
+    }
+    if selected.eq_ignore_ascii_case("auto")
+        && formula_python(cfg).is_some()
+        && formula_model_directory(cfg)
+            .join("formula-onnx/pp_formulanet_plus_s.onnx")
+            .is_file()
+        && formula_model_directory(cfg)
+            .join("formula-onnx/PP-DocLayout-M.onnx")
+            .is_file()
+    {
+        return Some(FORMULANET_MODEL_PROFILE);
+    }
+    None
+}
+
+fn formula_model_enabled(cfg: &DocumentEngineConfig) -> bool {
+    effective_formula_profile(cfg).is_some()
+}
+
+fn formula_worker_manager(cfg: &DocumentEngineConfig) -> Result<Option<OcrWorkerManager>, String> {
+    if !formula_model_enabled(cfg) {
+        return Ok(None);
+    }
+    let selected = effective_formula_profile(cfg).ok_or("没有可用的公式模型")?;
+    let low_memory = selected == FAST_MODEL_PROFILE
+        || selected == FORMULA_MODEL_PROFILE
+        || selected == FORMULANET_MODEL_PROFILE;
+    let high_addon_root = (!low_memory)
+        .then(|| paddle_formula_directory(cfg))
+        .and_then(|directory| directory.parent().map(Path::to_path_buf));
+    let python_env = if low_memory {
+        "CRUCIBLEBOX_FORMULA_ONNX_PYTHON"
+    } else {
+        "CRUCIBLEBOX_FORMULA_PYTHON"
+    };
+    let script_env = if low_memory {
+        "CRUCIBLEBOX_FORMULA_ONNX_WORKER_SCRIPT"
+    } else {
+        "CRUCIBLEBOX_FORMULA_WORKER_SCRIPT"
+    };
+    let script_name = if low_memory {
+        "formula-ocr-onnx-worker.py"
+    } else {
+        "formula-ocr-worker.py"
+    };
+    let python = if low_memory {
+        formula_python(cfg)
+    } else {
+        std::env::var_os(python_env)
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .or_else(|| {
+                high_addon_root
+                    .as_ref()
+                    .map(|root| root.join("python/python.exe"))
+                    .filter(|path| path.is_file())
+            })
+            .or_else(|| {
+                cfg.resources
+                    .as_ref()
+                    .map(|root| root.join("formula-ocr/high/python/python.exe"))
+                    .filter(|path| path.is_file())
+            })
+    }
+    .ok_or_else(|| format!("公式模式需要受管 Python 运行时 ({python_env})"))?;
+    let script = std::env::var_os(script_env)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            cfg.resources
+                .as_ref()
+                .map(|root| {
+                    if low_memory {
+                        root.join("formula-ocr").join(script_name)
+                    } else {
+                        root.join("formula-ocr/high").join(script_name)
+                    }
+                })
+                .filter(|path| path.is_file())
+                .or_else(|| {
+                    high_addon_root
+                        .as_ref()
+                        .map(|root| root.join(script_name))
+                        .filter(|path| path.is_file())
+                })
+                .unwrap_or_else(|| {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../scripts")
+                        .join(script_name)
+                })
+        });
+    if !python.is_file() || !script.is_file() {
+        return Err(format!(
+            "高精度公式运行时不完整：Python={}，worker={}",
+            python.display(),
+            script.display()
+        ));
+    }
+    Ok(Some(OcrWorkerManager::new_external(
+        python,
+        vec![script.to_string_lossy().into_owned()],
+        std::time::Duration::from_secs(if low_memory { 300 } else { 900 }),
+    )))
 }
 
 fn ocr_model_identity(cfg: &DocumentEngineConfig) -> Value {
@@ -884,9 +1394,8 @@ fn ocr_model_identity(cfg: &DocumentEngineConfig) -> Value {
     })
 }
 
-fn gpu_status() -> Value {
-    static GPU_STATUS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    GPU_STATUS.get_or_init(gpu_status_uncached).clone()
+fn gpu_status(context: &Service) -> Value {
+    context.gpu_status.get_or_init(gpu_status_uncached).clone()
 }
 
 fn gpu_status_uncached() -> Value {
@@ -959,7 +1468,7 @@ fn report_ocr_progress(
     // that canonical snapshot instead of the raw worker frame; otherwise a
     // late 5%/20% frame can overwrite a newer polling snapshot in the UI.
     let canonical = ctx.progress_snapshot();
-    emit_progress(plugin_id, &ctx.task_id(), &canonical);
+    ctx.emit_progress(plugin_id, &canonical);
     Ok(())
 }
 
@@ -974,13 +1483,25 @@ fn run_ocr_input(
     device: Option<String>,
     scope: Option<(usize, usize)>,
 ) -> Result<Value, String> {
+    let integrated_profile =
+        effective_formula_profile(cfg).filter(|profile| profile.starts_with("onnx-"));
+    let integrated_ocr = integrated_profile.is_some();
+    let selected_language = language.unwrap_or_else(|| ocr_language_for_config(cfg).to_string());
+    let model_directory = if integrated_ocr {
+        formula_model_directory(cfg).to_string_lossy().into_owned()
+    } else {
+        cfg.model_directory.clone()
+    };
+    let model_profile = integrated_profile
+        .map(str::to_string)
+        .unwrap_or_else(|| ocr_worker_profile(cfg));
     let source_hash = crate::document_engine_cache::file_hash(PathBuf::from(input).as_path())?;
     let options = json!({
-        "language": language,
+        "language": selected_language,
         "device": device.clone().unwrap_or_else(|| cfg.device.clone()),
-        "modelDirectory": cfg.model_directory,
+        "modelDirectory": model_directory,
         "dictionaryPath": if cfg.dictionary_path.trim().is_empty() { Value::Null } else { json!(cfg.dictionary_path) },
-        "modelProfile": ocr_worker_profile(cfg),
+        "modelProfile": model_profile,
     });
     let key = crate::document_engine_cache::cache_key(
         &source_hash,
@@ -1010,7 +1531,7 @@ fn run_ocr_input(
             "命中 OCR 缓存",
             Some(progress.clone()),
         );
-        emit_progress(plugin_id, &ctx.task_id(), &ctx.progress_snapshot());
+        ctx.emit_progress(plugin_id, &ctx.progress_snapshot());
         return Ok(cached);
     }
 
@@ -1021,11 +1542,11 @@ fn run_ocr_input(
             source_hash.get(..12).unwrap_or("input")
         ),
         input.to_string(),
-        language,
+        Some(selected_language),
         device.or_else(|| Some(cfg.device.clone())),
-        Some(cfg.model_directory.clone()),
+        Some(model_directory),
         (!cfg.dictionary_path.trim().is_empty()).then(|| cfg.dictionary_path.clone()),
-        Some(ocr_worker_profile(cfg)),
+        Some(model_profile),
     );
     ctx.update_progress(
         "model",
@@ -1033,12 +1554,18 @@ fn run_ocr_input(
         "加载 OCR 模型",
         Some(json!({
             "cacheHit": false,
-            "ocrEngine": "paddleocr-onnx",
+            "ocrEngine": if integrated_ocr { "rapidocr-formula-onnx" } else { "paddleocr-onnx" },
             "model": ocr_model_identity(cfg),
             "language": request.options.as_ref().and_then(|options| options.language.clone()),
         })),
     );
-    let result = manager.run(&request, ctx.cancel_flag(), &|progress| {
+    let integrated_manager = if integrated_ocr {
+        formula_worker_manager(cfg)?
+    } else {
+        None
+    };
+    let selected_manager = integrated_manager.as_ref().unwrap_or(manager);
+    let result = selected_manager.run(&request, ctx.cancel_flag(), &|progress| {
         // A paused task intentionally blocks the worker frame loop here. This
         // is the checkpoint boundary between OCR pages/frames and avoids
         // reporting "paused" while the native worker is still consuming CPU.
@@ -1159,13 +1686,13 @@ fn enumerate_document_paths(path: &str) -> Result<Vec<String>, String> {
 }
 
 fn merge_ocr_pages(
+    _document_worker: &cruciblebox_document_worker::client::Client,
     mut parsed: Value,
     path: &str,
     manager: &OcrWorkerManager,
     ctx: &TaskContext,
     plugin_id: &str,
     cfg: &DocumentEngineConfig,
-    _scope: Option<(usize, usize)>,
 ) -> Result<Value, String> {
     let page_numbers = parsed["ocrPageNumbers"]
         .as_array()
@@ -1185,6 +1712,7 @@ fn merge_ocr_pages(
         let page_total = page_numbers.len();
         let source_hash = crate::document_engine_cache::file_hash(Path::new(path))?;
         let model_version = ocr_model_version(cfg);
+        let formula_manager = formula_worker_manager(cfg)?;
         let mut actual_model: Option<Value> = None;
         for (page_index, page_number) in page_numbers.iter().enumerate() {
             ctx.wait_if_paused()?;
@@ -1246,23 +1774,63 @@ fn merge_ocr_pages(
                 })),
             );
             let rendered = temp_dir.join(format!("page-{page_number}.png"));
-            let dimensions = crate::pdf_parser::render_page_to_png(path, *page_number, &rendered)?;
-            let ocr = run_ocr_input(
-                manager,
-                ctx,
-                plugin_id,
-                cfg,
-                &rendered.to_string_lossy(),
-                Some(ocr_language_for_config(cfg).to_string()),
-                None,
-                Some((page_index, page_total)),
+            let dimensions = crate::pdf_parser::render_page_to_png(
+                _document_worker,
+                path,
+                *page_number,
+                &rendered,
+                ctx.runtime_context(),
             )?;
+            let integrated_ocr = formula_manager.is_some()
+                && effective_formula_profile(cfg)
+                    .is_some_and(|profile| profile.starts_with("onnx-"));
+            let ocr = if integrated_ocr {
+                let request = OcrWorkerRequest::new(
+                    format!("{}-page-{page_number}", ctx.task_id()),
+                    rendered.to_string_lossy().into_owned(),
+                    Some(ocr_language_for_config(cfg).to_string()),
+                    Some("cpu".into()),
+                    Some(formula_model_directory(cfg).to_string_lossy().into_owned()),
+                    None,
+                    Some(
+                        effective_formula_profile(cfg)
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                );
+                formula_manager.as_ref().ok_or("公式模型不可用")?.run(
+                    &request,
+                    ctx.cancel_flag(),
+                    &|progress| {
+                        let _ = report_ocr_progress(
+                            ctx,
+                            plugin_id,
+                            progress,
+                            Some((page_index, page_total)),
+                        );
+                    },
+                )?
+            } else {
+                run_ocr_input(
+                    manager,
+                    ctx,
+                    plugin_id,
+                    cfg,
+                    &rendered.to_string_lossy(),
+                    Some(ocr_language_for_config(cfg).to_string()),
+                    None,
+                    Some((page_index, page_total)),
+                )?
+            };
             if let Some(model) = ocr.get("model") {
                 actual_model = Some(model.clone());
             }
             let ocr_blocks = ocr["blocks"].as_array().cloned().unwrap_or_default();
             let mut blocks = Vec::with_capacity(ocr_blocks.len());
             for (block_index, block) in ocr_blocks.iter().enumerate() {
+                if block["type"] == "formula" {
+                    continue;
+                }
                 let content = block
                     .get("text")
                     .and_then(Value::as_str)
@@ -1330,7 +1898,105 @@ fn merge_ocr_pages(
                     "language": if content.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) { "zh" } else { "en" },
                 }));
             }
-            restore_reading_order(&mut blocks, dimensions.0);
+            if let Some(formula_manager) = formula_manager.as_ref() {
+                let request = OcrWorkerRequest::new(
+                    format!("{}-formula-{page_number}", ctx.task_id()),
+                    rendered.to_string_lossy().into_owned(),
+                    None,
+                    Some("cpu".into()),
+                    Some(
+                        if effective_formula_profile(cfg)
+                            .is_some_and(|profile| profile.starts_with("pp-doclayout"))
+                        {
+                            paddle_formula_directory(cfg).to_string_lossy().into_owned()
+                        } else {
+                            formula_model_directory(cfg).to_string_lossy().into_owned()
+                        },
+                    ),
+                    None,
+                    Some(
+                        effective_formula_profile(cfg)
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                );
+                let formula_response = if integrated_ocr {
+                    ocr.clone()
+                } else {
+                    formula_manager.run(&request, ctx.cancel_flag(), &|progress| {
+                        let _ = report_ocr_progress(
+                            ctx,
+                            plugin_id,
+                            progress,
+                            Some((page_index, page_total)),
+                        );
+                    })?
+                };
+                let formula_blocks = formula_response["blocks"]
+                    .as_array()
+                    .ok_or("高精度公式 worker 未返回公式块数组")?;
+                if formula_blocks
+                    .iter()
+                    .filter(|block| block["type"] == "formula")
+                    .count()
+                    > 256
+                {
+                    return Err("高精度公式块数量超过页面预算".into());
+                }
+                for (formula_index, formula) in formula_blocks.iter().enumerate() {
+                    if formula["type"] != "formula" {
+                        continue;
+                    }
+                    let Some(latex) = formula["text"].as_str().filter(|text| !text.is_empty())
+                    else {
+                        continue;
+                    };
+                    let Some(bbox) = block_bbox(formula) else {
+                        continue;
+                    };
+                    if latex.len() > 16_384
+                        || bbox[0] < 0.0
+                        || bbox[1] < 0.0
+                        || bbox[2] > dimensions.0 as f32
+                        || bbox[3] > dimensions.1 as f32
+                        || bbox[2] <= bbox[0]
+                        || bbox[3] <= bbox[1]
+                    {
+                        continue;
+                    }
+                    blocks.push(json!({
+                        "id": format!("p{page_number}-f{}", formula_index + 1),
+                        "type": "formula",
+                        "content": latex,
+                        "rawText": latex,
+                        "latex": latex,
+                        "rawLatex": latex,
+                        "normalizedLatex": latex,
+                        "plainText": latex,
+                        "formulaEngine": formula["formulaEngine"],
+                        "formulaModelVersion": formula["modelVersion"],
+                        "formulaConfidence": formula["confidence"],
+                        "recognitionConfidence": Value::Null,
+                        "requiresReview": true,
+                        "displayOrInline": "display",
+                        "level": Value::Null,
+                        "semanticType": Value::Null,
+                        "region": "formula",
+                        "source": "ocr/formula-model",
+                        "excludedFromRag": false,
+                        "ocrNoiseCandidate": false,
+                        "bbox": formula["bbox"],
+                        "polygon": formula["polygon"],
+                        "confidence": formula["confidence"],
+                        "language": "math",
+                    }));
+                }
+            }
+            if integrated_ocr {
+                insert_formulas_into_ocr_order(&mut blocks);
+            } else {
+                restore_reading_order(&mut blocks, dimensions.0);
+            }
             let page_value = json!({
                 "number": page_number,
                 "width": dimensions.0,
@@ -1372,7 +2038,7 @@ fn merge_ocr_pages(
             "ocrModel": parsed["document"]["metadata"]["ocrModel"],
             "layout": LAYOUT_MODEL_VERSION,
             "formulaDetection": FORMULA_DETECTION_VERSION,
-            "formula": "layout-gated/text-adapter-v1",
+            "formula": effective_formula_profile(cfg).unwrap_or("layout-gated/text-adapter-v1"),
             "readingOrder": "column-aware-v1"
         });
         rebuild_document_structure(&mut parsed["document"]);
@@ -1392,7 +2058,7 @@ fn merge_ocr_pages(
     result
 }
 
-fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
+fn handle_message(context: &Service, db: &Db, plugin_id: &str, payload: &Value) -> Value {
     let request = match payload {
         Value::Object(_) => payload,
         _ => return err("invalid-value", "message payload must be an object".into()),
@@ -1404,6 +2070,29 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
         .to_string();
 
     match msg_type.as_str() {
+        "document.runtime.install" => {
+            let source = match str_field(request, "directory", 32 * 1024) {
+                Ok(Some(path)) => path,
+                Ok(None) => return err("invalid-value", "missing directory".into()),
+                Err(error) => return error,
+            };
+            match context.install_document_runtime(Path::new(source)) {
+                Ok(result) => result,
+                Err(message) => err("document-runtime-install-failed", message),
+            }
+        }
+
+        "document.ocr.preview" => {
+            let path = match str_field(request, "path", 32 * 1024) {
+                Ok(Some(path)) => path,
+                Ok(None) => return err("invalid-value", "missing field: path".into()),
+                Err(error) => return error,
+            };
+            match ocr_preview(Path::new(path)) {
+                Ok(preview) => preview,
+                Err(message) => err("ocr-preview-failed", message),
+            }
+        }
         // ---- Phase 3 实现 ----
         "document.analyze" => {
             let path = match str_field(request, "path", 4096) {
@@ -1426,7 +2115,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
         }
         // ---- Phase 3 实现 ----
         "getStatus" => {
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             let default_model =
                 ensure_default_model(db, plugin_id, Path::new(&cfg.model_directory));
             let cache_entries = crate::document_engine_cache::list_files(std::path::Path::new(
@@ -1434,7 +2123,9 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             ))
             .map(|entries| entries.len())
             .unwrap_or(0);
-            let worker = worker_manager()
+            let worker = context
+                .worker
+                .as_ref()
                 .map(|manager| manager.status())
                 .unwrap_or_else(|| {
                     json!({
@@ -1446,12 +2137,22 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             json!({
                 "status": {
                     "ocrWorker": worker,
-                    "pdfium": crate::pdf_parser::renderer_status(),
+                    "pdfium": crate::pdf_parser::renderer_status(&context.document_client()),
                     "models": {
                         "default": default_model,
                         "directory": cfg.model_directory,
+                        "formula": {
+                            "profile": effective_formula_profile(&cfg),
+                            "lowMemoryReady": formula_python(&cfg).is_some()
+                                && formula_model_directory(&cfg).join("formula-onnx/PP-DocLayout-M.onnx").is_file()
+                                && formula_model_directory(&cfg).join("formula-onnx/pp_formulanet_plus_s.onnx").is_file(),
+                            "highPrecisionReady": high_precision_runtime_ready(&cfg),
+                            "standardReady": unimernet_runtime_ready(&cfg),
+                            "deepReady": false,
+                            "mode": match cfg.model_profile.as_str() { "fast" => "fast", "standard" => "standard", _ => "legacy" },
+                        },
                     },
-                    "gpu": gpu_status(),
+                    "gpu": gpu_status(context),
                     "workers": {
                         "ocr": worker.get("running").and_then(Value::as_bool).unwrap_or(false) as u8,
                         "parser": 0,
@@ -1460,6 +2161,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     "config": {
                         "device": cfg.device,
                         "modelDirectory": cfg.model_directory,
+                        "formulaAddonDirectory": cfg.formula_addon_directory,
                         "dictionaryPath": cfg.dictionary_path,
                         "modelProfile": cfg.model_profile,
                         "textRecognitionMode": cfg.text_recognition_mode,
@@ -1481,7 +2183,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             })
         }
         "document.jobs.list" => {
-            let list = tasks().list();
+            let list = context.tasks.list();
             json!({ "tasks": list })
         }
         "document.jobs.get" => {
@@ -1490,7 +2192,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: taskId".into()),
                 Err(e) => return e,
             };
-            match tasks().get(&task_id) {
+            match context.tasks.get(&task_id) {
                 Some(snapshot) => snapshot,
                 None => err("task-not-found", "未找到指定任务".into()),
             }
@@ -1502,16 +2204,16 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Err(e) => return e,
             };
             let is_ocr_task =
-                tasks().active_task(RESOURCE_OCR).as_deref() == Some(task_id.as_str());
+                context.tasks.active_task(RESOURCE_OCR).as_deref() == Some(task_id.as_str());
             if is_ocr_task {
                 // Stop the process before releasing the resource slot.  This
                 // prevents a new OCR task from starting and then being killed
                 // by the cancellation of its predecessor.
-                if let Some(manager) = worker_manager() {
+                if let Some(manager) = context.worker.as_ref() {
                     manager.cancel_current();
                 }
             }
-            if tasks().cancel(&task_id) {
+            if context.tasks.cancel(&task_id) {
                 json!({ "success": true, "taskId": task_id })
             } else {
                 err("task-not-cancellable", "任务不存在或已结束".into())
@@ -1536,8 +2238,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(value) => value.map(ToOwned::to_owned),
                 Err(error) => return error,
             };
-            let cfg = load_config(db, plugin_id);
-            let manager = match worker_manager() {
+            let cfg = load_config_for_service(context, db, plugin_id);
+            let manager = match context.worker.as_ref() {
                 Some(manager) => Arc::clone(manager),
                 None => {
                     return err(
@@ -1549,7 +2251,8 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             let plugin_id = plugin_id.to_string();
             let device = requested_device;
             let manager = Arc::clone(&manager);
-            let task_id = match tasks().start(
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
                 RESOURCE_OCR,
                 Box::new(move |ctx| {
                     ctx.update_progress("queued", 0, "等待 OCR Worker", None);
@@ -1561,7 +2264,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(task_id) => task_id,
                 Err(message) => return err("task-busy", message),
             };
-            remember_retry(&task_id, request);
+            remember_retry(context, &task_id, request);
             json!({ "taskId": task_id, "status": "queued" })
         }
         // ---- Phase 4/6：统一文档解析任务 ----
@@ -1599,27 +2302,35 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             if !parse_options.is_null() && !parse_options.is_object() {
                 return err("invalid-value", "options must be an object".into());
             }
-            let parse_cfg = load_config(db, plugin_id);
+            let parse_cfg = load_config_for_service(context, db, plugin_id);
             let parse_output_directory = parse_options
                 .get("outputDirectory")
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(&parse_cfg.output_directory));
-            let parse_manager = worker_manager().cloned();
+            let parse_manager = context.worker.as_ref().cloned();
             let parse_plugin_id = plugin_id.to_string();
-            let task_id = match tasks().start(
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
                 RESOURCE_PARSE,
                 Box::new(move |ctx| {
                     ctx.update_progress("parse", 5, "读取文档", None);
                     let parsed = parse_document_with_cache(
+                        &_document_worker,
                         &path,
                         &parse_cfg,
                         parse_manager.as_deref(),
                         ctx,
                         &parse_plugin_id,
                     )?;
-                    let result = export_parsed_result(parsed, &path, &parse_output_directory)?;
+                    let result = export_parsed_result(
+                        &_document_worker,
+                        parsed,
+                        &path,
+                        &parse_output_directory,
+                        ctx,
+                    )?;
                     let page_count = result["document"]["metadata"]["pageCount"]
                         .as_u64()
                         .unwrap_or(0);
@@ -1640,7 +2351,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(task_id) => task_id,
                 Err(message) => return err("task-busy", message),
             };
-            remember_retry(&task_id, request);
+            remember_retry(context, &task_id, request);
             json!({ "taskId": task_id, "status": "queued" })
         }
         // ---- Phase 7：PDF 物理拆分 ----
@@ -1661,7 +2372,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             if !options.is_null() && !options.is_object() {
                 return err("invalid-value", "options must be an object".into());
             }
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             let output_directory = options
                 .get("outputDirectory")
                 .and_then(Value::as_str)
@@ -1704,21 +2415,25 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             {
                 return err("invalid-value", "range/custom 模式需要 ranges 数组".into());
             }
-            let split_cfg = load_config(db, plugin_id);
-            let split_manager = worker_manager().cloned();
+            let split_cfg = load_config_for_service(context, db, plugin_id);
+            let split_manager = context.worker.as_ref().cloned();
             let split_plugin_id = plugin_id.to_string();
-            let task_id = match tasks().start(
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
                 RESOURCE_SPLIT,
                 Box::new(move |ctx| {
                     ctx.update_progress("split", 5, "读取 PDF 页面", None);
                     let result = if matches!(split_mode.as_str(), "range" | "ranges" | "custom") {
-                        crate::pdf_parser::split_pdf_file_with_ranges(
+                        crate::pdf_parser::split_pdf_file_with_ranges_with_publication(
+                            &_document_worker,
                             &path,
                             &output_directory,
                             explicit_ranges.as_deref().unwrap_or_default(),
+                            Some(ctx.runtime_context()),
                         )?
                     } else if split_mode == "chapters" {
                         let parsed = parse_document_with_cache(
+                            &_document_worker,
                             &path,
                             &split_cfg,
                             split_manager.as_deref(),
@@ -1727,22 +2442,38 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         )?;
                         let ranges = chapter_ranges_from_document(&parsed["document"]);
                         if ranges.is_empty() {
-                            crate::pdf_parser::split_pdf_file(
+                            crate::pdf_parser::split_pdf_file_with_publication(
+                                &_document_worker,
                                 &path,
                                 &output_directory,
                                 pages_per_file,
+                                Some(ctx.runtime_context()),
                             )?
                         } else {
-                            crate::pdf_parser::split_pdf_file_with_ranges(
+                            crate::pdf_parser::split_pdf_file_with_ranges_with_publication(
+                                &_document_worker,
                                 &path,
                                 &output_directory,
                                 &ranges,
+                                Some(ctx.runtime_context()),
                             )?
                         }
                     } else if split_mode == "pages" {
-                        crate::pdf_parser::split_pdf_file(&path, &output_directory, 1)?
+                        crate::pdf_parser::split_pdf_file_with_publication(
+                            &_document_worker,
+                            &path,
+                            &output_directory,
+                            1,
+                            Some(ctx.runtime_context()),
+                        )?
                     } else {
-                        crate::pdf_parser::split_pdf_file(&path, &output_directory, pages_per_file)?
+                        crate::pdf_parser::split_pdf_file_with_publication(
+                            &_document_worker,
+                            &path,
+                            &output_directory,
+                            pages_per_file,
+                            Some(ctx.runtime_context()),
+                        )?
                     };
                     ctx.check_cancelled()?;
                     ctx.update_progress(
@@ -1760,7 +2491,129 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(task_id) => task_id,
                 Err(message) => return err("task-busy", message),
             };
-            remember_retry(&task_id, request);
+            remember_retry(context, &task_id, request);
+            json!({ "taskId": task_id, "status": "queued" })
+        }
+        "document.pdf.merge" | "document.pdf.reorder" | "document.pdf.rotate" => {
+            let operation = request
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let output = match str_field(request, "outputPath", 32 * 1024) {
+                Ok(Some(path)) if path.to_ascii_lowercase().ends_with(".pdf") => {
+                    PathBuf::from(path)
+                }
+                Ok(_) => return err("invalid-value", "请提供 .pdf 输出文件路径".into()),
+                Err(error) => return error,
+            };
+            let paths = request
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let path = request
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let pages = request
+                .get("pages")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_u64)
+                        .map(|page| page as usize)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let degrees = request.get("degrees").and_then(Value::as_u64).unwrap_or(90) as u16;
+            if operation == "document.pdf.merge" && paths.len() < 2 {
+                return err("invalid-value", "PDF 合并至少需要两个源文件".into());
+            }
+            if operation == "document.pdf.reorder" && (path.is_empty() || pages.is_empty()) {
+                return err("invalid-value", "PDF 重排需要源文件及页码顺序".into());
+            }
+            if operation == "document.pdf.rotate" && path.is_empty() {
+                return err("invalid-value", "PDF 旋转需要源文件".into());
+            }
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
+                RESOURCE_SPLIT,
+                Box::new(move |ctx| {
+                    ctx.update_progress("pdf-pages", 10, "读取 PDF 页面", None);
+                    let result = if operation == "document.pdf.merge" {
+                        crate::pdf_parser::merge_pdf_files_with_publication(
+                            &_document_worker,
+                            &paths,
+                            &output,
+                            Some(ctx.runtime_context()),
+                        )?
+                    } else if operation == "document.pdf.rotate" {
+                        crate::pdf_parser::rotate_pdf_pages_with_publication(
+                            &_document_worker,
+                            &path,
+                            &pages,
+                            degrees,
+                            &output,
+                            Some(ctx.runtime_context()),
+                        )?
+                    } else {
+                        crate::pdf_parser::reorder_pdf_pages_with_publication(
+                            &_document_worker,
+                            &path,
+                            &pages,
+                            &output,
+                            Some(ctx.runtime_context()),
+                        )?
+                    };
+                    ctx.update_progress("pdf-pages", 100, "PDF 页面处理完成", None);
+                    Ok(result)
+                }),
+            ) {
+                Ok(task_id) => task_id,
+                Err(message) => return err("task-busy", message),
+            };
+            remember_retry(context, &task_id, request);
+            json!({ "taskId": task_id, "status": "queued" })
+        }
+        "document.pdf.extractImages" => {
+            let path = match str_field(request, "path", 32 * 1024) {
+                Ok(Some(path)) => path.to_string(),
+                Ok(None) => return err("invalid-value", "请选择 PDF 文件".into()),
+                Err(error) => return error,
+            };
+            let output_directory = match str_field(request, "outputDirectory", 32 * 1024) {
+                Ok(Some(path)) => PathBuf::from(path),
+                Ok(None) => return err("invalid-value", "请选择图片输出目录".into()),
+                Err(error) => return error,
+            };
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
+                RESOURCE_SPLIT,
+                Box::new(move |ctx| {
+                    ctx.update_progress("pdf-images", 10, "提取 PDF 内嵌图片", None);
+                    let result = crate::pdf_parser::extract_pdf_images_with_publication(
+                        &_document_worker,
+                        &path,
+                        &output_directory,
+                        Some(ctx.runtime_context()),
+                    )?;
+                    ctx.update_progress("pdf-images", 100, "图片提取完成", None);
+                    Ok(result)
+                }),
+            ) {
+                Ok(task_id) => task_id,
+                Err(message) => return err("task-busy", message),
+            };
+            remember_retry(context, &task_id, request);
             json!({ "taskId": task_id, "status": "queued" })
         }
         // ---- Phase 8：统一模型切分 ----
@@ -1777,7 +2630,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     "document.chunk 需要 path 或 document".into(),
                 );
             }
-            let chunk_cfg = load_config(db, plugin_id);
+            let chunk_cfg = load_config_for_service(context, db, plugin_id);
             // A chunk run may override the configured destination.  This lets
             // the renderer offer a folder picker while retaining the stable
             // plugin default for API callers that do not provide one.
@@ -1788,9 +2641,10 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 .filter(|value| !value.trim().is_empty())
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(|| chunk_cfg.output_directory.clone());
-            let chunk_manager = worker_manager().cloned();
+            let chunk_manager = context.worker.as_ref().cloned();
             let chunk_plugin_id = plugin_id.to_string();
-            let task_id = match tasks().start(
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
                 RESOURCE_CHUNK,
                 Box::new(move |ctx| {
                     ctx.update_progress("chunk", 5, "准备文档切分", None);
@@ -1799,6 +2653,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                     } else {
                         let path = path.ok_or_else(|| "缺少文档路径".to_string())?;
                         let parsed = parse_document_with_cache(
+                            &_document_worker,
                             &path,
                             &chunk_cfg,
                             chunk_manager.as_deref(),
@@ -1866,7 +2721,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(task_id) => task_id,
                 Err(message) => return err("task-busy", message),
             };
-            remember_retry(&task_id, request);
+            remember_retry(context, &task_id, request);
             json!({ "taskId": task_id, "status": "queued" })
         }
         // ---- Phase 8：统一模型转换/导出 ----
@@ -1889,16 +2744,18 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(value) => value.map(ToOwned::to_owned),
                 Err(error) => return error,
             };
-            let convert_cfg = load_config(db, plugin_id);
+            let convert_cfg = load_config_for_service(context, db, plugin_id);
             let convert_output_directory =
                 output_directory.unwrap_or_else(|| convert_cfg.output_directory.clone());
-            let convert_manager = worker_manager().cloned();
+            let convert_manager = context.worker.as_ref().cloned();
             let convert_plugin_id = plugin_id.to_string();
-            let task_id = match tasks().start(
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
                 RESOURCE_CONVERT,
                 Box::new(move |ctx| {
                     ctx.update_progress("convert", 5, "解析源文档（可复用页面缓存）", None);
                     let parsed = parse_document_with_cache(
+                        &_document_worker,
                         &path,
                         &convert_cfg,
                         convert_manager.as_deref(),
@@ -1914,21 +2771,21 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                         )?,
                     };
                     let resolved_output_path = resolved_output_path.to_string_lossy().into_owned();
-                    let result = crate::document_converter::convert_document_with_cache(
+                    ctx.check_cancelled()?;
+                    crate::document_converter::convert_document_with_publication(
+                        &_document_worker,
                         &parsed["document"],
                         &target,
                         Some(&resolved_output_path),
                         Some(&convert_cfg.cache_directory),
-                    )?;
-                    ctx.check_cancelled()?;
-                    ctx.update_progress("convert", 100, "转换完成", None);
-                    Ok(result)
+                        Some((ctx.runtime_context(), true)),
+                    )
                 }),
             ) {
                 Ok(task_id) => task_id,
                 Err(message) => return err("task-busy", message),
             };
-            remember_retry(&task_id, request);
+            remember_retry(context, &task_id, request);
             json!({ "taskId": task_id, "status": "queued" })
         }
         // ---- Phase 9：目录批处理（OCR / parse / convert） ----
@@ -1964,10 +2821,11 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 .and_then(Value::as_str)
                 .unwrap_or("txt")
                 .to_string();
-            let batch_cfg = load_config(db, plugin_id);
-            let batch_manager = worker_manager().cloned();
+            let batch_cfg = load_config_for_service(context, db, plugin_id);
+            let batch_manager = context.worker.as_ref().cloned();
             let batch_plugin_id = plugin_id.to_string();
-            let task_id = match tasks().start(
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
                 RESOURCE_BATCH,
                 Box::new(move |ctx| {
                     let mut items = Vec::with_capacity(paths.len());
@@ -2005,7 +2863,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                                         .and_then(|value| value.to_str())
                                         .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
                                     {
-                                        parse_document_with_cache(
+                                        parse_document_with_cache(&_document_worker,
                                             path,
                                             &batch_cfg,
                                             Some(manager),
@@ -2018,32 +2876,34 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                                 })
                             }
                             "parse" => {
-                                let parsed = parse_document_with_cache(
+                                let parsed = parse_document_with_cache(&_document_worker,
                                     path,
                                     &batch_cfg,
                                     batch_manager.as_deref(),
                                     ctx,
                                     &batch_plugin_id,
                                 )?;
-                                export_parsed_result(
+                                export_parsed_result(&_document_worker,
                                     parsed,
                                     path,
                                     Path::new(&batch_cfg.output_directory),
+                                    ctx,
                                 )
                             }
                             _ => {
-                                let parsed = parse_document_with_cache(
+                                let parsed = parse_document_with_cache(&_document_worker,
                                     path,
                                     &batch_cfg,
                                     batch_manager.as_deref(),
                                     ctx,
                                     &batch_plugin_id,
                                 )?;
-                                crate::document_converter::convert_document_with_cache(
+                                crate::document_converter::convert_document_with_publication(&_document_worker,
                                     &parsed["document"],
                                     &target,
                                     None,
                                     Some(&batch_cfg.cache_directory),
+                                    Some((ctx.runtime_context(), false)),
                                 )
                             }
                         };
@@ -2053,6 +2913,9 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                                 items.push(json!({ "path": path, "result": result }));
                             }
                             Err(error) => {
+                                if ctx.runtime_context().publication_pending() {
+                                    return Err(error);
+                                }
                                 failed += 1;
                                 failed_files.push(json!({ "path": path, "error": error }));
                                 items.push(json!({ "path": path, "error": error }));
@@ -2084,7 +2947,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(task_id) => task_id,
                 Err(message) => return err("task-busy", message),
             };
-            remember_retry(&task_id, request);
+            remember_retry(context, &task_id, request);
             json!({ "taskId": task_id, "status": "queued" })
         }
         // ---- Phase 9：任务暂停/恢复 ----
@@ -2094,7 +2957,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: taskId".into()),
                 Err(error) => return error,
             };
-            if tasks().pause(task_id) {
+            if context.tasks.pause(task_id) {
                 json!({ "success": true, "taskId": task_id, "status": "paused" })
             } else {
                 err("task-not-pausable", "任务不存在或当前状态不可暂停".into())
@@ -2106,7 +2969,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: taskId".into()),
                 Err(error) => return error,
             };
-            if tasks().resume(task_id) {
+            if context.tasks.resume(task_id) {
                 json!({ "success": true, "taskId": task_id, "status": "running" })
             } else {
                 err("task-not-resumable", "任务不存在或当前状态不可恢复".into())
@@ -2118,7 +2981,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: taskId".into()),
                 Err(error) => return error,
             };
-            let Some(snapshot) = tasks().get(&task_id) else {
+            let Some(snapshot) = context.tasks.get(&task_id) else {
                 return err("task-not-found", "未找到指定任务".into());
             };
             if !matches!(
@@ -2127,17 +2990,36 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             ) {
                 return err("task-not-retryable", "只有失败或已取消任务可以重试".into());
             }
-            let original = retry_requests()
+            let original = context
+                .retry_requests
                 .lock()
                 .ok()
                 .and_then(|requests| requests.get(&task_id).cloned());
             match original {
-                Some(original) => handle_message(db, plugin_id, &original),
+                Some(original) => handle_message(context, db, plugin_id, &original),
                 None => err("retry-unavailable", "任务请求已过期，无法重试".into()),
             }
         }
         "document.models.catalog" => {
             json!({ "catalog": model_catalog() })
+        }
+        "document.models.importFormulaAddon" => {
+            let archive = match str_field(request, "sourcePath", 32 * 1024) {
+                Ok(Some(path)) => PathBuf::from(path),
+                Ok(None) => return err("invalid-value", "请选择高精度公式附加包".into()),
+                Err(error) => return error,
+            };
+            let cfg = load_config_for_service(context, db, plugin_id);
+            let _document_worker = context.document_client();
+            let task_id = match context.tasks.start(
+                RESOURCE_MODELS,
+                Box::new(move |ctx| install_high_formula_addon(&cfg, &archive, ctx)),
+            ) {
+                Ok(task_id) => task_id,
+                Err(message) => return err("task-busy", message),
+            };
+            remember_retry(context, &task_id, request);
+            json!({ "taskId": task_id, "status": "queued" })
         }
         "document.models.installBundle" => {
             let model_id = match str_field(request, "modelId", 128) {
@@ -2145,7 +3027,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: modelId".into()),
                 Err(error) => return error,
             };
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             match install_model_bundle(
                 db,
                 plugin_id,
@@ -2161,7 +3043,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         "document.models.list" => {
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             match crate::document_engine_cache::list_files(std::path::Path::new(
                 &cfg.model_directory,
             )) {
@@ -2184,7 +3066,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         "document.models.install" => {
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             if request.get("url").and_then(Value::as_str).is_some() {
                 return install_remote_model(&cfg, request, false);
             }
@@ -2214,7 +3096,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         "document.models.update" => {
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             install_remote_model(&cfg, request, true)
         }
         "document.models.remove" => {
@@ -2223,7 +3105,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
                 Ok(None) => return err("invalid-value", "missing field: path".into()),
                 Err(error) => return error,
             };
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             let target = match crate::document_engine_cache::resolve_child(
                 std::path::Path::new(&cfg.model_directory),
                 &relative,
@@ -2240,7 +3122,7 @@ fn handle_message(db: &Db, plugin_id: &str, payload: &Value) -> Value {
             }
         }
         "document.cache.clear" => {
-            let cfg = load_config(db, plugin_id);
+            let cfg = load_config_for_service(context, db, plugin_id);
             match crate::document_engine_cache::clear_directory(std::path::Path::new(
                 &cfg.cache_directory,
             )) {
@@ -2292,8 +3174,12 @@ fn install_remote_model(cfg: &DocumentEngineConfig, request: &Value, update: boo
 
 /// Read the short-lived configuration under the host DB mutex, then let the
 /// caller perform a remote model download after releasing that mutex.
-pub(crate) fn load_config_for_host(db: &Db, plugin_id: &str) -> DocumentEngineConfig {
-    load_config(db, plugin_id)
+pub(crate) fn load_config_for_host(
+    context: &Service,
+    db: &Db,
+    plugin_id: &str,
+) -> DocumentEngineConfig {
+    load_config_for_service(context, db, plugin_id)
 }
 
 pub(crate) fn dispatch_remote_model(
@@ -2315,6 +3201,7 @@ pub(crate) fn dispatch_remote_model(
 /// 统一入口：envelope_host::host_dispatch 分发 service="document-engine" 时调用。
 /// params: { operation, payload? }。
 pub fn dispatch(
+    context: &Service,
     db: &Db,
     plugin_id: &str,
     operation: &str,
@@ -2322,19 +3209,18 @@ pub fn dispatch(
 ) -> Result<Value, String> {
     if operation == "activate" {
         // 初始化任务表；Worker 仍按需启动，避免仅激活插件就加载模型。
-        let _ = tasks();
         // 内置模型只做本地校验和复制，不在激活阶段主动阻塞网络下载。
         // 没有内置资源时由模型页的 installBundle 触发官方直连下载。
-        let cfg = load_config(db, plugin_id);
+        let cfg = load_config_for_service(context, db, plugin_id);
         let _ = ensure_default_model(db, plugin_id, Path::new(&cfg.model_directory));
         return Ok(Value::Null);
     }
     if operation == "deactivate" {
-        tasks().cancel_all_active();
-        if let Ok(mut requests) = retry_requests().lock() {
+        context.tasks.cancel_all_active();
+        if let Ok(mut requests) = context.retry_requests.lock() {
             requests.clear();
         }
-        if let Some(manager) = worker_manager() {
+        if let Some(manager) = context.worker.as_ref() {
             manager.shutdown();
         }
         return Ok(Value::Null);
@@ -2343,7 +3229,7 @@ pub fn dispatch(
         return Err(format!("unknown trusted operation: {operation}"));
     }
     let payload = payload.ok_or_else(|| "message operation requires payload".to_string())?;
-    Ok(handle_message(db, plugin_id, payload))
+    Ok(handle_message(context, db, plugin_id, payload))
 }
 
 #[cfg(test)]
@@ -2351,9 +3237,227 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn ocr_mode_profiles_keep_fast_text_only_and_unimernet_explicit() {
+        let fast = DocumentEngineConfig {
+            model_profile: "fast".into(),
+            ..Default::default()
+        };
+        assert_eq!(effective_formula_profile(&fast), Some(FAST_MODEL_PROFILE));
+        let standard_candidate = DocumentEngineConfig {
+            model_profile: "standard".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            effective_formula_profile(&standard_candidate),
+            Some("pp-doclayout-m-unimernet")
+        );
+    }
+
+    #[test]
+    fn ocr_preview_returns_bounded_thumbnail_with_source_dimensions() {
+        let fixture = TempDb::new("ocr-preview");
+        let source = image::RgbImage::from_pixel(1600, 800, image::Rgb([242, 248, 255]));
+        for extension in ["png", "jpg"] {
+            let path = fixture.dir.join(format!("source.{extension}"));
+            source.save(&path).unwrap();
+            let result = handle_message(
+                &fixture.service,
+                &fixture.db,
+                "document-engine",
+                &json!({"type": "document.ocr.preview", "path": path}),
+            );
+            assert_eq!(result["width"], 1600);
+            assert_eq!(result["height"], 800);
+            let encoded = result["dataUrl"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("data:image/jpeg;base64,")
+                .unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            assert!(bytes.len() <= 160 * 1024);
+            assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 720);
+        }
+    }
+
+    #[test]
+    fn high_precision_status_detects_selected_addon_directory() {
+        let fixture = TempDb::new("formula-addon-status");
+        let addon = fixture.dir.join("high");
+        let models = addon.join("models");
+        let cfg = DocumentEngineConfig {
+            model_directory: fixture.dir.join("default").to_string_lossy().into_owned(),
+            formula_addon_directory: addon.to_string_lossy().into_owned(),
+            model_profile: "pp-doclayout-m-formulanet-plus-l".into(),
+            ..Default::default()
+        };
+        assert!(!high_precision_runtime_ready(&cfg));
+        std::fs::create_dir_all(models.join("paddle-formula/PP-DocLayout-M")).unwrap();
+        std::fs::create_dir_all(models.join("paddle-formula/PP-FormulaNet_plus-L")).unwrap();
+        std::fs::write(
+            models.join("paddle-formula/PP-DocLayout-M/inference.pdiparams"),
+            [],
+        )
+        .unwrap();
+        std::fs::write(
+            models.join("paddle-formula/PP-FormulaNet_plus-L/inference.pdiparams"),
+            [],
+        )
+        .unwrap();
+        std::fs::create_dir_all(addon.join("python")).unwrap();
+        std::fs::write(addon.join("python/python.exe"), []).unwrap();
+        std::fs::write(addon.join("formula-ocr-worker.py"), []).unwrap();
+        assert!(high_precision_runtime_ready(&cfg));
+        let managed = DocumentEngineConfig {
+            model_directory: fixture.dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        assert!(high_precision_runtime_ready(&managed));
+    }
+
+    #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_ADDON_ARCHIVE and DOCUMENT_ENGINE_ADDON_IMPORT_ROOT"]
+    fn imports_pinned_formula_addon_through_host_task() {
+        let archive = std::env::var("DOCUMENT_ENGINE_ADDON_ARCHIVE").unwrap();
+        let root = PathBuf::from(std::env::var("DOCUMENT_ENGINE_ADDON_IMPORT_ROOT").unwrap());
+        assert!(!root.exists(), "use a fresh model root for addon import");
+        let fixture = TempDb::new("formula-addon-import");
+        {
+            let conn = fixture.db.conn().lock().unwrap();
+            conn.execute(
+                "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path, permissions, config_data)
+                 VALUES ('document-engine', 'document-engine', '0.1.0', 'Document Engine', 'dist/main.js', '.', '[]', ?1)",
+                [json!({ "modelDirectory": root.to_string_lossy() }).to_string()],
+            )
+            .unwrap();
+        }
+        let accepted = handle_message(
+            &fixture.service,
+            &fixture.db,
+            "document-engine",
+            &json!({ "type": "document.models.importFormulaAddon", "sourcePath": archive }),
+        );
+        let task_id = accepted["taskId"].as_str().expect("addon task ID");
+        let mut snapshot = Value::Null;
+        for _ in 0..1800 {
+            snapshot = handle_message(
+                &fixture.service,
+                &fixture.db,
+                "document-engine",
+                &json!({ "type": "document.jobs.get", "taskId": task_id }),
+            );
+            if matches!(
+                snapshot["status"].as_str(),
+                Some("succeeded" | "failed" | "cancelled")
+            ) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert_eq!(snapshot["status"], "succeeded", "{snapshot}");
+        let cfg = load_config(&fixture.db, "document-engine");
+        assert!(high_precision_runtime_ready(&cfg));
+        assert!(root.join("high/python/python.exe").is_file());
+    }
+
+    #[test]
+    fn formula_addon_import_rejects_unpinned_archive() {
+        let fixture = TempDb::new("formula-addon-reject");
+        let archive = fixture.dir.join("tampered.7z");
+        std::fs::write(&archive, b"not the trusted addon").unwrap();
+        {
+            let conn = fixture.db.conn().lock().unwrap();
+            conn.execute(
+                "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path, permissions, config_data)
+                 VALUES ('document-engine', 'document-engine', '0.1.0', 'Document Engine', 'dist/main.js', '.', '[]', ?1)",
+                [json!({ "modelDirectory": fixture.dir.join("models") }).to_string()],
+            )
+            .unwrap();
+        }
+        let accepted = handle_message(
+            &fixture.service,
+            &fixture.db,
+            "document-engine",
+            &json!({ "type": "document.models.importFormulaAddon", "sourcePath": archive }),
+        );
+        let task_id = accepted["taskId"].as_str().unwrap();
+        let mut snapshot = Value::Null;
+        for _ in 0..100 {
+            snapshot = handle_message(
+                &fixture.service,
+                &fixture.db,
+                "document-engine",
+                &json!({ "type": "document.jobs.get", "taskId": task_id }),
+            );
+            if snapshot["status"] == "failed" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(snapshot["status"], "failed");
+        assert!(snapshot["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("SHA-256"));
+        assert!(!fixture.dir.join("models/high").exists());
+    }
+
+    #[test]
+    #[ignore = "requires separately packaged DOCUMENT_RUNTIME_ACCEPTANCE_DIRECTORY"]
+    fn pinned_document_runtime_installs_and_runs_without_ocr_resources() {
+        let root = tempfile::tempdir().unwrap();
+        let service = Service::with_worker(
+            crate::task_runtime::TaskRuntime::memory(),
+            None,
+            None,
+            Some(root.path().join("runtime")),
+        );
+        let source =
+            std::env::var_os("DOCUMENT_RUNTIME_ACCEPTANCE_DIRECTORY").expect("packaged runtime");
+        let result = service
+            .install_document_runtime(Path::new(&source))
+            .unwrap();
+        assert_eq!(result["installed"], true);
+        let status = crate::pdf_parser::renderer_status(&service.document_client());
+        assert_eq!(status["available"], true, "{status}");
+        let source_file = root.path().join("source.pdf");
+        let pdf = b"%PDF-1.4\n1 0 obj\n<</Type /Page /MediaBox [0 0 200 100] /Contents 2 0 R>>\nendobj\n2 0 obj\n<</Length 23>>\nstream\nBT (Hi) Tj ET\nendstream\nendobj\n%%EOF";
+        std::fs::write(&source_file, pdf).unwrap();
+        let parsed = service
+            .document_client()
+            .run(
+                &cruciblebox_document_worker::protocol::Operation::Parse {
+                    path: source_file.to_string_lossy().into(),
+                },
+                &|| false,
+            )
+            .unwrap();
+        assert_eq!(parsed.value["route"], "native");
+        assert_eq!(parsed.value["document"]["metadata"]["pageCount"], 1);
+        assert_eq!(
+            parsed.value["document"]["pages"][0]["blocks"][0]["content"],
+            "Hi"
+        );
+        assert!(service.worker.is_none());
+        drop(service);
+        let restarted = Service::with_worker(
+            crate::task_runtime::TaskRuntime::memory(),
+            None,
+            None,
+            Some(root.path().join("runtime")),
+        );
+        assert_eq!(
+            crate::pdf_parser::renderer_status(&restarted.document_client())["available"],
+            true
+        );
+    }
+
     struct TempDb {
         dir: PathBuf,
         db: Db,
+        service: Service,
     }
 
     impl TempDb {
@@ -2368,7 +3472,11 @@ mod tests {
             ));
             std::fs::create_dir_all(&dir).unwrap();
             let db = Db::open(&dir.join("test.db")).unwrap();
-            TempDb { dir, db }
+            TempDb {
+                dir,
+                db,
+                service: Service::new(crate::task_runtime::TaskRuntime::memory()),
+            }
         }
     }
 
@@ -2379,9 +3487,27 @@ mod tests {
     }
 
     #[test]
+    fn formula_insertion_preserves_worker_text_sequence() {
+        let mut blocks = vec![
+            json!({ "type": "text", "content": "first", "bbox": [10, 200, 60, 220] }),
+            json!({ "type": "text", "content": "second", "bbox": [10, 100, 70, 120] }),
+            json!({ "type": "formula", "content": "x^2", "bbox": [10, 150, 70, 170] }),
+        ];
+        insert_formulas_into_ocr_order(&mut blocks);
+        let text = blocks
+            .iter()
+            .filter(|block| block["type"] == "text")
+            .map(|block| block["content"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(text, ["first", "second"]);
+        assert_eq!(blocks[0]["type"], "formula");
+    }
+
+    #[test]
     fn get_status_returns_object() {
         let t = TempDb::new("status");
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2401,6 +3527,7 @@ mod tests {
         std::fs::write(root.join("nested").join("a.pdf"), b"%PDF-1.4").unwrap();
         std::fs::write(root.join("ignored.bin"), b"ignored").unwrap();
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2420,6 +3547,7 @@ mod tests {
     fn unknown_type_errors() {
         let t = TempDb::new("unknowntype");
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2475,6 +3603,7 @@ mod tests {
     fn ocr_requires_configured_worker() {
         let t = TempDb::new("notimpl");
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2493,6 +3622,7 @@ mod tests {
         let path = dir.join("doc.pdf");
         std::fs::write(&path, pdf).unwrap();
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2508,6 +3638,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the separately packaged document worker runtime"]
     fn parse_pdf_task_returns_unified_document() {
         let t = TempDb::new("parse");
         let dir = std::env::temp_dir().join(format!("cb-de-parse-{}", std::process::id()));
@@ -2516,6 +3647,7 @@ mod tests {
         let path = dir.join("doc.pdf");
         std::fs::write(&path, pdf).unwrap();
         let accepted = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2528,8 +3660,9 @@ mod tests {
         .unwrap();
         let task_id = accepted["taskId"].as_str().unwrap().to_string();
         let mut snapshot = Value::Null;
-        for _ in 0..100 {
+        for _ in 0..500 {
             snapshot = dispatch(
+                &t.service,
                 &t.db,
                 "document-engine",
                 "message",
@@ -2551,8 +3684,32 @@ mod tests {
     }
 
     #[test]
+    fn model_formula_keeps_original_latex_and_engine_for_review() {
+        let mut document = json!({
+            "pages": [{"number": 1, "blocks": [{
+                "type": "formula",
+                "source": "ocr/formula-model",
+                "content": "\\begin{aligned}x&=1\\\\y&=2\\end{aligned}",
+                "rawLatex": "\\begin{aligned}x&=1\\\\y&=2\\end{aligned}",
+                "normalizedLatex": "\\begin{aligned}x&=1\\\\y&=2\\end{aligned}",
+                "formulaEngine": "PP-FormulaNet_plus-S",
+                "requiresReview": true
+            }]}]
+        });
+        enrich_formula_blocks(&mut document);
+        let block = &document["pages"][0]["blocks"][0];
+        assert_eq!(
+            block["content"],
+            "\\begin{aligned}x&=1\\\\y&=2\\end{aligned}"
+        );
+        assert_eq!(block["formulaEngine"], "PP-FormulaNet_plus-S");
+        assert_eq!(block["math"]["quality"], "needs-review");
+    }
+
+    #[test]
     #[ignore = "requires DOCUMENT_ENGINE_SCAN_FIXTURE_PDF and local OCR models"]
     fn parses_scanned_pdf_through_full_ocr_pipeline() {
+        let context = Service::new(crate::task_runtime::TaskRuntime::memory());
         let path = std::env::var("DOCUMENT_ENGINE_SCAN_FIXTURE_PDF").unwrap_or_else(|_| {
             "C:\\Users\\hjc\\Desktop\\fogharbor_botanical_field_notes_scanned.pdf".into()
         });
@@ -2577,6 +3734,8 @@ mod tests {
         let config = DocumentEngineConfig {
             model_directory: std::env::var("DOCUMENT_ENGINE_MODEL_DIRECTORY")
                 .unwrap_or_else(|_| "E:\\OCR\\Models".into()),
+            formula_addon_directory: std::env::var("DOCUMENT_ENGINE_FORMULA_ADDON_DIRECTORY")
+                .unwrap_or_default(),
             dictionary_path: std::env::var("DOCUMENT_ENGINE_DICTIONARY_PATH").unwrap_or_default(),
             model_profile: std::env::var("DOCUMENT_ENGINE_MODEL_PROFILE")
                 .unwrap_or_else(|_| "auto".into()),
@@ -2585,12 +3744,16 @@ mod tests {
             cache_directory: root.join("cache").to_string_lossy().into_owned(),
             output_directory: root.join("output").to_string_lossy().into_owned(),
             device: "cpu".into(),
+            resources: None,
         };
-        let task_id = tasks()
+        let _document_worker = context.document_client();
+        let task_id = context
+            .tasks
             .start(
                 RESOURCE_PARSE,
                 Box::new(move |ctx| {
                     parse_document_with_cache(
+                        &_document_worker,
                         &path,
                         &config,
                         Some(&manager),
@@ -2602,7 +3765,7 @@ mod tests {
             .unwrap();
         let mut snapshot = Value::Null;
         for _ in 0..720 {
-            snapshot = tasks().get(&task_id).unwrap();
+            snapshot = context.tasks.get(&task_id).unwrap();
             if matches!(
                 snapshot["status"].as_str(),
                 Some("succeeded") | Some("failed")
@@ -2705,9 +3868,114 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires DOCUMENT_ENGINE_GT_PDF, DOCUMENT_ENGINE_GT_OUTPUT and local OCR models"]
+    fn exports_annotated_pdf_ocr_for_accuracy_scoring() {
+        let context = Service::new(crate::task_runtime::TaskRuntime::memory());
+        let path = std::env::var("DOCUMENT_ENGINE_GT_PDF").expect("annotated PDF path is required");
+        let output =
+            std::env::var("DOCUMENT_ENGINE_GT_OUTPUT").expect("OCR output path is required");
+        let worker_path = std::env::var("OCR_WORKER_EXE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(
+                    "E:\\CrucibleBox_Sourses\\ocr-worker\\target\\release\\ocr-worker.exe",
+                )
+            });
+        let root = std::env::temp_dir().join(format!(
+            "cb-de-ground-truth-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let manager = Arc::new(OcrWorkerManager::new(
+            worker_path,
+            std::time::Duration::from_secs(180),
+        ));
+        let config = DocumentEngineConfig {
+            model_directory: std::env::var("DOCUMENT_ENGINE_MODEL_DIRECTORY")
+                .unwrap_or_else(|_| "E:\\OCR\\Models".into()),
+            formula_addon_directory: std::env::var("DOCUMENT_ENGINE_FORMULA_ADDON_DIRECTORY")
+                .unwrap_or_default(),
+            dictionary_path: std::env::var("DOCUMENT_ENGINE_DICTIONARY_PATH").unwrap_or_default(),
+            model_profile: std::env::var("DOCUMENT_ENGINE_MODEL_PROFILE")
+                .unwrap_or_else(|_| "auto".into()),
+            text_recognition_mode: std::env::var("DOCUMENT_ENGINE_TEXT_RECOGNITION_MODE")
+                .unwrap_or_else(|_| "mixed".into()),
+            cache_directory: root.join("cache").to_string_lossy().into_owned(),
+            output_directory: root.join("output").to_string_lossy().into_owned(),
+            device: "cpu".into(),
+            resources: None,
+        };
+        let _document_worker = context.document_client();
+        let task_id = context
+            .tasks
+            .start(
+                RESOURCE_PARSE,
+                Box::new(move |ctx| {
+                    parse_document_with_cache(
+                        &_document_worker,
+                        &path,
+                        &config,
+                        Some(&manager),
+                        ctx,
+                        "document-engine",
+                    )
+                }),
+            )
+            .unwrap();
+        let mut snapshot = Value::Null;
+        for _ in 0..2400 {
+            snapshot = context.tasks.get(&task_id).unwrap();
+            if matches!(
+                snapshot["status"].as_str(),
+                Some("succeeded") | Some("failed")
+            ) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        assert_eq!(snapshot["status"], "succeeded", "{snapshot}");
+        let full_result = std::fs::read_dir(root.join("cache"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .find_map(|entry| {
+                entry["result"]["document"]
+                    .is_object()
+                    .then(|| entry["result"].clone())
+            })
+            .expect("full OCR result should be cached");
+        assert_eq!(full_result["route"], "ocr");
+        assert_eq!(
+            full_result["document"]["metadata"]["quality"]["nativeTextBlockCount"],
+            0
+        );
+        if let Ok(ir_output) = std::env::var("DOCUMENT_ENGINE_GT_IR_OUTPUT") {
+            std::fs::write(ir_output, serde_json::to_vec_pretty(&full_result).unwrap()).unwrap();
+        }
+        let text = full_result["document"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|page| page["blocks"].as_array().into_iter().flatten())
+            .filter_map(|block| block["content"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.trim().is_empty());
+        std::fs::write(output, text).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn parse_rejects_non_pdf_extension() {
         let t = TempDb::new("parse-format");
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2725,6 +3993,7 @@ mod tests {
         let path = dir.join("note.txt");
         std::fs::write(&path, b"first paragraph\n\nsecond paragraph").unwrap();
         let accepted = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2733,8 +4002,9 @@ mod tests {
         .unwrap();
         let task_id = accepted["taskId"].as_str().unwrap().to_string();
         let mut snapshot = Value::Null;
-        for _ in 0..100 {
+        for _ in 0..500 {
             snapshot = dispatch(
+                &t.service,
                 &t.db,
                 "document-engine",
                 "message",
@@ -2752,6 +4022,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the separately packaged document worker runtime"]
     fn convert_task_writes_markdown_output() {
         let t = TempDb::new("convert");
         let dir = std::env::temp_dir().join(format!("cb-de-convert-{}", std::process::id()));
@@ -2760,6 +4031,7 @@ mod tests {
         let output = dir.join("note.md");
         std::fs::write(&path, b"hello").unwrap();
         let accepted = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2773,8 +4045,9 @@ mod tests {
         .unwrap();
         let task_id = accepted["taskId"].as_str().unwrap().to_string();
         let mut snapshot = Value::Null;
-        for _ in 0..100 {
+        for _ in 0..500 {
             snapshot = dispatch(
+                &t.service,
                 &t.db,
                 "document-engine",
                 "message",
@@ -2795,6 +4068,7 @@ mod tests {
     fn jobs_get_unknown_returns_not_found() {
         let t = TempDb::new("jobsget");
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2824,6 +4098,7 @@ mod tests {
 
         let t = TempDb::new("model-catalog");
         let response = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2848,6 +4123,7 @@ mod tests {
     fn unknown_model_bundle_is_rejected_before_download() {
         let t = TempDb::new("model-bundle");
         let out = dispatch(
+            &t.service,
             &t.db,
             "document-engine",
             "message",
@@ -2864,6 +4140,6 @@ mod tests {
     #[test]
     fn unknown_operation_rejected() {
         let t = TempDb::new("op");
-        assert!(dispatch(&t.db, "document-engine", "other", None).is_err());
+        assert!(dispatch(&t.service, &t.db, "document-engine", "other", None).is_err());
     }
 }

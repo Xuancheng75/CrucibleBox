@@ -11,7 +11,7 @@
 
 use crate::transaction::{
     canonicalize_plugins_dir, is_plugin_name, is_transaction_id, path_entry_exists,
-    remove_internal_directory, rename_internal_directory,
+    remove_internal_directory, rename_internal_directory, retain_internal_directory,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -325,7 +325,11 @@ fn reconcile_superseded_journals(
             ArtifactKind::Backup => backup_basename(plugin_name, &journal.transaction_id),
             ArtifactKind::Remove => return Ok(false),
         };
-        remove_internal_directory(&ctx.plugins_dir, root, &basename)?;
+        if *kind == ArtifactKind::Backup {
+            cleanup_backup(&ctx.plugins_dir, root, &basename, journal)?;
+        } else {
+            remove_internal_directory(&ctx.plugins_dir, root, &basename)?;
+        }
         clear_journal(root, journal)?;
         ctx.report
             .actions
@@ -344,7 +348,11 @@ fn reconcile_superseded_journals(
                 ArtifactKind::Backup => backup_basename(plugin_name, &artifact.transaction_id),
                 ArtifactKind::Remove => return Ok(false),
             };
-            remove_internal_directory(&ctx.plugins_dir, &artifact.path, &basename)?;
+            if artifact.kind == ArtifactKind::Backup {
+                cleanup_backup(&ctx.plugins_dir, &artifact.path, &basename, active)?;
+            } else {
+                remove_internal_directory(&ctx.plugins_dir, &artifact.path, &basename)?;
+            }
         }
     }
     clear_journal(target, active)?;
@@ -588,6 +596,31 @@ fn recover_install(
     }
 }
 
+fn retains_files(journal: &Journal) -> bool {
+    // Older journals lack the marker. Preserve their user files as well.
+    matches!(journal.operation.as_str(), "upgrade" | "uninstall")
+}
+
+fn cleanup_backup(
+    plugins: &Path,
+    path: &Path,
+    basename: &str,
+    journal: &Journal,
+) -> Result<(), String> {
+    if retains_files(journal) {
+        retain_internal_directory(
+            plugins,
+            path,
+            basename,
+            &journal.plugin_name,
+            &journal.transaction_id,
+        )
+        .map(|_| ())
+    } else {
+        remove_internal_directory(plugins, path, basename)
+    }
+}
+
 fn recover_upgrade(
     ctx: &mut RecoveryCtx,
     plugin_name: &str,
@@ -604,7 +637,7 @@ fn recover_upgrade(
     if journal.phase == "committed" {
         if let Some(b) = backup {
             let basename = backup_basename(plugin_name, &b.transaction_id);
-            if let Err(e) = remove_internal_directory(&ctx.plugins_dir, &b.path, &basename) {
+            if let Err(e) = cleanup_backup(&ctx.plugins_dir, &b.path, &basename, journal) {
                 block_plugin(ctx, plugin_name, &e);
                 return;
             }
@@ -743,8 +776,14 @@ fn recover_orphan(
             }
         } else {
             let basename = remove_basename(plugin_name, &r.transaction_id);
-            match remove_internal_directory(&ctx.plugins_dir, &r.path, &basename) {
-                Ok(()) => {
+            match retain_internal_directory(
+                &ctx.plugins_dir,
+                &r.path,
+                &basename,
+                plugin_name,
+                &r.transaction_id,
+            ) {
+                Ok(_) => {
                     ctx.report
                         .actions
                         .push(format!("commit-orphan-uninstall {plugin_name}"));
@@ -835,21 +874,58 @@ fn recover_uninstall(
         return;
     }
 
-    // DB 已不存在：无论崩溃发生在 quarantine 前后，都只删除受保护的直接子目录。
+    // The DB deletion committed; preserve all installed files when retention was journaled.
+    let mut retained_root = None;
+    if retains_files(journal) && target_exists && remove.is_some() {
+        block_plugin(
+            ctx,
+            plugin_name,
+            "Retained uninstall target and quarantine both exist",
+        );
+        return;
+    }
     if target_exists {
-        if let Err(e) = remove_internal_directory(&ctx.plugins_dir, &target, plugin_name) {
-            block_plugin(ctx, plugin_name, &e);
+        let result = if retains_files(journal) {
+            retain_internal_directory(
+                &ctx.plugins_dir,
+                &target,
+                plugin_name,
+                plugin_name,
+                &journal.transaction_id,
+            )
+            .map(|path| {
+                retained_root = Some(path);
+            })
+        } else {
+            remove_internal_directory(&ctx.plugins_dir, &target, plugin_name)
+        };
+        if let Err(error) = result {
+            block_plugin(ctx, plugin_name, &error);
             return;
         }
     }
     if let Some(r) = remove {
         let basename = remove_basename(plugin_name, &r.transaction_id);
-        if let Err(e) = remove_internal_directory(&ctx.plugins_dir, &r.path, &basename) {
-            block_plugin(ctx, plugin_name, &e);
+        let result = if retains_files(journal) {
+            retain_internal_directory(
+                &ctx.plugins_dir,
+                &r.path,
+                &basename,
+                plugin_name,
+                &r.transaction_id,
+            )
+            .map(|path| {
+                retained_root = Some(path);
+            })
+        } else {
+            remove_internal_directory(&ctx.plugins_dir, &r.path, &basename)
+        };
+        if let Err(error) = result {
+            block_plugin(ctx, plugin_name, &error);
             return;
         }
     }
-    match clear_journal(journal_root, journal) {
+    match clear_journal(retained_root.as_deref().unwrap_or(journal_root), journal) {
         Ok(()) => ctx
             .report
             .actions
@@ -1408,5 +1484,90 @@ mod tests {
         assert!(report.blocked_plugins.contains(&"demo".to_string()));
         assert!(backup.exists());
         assert!(plugins.join("demo").exists());
+    }
+    #[test]
+    fn recovery_preserves_committed_upgrade_and_uninstall_files_and_refuses_retention_collision() {
+        for uninstall in [false, true] {
+            let (plugins, metadata) = recovery_env(if uninstall {
+                "retained-uninstall"
+            } else {
+                "retained-upgrade"
+            });
+            let target = plugins.join("demo");
+            if !uninstall {
+                fs::create_dir_all(&target).unwrap();
+                fs::write(target.join("plugin.json"), "new").unwrap();
+                metadata
+                    .borrow_mut()
+                    .insert("demo".into(), json!({"id":"p1"}));
+            }
+            let artifact = plugins.join(if uninstall {
+                ".demo.remove-tx-1"
+            } else {
+                ".demo.backup-tx-1"
+            });
+            fs::create_dir_all(artifact.join("user/empty")).unwrap();
+            fs::write(artifact.join("user/note.txt"), "old user content").unwrap();
+            let root = if uninstall { &artifact } else { &target };
+            write_journal(
+                root,
+                &journal(
+                    if uninstall { "uninstall" } else { "upgrade" },
+                    "committed",
+                    "demo",
+                    "tx-1",
+                    Some(json!({"retainPreviousFiles":true})),
+                ),
+            )
+            .unwrap();
+            let result = run_recovery(&plugins, &metadata);
+            assert!(
+                result.blocked_plugins.is_empty(),
+                "{:?}",
+                result.blocked_plugins
+            );
+            let retained = plugins.join(".demo.retained-tx-1");
+            assert_eq!(
+                fs::read_to_string(retained.join("user/note.txt")).unwrap(),
+                "old user content"
+            );
+            assert!(retained.join("user/empty").is_dir());
+            assert!(!artifact.exists());
+            assert!(run_recovery(&plugins, &metadata).blocked_plugins.is_empty());
+            assert_eq!(
+                fs::read_to_string(retained.join("user/note.txt")).unwrap(),
+                "old user content"
+            );
+        }
+        let (plugins, metadata) = recovery_env("retained-collision");
+        let target = plugins.join("demo");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("plugin.json"), "new").unwrap();
+        metadata
+            .borrow_mut()
+            .insert("demo".into(), json!({"id":"p1"}));
+        let backup = plugins.join(".demo.backup-tx-1");
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("keep"), "previous").unwrap();
+        let retained = plugins.join(".demo.retained-tx-1");
+        fs::create_dir_all(&retained).unwrap();
+        fs::write(retained.join("keep"), "other generation").unwrap();
+        write_journal(
+            &target,
+            &journal(
+                "upgrade",
+                "committed",
+                "demo",
+                "tx-1",
+                Some(json!({"retainPreviousFiles":true})),
+            ),
+        )
+        .unwrap();
+        assert!(!run_recovery(&plugins, &metadata).blocked_plugins.is_empty());
+        assert_eq!(fs::read_to_string(backup.join("keep")).unwrap(), "previous");
+        assert_eq!(
+            fs::read_to_string(retained.join("keep")).unwrap(),
+            "other generation"
+        );
     }
 }

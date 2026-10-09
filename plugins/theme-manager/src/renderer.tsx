@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
-import type { PluginRenderProps, Theme } from 'cruciblebox-plugin-api'
+import type { ThemeRenderProps, Theme } from './next-types'
 import { themeColorVar } from './theme-vars'
 
 const TONE = themeColorVar
+const FEATURED_THEME_IDS = new Set([
+  'light',
+  'dark',
+  'cyber',
+  'neon-district',
+  'warm-sun',
+  'editorial-paper'
+])
 
 const CUSTOM_KEYS: { key: keyof typeof DEFAULT_CUSTOM; label: string }[] = [
   { key: 'primary', label: '主色' },
@@ -59,7 +67,11 @@ function buildCustomTheme(
   id = 'custom',
   name = '自定义'
 ): Theme {
-  const base: Record<string, string | number> = { ...FALLBACK_TOKENS }
+  const base: Record<string, string | number> = {
+    ...FALLBACK_TOKENS,
+    borderRadius: 8,
+    fontFamily: "'Segoe UI', sans-serif"
+  }
   if (theme?.tokens) {
     for (const [key, value] of Object.entries(theme.tokens)) {
       base[key] = value
@@ -117,11 +129,11 @@ const primaryBtnStyle: Record<string, string | number> = {
   borderRadius: 6,
   cursor: 'pointer',
   background: TONE('primary', '#555'),
-  color: '#fff',
+  color: 'var(--ob-color-primary-contrast, #fff)',
   fontSize: 14
 }
 
-export default function ThemeManager({ theme, api, config, onConfigChange }: PluginRenderProps) {
+export default function ThemeManager({ theme, api, config, onConfigChange }: ThemeRenderProps) {
   const [mode, setMode] = useState<'light' | 'dark'>(theme?.mode || 'light')
   const [colors, setColors] = useState<typeof DEFAULT_CUSTOM>({
     primary: readToken(theme, 'colorPrimary'),
@@ -148,7 +160,7 @@ export default function ThemeManager({ theme, api, config, onConfigChange }: Plu
     void api.theme
       .list()
       .then((themes) => {
-        if (active) setPresets(themes)
+        if (active) setPresets(themes.filter((item) => FEATURED_THEME_IDS.has(item.id)))
       })
       .catch(() => {
         if (active) setMsg('无法读取内置主题列表')
@@ -159,13 +171,28 @@ export default function ThemeManager({ theme, api, config, onConfigChange }: Plu
     }
   }, [api.theme])
 
-  const persistCustoms = (next: Theme[]) => {
-    setSavedCustoms(next)
-    onConfigChange?.({ ...(config ?? {}), customThemes: JSON.stringify(next) })
+  const persistCustoms = async (next: Theme[]) => {
+    try {
+      const original = JSON.parse(String(config.customThemes ?? '[]')) as unknown
+      if (!Array.isArray(original)) throw Error('原自定义主题不是数组，已保留原值')
+      const retained = original.filter((item) => !isValidTheme(item))
+      await onConfigChange({ customThemes: JSON.stringify([...next, ...retained]) })
+      setSavedCustoms(next)
+      return true
+    } catch (error) {
+      setMsg('保存失败：' + String(error))
+      return false
+    }
   }
 
   const previewTheme = async (next: Theme) => {
-    const ok = await api.theme.preview(next)
+    let ok = false
+    try {
+      ok = await api.theme.preview(next)
+    } catch (error) {
+      setMsg('预览失败：' + String(error))
+      return false
+    }
     setPreviewing((current) => ok || current)
     setMsg(ok ? `正在预览主题「${next.name}」` : '预览失败：缺少主题修改权限')
     return ok
@@ -193,13 +220,13 @@ export default function ThemeManager({ theme, api, config, onConfigChange }: Plu
     )
     const ok = await previewTheme(next)
     if (ok) {
-      persistCustoms([...savedCustoms, next])
+      if (!(await persistCustoms([...savedCustoms, next]))) return
       setMsg(`已保存并正在预览自定义主题「${next.name}」`)
     }
   }
 
   const deleteCustom = (id: string) => {
-    persistCustoms(savedCustoms.filter((t) => t.id !== id))
+    void persistCustoms(savedCustoms.filter((t) => t.id !== id))
   }
 
   const exportTheme = async () => {
@@ -437,7 +464,7 @@ export default function ThemeManager({ theme, api, config, onConfigChange }: Plu
                 borderRadius: 6,
                 cursor: 'pointer',
                 background: mode === m ? TONE('primary', '#555') : 'transparent',
-                color: mode === m ? '#fff' : TONE('text', '#333'),
+                color: mode === m ? 'var(--ob-color-primary-contrast, #fff)' : TONE('text', '#333'),
                 fontSize: 13
               }}
             >

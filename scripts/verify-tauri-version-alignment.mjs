@@ -23,6 +23,11 @@ function readLockVersion(path, packageName) {
 }
 
 const checks = [
+  ['package.json', readJson(resolve(repositoryRoot, 'package.json')).version],
+  [
+    'package-lock.json',
+    readJson(resolve(repositoryRoot, 'package-lock.json')).packages?.['']?.version
+  ],
   [
     'src-tauri/tauri.conf.json',
     readJson(resolve(repositoryRoot, 'src-tauri/tauri.conf.json')).version
@@ -62,7 +67,4 @@ if (mismatches.length > 0) {
   )
 }
 
-const legacyRoot = readJson(resolve(repositoryRoot, 'package.json')).version
-console.log(
-  `[version] Tauri ${expected} aligned across ${checks.length} files; root Electron legacy package remains ${legacyRoot}`
-)
+console.log(`[version] Tauri ${expected} aligned across ${checks.length} files`)

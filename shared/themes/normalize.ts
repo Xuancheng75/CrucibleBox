@@ -59,7 +59,7 @@ export function normalizeTheme(value: unknown): ToolboxTheme | null {
   if (
     typeof font === 'string' &&
     font.length > 0 &&
-    font.length <= 128 &&
+    font.length <= 512 &&
     FONT_CHARS.test(font) &&
     !font.includes('url(') &&
     !font.includes(';')

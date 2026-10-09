@@ -4,6 +4,7 @@ import { resolveDocumentDropPaths, resolveDropPaths } from '../utils/drop-target
 import { shouldHandleGlobalFileDrop } from '../utils/plugin-drop'
 import { usePluginStore } from '../store/plugin.store'
 import { useAppStore } from '../store/app.store'
+import { tauriApi, type PluginFileHandler } from '../api/tauriApi'
 
 export interface GlobalDropState {
   dragActive: boolean
@@ -23,6 +24,8 @@ export function useGlobalPluginDrop(): GlobalDropState {
   const [dragTarget, setDragTarget] = useState<GlobalDropState['dragTarget']>('plugin')
 
   useEffect(() => {
+    let fileHandlers: PluginFileHandler[] = []
+    void tauriApi.plugin.fileHandlers().then(value => { fileHandlers = value }).catch(() => { fileHandlers = [] })
     let unlisten: (() => void) | undefined
     let disposed = false
     // 拖拽离开窗口/在外释放时 Tauri 不发事件：用 over 心跳超时兜底隐藏遮罩
@@ -107,6 +110,14 @@ export function useGlobalPluginDrop(): GlobalDropState {
         if (store.installQueue.length > 0) return
 
         const app = useAppStore.getState()
+        const contributed = fileHandlers.find(handler => handler.pluginId === app.activePluginId)
+        if (app.currentPage === 'pluginView' && contributed) {
+          const accepted = paths.filter(path => contributed.extensions.includes(path.split('.').at(-1)?.toLowerCase() ?? ''))
+          if (accepted.length > 0) {
+            window.dispatchEvent(new CustomEvent('cruciblebox:plugin-files-dropped', { detail: { pluginId: app.activePluginId, paths: accepted } }))
+            return
+          }
+        }
         const documentActive =
           app.currentPage === 'pluginView' && app.activePluginId === 'document-engine'
         const archiveActive =

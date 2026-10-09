@@ -116,7 +116,7 @@ afterEach(() => {
 })
 
 describe('production plugin storage consumers', () => {
-  it('keeps legacy diary readable and rejects new writes', async () => {
+  it('keeps legacy diary readable and accepts restored writes', async () => {
     const storage = new MemoryPluginStorage()
     await storage.set('entry:2026-08-01', {
       entry_date: '2026-08-01',
@@ -137,7 +137,7 @@ describe('production plugin storage consumers', () => {
         title: '标题',
         content: '正文'
       })
-    ).resolves.toMatchObject({ ok: false, error: { code: 'READ_ONLY' } })
+    ).resolves.toMatchObject({ ok: true, deleted: false })
 
     await expect(
       diaryPlugin.onMessage?.({ type: 'getMonthEntries', year: 2026, month: 8 })
@@ -153,10 +153,10 @@ describe('production plugin storage consumers', () => {
 
     await expect(
       diaryPlugin.onMessage?.({ type: 'deleteEntry', date: '2026-08-10' })
-    ).resolves.toMatchObject({ ok: false, error: { code: 'READ_ONLY' } })
+    ).resolves.toMatchObject({ ok: true, deleted: true })
   })
 
-  it('keeps legacy turntable readable and rejects option mutations', async () => {
+  it('keeps legacy turntable readable and accepts restored option mutations', async () => {
     const storage = new MemoryPluginStorage()
     await storage.set('items', [
       { id: 2, label: 'B', weight: 3, color: '#222222', sort_order: 0, created_at: '' },
@@ -169,11 +169,12 @@ describe('production plugin storage consumers', () => {
         type: 'addItem',
         payload: { label: 'A', weight: 1, color: '#111111' }
       })
-    ).resolves.toMatchObject({ error: expect.stringContaining('兼容期') })
+    ).resolves.toMatchObject({ label: 'A', weight: 1 })
 
     await expect(turntablePlugin.onMessage?.({ type: 'getItems' })).resolves.toMatchObject([
       { id: 2, label: 'B', sort_order: 0 },
-      { id: 1, label: 'A', sort_order: 1 }
+      { id: 1, label: 'A', sort_order: 1 },
+      { id: 3, label: 'A', sort_order: 2 }
     ])
     vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((array) => {
       ;(array as Uint32Array)[0] = 0

@@ -8,3 +8,9 @@
   ; SHChangeNotify(SHCNE_ASSOCCHANGED=0x08000000, SHCNF_IDLIST=0, NULL, NULL)
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ; The bundled portable Python tree leaves an empty parent directory after
+  ; NSIS removes its files. RmDir succeeds only when the directory is empty.
+  RMDir "$INSTDIR\formula-ocr"
+!macroend

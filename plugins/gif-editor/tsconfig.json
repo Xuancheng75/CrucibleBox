@@ -8,7 +8,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@cruciblebox/next-api": ["./vendor/next-api/src/index.d.ts"]
+    }
   },
-  "include": ["src", "tests", "vitest.config.ts"]
+  "include": ["src", "tests", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist", "src/main.ts"]
 }

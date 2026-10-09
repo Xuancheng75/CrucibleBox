@@ -83,10 +83,16 @@ prepared ──► awaiting-confirmation ──► staged ──► stopping-old
 - fail-closed：恢复或配置校验失败 → 保留原因，install/combo/uninstall/version switch 全部关闭，直到服务以有效状态重启；只读列表与检测仍安全可用。
 - 不尝试续传任意安装器进程；新任务从干净 staging 开始并重验固定制品（官方 URL + SHA-256）。
 
-## 6. 数据兼容（schema v3）
+## 6. 历史数据兼容（旧 SDK 与 schema v3）
 
-- schema v3：`plugins`（含 `sort_order`）/`settings`/`plugin_logs`/`plugin_storage`（含迁移标记）。
-- 迁移用 `PRAGMA user_version` + `MIGRATIONS` 数组 + `BEGIN IMMEDIATE`；失败回滚并保留旧 `user_version`。
-- 启动迁移后清理 30 天前 `plugin_logs`。
-- 旧表迁移（diary_entries/turntable_items）只复制不删除，marker 防旧数据复活；未安装旧插件在首次激活执行同一幂等事务。
-- 数据库 schema 变更 = 强制 minor 版本 + `smoke-packaged`（旧库迁移）+ `release-compatibility`（previous→candidate 回滚）双验证。
+- 旧版本曾使用 schema v3；其中插件排序及日记/随机决策数据复制标记只作为历史迁移输入。当前 Next repository 数据库为 schema v10，生产连接和 SQL 访问已收敛在 repository crate。
+- 迁移在事务中进行；失败回滚并保留旧数据。v2-v4 旧执行入口退役不删除旧插件包、用户文件、配置或存储原值。
+- 升级/卸载会保留插件目录与空目录，稳定插件 ID 重装按事务恢复原配置、storage 和迁移标记；冲突时拒绝覆盖。
+
+## Next 数据保留与配对恢复
+
+Next repository 当前 schema 为 10。卸载在同一事务中保存原始配置、存储值和迁移标记；按稳定插件 ID 重装时恢复到新安装记录。保留已有代际发生冲突时拒绝覆盖。升级与卸载将旧插件目录原子保留为 `.插件ID.retained-事务ID`，包含用户文件和空目录；恢复流程不会自动清除这些目录。
+
+升级前停止旧程序及其 worker，使用 `node scripts/next-paired-rollback.mjs capture <旧程序目录> <用户数据目录> <新外部备份目录>` 保存程序与数据配对。SQLite 通过一致性备份读取 WAL；普通附件按字节复制，并记录摘要、数据库版本和空目录。使用 `verify <备份目录>` 验证；`restore <备份目录> <新外部恢复目录>` 同时恢复旧程序及旧数据，不覆盖当前目录。恢复后必须使用恢复的数据目录启动恢复的旧程序，不能用旧程序打开已升级的数据库。工具拒绝链接、摘要损坏、已有目标和运行中的旧程序。
+
+此工具的自动化测试覆盖一致性备份、原始数据保留、损坏拒绝和新目录恢复；实际安装器升级、断电恢复和旧程序启动验收须另行记录，不能由工具测试代替。

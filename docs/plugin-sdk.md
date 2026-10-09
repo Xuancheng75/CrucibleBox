@@ -1,94 +1,29 @@
-# CrucibleBox 插件 SDK v3
+# CrucibleBox Next 插件 SDK（冻结的 beta.1 契约）
 
-> 当前规范（替代 plugin-sdk-migration.md；模板在 `templates/plugin-template`）。
-> 当前契约：Manifest/API v3；宿主继续兼容 Manifest/API v2。v3 renderer 沿用稳定的 v2 帧协议，新增能力声明、最低宿主版本和信任级别。
+Next beta.1 使用冻结的 Manifest/API 5、wire 3、data 1；SDK 5.0.0-beta.1 与独立构建 CLI 1.0.0-beta.1 的源目录和生成产物均封存。alpha.7 保持不可变作为历史消费者交接快照；正式契约由 contracts/next/contract.json 生成。旧数据与配对回滚保留，旧 v2-v4 runtime 不再执行。
 
-## 1. Manifest 契约
+## Next 插件
 
-```jsonc
-{
-  "name": "<plugin-id>",
-  "version": "0.4.11",
-  "displayName": "日记",
-  "author": "cruciblebox",
-  "main": "dist/main.js", // 必须存在；renderer-only 时宿主只校验不加载
-  "renderer": "dist/renderer.js",
-  "manifestVersion": 3,
-  "backendApiVersion": 3, // "backend": false 时可省略
-  "rendererApiVersion": 3,
-  "minimumHostVersion": "2.1.0-beta.1",
-  "trustLevel": "standard",
-  "capabilities": {
-    "storage": true,
-    "network": true,
-    "events": true,
-    "ui": true
-  },
-  "permissions": ["storage:read", "storage:write"], // 只声明实际使用的权限
-  "config": {}
-}
-```
+Manifest 使用 `id`，声明 `manifestVersion: 5`、`sdkApiVersion: 5`、`wireVersion: 3`、`dataSchemaVersion: 1`、`renderer: "dist/renderer.js"` 和精确 `permissions`。可选 backend 是 `"dist/main.js"` 字符串；renderer-only 省略 backend，不能沿用旧协议的布尔值或必需 main 占位规则。renderer 导出 ESM `mount(context)`，从 `createClient(context)` 获取能力；无父窗口或 Node 依赖。
 
-- 新插件使用 `manifestVersion: 3`、`backendApiVersion: 3`、`rendererApiVersion: 3`；v2 插件无需修改即可继续运行。
-- `minimumHostVersion` 声明最低宿主版本；`minHostVersion` 仅为 v2 兼容保留。
-- `trustLevel` 为 `standard` 或 `full`。`full` 自动申请 `host:full-trust`，安装和升级确认页显示高风险提示。
-- `capabilities` 支持 `storage/fs/network/process/archive/tasks/events/ui/system/crypto/credentials/pluginData`；已实现能力映射为宿主权限。
-- `permissions`：只声明实际使用的权限；升级时预览列出新增/移除权限并二次确认；迁移不删配置/存储/目录。
-- `backend: false`（renderer-only）：不创建 utility process，但仍参与启停/配置重启/退出清理/活跃查询；`main` 为必需占位入口；向 renderer-only 发送 backend 消息得确定性错误。
-- 旧 v1 兼容：已安装 v1 包由 Legacy Full Trust 适配器运行，但宿主**不再接受**新 v1 安装或升级（1.5.23 起）。
-- 版本一致性：`package.json` / `plugin.json` / lockfile 三处版本必须一致（构建门禁强制）。
+七个官方插件目录以 `scripts/next-plugin-catalog.json` 为准。插件自带 `vendor/next-api` 和 `vendor/plugin-build`，独立执行 clean/build/typecheck/test/pack。两个可独立安装示例在 `templates/next-examples`。宿主只消费清单声明的运行文件；GIF 的 classic worker 是显式资源。构建 CLI 对样式、资源、导入路径和预算失败关闭。
 
-## 2. Renderer API（自包含 browser IIFE）
+存储 owner 来自宿主会话，不接受插件传入其他 owner；无 SQL 或任意文件系统 API。支持 keys 分页、batch/transact 原子事务和有界大值传输：单值 4 MiB、事务 8 MiB、帧 64 KiB。旧值超预算时拒绝读取而不截断或改写。config.get/patch 保留未知已有键，损坏 JSON 拒绝修改。任务 get/list/cancel 按 owner 校验，晚到事件不能覆盖终态；复杂服务详情与大结果由不可变分块快照读取。
 
-- 插件 renderer 为**自包含 browser bundle**：无运行时 `require()`、不读 `window.electronAPI`/父窗口/Node 全局；能力仅来自 `PluginRenderProps.api`。
-- `api` 提供：
-  - `sendToBackend(message)` / `onBackendMessage(handler)`：与 backend 通信；
-  - `notify({ title, body })`：系统通知；
-  - `confirm(options)`：异步确认框（不用同步 `window.confirm`）；
-  - `theme.get() / theme.set()`：读取/切换主题（`theme:write` 权限门控）。
-- 下载用 Blob URL；插件运行在跨源 sandboxed iframe，样式/主题通过 `var(--ob-*)` CSS 变量 + `props.theme` 快照获取。
-- 主题契约：`ToolboxTheme { id, name, mode, tokens }`；canvas 场景从 `getComputedStyle` 读取 `--ob-*` 并监听主题变化事件重绘。
+宿主提供 beta.3 appearance 和文件拖入事件；下载独立要求 browser:downloads。主题读取要求 theme:read，预览/提交/回滚要求 theme:write。三个可信服务还要求固定身份、版本、权限及运行文件 SHA-256 完全匹配，安装与每次服务/结果分块调用重新校验。
 
-## 3. Backend API（utility process）
+接口版本及文件白名单通过不可变消费者交接快照封存；源契约已冻结为 beta.1，alpha.6 与 alpha.7 包不可原地重写。
 
-- 仍导出 `activate(ctx)` / `deactivate()` / `onMessage(handler)`。
-- 全部能力走**异步 SDK**（`Promise`）：`ctx.database.query/execute`、`ctx.storage.get/set/delete/list/batch`、`ctx.logger`、`ctx.api.*`（notify/dialog/fetch/readFile/writeFile/registerShortcut/onEvent/emitEvent/invokeTrustedService）。
-- 长任务：立即返回 taskId，由宿主事件推送进度和终态；重连时读取一次任务快照。
-- v3 增加 `ctx.pluginData`（插件私有存储别名）以及 `ctx.capabilities.events/system` 分组入口；v2 的 `ctx.storage`、`ctx.api` 保持可用。
-- `ctx.api.fetch`：30s 超时、响应 ≤50MB；`ctx.api.registerShortcut`：全局快捷键（`Permission.Shortcut`）。
-- 权限在**主进程统一断言**（`PermissionGuard`），子进程侧为 RPC 代理。
-- 生命周期纪律：
-  - `activate` 幂等可重启；失败抛明确错误；**activate 内不做不可回滚的数据修改**；
-  - `deactivate` 停止计时器/订阅/快捷键/后台任务；
-  - 意外退出由宿主崩溃恢复策略接管（指数退避/隔离）。
+## 旧协议与数据回滚策略
 
-## 4. 私有存储 API
+Next 宿主只接受 Manifest/API v5、wire v3；v2–v4 的 renderer/backend 执行路径、旧 SQL RPC 与自动兼容加载已经退出生产分发和启动流程。旧包和 SQLite 原值保留作迁移与诊断材料，不会在 Next 宿主中被静默转换或执行。升级或卸载后的数据保留策略见安装恢复文档；回滚旧程序时必须通过 scripts/next-paired-rollback.mjs 同时恢复匹配的旧程序与数据库。
 
-- `storage.get(key)` / `set(key, value)` / `delete(key)` / `list(prefix?)` / `batch(mutations)`。
-- 约束：key ≤256 字符、拒绝控制字符；值必须有限无环 JSON、单值 ≤1 MiB；namespace 由宿主按插件 ID 绑定。
-- `batch`：1–64 个严格 JSON set/delete，全部预校验后在宿主 `BEGIN IMMEDIATE` 中提交。
-- **无跨键事务**：多字段原子更新存为单个 JSON 文档。
-- 不直接执行 SQL；`database:*` 权限仅旧插件（v1 兼容期）保留，新插件不申请。
+生产 sidecar 中的 new Function 是 QuickJS 内部用于加载 Next backend CJS 模块的包装器；它不执行插件 renderer，也不恢复旧 v2–v4 运行时。该 loader 只解析安装包内模块，宿主能力仍经 Next wire v3、身份绑定和 PermissionGuard 校验。旧 SQL RPC 名称只保留在被冻结的 legacy 类型/fixture 中，Next host method 集不实现 db.query 或 db.execute，并由权限测试断言拒绝。
 
-## 5. 权限清单（Permission 枚举）
+旧版 Manifest/API 说明已归档；不要依据旧文档把 v2–v4 字段填入 Next manifest。
 
-Manifest v3 优先使用 `capabilities`，`permissions` 用于精确补充和 v2 兼容。
+## beta.3 插件 UI 组件
 
-`database:read/write`（旧）、`storage:read/write`、`shell:exec`、`network:fetch`、`notification`、`clipboard`、`dialog`、`shortcut`、`file:read/write`、`theme:write`、三个第一方可信服务权限，以及 `host:full-trust`。
+packages/cruciblebox-plugin-ui 提供可独立安装的 @cruciblebox/plugin-ui，React 作为 peer dependency，兼容 React 18/19，不依赖 Ant Design 或宿主运行时。组件含 PluginPage、Toolbar、SplitPane、Field、Button、TextInput、FileList、TaskProgress、ResultList、EmptyState 和 ErrorPanel。内置样式使用 beta.3 主题变量；插件可在自身 renderer 中独立构建并携带 UI 包。
 
-> 高权限能力（进程/下载/解压/环境修改）**不扩大通用插件能力**：应设计宿主持有的固定服务 + 操作白名单 + 输入协议 + 资源预算 + 摘要策略（UniEnv 即此模式）。
-
-### 6.1 UniEnv 支持的工具与版本源（1.9.12+）
-
-- 内置工具：Python、Node.js、Git、Go、Java (Temurin)、**Rust (rustup stable)**、**PHP (NTS x64 zip)**。
-- 版本目录：编译期固定 + SHA-256 fail-closed；**node/go/java** 另支持在线发现新版本
-  （官方端点权威摘要校验，交互与安全边界见 `adr-0021-unienv-online-version-feeds.md`；
-  配置项 `onlineVersions` 默认开启，可关闭）。
-- python/git 暂不支持在线新版本（无机器可读校验源），新版本需随插件更新。
-
-## 6. 类型与构建
-
-- API 类型唯一事实源：`packages/cruciblebox-plugin-api`（1.5.25 落地；此前各插件本地 `openbox-api.d.ts`）。
-- 模板提供双 API v2 构建：backend 用 esbuild 独立 main CJS，renderer 用 esbuild browser IIFE。
-- renderer 外部化 `react` + `cruciblebox-plugin-api`；产物进 `dist/`（`dist/main.js` + `dist/renderer.js`）。
-- 当前 11 个正式插件均声明双 v2；插件目录与版本以 `scripts/plugin-catalog.json` 为准。
+Next beta.1 契约冻结与 beta.3 主程序发布验收分开追踪；两者均不声明 OCR 精度门槛已通过。

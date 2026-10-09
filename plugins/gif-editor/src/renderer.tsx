@@ -1,5 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PluginRenderProps } from 'cruciblebox-plugin-api'
+interface GifEditorProps {
+  api: { notify(title: string, message: string): void }
+}
 import {
   decodeGifFile,
   encodeGif,
@@ -17,7 +19,7 @@ import {
   splitConnectedObjects,
   splitColorClusters,
   mergeLayers,
-  splitByMask,
+  splitByMask
 } from './utils/gif'
 import type { ResidueReport } from './utils/gif'
 import { isResidueWorkerAbortError, runResidueWorker } from './residue-worker'
@@ -33,18 +35,15 @@ import {
   reconcileThumbnailCache,
   type FilterValues,
   type HistoryEntry as RendererHistoryEntry,
-  type ThumbnailCache,
+  type ThumbnailCache
 } from './renderer-state'
 import { retainDynamicStyle } from './renderer-style'
 import {
   applyCanvasTransform,
   cropCanvasToFrameBounds,
-  cropCanvasToUnionBounds,
+  cropCanvasToUnionBounds
 } from './document-operations'
-import {
-  assertGifDocumentCanvasInvariant,
-  validateGifEncodeBudget,
-} from './utils/gif-validation'
+import { assertGifDocumentCanvasInvariant, validateGifEncodeBudget } from './utils/gif-validation'
 import gifEditorCss from './gif-editor.css'
 
 type ToolTab = 'geometry' | 'draw' | 'filter' | 'color' | 'smart' | 'select'
@@ -62,7 +61,7 @@ const MAX_LAYER_HISTORY_ENTRIES = 50
 const MAX_LAYER_HISTORY_BYTES = 128 * 1024 * 1024
 const STYLE_ID = 'gif-editor-plugin-styles'
 
-export default function GifEditorPlugin({ api }: PluginRenderProps) {
+export default function GifEditorPlugin({ api }: GifEditorProps) {
   const [doc, setDoc] = useState<GifDocument | null>(null)
 
   useEffect(() => {
@@ -83,7 +82,9 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
   const [zoomFit, setZoomFit] = useState(true)
   const [playing, setPlaying] = useState(false)
   const [cropMode, setCropMode] = useState(false)
-  const [cropRect, setCropRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  const [cropRect, setCropRect] = useState<{ x: number; y: number; w: number; h: number } | null>(
+    null
+  )
   const [targetColor, setTargetColor] = useState<Rgb>([0, 0, 0])
   const [replaceColor, setReplaceColor] = useState('#ff0000')
   const [tolerance, setTolerance] = useState(30)
@@ -102,7 +103,12 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
   const [, setLayerUndoStack] = useState<LayerItem[][]>([])
   const [, setLayerRedoStack] = useState<LayerItem[][]>([])
   const [selectMode, setSelectMode] = useState<SelectMode>('none')
-  const [selectRect, setSelectRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  const [selectRect, setSelectRect] = useState<{
+    x: number
+    y: number
+    w: number
+    h: number
+  } | null>(null)
   const [wandTolerance, setWandTolerance] = useState(40)
   const [wandMask, setWandMask] = useState<Uint8Array | null>(null)
   const [lassoMode, setLassoMode] = useState<LassoMode>('poly')
@@ -171,10 +177,13 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     setRedoStack([])
   }, [])
 
-  const snapshot = useCallback((source: GifDocument | null = docRef.current): HistoryEntry | null => {
-    if (!source) return null
-    return cloneHistoryEntry(source, cloneImageData, (imageData) => imageData.data.byteLength)
-  }, [])
+  const snapshot = useCallback(
+    (source: GifDocument | null = docRef.current): HistoryEntry | null => {
+      if (!source) return null
+      return cloneHistoryEntry(source, cloneImageData, (imageData) => imageData.data.byteLength)
+    },
+    []
+  )
 
   const commit = useCallback(
     (mutator: (d: GifDocument) => GifDocument): boolean => {
@@ -324,7 +333,10 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')
+      ) {
         const isRedo = e.shiftKey || e.key.toLowerCase() === 'y'
         e.preventDefault()
         layerUndo(isRedo)
@@ -338,7 +350,10 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     const container = containerRef.current
     if (!container || !doc) return
     const pad = 24
-    const z = Math.min((container.clientWidth - 288 - pad * 2) / doc.width, (container.clientHeight - 40 - pad * 2) / doc.height)
+    const z = Math.min(
+      (container.clientWidth - 288 - pad * 2) / doc.width,
+      (container.clientHeight - 40 - pad * 2) / doc.height
+    )
     setZoom(Math.max(0.05, Math.min(4, z)))
     setZoomFit(true)
   }, [doc])
@@ -525,7 +540,8 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     ctx.moveTo(pts[0].x * scale, pts[0].y * scale)
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * scale, pts[i].y * scale)
     if (preview) ctx.lineTo(preview.x * scale, preview.y * scale)
-    else if (lassoClosedRef.current && pts.length >= 3) ctx.lineTo(pts[0].x * scale, pts[0].y * scale)
+    else if (lassoClosedRef.current && pts.length >= 3)
+      ctx.lineTo(pts[0].x * scale, pts[0].y * scale)
     ctx.stroke()
     ctx.setLineDash([])
     // vertices
@@ -549,7 +565,18 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
   useEffect(() => {
     redrawMainCanvas()
     redrawLassoOverlay()
-  }, [doc, current, zoom, redrawMainCanvas, redrawLassoOverlay, lassoPoints, lassoPreview, lassoMask, layerSession, activeLayerId])
+  }, [
+    doc,
+    current,
+    zoom,
+    redrawMainCanvas,
+    redrawLassoOverlay,
+    lassoPoints,
+    lassoPreview,
+    lassoMask,
+    layerSession,
+    activeLayerId
+  ])
 
   const startEditCanvas = useCallback(() => {
     const d = docRef.current
@@ -580,7 +607,10 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     const rect = canvas.getBoundingClientRect()
     const x = ((clientX - rect.left) / rect.width) * d.width
     const y = ((clientY - rect.top) / rect.height) * d.height
-    return { x: Math.max(0, Math.min(d.width - 1, Math.floor(x))), y: Math.max(0, Math.min(d.height - 1, Math.floor(y))) }
+    return {
+      x: Math.max(0, Math.min(d.width - 1, Math.floor(x))),
+      y: Math.max(0, Math.min(d.height - 1, Math.floor(y)))
+    }
   }
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -820,7 +850,9 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
       setCropRect(null)
       return
     }
-    applyGeometry(transforms.crop({ x: cropRect.x, y: cropRect.y, width: cropRect.w, height: cropRect.h }))
+    applyGeometry(
+      transforms.crop({ x: cropRect.x, y: cropRect.y, width: cropRect.w, height: cropRect.h })
+    )
     setCropMode(false)
     setCropRect(null)
   }
@@ -837,11 +869,17 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     const replacement = hexToRgb(replaceColor)
     if (all) {
       commit((doc_) => {
-        const frames = doc_.frames.map((f) => ({ ...f, imageData: transforms.replaceColor(target, replacement, tolerance)(f.imageData) }))
+        const frames = doc_.frames.map((f) => ({
+          ...f,
+          imageData: transforms.replaceColor(target, replacement, tolerance)(f.imageData)
+        }))
         return { ...doc_, frames }
       })
     } else {
-      applyToFrame((data) => transforms.replaceColor(target, replacement, tolerance)(data), currentRef.current)
+      applyToFrame(
+        (data) => transforms.replaceColor(target, replacement, tolerance)(data),
+        currentRef.current
+      )
     }
   }
 
@@ -855,7 +893,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
       const frames = d.frames.filter((_, i) => i !== currentRef.current)
       return { ...d, frames }
     })
-    setCurrent((c) => Math.min(c, (doc.frames.length - 1) - 1))
+    setCurrent((c) => Math.min(c, doc.frames.length - 1 - 1))
   }
 
   const removeSelectedFrames = () => {
@@ -907,7 +945,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     const delay = Math.max(20, Math.round(batchDelay))
     commit((d) => ({
       ...d,
-      frames: d.frames.map((f, i) => (i >= from && i <= to ? { ...f, delay } : f)),
+      frames: d.frames.map((f, i) => (i >= from && i <= to ? { ...f, delay } : f))
     }))
   }
 
@@ -942,7 +980,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     commit((doc_) => {
       const frames = doc_.frames.map((f) => ({
         ...f,
-        imageData: applyFilterValues(f.imageData, filterValues, transforms),
+        imageData: applyFilterValues(f.imageData, filterValues, transforms)
       }))
       return { ...doc_, frames }
     })
@@ -956,7 +994,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     if (all) {
       commit((doc_) => ({
         ...doc_,
-        frames: doc_.frames.map((f) => ({ ...f, imageData: removeBackground(f.imageData, tol) })),
+        frames: doc_.frames.map((f) => ({ ...f, imageData: removeBackground(f.imageData, tol) }))
       }))
     } else {
       applyToFrame((data) => removeBackground(data, tol), currentRef.current)
@@ -988,7 +1026,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     const newFrames = parts.map((imageData) => ({
       id: crypto.randomUUID(),
       imageData,
-      delay: f.delay,
+      delay: f.delay
     }))
     commit((doc_) => {
       const frames = [...doc_.frames]
@@ -1001,12 +1039,15 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     const d = docRef.current
     const f = d?.frames[currentRef.current]
     if (!d || !f) return
-    const layers = splitColorLayers(f.imageData, { tolerance: colorLayerTol, maxLayers: colorLayers })
+    const layers = splitColorLayers(f.imageData, {
+      tolerance: colorLayerTol,
+      maxLayers: colorLayers
+    })
     if (layers.length <= 1) return
     const newFrames = layers.map((imageData) => ({
       id: crypto.randomUUID(),
       imageData,
-      delay: f.delay,
+      delay: f.delay
     }))
     commit((doc_) => {
       const frames = [...doc_.frames]
@@ -1057,7 +1098,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     setLayerSession((prev) => [
       ...(prev ?? []),
       { id: crypto.randomUUID(), imageData: inner, visible: true },
-      { id: crypto.randomUUID(), imageData: outer, visible: true },
+      { id: crypto.randomUUID(), imageData: outer, visible: true }
     ])
     clearLasso()
     setSelectMode('none')
@@ -1103,12 +1144,16 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
       api.notify('合并失败', '图层尺寸与当前文档画布不一致，请取消本次图层会话')
       return
     }
-    const merged = mergeLayers(visible.map((l) => l.imageData), d.width, d.height)
+    const merged = mergeLayers(
+      visible.map((l) => l.imageData),
+      d.width,
+      d.height
+    )
     commit((doc_) => ({
       ...doc_,
       frames: doc_.frames.map((fr, i) =>
         i === currentRef.current ? { ...fr, imageData: merged } : fr
-      ),
+      )
     }))
     setLayerSession(null)
     setActiveLayerId(null)
@@ -1164,7 +1209,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
         ...d,
         width: firstFrame.imageData.width,
         height: firstFrame.imageData.height,
-        frames: fixed,
+        frames: fixed
       }))
       if (!changed) return
       resetCanvasScopedState()
@@ -1188,7 +1233,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     if (all) {
       commit((doc_) => ({
         ...doc_,
-        frames: doc_.frames.map((f) => ({ ...f, imageData: deleteRectRegion(f.imageData, rect) })),
+        frames: doc_.frames.map((f) => ({ ...f, imageData: deleteRectRegion(f.imageData, rect) }))
       }))
     } else {
       applyToFrame((data) => deleteRectRegion(data, rect), currentRef.current)
@@ -1204,7 +1249,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     if (all) {
       commit((doc_) => ({
         ...doc_,
-        frames: doc_.frames.map((f) => ({ ...f, imageData: deleteRegionByMask(f.imageData, mask) })),
+        frames: doc_.frames.map((f) => ({ ...f, imageData: deleteRegionByMask(f.imageData, mask) }))
       }))
     } else {
       applyToFrame((data) => deleteRegionByMask(data, mask), currentRef.current)
@@ -1241,7 +1286,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
     if (all) {
       commit((doc_) => ({
         ...doc_,
-        frames: doc_.frames.map((f) => ({ ...f, imageData: deleteRegionByMask(f.imageData, mask) })),
+        frames: doc_.frames.map((f) => ({ ...f, imageData: deleteRegionByMask(f.imageData, mask) }))
       }))
     } else {
       applyToFrame((data) => deleteRegionByMask(data, mask), currentRef.current)
@@ -1336,10 +1381,20 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
 
   return (
     <div className="ge-root">
-      <input ref={fileInputRef} type="file" accept="image/gif" style={{ display: 'none' }} onChange={onFileChange} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/gif"
+        style={{ display: 'none' }}
+        onChange={onFileChange}
+      />
 
       <div className="ge-topbar">
-        <button className="ge-btn ge-btn-primary" onClick={() => fileInputRef.current?.click()} disabled={exporting}>
+        <button
+          className="ge-btn ge-btn-primary"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={exporting}
+        >
           导入 GIF
         </button>
         <div className="ge-file-info">
@@ -1364,7 +1419,11 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
         <button className="ge-btn" onClick={() => setShowExportSettings((v) => !v)} disabled={!doc}>
           导出设置
         </button>
-        <button className="ge-btn ge-btn-primary" onClick={() => void handleExport()} disabled={!doc || exporting}>
+        <button
+          className="ge-btn ge-btn-primary"
+          onClick={() => void handleExport()}
+          disabled={!doc || exporting}
+        >
           {exporting ? '合成中...' : '导出 GIF'}
         </button>
       </div>
@@ -1373,7 +1432,11 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
         <div className="ge-export-bar">
           <label className="ge-field">
             循环次数
-            <select className="ge-select" value={repeat} onChange={(e) => setRepeat(Number(e.target.value))}>
+            <select
+              className="ge-select"
+              value={repeat}
+              onChange={(e) => setRepeat(Number(e.target.value))}
+            >
               <option value={0}>无限循环</option>
               <option value={1}>1 次</option>
               <option value={2}>2 次</option>
@@ -1383,7 +1446,11 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           </label>
           <label className="ge-field">
             延迟模式
-            <select className="ge-select" value={delayMode} onChange={(e) => setDelayMode(e.target.value as 'unified' | 'perframe')}>
+            <select
+              className="ge-select"
+              value={delayMode}
+              onChange={(e) => setDelayMode(e.target.value as 'unified' | 'perframe')}
+            >
               <option value="unified">统一</option>
               <option value="perframe">逐帧</option>
             </select>
@@ -1391,12 +1458,24 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           {delayMode === 'unified' && (
             <label className="ge-field">
               延迟(ms)
-              <input className="ge-input ge-input-num" type="number" min={20} max={10000} step={10} value={unifiedDelay} onChange={(e) => setUnifiedDelay(Number(e.target.value))} />
+              <input
+                className="ge-input ge-input-num"
+                type="number"
+                min={20}
+                max={10000}
+                step={10}
+                value={unifiedDelay}
+                onChange={(e) => setUnifiedDelay(Number(e.target.value))}
+              />
             </label>
           )}
           <label className="ge-field">
             导出尺寸
-            <select className="ge-select" value={exportScale} onChange={(e) => setExportScale(Number(e.target.value))}>
+            <select
+              className="ge-select"
+              value={exportScale}
+              onChange={(e) => setExportScale(Number(e.target.value))}
+            >
               <option value={50}>50%</option>
               <option value={75}>75%</option>
               <option value={100}>100%</option>
@@ -1445,7 +1524,10 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           onDrop={onDrop}
         >
           {!doc ? (
-            <div className={`ge-empty ${dragOver ? 'ge-empty-over' : ''}`} onClick={() => fileInputRef.current?.click()}>
+            <div
+              className={`ge-empty ${dragOver ? 'ge-empty-over' : ''}`}
+              onClick={() => fileInputRef.current?.click()}
+            >
               <div className="ge-empty-icon">🎞️</div>
               <div className="ge-empty-title">点击导入或拖拽 GIF 到此处</div>
               <div className="ge-empty-sub">支持 .gif · 导入后自动拆分为帧</div>
@@ -1457,7 +1539,28 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                   className="ge-checkerboard"
                   style={{ width: doc.width * zoom, height: doc.height * zoom }}
                 >
-                  <canvas ref={canvasRef} className="ge-frame-canvas" onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseLeave} onDoubleClick={() => { if (selectMode === 'lasso' && lassoMode === 'poly' && !lassoMask) closeLasso() }} style={{ cursor: cropMode ? 'crosshair' : selectMode !== 'none' ? 'crosshair' : tab === 'draw' ? 'crosshair' : tab === 'color' ? 'copy' : 'default' }} />
+                  <canvas
+                    ref={canvasRef}
+                    className="ge-frame-canvas"
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseLeave}
+                    onDoubleClick={() => {
+                      if (selectMode === 'lasso' && lassoMode === 'poly' && !lassoMask) closeLasso()
+                    }}
+                    style={{
+                      cursor: cropMode
+                        ? 'crosshair'
+                        : selectMode !== 'none'
+                          ? 'crosshair'
+                          : tab === 'draw'
+                            ? 'crosshair'
+                            : tab === 'color'
+                              ? 'copy'
+                              : 'default'
+                    }}
+                  />
                   {cropRect && cropMode && (
                     <div
                       className="ge-crop-overlay"
@@ -1465,7 +1568,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                         left: cropRect.x * zoom,
                         top: cropRect.y * zoom,
                         width: cropRect.w * zoom,
-                        height: cropRect.h * zoom,
+                        height: cropRect.h * zoom
                       }}
                     />
                   )}
@@ -1476,7 +1579,7 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                         left: selectRect.x * zoom,
                         top: selectRect.y * zoom,
                         width: selectRect.w * zoom,
-                        height: selectRect.h * zoom,
+                        height: selectRect.h * zoom
                       }}
                     />
                   )}
@@ -1489,11 +1592,23 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                 </div>
               </div>
               <div className="ge-zoombar">
-                <button className="ge-btn ge-btn-sm" onClick={() => { setZoom((z) => Math.max(0.05, z / 1.25)); setZoomFit(false) }}>
+                <button
+                  className="ge-btn ge-btn-sm"
+                  onClick={() => {
+                    setZoom((z) => Math.max(0.05, z / 1.25))
+                    setZoomFit(false)
+                  }}
+                >
                   −
                 </button>
                 <span className="ge-zoom-label">{Math.round(zoom * 100)}%</span>
-                <button className="ge-btn ge-btn-sm" onClick={() => { setZoom((z) => Math.min(4, z * 1.25)); setZoomFit(false) }}>
+                <button
+                  className="ge-btn ge-btn-sm"
+                  onClick={() => {
+                    setZoom((z) => Math.min(4, z * 1.25))
+                    setZoomFit(false)
+                  }}
+                >
                   +
                 </button>
                 <button className="ge-btn ge-btn-sm" onClick={fitZoom}>
@@ -1501,7 +1616,10 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                 </button>
               </div>
               {textEntryMode && textPos && (
-                <div className="ge-text-entry" style={{ left: textPos.x * zoom, top: textPos.y * zoom }}>
+                <div
+                  className="ge-text-entry"
+                  style={{ left: textPos.x * zoom, top: textPos.y * zoom }}
+                >
                   <input
                     autoFocus
                     className="ge-input"
@@ -1530,8 +1648,23 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
         <div className="ge-toolpanel">
           <div className="ge-tabs">
             {(['geometry', 'draw', 'filter', 'color', 'smart', 'select'] as ToolTab[]).map((t) => (
-              <button key={t} className={`ge-tab ${tab === t ? 'ge-tab-active' : ''}`} onClick={() => setTab(t)} disabled={!doc}>
-                {t === 'geometry' ? '几何' : t === 'draw' ? '绘制' : t === 'filter' ? '滤镜' : t === 'color' ? '调色' : t === 'smart' ? '智能' : '选区'}
+              <button
+                key={t}
+                className={`ge-tab ${tab === t ? 'ge-tab-active' : ''}`}
+                onClick={() => setTab(t)}
+                disabled={!doc}
+              >
+                {t === 'geometry'
+                  ? '几何'
+                  : t === 'draw'
+                    ? '绘制'
+                    : t === 'filter'
+                      ? '滤镜'
+                      : t === 'color'
+                        ? '调色'
+                        : t === 'smart'
+                          ? '智能'
+                          : '选区'}
               </button>
             ))}
           </div>
@@ -1540,23 +1673,43 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
             {tab === 'geometry' && (
               <div className="ge-tool-section">
                 <div className="ge-tool-row">
-                  <button className="ge-btn" onClick={() => applyGeometry(transforms.rotate90)} disabled={!frame}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyGeometry(transforms.rotate90)}
+                    disabled={!frame}
+                  >
                     ↻ 旋转90°
                   </button>
-                  <button className="ge-btn" onClick={() => applyGeometry(transforms.rotate270)} disabled={!frame}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyGeometry(transforms.rotate270)}
+                    disabled={!frame}
+                  >
                     ↺ 旋转90°
                   </button>
                 </div>
                 <div className="ge-tool-row">
-                  <button className="ge-btn" onClick={() => applyGeometry(transforms.flipHorizontal)} disabled={!frame}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyGeometry(transforms.flipHorizontal)}
+                    disabled={!frame}
+                  >
                     ↔ 水平镜像
                   </button>
-                  <button className="ge-btn" onClick={() => applyGeometry(transforms.flipVertical)} disabled={!frame}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyGeometry(transforms.flipVertical)}
+                    disabled={!frame}
+                  >
                     ↕ 垂直镜像
                   </button>
                 </div>
                 <div className="ge-tool-row">
-                  <button className={`ge-btn ${cropMode ? 'ge-btn-active' : ''}`} onClick={() => setCropMode((v) => !v)} disabled={!frame}>
+                  <button
+                    className={`ge-btn ${cropMode ? 'ge-btn-active' : ''}`}
+                    onClick={() => setCropMode((v) => !v)}
+                    disabled={!frame}
+                  >
                     裁剪模式
                   </button>
                   {cropMode && (
@@ -1578,7 +1731,11 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
               <div className="ge-tool-section">
                 <div className="ge-tool-row">
                   {(['brush', 'eraser', 'text'] as DrawTool[]).map((t) => (
-                    <button key={t} className={`ge-btn ${drawTool === t ? 'ge-btn-active' : ''}`} onClick={() => setDrawTool(t)}>
+                    <button
+                      key={t}
+                      className={`ge-btn ${drawTool === t ? 'ge-btn-active' : ''}`}
+                      onClick={() => setDrawTool(t)}
+                    >
                       {t === 'brush' ? '画笔' : t === 'eraser' ? '橡皮擦' : '文字'}
                     </button>
                   ))}
@@ -1587,18 +1744,34 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                   <>
                     <label className="ge-field">
                       颜色
-                      <input type="color" className="ge-color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} />
+                      <input
+                        type="color"
+                        className="ge-color"
+                        value={brushColor}
+                        onChange={(e) => setBrushColor(e.target.value)}
+                      />
                     </label>
                     <div className="ge-preset-row">
                       {[0.5, 1, 2, 3, 6, 12].map((p) => (
-                        <button key={p} className={`ge-btn ge-btn-sm ${brushSize === p ? 'ge-btn-active' : ''}`} onClick={() => setBrushSize(p)}>
+                        <button
+                          key={p}
+                          className={`ge-btn ge-btn-sm ${brushSize === p ? 'ge-btn-active' : ''}`}
+                          onClick={() => setBrushSize(p)}
+                        >
                           {formatSize(p)}
                         </button>
                       ))}
                     </div>
                     <label className="ge-field">
                       粗细 {formatSize(brushSize)} · 实际 {formatSize(brushSize * 2)}px
-                      <input type="range" min={0.5} max={40} step={0.5} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
+                      <input
+                        type="range"
+                        min={0.5}
+                        max={40}
+                        step={0.5}
+                        value={brushSize}
+                        onChange={(e) => setBrushSize(Number(e.target.value))}
+                      />
                     </label>
                   </>
                 )}
@@ -1606,14 +1779,25 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                   <>
                     <div className="ge-preset-row">
                       {[1, 2, 4, 8, 16, 32].map((p) => (
-                        <button key={p} className={`ge-btn ge-btn-sm ${eraserSize === p ? 'ge-btn-active' : ''}`} onClick={() => setEraserSize(p)}>
+                        <button
+                          key={p}
+                          className={`ge-btn ge-btn-sm ${eraserSize === p ? 'ge-btn-active' : ''}`}
+                          onClick={() => setEraserSize(p)}
+                        >
                           {formatSize(p)}
                         </button>
                       ))}
                     </div>
                     <label className="ge-field">
                       粗细 {formatSize(eraserSize)} · 实际 {formatSize(eraserSize * 2)}px
-                      <input type="range" min={0.5} max={80} step={0.5} value={eraserSize} onChange={(e) => setEraserSize(Number(e.target.value))} />
+                      <input
+                        type="range"
+                        min={0.5}
+                        max={80}
+                        step={0.5}
+                        value={eraserSize}
+                        onChange={(e) => setEraserSize(Number(e.target.value))}
+                      />
                     </label>
                   </>
                 )}
@@ -1621,11 +1805,22 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                   <>
                     <label className="ge-field">
                       字号 {textFontSize}
-                      <input type="range" min={10} max={120} value={textFontSize} onChange={(e) => setTextFontSize(Number(e.target.value))} />
+                      <input
+                        type="range"
+                        min={10}
+                        max={120}
+                        value={textFontSize}
+                        onChange={(e) => setTextFontSize(Number(e.target.value))}
+                      />
                     </label>
                     <label className="ge-field">
                       颜色
-                      <input type="color" className="ge-color" value={textColor} onChange={(e) => setTextColor(e.target.value)} />
+                      <input
+                        type="color"
+                        className="ge-color"
+                        value={textColor}
+                        onChange={(e) => setTextColor(e.target.value)}
+                      />
                     </label>
                     <div className="ge-hint">点击画布任意位置放置文字</div>
                   </>
@@ -1637,34 +1832,79 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
               <div className="ge-tool-section">
                 <div className="ge-filter-row">
                   <span className="ge-filter-label">亮度</span>
-                  <input type="range" min={-1} max={1} step={0.05} value={brightnessVal} onChange={(e) => setBrightnessVal(Number(e.target.value))} />
-                  <button className="ge-btn ge-btn-sm" onClick={() => applyPendingFilter('brightness')} disabled={!frame || brightnessVal === 0}>
+                  <input
+                    type="range"
+                    min={-1}
+                    max={1}
+                    step={0.05}
+                    value={brightnessVal}
+                    onChange={(e) => setBrightnessVal(Number(e.target.value))}
+                  />
+                  <button
+                    className="ge-btn ge-btn-sm"
+                    onClick={() => applyPendingFilter('brightness')}
+                    disabled={!frame || brightnessVal === 0}
+                  >
                     应用
                   </button>
                 </div>
                 <div className="ge-filter-row">
                   <span className="ge-filter-label">对比度</span>
-                  <input type="range" min={-1} max={1} step={0.05} value={contrastVal} onChange={(e) => setContrastVal(Number(e.target.value))} />
-                  <button className="ge-btn ge-btn-sm" onClick={() => applyPendingFilter('contrast')} disabled={!frame || contrastVal === 0}>
+                  <input
+                    type="range"
+                    min={-1}
+                    max={1}
+                    step={0.05}
+                    value={contrastVal}
+                    onChange={(e) => setContrastVal(Number(e.target.value))}
+                  />
+                  <button
+                    className="ge-btn ge-btn-sm"
+                    onClick={() => applyPendingFilter('contrast')}
+                    disabled={!frame || contrastVal === 0}
+                  >
                     应用
                   </button>
                 </div>
                 <div className="ge-filter-row">
                   <span className="ge-filter-label">饱和度</span>
-                  <input type="range" min={-1} max={1} step={0.05} value={saturationVal} onChange={(e) => setSaturationVal(Number(e.target.value))} />
-                  <button className="ge-btn ge-btn-sm" onClick={() => applyPendingFilter('saturation')} disabled={!frame || saturationVal === 0}>
+                  <input
+                    type="range"
+                    min={-1}
+                    max={1}
+                    step={0.05}
+                    value={saturationVal}
+                    onChange={(e) => setSaturationVal(Number(e.target.value))}
+                  />
+                  <button
+                    className="ge-btn ge-btn-sm"
+                    onClick={() => applyPendingFilter('saturation')}
+                    disabled={!frame || saturationVal === 0}
+                  >
                     应用
                   </button>
                 </div>
                 <div className="ge-tool-row">
-                  <button className="ge-btn" onClick={() => applyToFrame(transforms.grayscale, currentRef.current)} disabled={!frame}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyToFrame(transforms.grayscale, currentRef.current)}
+                    disabled={!frame}
+                  >
                     灰度
                   </button>
-                  <button className="ge-btn" onClick={() => applyToFrame(transforms.invert, currentRef.current)} disabled={!frame}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyToFrame(transforms.invert, currentRef.current)}
+                    disabled={!frame}
+                  >
                     反色
                   </button>
                 </div>
-                <button className="ge-btn ge-btn-full" onClick={applyFilterAll} disabled={!doc || !hasPendingFilters(filterValues)}>
+                <button
+                  className="ge-btn ge-btn-full"
+                  onClick={applyFilterAll}
+                  disabled={!doc || !hasPendingFilters(filterValues)}
+                >
                   应用到全部帧
                 </button>
               </div>
@@ -1674,21 +1914,43 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
               <div className="ge-tool-section">
                 <div className="ge-color-target">
                   <span className="ge-field-label">目标色（点击画布取色）</span>
-                  <div className="ge-swatch" style={{ background: `rgb(${targetColor.join(',')})` }} />
+                  <div
+                    className="ge-swatch"
+                    style={{ background: `rgb(${targetColor.join(',')})` }}
+                  />
                   <code className="ge-code">rgb({targetColor.join(', ')})</code>
                 </div>
                 <label className="ge-field">
                   替换色
-                  <input type="color" className="ge-color" value={replaceColor} onChange={(e) => setReplaceColor(e.target.value)} />
+                  <input
+                    type="color"
+                    className="ge-color"
+                    value={replaceColor}
+                    onChange={(e) => setReplaceColor(e.target.value)}
+                  />
                 </label>
                 <label className="ge-field">
                   容差 {tolerance}
-                  <input type="range" min={0} max={150} value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={150}
+                    value={tolerance}
+                    onChange={(e) => setTolerance(Number(e.target.value))}
+                  />
                 </label>
-                <button className="ge-btn ge-btn-full" onClick={() => applyReplaceColor(false)} disabled={!frame}>
+                <button
+                  className="ge-btn ge-btn-full"
+                  onClick={() => applyReplaceColor(false)}
+                  disabled={!frame}
+                >
                   应用替换（当前帧）
                 </button>
-                <button className="ge-btn ge-btn-full" onClick={() => applyReplaceColor(true)} disabled={!doc}>
+                <button
+                  className="ge-btn ge-btn-full"
+                  onClick={() => applyReplaceColor(true)}
+                  disabled={!doc}
+                >
                   应用到全部帧
                 </button>
               </div>
@@ -1698,21 +1960,43 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
               <div className="ge-tool-section">
                 <label className="ge-field">
                   识别容差 {smartTolerance}
-                  <input type="range" min={0} max={100} value={smartTolerance} onChange={(e) => setSmartTolerance(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={smartTolerance}
+                    onChange={(e) => setSmartTolerance(Number(e.target.value))}
+                  />
                 </label>
                 <div className="ge-tool-row">
-                  <button className="ge-btn" onClick={() => applyRemoveBackground(false)} disabled={!frame || busy}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyRemoveBackground(false)}
+                    disabled={!frame || busy}
+                  >
                     删除背景
                   </button>
-                  <button className="ge-btn" onClick={() => applyRemoveBackground(true)} disabled={!doc || busy}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyRemoveBackground(true)}
+                    disabled={!doc || busy}
+                  >
                     全部帧
                   </button>
                 </div>
                 <div className="ge-tool-row">
-                  <button className="ge-btn" onClick={() => applyAutoCrop(false)} disabled={!frame || busy}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyAutoCrop(false)}
+                    disabled={!frame || busy}
+                  >
                     按当前帧裁剪画布
                   </button>
-                  <button className="ge-btn" onClick={() => applyAutoCrop(true)} disabled={!doc || busy}>
+                  <button
+                    className="ge-btn"
+                    onClick={() => applyAutoCrop(true)}
+                    disabled={!doc || busy}
+                  >
                     按全部帧联合裁剪
                   </button>
                 </div>
@@ -1728,63 +2012,119 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                       </button>
                     </div>
                   ) : (
-                    <button className="ge-btn ge-btn-full" onClick={() => void handleAnalyzeResidue()} disabled={!doc}>
+                    <button
+                      className="ge-btn ge-btn-full"
+                      onClick={() => void handleAnalyzeResidue()}
+                      disabled={!doc}
+                    >
                       检测叠加残留
                     </button>
                   )
                 ) : (
                   <>
                     <div className="ge-residue-info">
-                      污染源帧 #{residueReport.pollutedFrame + 1} · 影响 {residueReport.affectedCount} 帧 · 残留 {residueReport.residuePixels.toLocaleString()}px
+                      污染源帧 #{residueReport.pollutedFrame + 1} · 影响{' '}
+                      {residueReport.affectedCount} 帧 · 残留{' '}
+                      {residueReport.residuePixels.toLocaleString()}px
                     </div>
                     <div className="ge-residue-preview">
                       <div className="ge-residue-preview-col">
                         <span className="ge-field-label">修复前</span>
                         <div className="ge-residue-thumb-wrap">
-                          <img src={layerThumb(residueReport.previewBefore)} alt="修复前" className="ge-residue-thumb" />
+                          <img
+                            src={layerThumb(residueReport.previewBefore)}
+                            alt="修复前"
+                            className="ge-residue-thumb"
+                          />
                         </div>
                       </div>
                       <div className="ge-residue-preview-col">
                         <span className="ge-field-label">修复后</span>
                         <div className="ge-residue-thumb-wrap">
-                          <img src={layerThumb(residueReport.previewAfter)} alt="修复后" className="ge-residue-thumb" />
+                          <img
+                            src={layerThumb(residueReport.previewAfter)}
+                            alt="修复后"
+                            className="ge-residue-thumb"
+                          />
                         </div>
                       </div>
                     </div>
                     <div className="ge-tool-row">
-                      <button className="ge-btn ge-btn-primary" onClick={() => void handleApplyResidueFix()} disabled={residueAnalyzing}>
+                      <button
+                        className="ge-btn ge-btn-primary"
+                        onClick={() => void handleApplyResidueFix()}
+                        disabled={residueAnalyzing}
+                      >
                         {residueAnalyzing ? '修复中...' : '应用修复'}
                       </button>
-                      <button className="ge-btn" onClick={residueAnalyzing ? cancelResidueTask : () => setResidueReport(null)}>
+                      <button
+                        className="ge-btn"
+                        onClick={
+                          residueAnalyzing ? cancelResidueTask : () => setResidueReport(null)
+                        }
+                      >
                         {residueAnalyzing ? '停止' : '取消'}
                       </button>
                     </div>
-                    <div className="ge-hint">将污染源帧改为「画后清除」，移除其后所有帧的叠加残留</div>
+                    <div className="ge-hint">
+                      将污染源帧改为「画后清除」，移除其后所有帧的叠加残留
+                    </div>
                   </>
                 )}
                 <div className="ge-section-title">智能分离图层</div>
                 <div className="ge-tool-row">
                   {(['subject', 'objects', 'colors', 'lasso'] as const).map((m) => (
-                    <button key={m} className={`ge-btn ${splitMode === m ? 'ge-btn-active' : ''}`} onClick={() => { setSplitMode(m); if (m === 'lasso') { setSelectMode('lasso'); clearLasso() } }} disabled={busy}>
-                      {m === 'subject' ? '主体/背景' : m === 'objects' ? '多对象' : m === 'colors' ? '颜色聚类' : '按边线'}
+                    <button
+                      key={m}
+                      className={`ge-btn ${splitMode === m ? 'ge-btn-active' : ''}`}
+                      onClick={() => {
+                        setSplitMode(m)
+                        if (m === 'lasso') {
+                          setSelectMode('lasso')
+                          clearLasso()
+                        }
+                      }}
+                      disabled={busy}
+                    >
+                      {m === 'subject'
+                        ? '主体/背景'
+                        : m === 'objects'
+                          ? '多对象'
+                          : m === 'colors'
+                            ? '颜色聚类'
+                            : '按边线'}
                     </button>
                   ))}
                 </div>
                 {splitMode === 'colors' && (
                   <label className="ge-field">
                     聚类层数 {clusterCount}
-                    <input type="range" min={2} max={10} value={clusterCount} onChange={(e) => setClusterCount(Number(e.target.value))} />
+                    <input
+                      type="range"
+                      min={2}
+                      max={10}
+                      value={clusterCount}
+                      onChange={(e) => setClusterCount(Number(e.target.value))}
+                    />
                   </label>
                 )}
                 {splitMode === 'lasso' && (
                   <div className="ge-hint">用套索画一条闭合边线，围成要分离的区域</div>
                 )}
                 {splitMode === 'lasso' && lassoMask ? (
-                  <button className="ge-btn ge-btn-full ge-btn-primary" onClick={separateByLasso} disabled={busy}>
+                  <button
+                    className="ge-btn ge-btn-full ge-btn-primary"
+                    onClick={separateByLasso}
+                    disabled={busy}
+                  >
                     分离为图层（边线内/外各一层）
                   </button>
                 ) : splitMode !== 'lasso' && !layerSession ? (
-                  <button className="ge-btn ge-btn-full" onClick={startLayerSeparation} disabled={!frame || busy}>
+                  <button
+                    className="ge-btn ge-btn-full"
+                    onClick={startLayerSeparation}
+                    disabled={!frame || busy}
+                  >
                     {busy ? '分析中...' : '开始分离'}
                   </button>
                 ) : null}
@@ -1795,9 +2135,19 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                         <div
                           key={layer.id}
                           className={`ge-layer-row ${activeLayerId === layer.id ? 'ge-layer-row-active' : ''}`}
-                          onClick={() => { setActiveLayerId((prev) => (prev === layer.id ? null : layer.id)); setSelectMode('none') }}
+                          onClick={() => {
+                            setActiveLayerId((prev) => (prev === layer.id ? null : layer.id))
+                            setSelectMode('none')
+                          }}
                         >
-                          <button className="ge-btn ge-btn-sm ge-layer-vis" onClick={(e) => { e.stopPropagation(); toggleLayer(layer.id) }} title={layer.visible ? '点击隐藏' : '点击显示'}>
+                          <button
+                            className="ge-btn ge-btn-sm ge-layer-vis"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              toggleLayer(layer.id)
+                            }}
+                            title={layer.visible ? '点击隐藏' : '点击显示'}
+                          >
                             {layer.visible ? '●' : '○'}
                           </button>
                           <span className="ge-layer-index">{i + 1}</span>
@@ -1808,24 +2158,62 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                               className={`ge-layer-thumb ${layer.visible ? '' : 'ge-layer-thumb-hidden'}`}
                             />
                           </div>
-                          <button className="ge-btn ge-btn-sm" onClick={(e) => { e.stopPropagation(); moveLayer(layer.id, -1) }} disabled={i === 0} title="上移">
+                          <button
+                            className="ge-btn ge-btn-sm"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              moveLayer(layer.id, -1)
+                            }}
+                            disabled={i === 0}
+                            title="上移"
+                          >
                             ▲
                           </button>
-                          <button className="ge-btn ge-btn-sm" onClick={(e) => { e.stopPropagation(); moveLayer(layer.id, 1) }} disabled={i === layerSession.length - 1} title="下移">
+                          <button
+                            className="ge-btn ge-btn-sm"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              moveLayer(layer.id, 1)
+                            }}
+                            disabled={i === layerSession.length - 1}
+                            title="下移"
+                          >
                             ▼
                           </button>
-                          <button className="ge-btn ge-btn-sm" onClick={(e) => { e.stopPropagation(); removeLayer(layer.id) }} title="删除图层">
+                          <button
+                            className="ge-btn ge-btn-sm"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              removeLayer(layer.id)
+                            }}
+                            title="删除图层"
+                          >
                             ✕
                           </button>
                         </div>
                       ))}
                     </div>
-                    <div className="ge-hint">{activeLayerId ? '正在编辑选中图层 · 点击图层行取消选择' : '点击图层行可单独查看并编辑'}</div>
+                    <div className="ge-hint">
+                      {activeLayerId
+                        ? '正在编辑选中图层 · 点击图层行取消选择'
+                        : '点击图层行可单独查看并编辑'}
+                    </div>
                     <div className="ge-tool-row">
-                      <button className="ge-btn ge-btn-primary" onClick={mergeLayerSession} disabled={busy}>
+                      <button
+                        className="ge-btn ge-btn-primary"
+                        onClick={mergeLayerSession}
+                        disabled={busy}
+                      >
                         合并图层
                       </button>
-                      <button className="ge-btn" onClick={() => { clearLayerSession(); setActiveLayerId(null) }} disabled={busy}>
+                      <button
+                        className="ge-btn"
+                        onClick={() => {
+                          clearLayerSession()
+                          setActiveLayerId(null)
+                        }}
+                        disabled={busy}
+                      >
                         取消
                       </button>
                     </div>
@@ -1836,26 +2224,64 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                 <div className="ge-tool-row">
                   <label className="ge-field">
                     行
-                    <input className="ge-input" type="number" min={1} max={16} value={gridRows} onChange={(e) => setGridRows(Math.min(16, Math.max(1, Number(e.target.value))))} />
+                    <input
+                      className="ge-input"
+                      type="number"
+                      min={1}
+                      max={16}
+                      value={gridRows}
+                      onChange={(e) =>
+                        setGridRows(Math.min(16, Math.max(1, Number(e.target.value))))
+                      }
+                    />
                   </label>
                   <label className="ge-field">
                     列
-                    <input className="ge-input" type="number" min={1} max={16} value={gridCols} onChange={(e) => setGridCols(Math.min(16, Math.max(1, Number(e.target.value))))} />
+                    <input
+                      className="ge-input"
+                      type="number"
+                      min={1}
+                      max={16}
+                      value={gridCols}
+                      onChange={(e) =>
+                        setGridCols(Math.min(16, Math.max(1, Number(e.target.value))))
+                      }
+                    />
                   </label>
                 </div>
-                <button className="ge-btn ge-btn-full" onClick={applySplitGrid} disabled={!frame || busy}>
+                <button
+                  className="ge-btn ge-btn-full"
+                  onClick={applySplitGrid}
+                  disabled={!frame || busy}
+                >
                   拆分当前帧
                 </button>
                 <div className="ge-section-title">按颜色拆分</div>
                 <label className="ge-field">
                   颜色容差 {colorLayerTol}
-                  <input type="range" min={0} max={120} value={colorLayerTol} onChange={(e) => setColorLayerTol(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={120}
+                    value={colorLayerTol}
+                    onChange={(e) => setColorLayerTol(Number(e.target.value))}
+                  />
                 </label>
                 <label className="ge-field">
                   最多层数 {colorLayers}
-                  <input type="range" min={2} max={16} value={colorLayers} onChange={(e) => setColorLayers(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={2}
+                    max={16}
+                    value={colorLayers}
+                    onChange={(e) => setColorLayers(Number(e.target.value))}
+                  />
                 </label>
-                <button className="ge-btn ge-btn-full" onClick={applySplitColor} disabled={!frame || busy}>
+                <button
+                  className="ge-btn ge-btn-full"
+                  onClick={applySplitColor}
+                  disabled={!frame || busy}
+                >
                   拆分颜色区块
                 </button>
                 <div className="ge-hint">拆分后子帧保持画布尺寸，非目标区域透明</div>
@@ -1865,15 +2291,40 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
             {tab === 'select' && (
               <div className="ge-tool-section">
                 <div className="ge-tool-row">
-                  <button className={`ge-btn ${selectMode === 'rect' ? 'ge-btn-active' : ''}`} onClick={() => { setSelectMode('rect'); setWandMask(null); setLassoMask(null) }} disabled={!frame || busy}>
+                  <button
+                    className={`ge-btn ${selectMode === 'rect' ? 'ge-btn-active' : ''}`}
+                    onClick={() => {
+                      setSelectMode('rect')
+                      setWandMask(null)
+                      setLassoMask(null)
+                    }}
+                    disabled={!frame || busy}
+                  >
                     框选删除
                   </button>
-                  <button className={`ge-btn ${selectMode === 'wand' ? 'ge-btn-active' : ''}`} onClick={() => { setSelectMode('wand'); setSelectRect(null); setLassoMask(null) }} disabled={!frame || busy}>
+                  <button
+                    className={`ge-btn ${selectMode === 'wand' ? 'ge-btn-active' : ''}`}
+                    onClick={() => {
+                      setSelectMode('wand')
+                      setSelectRect(null)
+                      setLassoMask(null)
+                    }}
+                    disabled={!frame || busy}
+                  >
                     魔棒删除
                   </button>
                 </div>
                 <div className="ge-tool-row">
-                  <button className={`ge-btn ${selectMode === 'lasso' ? 'ge-btn-active' : ''}`} onClick={() => { setSelectMode('lasso'); setSelectRect(null); setWandMask(null); clearLasso() }} disabled={!frame || busy}>
+                  <button
+                    className={`ge-btn ${selectMode === 'lasso' ? 'ge-btn-active' : ''}`}
+                    onClick={() => {
+                      setSelectMode('lasso')
+                      setSelectRect(null)
+                      setWandMask(null)
+                      clearLasso()
+                    }}
+                    disabled={!frame || busy}
+                  >
                     套索删除
                   </button>
                 </div>
@@ -1881,14 +2332,29 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                   <>
                     <div className="ge-hint">在画布上拖出矩形，松手后删除该区域</div>
                     <div className="ge-tool-row">
-                      <button className="ge-btn" onClick={() => applyRectDelete(false)} disabled={!selectRect || busy}>
+                      <button
+                        className="ge-btn"
+                        onClick={() => applyRectDelete(false)}
+                        disabled={!selectRect || busy}
+                      >
                         删除当前帧
                       </button>
-                      <button className="ge-btn" onClick={() => applyRectDelete(true)} disabled={!selectRect || busy}>
+                      <button
+                        className="ge-btn"
+                        onClick={() => applyRectDelete(true)}
+                        disabled={!selectRect || busy}
+                      >
                         全部帧
                       </button>
                     </div>
-                    <button className="ge-btn ge-btn-full" onClick={() => { setSelectMode('none'); setSelectRect(null) }} disabled={busy}>
+                    <button
+                      className="ge-btn ge-btn-full"
+                      onClick={() => {
+                        setSelectMode('none')
+                        setSelectRect(null)
+                      }}
+                      disabled={busy}
+                    >
                       退出框选
                     </button>
                   </>
@@ -1897,18 +2363,39 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                   <>
                     <label className="ge-field">
                       容差 {wandTolerance}
-                      <input type="range" min={0} max={150} value={wandTolerance} onChange={(e) => setWandTolerance(Number(e.target.value))} />
+                      <input
+                        type="range"
+                        min={0}
+                        max={150}
+                        value={wandTolerance}
+                        onChange={(e) => setWandTolerance(Number(e.target.value))}
+                      />
                     </label>
                     <div className="ge-hint">点击画布选中同色连通区域</div>
                     <div className="ge-tool-row">
-                      <button className="ge-btn" onClick={() => applyWandDelete(false)} disabled={!wandMask || busy}>
+                      <button
+                        className="ge-btn"
+                        onClick={() => applyWandDelete(false)}
+                        disabled={!wandMask || busy}
+                      >
                         删除当前帧
                       </button>
-                      <button className="ge-btn" onClick={() => applyWandDelete(true)} disabled={!wandMask || busy}>
+                      <button
+                        className="ge-btn"
+                        onClick={() => applyWandDelete(true)}
+                        disabled={!wandMask || busy}
+                      >
                         全部帧
                       </button>
                     </div>
-                    <button className="ge-btn ge-btn-full" onClick={() => { setSelectMode('none'); setWandMask(null) }} disabled={busy}>
+                    <button
+                      className="ge-btn ge-btn-full"
+                      onClick={() => {
+                        setSelectMode('none')
+                        setWandMask(null)
+                      }}
+                      disabled={busy}
+                    >
                       退出魔棒
                     </button>
                   </>
@@ -1916,16 +2403,36 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                 {selectMode === 'lasso' && (
                   <>
                     <div className="ge-tool-row">
-                      <button className={`ge-btn ${lassoMode === 'poly' ? 'ge-btn-active' : ''}`} onClick={() => { setLassoMode('poly'); clearLasso() }} disabled={busy}>
+                      <button
+                        className={`ge-btn ${lassoMode === 'poly' ? 'ge-btn-active' : ''}`}
+                        onClick={() => {
+                          setLassoMode('poly')
+                          clearLasso()
+                        }}
+                        disabled={busy}
+                      >
                         多边形
                       </button>
-                      <button className={`ge-btn ${lassoMode === 'free' ? 'ge-btn-active' : ''}`} onClick={() => { setLassoMode('free'); clearLasso() }} disabled={busy}>
+                      <button
+                        className={`ge-btn ${lassoMode === 'free' ? 'ge-btn-active' : ''}`}
+                        onClick={() => {
+                          setLassoMode('free')
+                          clearLasso()
+                        }}
+                        disabled={busy}
+                      >
                         手绘
                       </button>
                     </div>
                     <label className="ge-field">
                       保留边线宽度 {lassoEdgeWidth}px
-                      <input type="range" min={1} max={8} value={lassoEdgeWidth} onChange={(e) => setLassoEdgeWidth(Number(e.target.value))} />
+                      <input
+                        type="range"
+                        min={1}
+                        max={8}
+                        value={lassoEdgeWidth}
+                        onChange={(e) => setLassoEdgeWidth(Number(e.target.value))}
+                      />
                     </label>
                     {!lassoMask ? (
                       <div className="ge-hint">
@@ -1937,14 +2444,32 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
                       <div className="ge-hint">边线已闭合，内部区域已标记（边线保留）</div>
                     )}
                     <div className="ge-tool-row">
-                      <button className="ge-btn" onClick={() => applyLassoDelete(false)} disabled={!lassoMask || busy}>
+                      <button
+                        className="ge-btn"
+                        onClick={() => applyLassoDelete(false)}
+                        disabled={!lassoMask || busy}
+                      >
                         删除当前帧
                       </button>
-                      <button className="ge-btn" onClick={() => applyLassoDelete(true)} disabled={!lassoMask || busy}>
+                      <button
+                        className="ge-btn"
+                        onClick={() => applyLassoDelete(true)}
+                        disabled={!lassoMask || busy}
+                      >
                         全部帧
                       </button>
                     </div>
-                    <button className="ge-btn ge-btn-full" onClick={() => { if (lassoMask) { clearLasso() } else { setSelectMode('none') } }} disabled={busy}>
+                    <button
+                      className="ge-btn ge-btn-full"
+                      onClick={() => {
+                        if (lassoMask) {
+                          clearLasso()
+                        } else {
+                          setSelectMode('none')
+                        }
+                      }}
+                      disabled={busy}
+                    >
                       {lassoMask ? '重新描绘' : '退出套索'}
                     </button>
                   </>
@@ -1963,14 +2488,39 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
           <button className="ge-btn ge-btn-sm" onClick={removeFrame} disabled={!doc}>
             删除
           </button>
-          <button className={`ge-btn ge-btn-sm ${frameSelectMode ? 'ge-btn-active' : ''}`} onClick={() => { setFrameSelectMode((value) => !value); setSelectedFrames(new Set()) }} disabled={!doc}>
+          <button
+            className={`ge-btn ge-btn-sm ${frameSelectMode ? 'ge-btn-active' : ''}`}
+            onClick={() => {
+              setFrameSelectMode((value) => !value)
+              setSelectedFrames(new Set())
+            }}
+            disabled={!doc}
+          >
             {frameSelectMode ? '退出多选' : '多选帧'}
           </button>
-          {frameSelectMode && <button className="ge-btn ge-btn-sm" onClick={removeSelectedFrames} disabled={selectedFrames.size === 0 || selectedFrames.size >= (doc?.frames.length ?? 0)}>删除所选 ({selectedFrames.size})</button>}
-          <button className="ge-btn ge-btn-sm" onClick={() => moveFrame(-1)} disabled={!doc || current === 0}>
+          {frameSelectMode && (
+            <button
+              className="ge-btn ge-btn-sm"
+              onClick={removeSelectedFrames}
+              disabled={
+                selectedFrames.size === 0 || selectedFrames.size >= (doc?.frames.length ?? 0)
+              }
+            >
+              删除所选 ({selectedFrames.size})
+            </button>
+          )}
+          <button
+            className="ge-btn ge-btn-sm"
+            onClick={() => moveFrame(-1)}
+            disabled={!doc || current === 0}
+          >
             ◀ 左移
           </button>
-          <button className="ge-btn ge-btn-sm" onClick={() => moveFrame(1)} disabled={!doc || !doc.frames[current + 1]}>
+          <button
+            className="ge-btn ge-btn-sm"
+            onClick={() => moveFrame(1)}
+            disabled={!doc || !doc.frames[current + 1]}
+          >
             右移 ▶
           </button>
           <span className="ge-timeline-sep" />
@@ -2012,7 +2562,28 @@ export default function GifEditorPlugin({ api }: PluginRenderProps) {
         </div>
         <div className="ge-thumbs">
           {doc?.frames.map((f, i) => (
-            <div key={f.id} className={`ge-thumb ${i === current ? 'ge-thumb-active' : ''} ${selectedFrames.has(i) ? 'ge-thumb-selected' : ''}`} onClick={() => { stopPlay(); if (frameSelectMode) { setSelectedFrames((previous) => { const next = new Set(previous); if (next.has(i)) next.delete(i); else next.add(i); return next }) } else { setCurrent(i); setLassoMask(null); setLassoPoints([]); setLassoPreview(null); setLayerSession(null); setActiveLayerId(null) } }}>
+            <div
+              key={f.id}
+              className={`ge-thumb ${i === current ? 'ge-thumb-active' : ''} ${selectedFrames.has(i) ? 'ge-thumb-selected' : ''}`}
+              onClick={() => {
+                stopPlay()
+                if (frameSelectMode) {
+                  setSelectedFrames((previous) => {
+                    const next = new Set(previous)
+                    if (next.has(i)) next.delete(i)
+                    else next.add(i)
+                    return next
+                  })
+                } else {
+                  setCurrent(i)
+                  setLassoMask(null)
+                  setLassoPoints([])
+                  setLassoPreview(null)
+                  setLayerSession(null)
+                  setActiveLayerId(null)
+                }
+              }}
+            >
               <div className="ge-thumb-img-wrap">
                 <img src={thumbCache.get(f.id)?.url} alt={`帧 ${i + 1}`} className="ge-thumb-img" />
                 <span className="ge-thumb-index">{i + 1}</span>
@@ -2041,11 +2612,7 @@ function formatSize(value: number): string {
 }
 
 function cloneImageData(imageData: ImageData): ImageData {
-  return new ImageData(
-    new Uint8ClampedArray(imageData.data),
-    imageData.width,
-    imageData.height
-  )
+  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height)
 }
 
 function layerThumb(imageData: ImageData): string {
@@ -2059,7 +2626,14 @@ function layerThumb(imageData: ImageData): string {
 }
 
 function cloneLayers(layers: LayerItem[]): LayerItem[] {
-  return layers.map((l) => ({ ...l, imageData: new ImageData(new Uint8ClampedArray(l.imageData.data), l.imageData.width, l.imageData.height) }))
+  return layers.map((l) => ({
+    ...l,
+    imageData: new ImageData(
+      new Uint8ClampedArray(l.imageData.data),
+      l.imageData.width,
+      l.imageData.height
+    )
+  }))
 }
 
 function layersByteLength(layers: LayerItem[]): number {

@@ -12,7 +12,7 @@ export interface ConfigField {
 }
 
 export interface PluginManifest {
-  manifestVersion?: 1 | 2 | 3
+  manifestVersion?: 1 | 2 | 3 | 4
   name: string
   version: string
   displayName: string
@@ -22,8 +22,12 @@ export interface PluginManifest {
   main: string
   renderer: string
   backend?: boolean
-  backendApiVersion?: 1 | 2 | 3
-  rendererApiVersion?: 1 | 2 | 3
+  backendApiVersion?: 1 | 2 | 3 | 4
+  rendererApiVersion?: 1 | 2 | 3 | 4
+  category?: string
+  tags?: string[]
+  keywords?: string[]
+  contributes?: Record<string, unknown>
   minimumHostVersion?: string
   trustLevel?: 'standard' | 'full'
   capabilities?: Partial<

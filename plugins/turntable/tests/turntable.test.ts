@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PluginContext, PluginStorageEntry, PluginStorageMutation } from 'cruciblebox-plugin-api'
+import type { DecisionContext, DecisionStorage } from '../src/next-service'
+type PluginStorageEntry<T> = { key: string; value: T }
+type PluginStorageMutation = Parameters<DecisionStorage['batch']>[0][number]
 import turntablePlugin from '../src/main'
 import {
   normalizeAngle,
@@ -44,50 +46,8 @@ class MemoryStorage {
   }
 }
 
-function context(storage: MemoryStorage): PluginContext {
-  return {
-    id: 'turntable-id',
-    config: {},
-    storage,
-    pluginData: storage,
-    capabilities: {
-      events: { emitEvent() {}, onEvent: () => () => undefined },
-      system: {
-        clipboard: { read: async () => ({ text: '' }), write: async () => ({ ok: true }) },
-        getSystemInfo: async () => ({
-          os: { name: '', version: '', hostname: '' },
-          cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
-          memory: { total: 0, available: 0, usage: 0 },
-          disks: [],
-          network: []
-        }),
-        registerShortcut: () => () => undefined
-      }
-    },
-    database: { query: async () => [], execute: async () => undefined },
-    logger: { debug() {}, error() {}, info() {}, warn() {} },
-    api: {
-      emitEvent() {},
-      fetch: async () => new Response(),
-      notify() {},
-      onEvent: () => () => undefined,
-      openDialog: async () => null,
-      readFile: async () => new Uint8Array(),
-      registerShortcut: () => () => undefined,
-      writeFile: async () => undefined,
-      clipboard: {
-        read: async () => ({ text: '' }),
-        write: async () => ({ ok: true })
-      },
-      getSystemInfo: async () => ({
-        os: { name: '', version: '', hostname: '' },
-        cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
-        memory: { total: 0, available: 0, usage: 0 },
-        disks: [],
-        network: []
-      })
-    }
-  }
+function context(storage: MemoryStorage): DecisionContext {
+  return { storage, logger: { info() {}, error() {} } }
 }
 
 function item(id: number, weight: number): TurntableItem {
@@ -137,20 +97,24 @@ describe('winner geometry', () => {
 })
 
 describe('turntable persistence', () => {
-  it('preserves legacy option order across restart without accepting edits', async () => {
+  it('preserves reordered options across restart', async () => {
     const storage = new MemoryStorage()
     storage.values.set('items', [item(3, 1), item(1, 1), item(2, 1)])
     await turntablePlugin.activate(context(storage))
     await expect(
       turntablePlugin.onMessage?.({ type: 'reorderItems', payload: { ids: [3, 1, 2] } })
-    ).resolves.toEqual({ error: '旧版转盘处于兼容期，请在“笔记与效率”中继续维护选项。' })
+    ).resolves.toMatchObject([
+      { id: 3, sort_order: 0 },
+      { id: 1, sort_order: 1 },
+      { id: 2, sort_order: 2 }
+    ])
 
     await turntablePlugin.deactivate()
     await turntablePlugin.activate(context(storage))
     await expect(turntablePlugin.onMessage?.({ type: 'getItems' })).resolves.toMatchObject([
-      { id: 1, sort_order: 0 },
-      { id: 2, sort_order: 1 },
-      { id: 3, sort_order: 2 }
+      { id: 3, sort_order: 0 },
+      { id: 1, sort_order: 1 },
+      { id: 2, sort_order: 2 }
     ])
   })
 
@@ -160,7 +124,7 @@ describe('turntable persistence', () => {
     await turntablePlugin.activate(context(storage))
     await expect(
       turntablePlugin.onMessage?.({ type: 'reorderItems', payload: { ids: [2] } })
-    ).resolves.toEqual({ error: '旧版转盘处于兼容期，请在“笔记与效率”中继续维护选项。' })
+    ).resolves.toEqual({ error: '排序必须包含且仅包含全部现有选项' })
 
     vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((array) => {
       ;(array as Uint32Array)[0] = 0

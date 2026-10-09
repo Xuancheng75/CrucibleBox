@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Sender, TryRecvError};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -45,9 +45,15 @@ struct ArchiveInfo {
     encrypted: bool,
 }
 
-fn tasks() -> &'static Arc<TaskManager> {
-    static TASKS: OnceLock<Arc<TaskManager>> = OnceLock::new();
-    TASKS.get_or_init(|| Arc::new(TaskManager::default()))
+pub struct Service {
+    tasks: Arc<TaskManager>,
+}
+impl Service {
+    pub fn new(runtime: Arc<crate::task_runtime::TaskRuntime>) -> Self {
+        Self {
+            tasks: Arc::new(TaskManager::with_runtime("archive-extractor", runtime)),
+        }
+    }
 }
 
 fn ok(data: Value) -> Value {
@@ -693,10 +699,19 @@ fn now_nonce() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(test)]
 fn commit_staging(
     staging: &Path,
     destination: &Path,
     policy: &str,
+) -> Result<(u64, u64, u64), String> {
+    commit_staging_with_context(staging, destination, policy, None)
+}
+fn commit_staging_with_context(
+    staging: &Path,
+    destination: &Path,
+    policy: &str,
+    context: Option<&TaskContext>,
 ) -> Result<(u64, u64, u64), String> {
     let mut files = 0_u64;
     let mut bytes = 0_u64;
@@ -718,17 +733,73 @@ fn commit_staging(
                     continue;
                 }
                 "rename" => unique_renamed_path(destination, &name.to_string_lossy()),
-                "overwrite" => {
-                    remove_tree(&target)?;
-                    target
-                }
+                "overwrite" => target,
                 _ => return Err("解压冲突策略仍为询问，请先完成冲突确认".into()),
             }
         } else {
             target
         };
         let (root_files, root_bytes) = audit_tree(&source)?;
-        fs::rename(&source, &final_target).map_err(|error| format!("无法写入解压结果：{error}"))?;
+        if let Some(ctx) = context {
+            ctx.check_cancelled()?;
+            let stage = destination.join(format!(".cruciblebox-extract-output-{}", now_nonce()));
+            if stage.exists() {
+                return Err("解压发布暂存路径冲突".into());
+            }
+            fs::rename(&source, &stage)
+                .map_err(|error| format!("移动解压暂存结果失败：{error}"))?;
+            let publication = ctx.runtime_context().publish_object(
+                &stage,
+                &final_target,
+                policy == "overwrite",
+                false,
+                Some(destination),
+            );
+            if let Err(error) = publication {
+                if !ctx.runtime_context().publication_pending() {
+                    fs::rename(&stage, &source).map_err(|restore| {
+                        format!(
+                            "{error}; 恢复解压暂存失败：{restore}; 暂存位于 {}",
+                            stage.display()
+                        )
+                    })?;
+                }
+                return Err(error);
+            }
+            files = files.saturating_add(root_files);
+            bytes = bytes.saturating_add(root_bytes);
+            continue;
+        }
+        let backup = if policy == "overwrite" && final_target.exists() {
+            let backup = destination.join(format!(".cruciblebox-replaced-{}", now_nonce()));
+            if backup.exists() {
+                return Err("无法分配解压备份路径".into());
+            }
+            fs::rename(&final_target, &backup)
+                .map_err(|error| format!("无法备份旧解压结果：{error}"))?;
+            Some(backup)
+        } else {
+            None
+        };
+        if let Err(error) = fs::rename(&source, &final_target) {
+            if let Some(backup) = backup {
+                fs::rename(&backup, &final_target).map_err(|restore| {
+                    format!(
+                        "无法写入解压结果：{error}；恢复旧结果失败：{restore}；备份位于 {}",
+                        backup.display()
+                    )
+                })?;
+            }
+            return Err(format!("无法写入解压结果：{error}"));
+        }
+        if let Some(backup) = backup {
+            if let Err(error) = remove_tree(&backup) {
+                eprintln!(
+                    "[archive] retained replaced backup {}: {error}",
+                    backup.display()
+                );
+            }
+        }
         files = files.saturating_add(root_files);
         bytes = bytes.saturating_add(root_bytes);
     }
@@ -766,24 +837,27 @@ fn execute_task(
         ctx.check_cancelled()?;
         audit_tree(&staging)?;
         ctx.update_progress("committing", 96, "正在写入解压结果…");
-        let (files, bytes, skipped) = commit_staging(&staging, &destination, &policy)?;
-        if open_after_extract {
-            #[cfg(windows)]
-            {
-                let _ = Command::new("explorer.exe").arg(&destination).spawn();
+        {
+            let (files, bytes, skipped) =
+                commit_staging_with_context(&staging, &destination, &policy, Some(ctx))?;
+            if open_after_extract {
+                #[cfg(windows)]
+                {
+                    let _ = Command::new("explorer.exe").arg(&destination).spawn();
+                }
             }
+            ctx.update_progress("done", 100, "解压完成");
+            Ok(json!({
+                "source": source,
+                "destination": destination,
+                "format": info.format,
+                "files": files,
+                "bytes": bytes,
+                "skipped": skipped,
+            }))
         }
-        ctx.update_progress("done", 100, "解压完成");
-        Ok(json!({
-            "source": source,
-            "destination": destination,
-            "format": info.format,
-            "files": files,
-            "bytes": bytes,
-            "skipped": skipped,
-        }))
     })();
-    if result.is_err() {
+    if result.is_err() && !ctx.runtime_context().publication_pending() {
         let _ = remove_tree(&staging);
     }
     result
@@ -815,7 +889,7 @@ fn preflight_operation(payload: Option<&Value>) -> Result<Value, String> {
     Ok(preflight(&info, &destination))
 }
 
-fn start_operation(payload: Option<&Value>) -> Result<Value, String> {
+fn start_operation(context: &Service, payload: Option<&Value>) -> Result<Value, String> {
     let source = source_path(&payload_string(payload, "source")?)?;
     let destination = destination_path(&payload_string(payload, "destination")?)?;
     let policy = validate_policy(payload.and_then(|value| value.get("conflictPolicy")))?;
@@ -828,7 +902,7 @@ fn start_operation(payload: Option<&Value>) -> Result<Value, String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
     let open_after_extract = payload_bool(payload, "openAfterExtract", true);
-    let task_id = tasks().start(
+    let task_id = context.tasks.start(
         RESOURCE_KEY,
         Box::new(move |ctx| {
             execute_task(
@@ -839,6 +913,103 @@ fn start_operation(payload: Option<&Value>) -> Result<Value, String> {
                 password,
                 open_after_extract,
             )
+        }),
+    )?;
+    Ok(ok(json!({ "taskId": task_id })))
+}
+
+fn create_operation(context: &Service, payload: Option<&Value>) -> Result<Value, String> {
+    let source_values = payload
+        .and_then(|value| value.get("sources"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "请选择需要压缩的文件".to_string())?;
+    if source_values.is_empty() {
+        return Err("请选择需要压缩的文件".into());
+    }
+    let sources = source_values
+        .iter()
+        .map(|value| {
+            let raw = value.as_str().ok_or_else(|| "文件路径无效".to_string())?;
+            let path = PathBuf::from(raw);
+            let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+            if !path.is_absolute()
+                || metadata.file_type().is_symlink()
+                || !(metadata.is_file() || metadata.is_dir())
+            {
+                return Err("压缩来源必须是本地文件或目录".into());
+            }
+            fs::canonicalize(path).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let destination = PathBuf::from(payload_string(payload, "destination")?);
+    let format = payload_string(payload, "format")?;
+    if !matches!(format.as_str(), "zip" | "7z") {
+        return Err("压缩格式仅支持 ZIP 和 7z".into());
+    }
+    if destination.extension().and_then(|value| value.to_str()) != Some(format.as_str()) {
+        return Err("输出文件扩展名与压缩格式不一致".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "输出路径无效".to_string())?;
+    if !parent.is_dir() {
+        return Err("输出目录不存在".into());
+    }
+    let password = payload
+        .and_then(|value| value.get("password"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let task_id = context.tasks.start(
+        RESOURCE_KEY,
+        Box::new(move |ctx| {
+            let executable = seven_zip_path()?;
+            let output = crate::output_transaction::OutputTransaction::new(&destination, false)?;
+            // 7-Zip creates its own archive and rejects a reserved empty file.
+            // The randomly named stage remains task-owned and is cleaned on failure.
+            fs::remove_file(output.stage_path())
+                .map_err(|error| format!("准备归档暂存文件失败：{error}"))?;
+            ctx.update_progress("compressing", 5, "正在创建归档…");
+            let mut command = Command::new(executable);
+            command.arg("a").arg(format!("-t{format}")).arg("-y");
+            if let Some(password) = password.as_deref() {
+                command.arg(format!("-p{password}"));
+            }
+            command.arg(output.stage_path()).args(&sources);
+            let mut child = command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("无法启动压缩进程：{error}"))?;
+            loop {
+                if ctx.is_cancelled() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("压缩已取消".into());
+                }
+                if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+                    if !status.success() {
+                        return Err("7-Zip 压缩失败".into());
+                    }
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            ctx.check_cancelled()?;
+            let committed = output.publish_durable(ctx.runtime_context(), true, |stage| {
+                let metadata = fs::metadata(stage)
+                    .map_err(|error| format!("读取归档结果失败：{error}"))?;
+                if metadata.len() == 0 {
+                    return Err("归档结果为空".into());
+                }
+                let listing = run_listing(stage, password.as_deref())?;
+                if !listing.status.success() {
+                    return Err("归档结果无法重新列出".into());
+                }
+                Ok(())
+            })?;
+            Ok(json!({ "destination": committed, "files": sources.len(), "bytes": fs::metadata(&committed).map(|value| value.len()).unwrap_or(0), "skipped": 0, "format": format }))
         }),
     )?;
     Ok(ok(json!({ "taskId": task_id })))
@@ -878,6 +1049,7 @@ fn compact_error(text: &str) -> String {
 
 /// Trusted service entry point used by `envelope_host`.
 pub fn dispatch(
+    context: &Service,
     _plugin_id: &str,
     operation: &str,
     payload: Option<&Value>,
@@ -887,7 +1059,7 @@ pub fn dispatch(
             .and_then(|value| value.get("type"))
             .and_then(Value::as_str)
             .ok_or_else(|| "archive message requires type".to_string())?;
-        return dispatch(_plugin_id, message_type, payload);
+        return dispatch(context, _plugin_id, message_type, payload);
     }
     match operation {
         "activate" => Ok(ok(json!({
@@ -895,7 +1067,7 @@ pub fn dispatch(
             "tool": seven_zip_path().is_ok(),
         }))),
         "deactivate" => {
-            tasks().cancel_all_active();
+            context.tasks.cancel_all_active();
             Ok(ok(json!({ "cancelled": true })))
         }
         "getToolInfo" => Ok(ok(json!({
@@ -905,14 +1077,15 @@ pub fn dispatch(
         }))),
         "inspect" => inspect_operation(payload),
         "preflight" => preflight_operation(payload),
-        "start" => start_operation(payload),
+        "start" => start_operation(context, payload),
+        "create" => create_operation(context, payload),
         "getTask" => {
             let task_id = payload_string(payload, "taskId")?;
-            Ok(ok(json!({ "task": tasks().get(&task_id) })))
+            Ok(ok(json!({ "task": context.tasks.get(&task_id) })))
         }
         "cancel" => {
             let task_id = payload_string(payload, "taskId")?;
-            Ok(ok(json!({ "cancelled": tasks().cancel(&task_id) })))
+            Ok(ok(json!({ "cancelled": context.tasks.cancel(&task_id) })))
         }
         "openFolder" => open_folder_operation(payload),
         _ => Ok(failure(
@@ -924,6 +1097,67 @@ pub fn dispatch(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn durable_extraction_keeps_bounded_directory_reference_after_many_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("staging");
+        let destination = root.path().join("destination");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        for index in 0..40 {
+            fs::write(staging.join(format!("file-{index}.txt")), b"new").unwrap();
+        }
+        fs::create_dir_all(staging.join("folder")).unwrap();
+        fs::create_dir_all(destination.join("folder")).unwrap();
+        fs::write(staging.join("folder/new.txt"), b"new").unwrap();
+        fs::write(destination.join("folder/old.txt"), b"old").unwrap();
+        let journal = root.path().join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let manager = Arc::new(TaskManager::with_runtime(
+            "archive-extractor",
+            runtime.clone(),
+        ));
+        let output = destination.clone();
+        let id = manager
+            .start(
+                RESOURCE_KEY,
+                Box::new(move |ctx| {
+                    let (files, bytes, skipped) =
+                        commit_staging_with_context(&staging, &output, "overwrite", Some(ctx))?;
+                    Ok(json!({"files":files,"bytes":bytes,"skipped":skipped}))
+                }),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if manager.get(&id).unwrap()["status"] == "succeeded" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let snapshot = manager.get(&id).unwrap();
+        assert_eq!(snapshot["status"], "succeeded", "{snapshot}");
+        assert_eq!(snapshot["result"]["files"], 41);
+        assert_eq!(snapshot["resultRefs"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            fs::read(destination.join("folder/new.txt")).unwrap(),
+            b"new"
+        );
+        assert!(!destination.join("folder/old.txt").exists());
+        drop(manager);
+        drop(runtime);
+        let reopened = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        assert_eq!(
+            reopened.get("archive-extractor", &id).unwrap()["resultRefs"][0],
+            destination
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -952,6 +1186,232 @@ mod tests {
         fs::write(root.join("data.txt"), b"x").unwrap();
         let renamed = unique_renamed_path(&root, "data.txt");
         assert_eq!(renamed.file_name().unwrap(), "data (1).txt");
+        let _ = remove_tree(&root);
+    }
+
+    #[test]
+    fn overwrite_commits_staged_tree_and_removes_backup() {
+        let root = std::env::temp_dir().join(format!("cruciblebox-overwrite-{}", now_nonce()));
+        let staging = root.join("staging");
+        let destination = root.join("destination");
+        fs::create_dir_all(staging.join("folder")).unwrap();
+        fs::create_dir_all(destination.join("folder")).unwrap();
+        fs::write(staging.join("folder").join("new.txt"), b"new").unwrap();
+        fs::write(destination.join("folder").join("old.txt"), b"old").unwrap();
+        let (files, bytes, skipped) = commit_staging(&staging, &destination, "overwrite").unwrap();
+        assert_eq!((files, bytes, skipped), (1, 3, 0));
+        assert_eq!(
+            fs::read(destination.join("folder").join("new.txt")).unwrap(),
+            b"new"
+        );
+        assert!(!destination.join("folder").join("old.txt").exists());
+        assert!(fs::read_dir(&destination).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".cruciblebox-replaced-")));
+        let _ = remove_tree(&root);
+    }
+
+    #[test]
+    fn failed_extraction_task_remains_failed_after_runtime_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("corrupt.zip");
+        let destination = root.path().join("destination");
+        fs::write(&source, b"not a zip archive").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let journal = root.path().join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let service = Service::new(runtime.clone());
+        let response = start_operation(
+            &service,
+            Some(&json!({
+                "source": source.to_string_lossy(),
+                "destination": destination.to_string_lossy(),
+                "conflictPolicy": "skip"
+            })),
+        )
+        .unwrap();
+        let id = response["data"]["taskId"].as_str().unwrap().to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let failed = loop {
+            let snapshot = service.tasks.get(&id).unwrap();
+            if snapshot["status"] == "failed" {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "archive task did not fail: {snapshot}"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert!(!failed["error"]["message"].as_str().unwrap().is_empty());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        drop(service);
+        drop(runtime);
+
+        let reopened = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let recovered = reopened.get("archive-extractor", &id).unwrap();
+        assert_eq!(recovered["status"], "failed");
+        assert_eq!(recovered["error"], failed["error"]);
+        assert_eq!(recovered["resultRefs"], json!([]));
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn archive_round_trip_publishes_outputs_and_recovers_after_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = root.path().join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let service = Service::new(runtime.clone());
+        let source = root.path().join("源文件.txt");
+        let contents = "归档产物必须可读取";
+        fs::write(&source, contents).unwrap();
+        let archive = root.path().join("round-trip.zip");
+
+        let created = create_operation(
+            &service,
+            Some(&json!({
+                "sources": [source.to_string_lossy()],
+                "destination": archive.to_string_lossy(),
+                "format": "zip"
+            })),
+        )
+        .unwrap();
+        let create_id = created["data"]["taskId"].as_str().unwrap().to_string();
+        let create_deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let create_snapshot = loop {
+            let snapshot = service.tasks.get(&create_id).unwrap();
+            if matches!(snapshot["status"].as_str(), Some("succeeded" | "failed")) {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < create_deadline,
+                "archive creation did not finish: {snapshot}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(create_snapshot["status"], "succeeded", "{create_snapshot}");
+        assert!(archive.is_file());
+        assert_eq!(inspect_archive(&archive, None).unwrap().file_count, 1);
+
+        let destination = root.path().join("extracted");
+        let started = start_operation(
+            &service,
+            Some(&json!({
+                "source": archive.to_string_lossy(),
+                "destination": destination.to_string_lossy(),
+                "conflictPolicy": "skip",
+                "openAfterExtract": false
+            })),
+        )
+        .unwrap();
+        let extract_id = started["data"]["taskId"].as_str().unwrap().to_string();
+        let extract_deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let extract_snapshot = loop {
+            let snapshot = service.tasks.get(&extract_id).unwrap();
+            if matches!(snapshot["status"].as_str(), Some("succeeded" | "failed")) {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < extract_deadline,
+                "archive extraction did not finish: {snapshot}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            extract_snapshot["status"], "succeeded",
+            "{extract_snapshot}"
+        );
+        assert_eq!(extract_snapshot["result"]["files"], 1);
+        assert_eq!(
+            fs::read_to_string(destination.join("源文件.txt")).unwrap(),
+            contents
+        );
+
+        drop(service);
+        drop(runtime);
+        let reopened = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let recovered_create = reopened.get("archive-extractor", &create_id).unwrap();
+        let recovered_extract = reopened.get("archive-extractor", &extract_id).unwrap();
+        assert_eq!(recovered_create["status"], "succeeded");
+        assert_eq!(recovered_extract["status"], "succeeded");
+        let archive_reference = fs::canonicalize(&archive).unwrap();
+        assert_eq!(
+            recovered_create["resultRefs"],
+            json!([archive_reference.to_string_lossy()])
+        );
+        let published_dir = destination.canonicalize().unwrap();
+        assert_eq!(
+            recovered_extract["resultRefs"],
+            json!([published_dir.to_string_lossy()])
+        );
+        assert_eq!(
+            fs::read_to_string(published_dir.join("源文件.txt")).unwrap(),
+            contents
+        );
+    }
+
+    #[test]
+    fn creates_zip_from_files_and_reads_it_back() {
+        let context = Service::new(crate::task_runtime::TaskRuntime::memory());
+        let root = std::env::temp_dir().join(format!("cruciblebox-create-zip-{}", now_nonce()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("hello.txt");
+        fs::write(&source, "归档测试").unwrap();
+        let destination = root.join("created.zip");
+        let response = create_operation(
+            &context,
+            Some(&json!({
+                "sources": [source.to_string_lossy()],
+                "destination": destination.to_string_lossy(),
+                "format": "zip"
+            })),
+        )
+        .unwrap();
+        let task_id = response["data"]["taskId"].as_str().unwrap();
+        let mut terminal = None;
+        for _ in 0..100 {
+            let snapshot = context.tasks.get(task_id).unwrap();
+            if snapshot["status"] == "succeeded" || snapshot["status"] == "failed" {
+                terminal = Some(snapshot);
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(terminal.unwrap()["status"], "succeeded");
+        let info = inspect_archive(&destination, None).unwrap();
+        assert_eq!(info.file_count, 1);
+        let original = fs::read(&destination).unwrap();
+        let second = create_operation(
+            &context,
+            Some(&json!({
+                "sources": [source.to_string_lossy()],
+                "destination": destination.to_string_lossy(),
+                "format": "zip"
+            })),
+        )
+        .unwrap();
+        let second_id = second["data"]["taskId"].as_str().unwrap();
+        let mut second_terminal = None;
+        for _ in 0..100 {
+            let snapshot = context.tasks.get(second_id).unwrap();
+            if snapshot["status"] == "succeeded" || snapshot["status"] == "failed" {
+                second_terminal = Some(snapshot);
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let second_terminal = second_terminal.unwrap();
+        assert_eq!(second_terminal["status"], "succeeded");
+        let second_path = PathBuf::from(second_terminal["result"]["destination"].as_str().unwrap());
+        assert_eq!(
+            second_terminal["resultRefs"],
+            json!([second_path.to_string_lossy()])
+        );
+        assert_ne!(second_path, destination);
+        assert_eq!(fs::read(&destination).unwrap(), original);
+        assert_eq!(inspect_archive(&second_path, None).unwrap().file_count, 1);
         let _ = remove_tree(&root);
     }
 }

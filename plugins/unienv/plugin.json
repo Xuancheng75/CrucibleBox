@@ -1,27 +1,23 @@
 {
-  "name": "unienv",
-  "version": "0.12.0-beta.1",
+  "id": "unienv",
+  "version": "0.13.0-alpha.1",
   "displayName": "开发环境管理",
   "description": "统一管理 Python、Node.js、Git、Go、Java、Rust、PHP、Ruby、Zig、Deno 和 Bun 的版本、镜像、项目环境与离线安装",
   "author": "CrucibleBox",
-  "main": "dist/main.js",
+  "manifestVersion": 5,
+  "sdkApiVersion": 5,
+  "wireVersion": 3,
+  "dataSchemaVersion": 1,
   "renderer": "dist/renderer.js",
-  "manifestVersion": 3,
-  "backendApiVersion": 3,
-  "rendererApiVersion": 3,
-  "minimumHostVersion": "2.1.0-beta.1",
-  "trustLevel": "standard",
-  "capabilities": {
-    "tasks": true,
-    "events": true,
-    "system": true,
-    "pluginData": true,
-    "process": true,
-    "fs": true,
-    "network": true,
-    "ui": true
-  },
-  "permissions": ["trusted:unienv"],
+  "permissions": [
+    "trusted:unienv",
+    "dialog",
+    "notification",
+    "storage:read",
+    "storage:write",
+    "tasks:read",
+    "tasks:control"
+  ],
   "config": {
     "installRoot": {
       "type": "string",
@@ -35,11 +31,26 @@
       "description": "选择下载源，国内用户建议选择镜像以获得更快速度",
       "default": "direct",
       "options": [
-        { "label": "官方源 (国际)", "value": "direct" },
-        { "label": "npmmirror (Node.js)", "value": "npmmirror" },
-        { "label": "华为云 (国内)", "value": "huawei" },
-        { "label": "阿里云 (国内)", "value": "aliyun" },
-        { "label": "TUNA 清华 (国内)", "value": "tuna" }
+        {
+          "label": "官方源 (国际)",
+          "value": "direct"
+        },
+        {
+          "label": "npmmirror (Node.js)",
+          "value": "npmmirror"
+        },
+        {
+          "label": "华为云 (国内)",
+          "value": "huawei"
+        },
+        {
+          "label": "阿里云 (国内)",
+          "value": "aliyun"
+        },
+        {
+          "label": "TUNA 清华 (国内)",
+          "value": "tuna"
+        }
       ]
     },
     "mirrorFallback": {
@@ -48,8 +59,14 @@
       "description": "关闭后严格只使用所选镜像；所选镜像不支持当前工具时会直接提示，不会悄悄转到官方源。",
       "default": "off",
       "options": [
-        { "label": "关闭（严格使用所选源）", "value": "off" },
-        { "label": "开启官方源回退", "value": "on" }
+        {
+          "label": "关闭（严格使用所选源）",
+          "value": "off"
+        },
+        {
+          "label": "开启官方源回退",
+          "value": "on"
+        }
       ]
     },
     "onlineVersions": {
@@ -58,8 +75,14 @@
       "description": "开启后 Node/Go/Java/Ruby/Zig/Deno/Bun 会从官方源发现新版本并可直接安装（Python/Git 暂不支持在线新版本）；关闭则仅显示内置版本目录。网络不可达时自动回退内置目录。",
       "default": "on",
       "options": [
-        { "label": "开启（推荐）", "value": "on" },
-        { "label": "关闭", "value": "off" }
+        {
+          "label": "开启（推荐）",
+          "value": "on"
+        },
+        {
+          "label": "关闭",
+          "value": "off"
+        }
       ]
     },
     "autoConfigureEnvironment": {
@@ -68,8 +91,14 @@
       "description": "安装或组合包完成后，将开发环境管理的统一入口加入当前用户 PATH；可随时关闭。",
       "default": "on",
       "options": [
-        { "label": "开启（推荐）", "value": "on" },
-        { "label": "仅安装，不修改环境", "value": "off" }
+        {
+          "label": "开启（推荐）",
+          "value": "on"
+        },
+        {
+          "label": "仅安装，不修改环境",
+          "value": "off"
+        }
       ]
     },
     "customCombos": {

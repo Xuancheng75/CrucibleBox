@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { validateManifest } from '../packages/cruciblebox-next-api/src/index.mjs'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
@@ -22,11 +23,14 @@ for (const [serviceName, policy] of Object.entries(policies)) {
   const pluginDirectory = resolve(repositoryRoot, 'plugins', policy.name)
   const manifest = JSON.parse(readFileSync(resolve(pluginDirectory, 'plugin.json'), 'utf8'))
   const expectedPermissions = policy.permissions ?? [`trusted:${serviceName}`]
+  if (manifest.manifestVersion === 5) validateManifest(JSON.stringify(manifest))
   if (
-    manifest.name !== policy.name ||
+    (manifest.id ?? manifest.name) !== policy.name ||
     manifest.version !== policy.version ||
-    ![2, 3].includes(manifest.manifestVersion) ||
-    manifest.backendApiVersion !== manifest.manifestVersion ||
+    (manifest.manifestVersion === 5
+      ? policy.manifestVersion !== 5 || manifest.backend !== undefined
+      : ![2, 3].includes(manifest.manifestVersion) ||
+        manifest.backendApiVersion !== manifest.manifestVersion) ||
     JSON.stringify(manifest.permissions) !== JSON.stringify(expectedPermissions)
   ) {
     throw new Error(`${serviceName}: manifest does not match the trusted-service policy`)

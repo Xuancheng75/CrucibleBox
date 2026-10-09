@@ -1,7 +1,7 @@
 {
   "name": "{{pluginName}}",
   "version": "0.1.0",
-  "description": "{{displayName}} plugin for OpenBox",
+  "description": "{{displayName}} plugin for CrucibleBox",
   "main": "dist/main.js",
   "scripts": {
     "build": "npm run clean && node esbuild.config.mjs",

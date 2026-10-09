@@ -22,6 +22,88 @@ const INSTALL_STAGING_PREFIX: &str = ".unienv-staging-";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub type ProgressCb<'a> = &'a (dyn Fn(&str, u32, &str) + Send + Sync);
+/// The caller reserves publication in its durable task authority before invoking the operation.
+pub type PublicationCb<'a> =
+    &'a dyn Fn(&Path, &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>;
+#[derive(Clone, Copy)]
+pub struct Publication<'a> {
+    pub reserve: PublicationCb<'a>,
+    pub context: Option<&'a crate::task_runtime::Context>,
+}
+impl<'a> Publication<'a> {
+    #[cfg(test)]
+    pub fn legacy(reserve: PublicationCb<'a>) -> Self {
+        Self {
+            reserve,
+            context: None,
+        }
+    }
+}
+
+fn activate_durable(
+    link: &Path,
+    version_dir: &Path,
+    ctx: &crate::task_runtime::Context,
+) -> Result<(), String> {
+    let parent = link.parent().ok_or("版本链接目录缺失")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let stage = parent.join(format!(".unienv-link-{}", random_suffix()));
+    junction::create(version_dir, &stage).map_err(|e| format!("版本暂存链接创建失败: {e}"))?;
+    let result = ctx.publish_link(&stage, link, true, false, Some(parent));
+    if result.is_err() && !ctx.publication_pending() {
+        let _ = remove_junction(&stage);
+    }
+    result.map(|_| ())
+}
+fn promote_and_activate_durable(
+    source: &Path,
+    final_dir: &Path,
+    link: &Path,
+    version_dir: &Path,
+    ctx: &crate::task_runtime::Context,
+) -> Result<(), String> {
+    if final_dir.exists() {
+        return Err("运行时目录已存在，拒绝覆盖".into());
+    }
+    let parent = final_dir.parent().ok_or("运行时目录缺失")?;
+    let stage = parent.join(format!(".unienv-publishing-{}", random_suffix()));
+    if stage.exists() {
+        return Err("运行时发布暂存路径冲突".into());
+    }
+    fs::rename(source, &stage).map_err(|e| format!("运行时发布暂存失败: {e}"))?;
+    let reference = link.parent().ok_or("版本入口目录缺失")?;
+    let result = ctx.publish_object(&stage, final_dir, false, false, Some(reference));
+    if let Err(error) = result {
+        if !ctx.publication_pending() {
+            fs::rename(&stage, source).map_err(|restore| {
+                format!(
+                    "{error}; 恢复运行时暂存失败: {restore}; 暂存位于 {}",
+                    stage.display()
+                )
+            })?;
+        }
+        return Err(error);
+    }
+    activate_durable(link, version_dir, ctx)
+}
+fn promote_and_activate(
+    source: &Path,
+    final_dir: &Path,
+    link: &Path,
+    version_dir: &Path,
+) -> Result<(), String> {
+    promote_staged_runtime(source, final_dir)?;
+    if let Err(error) = create_junction(link, version_dir) {
+        fs::rename(final_dir, source).map_err(|rollback| {
+            format!(
+                "{error}; 运行时提升回滚失败 {}: {rollback}",
+                final_dir.display()
+            )
+        })?;
+        return Err(error);
+    }
+    Ok(())
+}
 
 fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::SeqCst) {
@@ -68,7 +150,12 @@ fn download_one(
     assert_https_url(url)?;
     cancelled(cancel)?;
     let agent = crate::network_policy::current()
-        .agent(DOWNLOAD_CONNECT_TIMEOUT_SECS, DOWNLOAD_IDLE_TIMEOUT_SECS)?;
+        .agent_for_url(
+            url,
+            DOWNLOAD_CONNECT_TIMEOUT_SECS,
+            DOWNLOAD_IDLE_TIMEOUT_SECS,
+        )?
+        .0;
     let response = match agent.get(url).call() {
         Ok(r) => r,
         Err(ureq::Error::Status(code, _)) => {
@@ -673,6 +760,34 @@ fn write_cmd_shim(directory: &Path, name: &str, target: &Path) -> Result<(), Str
     fs::write(&shim, contents).map_err(|e| format!("写入环境 shim {name} 失败: {e}"))
 }
 
+fn normalized_path_entry(value: &str) -> &str {
+    let value = value.trim().trim_matches('"');
+    if value.len() > 3 {
+        value.trim_end_matches(['\\', '/'])
+    } else {
+        value
+    }
+}
+
+fn same_path_entry(left: &str, right: &str) -> bool {
+    normalized_path_entry(left).eq_ignore_ascii_case(normalized_path_entry(right))
+}
+
+fn prioritize_path_entry(path: &str, entry: &str) -> String {
+    if path.is_empty() {
+        return entry.to_owned();
+    }
+    let remaining = path
+        .split(';')
+        .filter(|existing| !same_path_entry(existing, entry))
+        .collect::<Vec<_>>();
+    if remaining.is_empty() {
+        entry.to_owned()
+    } else {
+        format!("{entry};{}", remaining.join(";"))
+    }
+}
+
 #[cfg(windows)]
 fn configure_user_path(shim_dir: &Path) -> Result<(), String> {
     use std::ptr::{null, null_mut};
@@ -740,17 +855,10 @@ fn configure_user_path(shim_dir: &Path) -> Result<(), String> {
             String::new()
         };
         let shim = shim_dir.to_string_lossy().to_string();
-        let already_present = old_path
-            .split(';')
-            .any(|entry| entry.eq_ignore_ascii_case(&shim));
-        if already_present {
+        let new_path = prioritize_path_entry(&old_path, &shim);
+        if new_path == old_path {
             return Ok(());
         }
-        let new_path = if old_path.trim().is_empty() {
-            shim
-        } else {
-            format!("{old_path};{shim}")
-        };
         let encoded = wide(&new_path);
         let bytes = encoded
             .len()
@@ -773,6 +881,22 @@ fn configure_user_path(shim_dir: &Path) -> Result<(), String> {
         if set_status != 0 {
             return Err(format!("写入用户 PATH 失败（错误码 {set_status}）"));
         }
+        let setting = wide("Environment");
+        let mut notification_result = 0usize;
+        let notified = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SendMessageTimeoutW(
+                windows_sys::Win32::UI::WindowsAndMessaging::HWND_BROADCAST,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_SETTINGCHANGE,
+                0,
+                setting.as_ptr() as isize,
+                windows_sys::Win32::UI::WindowsAndMessaging::SMTO_ABORTIFHUNG,
+                5_000,
+                &mut notification_result,
+            )
+        };
+        if notified == 0 {
+            return Err("用户 PATH 已保存，但通知其他程序刷新环境变量失败".into());
+        }
         Ok(())
     })();
     unsafe { RegCloseKey(key) };
@@ -787,6 +911,7 @@ pub fn install_offline_archive(
     archive_path: &Path,
     progress: ProgressCb,
     cancel: &AtomicBool,
+    publication: Publication,
 ) -> Result<(), String> {
     if archive_path
         .extension()
@@ -812,8 +937,19 @@ pub fn install_offline_archive(
         extract_zip(archive_path, &extract_dir)?;
         cancelled(cancel)?;
         let source = find_top_dir(&extract_dir);
-        promote_staged_runtime(&source, &final_dir)?;
-        create_junction(&current_link(install_root, tool), &dir)?;
+        if let Some(ctx) = publication.context {
+            promote_and_activate_durable(
+                &source,
+                &final_dir,
+                &current_link(install_root, tool),
+                &dir,
+                ctx,
+            )?;
+        } else {
+            (publication.reserve)(&final_dir, &mut || {
+                promote_and_activate(&source, &final_dir, &current_link(install_root, tool), &dir)
+            })?;
+        }
         progress("done", 100, "离线运行时安装完成");
         Ok(())
     })();
@@ -836,6 +972,7 @@ pub fn install_with_plan(
     plan: &InstallPlan,
     progress: ProgressCb,
     cancel: &AtomicBool,
+    publication: Publication,
 ) -> Result<(), String> {
     match runtime_subdir(tool) {
         None => install_from_installer(
@@ -846,6 +983,7 @@ pub fn install_with_plan(
             plan.urls.clone(),
             progress,
             cancel,
+            publication,
         ),
         Some(sub) => install_from_zip(
             install_root,
@@ -858,6 +996,7 @@ pub fn install_with_plan(
             &plan.urls,
             progress,
             cancel,
+            publication,
         ),
     }
 }
@@ -871,6 +1010,7 @@ fn install_from_installer(
     urls: Vec<(String, String)>,
     progress: ProgressCb,
     cancel: &AtomicBool,
+    publication: Publication,
 ) -> Result<(), String> {
     let dir = version_dir(install_root, tool, version);
     prepare_direct_install_directory(&dir, &display_name(tool, version))?;
@@ -914,32 +1054,43 @@ fn install_from_installer(
         95,
         &format!("正在安装 {} {version}...", display_name(tool, version)),
     );
-    let result = match tool {
-        "rust" => {
-            // rustup-init：通过 RUSTUP_HOME/CARGO_HOME 将工具链与 cargo home
-            // 完全隔离进版本目录（自包含，不污染用户全局）
-            let rustup_home = dir.join("rustup");
-            let cargo_home = dir.join("cargo");
-            let envs: Vec<(&str, String)> = vec![
-                ("RUSTUP_HOME", rustup_home.to_string_lossy().into_owned()),
-                ("CARGO_HOME", cargo_home.to_string_lossy().into_owned()),
-            ];
-            let mut full_args: Vec<String> = vec![
-                "-y".into(),
-                "--default-toolchain".into(),
-                format!("{version}-x86_64-pc-windows-msvc"),
-                "--no-modify-path".into(),
-            ];
-            full_args.extend(args.clone());
-            run_process_env(&installer_path, &full_args, 900_000, cancel, &envs)
-        }
-        _ => run_process(&installer_path, &args, 600_000, cancel),
-    };
-    let _ = fs::remove_file(&installer_path);
-    result?;
+    cancelled(cancel)?;
+    let result = (publication.reserve)(&dir, &mut || {
+        let result = match tool {
+            "rust" => {
+                // rustup-init：通过 RUSTUP_HOME/CARGO_HOME 将工具链与 cargo home
+                // 完全隔离进版本目录（自包含，不污染用户全局）
+                let rustup_home = dir.join("rustup");
+                let cargo_home = dir.join("cargo");
+                let envs: Vec<(&str, String)> = vec![
+                    ("RUSTUP_HOME", rustup_home.to_string_lossy().into_owned()),
+                    ("CARGO_HOME", cargo_home.to_string_lossy().into_owned()),
+                ];
+                let mut full_args: Vec<String> = vec![
+                    "-y".into(),
+                    "--default-toolchain".into(),
+                    format!("{version}-x86_64-pc-windows-msvc"),
+                    "--no-modify-path".into(),
+                ];
+                full_args.extend(args.clone());
+                run_process_env(&installer_path, &full_args, 900_000, cancel, &envs)
+            }
+            _ => run_process(&installer_path, &args, 600_000, cancel),
+        };
+        let _ = fs::remove_file(&installer_path);
+        result?;
 
-    progress("configuring", 98, "正在创建目录链接...");
-    create_junction(&current_link(install_root, tool), &dir)?;
+        progress("configuring", 98, "正在创建目录链接...");
+        if publication.context.is_some() {
+            Ok(())
+        } else {
+            create_junction(&current_link(install_root, tool), &dir)
+        }
+    });
+    result?;
+    if let Some(ctx) = publication.context {
+        activate_durable(&current_link(install_root, tool), &dir, ctx)?;
+    }
 
     progress(
         "done",
@@ -962,6 +1113,7 @@ fn install_from_zip(
     urls: &[(String, String)],
     progress: ProgressCb,
     cancel: &AtomicBool,
+    publication: Publication,
 ) -> Result<(), String> {
     let ZipTarget {
         tool,
@@ -996,14 +1148,26 @@ fn install_from_zip(
         );
         extract_zip(&zip_path, &extract_dir)?;
         let src = find_top_dir(&extract_dir);
-        promote_staged_runtime(&src, &final_dir)?;
+        cancelled(cancel)?;
+        if let Some(ctx) = publication.context {
+            promote_and_activate_durable(
+                &src,
+                &final_dir,
+                &current_link(install_root, tool),
+                &dir,
+                ctx,
+            )?;
+        } else {
+            (publication.reserve)(&final_dir, &mut || {
+                promote_and_activate(&src, &final_dir, &current_link(install_root, tool), &dir)
+            })?;
+        }
         Ok(())
     })();
     cleanup_install_staging_dir(&staging);
     result?;
 
-    progress("configuring", 98, "正在创建目录链接...");
-    create_junction(&current_link(install_root, tool), &dir)?;
+    progress("configuring", 98, "目录链接已发布");
 
     progress(
         "done",
@@ -1069,7 +1233,255 @@ pub fn recover_interrupted_staging(version_roots: &[PathBuf]) -> Result<Vec<Stri
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn junction_activation_recovers_after_task_commit_fault_without_deleting_runtime_data() {
+        let root = tempfile::tempdir().unwrap();
+        let previous = root.path().join("previous");
+        let next = root.path().join("next");
+        fs::create_dir(&previous).unwrap();
+        fs::create_dir(&next).unwrap();
+        fs::write(previous.join("keep.txt"), b"previous user data").unwrap();
+        fs::write(next.join("runtime.exe"), b"new runtime").unwrap();
+        let link = root.path().join("current");
+        create_junction(&link, &previous).unwrap();
+        let journal = root.path().join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let fault = rusqlite::Connection::open(&journal).unwrap();
+        fault.execute_batch("CREATE TRIGGER fail_link_commit BEFORE UPDATE ON next_tasks WHEN json_extract(OLD.snapshot,'$.publication') IS NOT NULL AND json_extract(NEW.snapshot,'$.publication') IS NULL BEGIN SELECT RAISE(ABORT,'injected activation commit fault'); END;").unwrap();
+        let result = runtime.run_sync("unienv", "installation", Some("activation-fault"), |ctx| {
+            activate_durable(&link, &next, ctx)?;
+            Ok(serde_json::json!({"kind":"install"}))
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(link.join("runtime.exe")).unwrap(), b"new runtime");
+        assert_eq!(
+            fs::read(previous.join("keep.txt")).unwrap(),
+            b"previous user data"
+        );
+        drop(runtime);
+        fault
+            .execute_batch("DROP TRIGGER fail_link_commit")
+            .unwrap();
+        drop(fault);
+        let reopened = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let snapshot = reopened.get("unienv", "activation-fault").unwrap();
+        assert_eq!(snapshot["status"], "interrupted");
+        assert_eq!(
+            snapshot["resultRefs"][0],
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(
+            fs::read(previous.join("keep.txt")).unwrap(),
+            b"previous user data"
+        );
+        assert_eq!(fs::read(next.join("runtime.exe")).unwrap(), b"new runtime");
+        assert_eq!(fs::read(link.join("runtime.exe")).unwrap(), b"new runtime");
+    }
+
+    fn offline_zip(root: &Path) -> PathBuf {
+        let path = root.join("runtime.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        zip.start_file(
+            "node-package/node.exe",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"offline fixture runtime").unwrap();
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn offline_install_publishes_through_durable_task_and_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = offline_zip(dir.path());
+        let root = dir.path().join("environments");
+        let journal = dir.path().join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        runtime
+            .run_sync("unienv", "installation", Some("offline-native"), |ctx| {
+                install_offline_archive(
+                    &root,
+                    "node",
+                    "22.15.0",
+                    &archive,
+                    &|_, _, _| {},
+                    ctx.cancel_flag(),
+                    Publication {
+                        context: Some(ctx),
+                        reserve: &|path, operation| {
+                            ctx.publish_step(|| {
+                                assert!(!runtime.cancel("unienv", "offline-native"));
+                                operation()?;
+                                Ok(serde_json::json!({"path":path.to_string_lossy()}))
+                            })
+                            .map(|_| ())
+                        },
+                    },
+                )?;
+                Ok(serde_json::json!({"kind":"install"}))
+            })
+            .unwrap();
+        let expected = version_dir(&root, "node", "22.15.0").join(runtime_subdir("node").unwrap());
+        assert!(expected.join("node.exe").is_file());
+        assert_eq!(
+            fs::read(
+                current_link(&root, "node")
+                    .join(runtime_subdir("node").unwrap())
+                    .join("node.exe")
+            )
+            .unwrap(),
+            b"offline fixture runtime"
+        );
+        drop(runtime);
+        let reopened = crate::task_runtime::TaskRuntime::open(&journal).unwrap();
+        let record = reopened.get("unienv", "offline-native").unwrap();
+        assert_eq!(record["status"], "succeeded");
+        assert_eq!(
+            record["resultRefs"],
+            serde_json::json!([tool_dir(&root, "node")
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()])
+        );
+    }
+
+    #[test]
+    fn publication_denial_preserves_previous_runtime_and_link_failure_rolls_back_promotion() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = offline_zip(dir.path());
+        let root = dir.path().join("environments");
+        let previous = version_dir(&root, "node", "20.0.0");
+        fs::create_dir_all(&previous).unwrap();
+        fs::write(previous.join("keep.txt"), b"user original").unwrap();
+        create_junction(&current_link(&root, "node"), &previous).unwrap();
+        let cancel = AtomicBool::new(false);
+        let error = install_offline_archive(
+            &root,
+            "node",
+            "22.15.0",
+            &archive,
+            &|_, _, _| {},
+            &cancel,
+            Publication::legacy(&|_, _| Err("reservation denied".into())),
+        )
+        .unwrap_err();
+        assert_eq!(error, "reservation denied");
+        assert_eq!(
+            fs::read(current_link(&root, "node").join("keep.txt")).unwrap(),
+            b"user original"
+        );
+        assert!(!version_dir(&root, "node", "22.15.0")
+            .join(runtime_subdir("node").unwrap())
+            .exists());
+        let staging = dir.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("keep.txt"), b"new staged").unwrap();
+        let final_dir = dir.path().join("promoted");
+        let invalid_link = dir.path().join("ordinary-user-directory");
+        fs::create_dir_all(&invalid_link).unwrap();
+        fs::write(invalid_link.join("keep.txt"), b"untouched").unwrap();
+        assert!(promote_and_activate(&staging, &final_dir, &invalid_link, dir.path()).is_err());
+        assert!(!final_dir.exists());
+        assert_eq!(fs::read(staging.join("keep.txt")).unwrap(), b"new staged");
+        assert_eq!(
+            fs::read(invalid_link.join("keep.txt")).unwrap(),
+            b"untouched"
+        );
+    }
     use super::*;
+
+    #[test]
+    fn unienv_shims_precede_existing_python_paths_and_remain_unique() {
+        let shim = r"C:\UniEnv\shims";
+        let old_path =
+            r"E:\Computer\Python\bin;C:\UniEnv\shims\;C:\Windows\System32;c:\unienv\SHIMS";
+        let expected = r"C:\UniEnv\shims;E:\Computer\Python\bin;C:\Windows\System32";
+        let updated = prioritize_path_entry(old_path, shim);
+        assert_eq!(updated, expected);
+        assert_eq!(prioritize_path_entry(&updated, shim), expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_resolves_unienv_python_shim_before_an_existing_python_exe() {
+        let root = tempfile::tempdir().unwrap();
+        let shim_dir = root.path().join("shims");
+        let previous_python = root.path().join("python314");
+        fs::create_dir_all(&shim_dir).unwrap();
+        fs::create_dir_all(&previous_python).unwrap();
+        fs::write(
+            shim_dir.join("python.cmd"),
+            "@echo off\r\necho UNIENV_SHIM_SELECTED\r\n",
+        )
+        .unwrap();
+        fs::write(previous_python.join("python.exe"), b"old executable marker").unwrap();
+        let path = prioritize_path_entry(
+            &previous_python.to_string_lossy(),
+            &shim_dir.to_string_lossy(),
+        );
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "python", "--version"])
+            .current_dir(root.path())
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "cmd.exe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("UNIENV_SHIM_SELECTED"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_python_shim_follows_current_after_switching_from_314_to_312() {
+        let root = tempfile::tempdir().unwrap();
+        let install_root = root.path().join("UniEnv");
+        let python_314 = version_dir(&install_root, "python", "3.14.7");
+        let python_312 = version_dir(&install_root, "python", "3.12.5");
+        fs::create_dir_all(&python_314).unwrap();
+        fs::create_dir_all(&python_312).unwrap();
+        fs::write(
+            python_314.join("python.cmd"),
+            "@echo off\r\necho Python 3.14.7\r\n",
+        )
+        .unwrap();
+        fs::write(
+            python_312.join("python.cmd"),
+            "@echo off\r\necho Python 3.12.5\r\n",
+        )
+        .unwrap();
+        let current = current_link(&install_root, "python");
+        create_junction(&current, &python_314).unwrap();
+        let shim_dir = install_root.join("shims");
+        fs::create_dir_all(&shim_dir).unwrap();
+        write_cmd_shim(&shim_dir, "python.cmd", &current.join("python.cmd")).unwrap();
+
+        let run_python = || {
+            std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "python", "--version"])
+                .current_dir(root.path())
+                .env("PATH", shim_dir.as_os_str())
+                .output()
+                .unwrap()
+        };
+        let before = run_python();
+        assert!(before.status.success());
+        assert!(String::from_utf8_lossy(&before.stdout).contains("Python 3.14.7"));
+
+        switch_version(&install_root, "python", "3.12.5").unwrap();
+
+        let after = run_python();
+        assert!(after.status.success());
+        assert!(String::from_utf8_lossy(&after.stdout).contains("Python 3.12.5"));
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir =

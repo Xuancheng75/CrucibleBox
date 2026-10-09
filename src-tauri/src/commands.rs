@@ -17,6 +17,50 @@ use tauri::{Emitter, Manager, State, Webview, WebviewWindow};
 use tauri_plugin_updater::UpdaterExt;
 
 /// 渲染进程可写 settings key 白名单（对等 electron/ipc/settings.ipc.ts）
+#[tauri::command]
+pub fn window_apply_theme(
+    window: WebviewWindow,
+    dark: bool,
+    caption: u32,
+    text: u32,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    if caption > 0xFFFFFF || text > 0xFFFFFF {
+        return Err("invalid title bar color".into());
+    }
+    window
+        .set_theme(Some(if dark {
+            tauri::Theme::Dark
+        } else {
+            tauri::Theme::Light
+        }))
+        .map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+        };
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0;
+        for (attribute, color) in [(DWMWA_CAPTION_COLOR, caption), (DWMWA_TEXT_COLOR, text)] {
+            // Windows 10 supports light/dark mode but not Windows 11 caption colors.
+            let result = unsafe {
+                DwmSetWindowAttribute(
+                    hwnd as _,
+                    attribute as u32,
+                    (&color as *const u32).cast(),
+                    std::mem::size_of::<u32>() as u32,
+                )
+            };
+            if result < 0 && result != 0x80070057u32 as i32 {
+                return Err(format!("title bar color failed: {result:#x}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     "theme",
     "updateChannel",
@@ -49,13 +93,7 @@ pub fn settings_get(
     }
     let db_state = db.inner().clone();
     let db = lock(&db_state);
-    let guard = db.conn().lock().unwrap();
-    let v: Option<String> = guard
-        .query_row("SELECT value FROM settings WHERE key = ?1", [&key], |row| {
-            row.get(0)
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(v)
+    db.setting_get(&key).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -85,15 +123,7 @@ pub fn settings_set(
     }
     let db_state = db.inner().clone();
     let db = lock(&db_state);
-    let guard = db.conn().lock().unwrap();
-    guard
-        .execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![key, value],
-        )
-        .map_err(|e| e.to_string())?;
-    drop(guard);
+    db.setting_set(&key, &value).map_err(|e| e.to_string())?;
     drop(db);
     crate::network_policy::reload(&db_state);
     // 对等 TS：set 成功恒返回 true（含同值更新）
@@ -119,20 +149,7 @@ pub fn settings_get_all(
         return Err("unauthorized".into());
     }
     let db = lock(&db);
-    let guard = db.conn().lock().unwrap();
-    let mut stmt = guard
-        .prepare("SELECT key, value FROM settings")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
+    db.settings_all().map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +170,15 @@ pub fn app_get_platform() -> String {
     } else {
         "linux".into()
     }
+}
+
+#[tauri::command]
+pub fn app_fault_history(window: WebviewWindow) -> Result<serde_json::Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let (path, text) = crate::diagnostics::read()?;
+    Ok(serde_json::json!({ "path": path, "text": text }))
 }
 
 #[derive(Serialize)]
@@ -191,20 +217,17 @@ pub async fn app_check_update(
     let endpoint = tauri::Url::parse(endpoint).map_err(|error| error.to_string())?;
     let mut builder = webview
         .updater_builder()
-        .endpoints(vec![endpoint])
+        .endpoints(vec![endpoint.clone()])
         .map_err(|error| error.to_string())?;
     let network_policy = marketplace_network_policy(&db);
     let network_route = network_policy.route();
-    if network_policy.mode == "direct" {
-        builder = builder.no_proxy();
-    } else if let Some(proxy_url) = network_policy
-        .proxy_url
-        .as_deref()
-        .filter(|_| network_policy.mode == "manual" || network_policy.mode == "auto")
-    {
+    let resolved_route = network_policy.resolve(endpoint.as_str())?;
+    if let Some(proxy_url) = resolved_route.proxy_endpoint.as_deref() {
         let proxy =
             tauri::Url::parse(proxy_url).map_err(|error| format!("手动代理地址无效：{error}"))?;
         builder = builder.proxy(proxy);
+    } else {
+        builder = builder.no_proxy();
     }
     if let Some(timeout_ms) = timeout_ms {
         builder = builder.timeout(std::time::Duration::from_millis(timeout_ms));
@@ -226,58 +249,7 @@ pub async fn app_check_update(
 // plugins（对等 plugin.ipc.ts 读路径：list/get）
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PluginMetaDto {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub display_name: String,
-    pub description: String,
-    pub author: String,
-    pub icon: String,
-    pub entry_main: String,
-    pub entry_renderer: String,
-    pub permissions: Vec<String>,
-    pub config_schema: serde_json::Value,
-    pub config_data: serde_json::Value,
-    pub enabled: bool,
-    pub installed_path: String,
-    pub installed_at: String,
-    pub updated_at: String,
-    pub sort_order: i64,
-}
-
-fn json_or_empty(raw: &str) -> serde_json::Value {
-    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
-}
-
-fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<PluginMetaDto> {
-    Ok(PluginMetaDto {
-        id: row.get("id")?,
-        name: row.get("name")?,
-        version: row.get("version")?,
-        display_name: row.get("display_name")?,
-        description: row.get("description").unwrap_or_default(),
-        author: row.get("author").unwrap_or_default(),
-        icon: row.get("icon").unwrap_or_default(),
-        entry_main: row.get("entry_main")?,
-        entry_renderer: row.get("entry_renderer").unwrap_or_default(),
-        permissions: serde_json::from_str(&row.get::<_, String>("permissions").unwrap_or_default())
-            .unwrap_or_default(),
-        config_schema: json_or_empty(&row.get::<_, String>("config_schema").unwrap_or_default()),
-        config_data: json_or_empty(&row.get::<_, String>("config_data").unwrap_or_default()),
-        enabled: row.get::<_, i64>("enabled").unwrap_or(1) == 1,
-        installed_path: row.get("installed_path")?,
-        installed_at: row.get("installed_at").unwrap_or_default(),
-        updated_at: row.get("updated_at").unwrap_or_default(),
-        sort_order: row.get("sort_order").unwrap_or(0),
-    })
-}
-
-const PLUGIN_COLUMNS: &str = "id, name, version, display_name, description, author, icon, \
-     entry_main, entry_renderer, permissions, config_schema, config_data, enabled, \
-     installed_path, installed_at, updated_at, sort_order";
+pub use cruciblebox_repository::management::PluginMetaDto;
 
 #[tauri::command(async)]
 pub fn plugin_list(
@@ -287,21 +259,129 @@ pub fn plugin_list(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let db = lock(&db);
-    let guard = db.conn().lock().unwrap();
-    // 对等 plugin.repository.ts 排序：sort_order ASC, installed_at DESC
-    let mut stmt = guard
-        .prepare(&format!(
-            "SELECT {} FROM plugins ORDER BY sort_order ASC, installed_at DESC, id ASC",
-            PLUGIN_COLUMNS
-        ))
-        .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], row_to_meta).map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
+    lock(&db).metadata_list()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommandContributionDto {
+    plugin_id: String,
+    id: String,
+    title: String,
+    keywords: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginFileHandlerDto {
+    plugin_id: String,
+    extensions: Vec<String>,
+}
+
+#[tauri::command(async)]
+pub fn plugin_file_handlers_list(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+) -> Result<Vec<PluginFileHandlerDto>, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
     }
-    Ok(out)
+    let installations = lock(&db).enabled_plugin_installations()?;
+    let mut handlers = Vec::new();
+    for (plugin_id, installed_path) in installations {
+        let manifest_path = std::path::Path::new(&installed_path).join("plugin.json");
+        let Ok(manifest) = crate::manifest::read_manifest(&manifest_path) else {
+            continue;
+        };
+        if manifest.manifest_version != Some(4) {
+            continue;
+        }
+        let Some(items) = manifest
+            .contributes
+            .get("fileHandlers")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        let extensions = items
+            .iter()
+            .flat_map(|item| {
+                item.get("extensions")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .filter_map(serde_json::Value::as_str)
+            .map(|value| value.trim_start_matches('.').to_ascii_lowercase())
+            .filter(|value| {
+                !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
+            .collect::<Vec<_>>();
+        if !extensions.is_empty() {
+            handlers.push(PluginFileHandlerDto {
+                plugin_id,
+                extensions,
+            });
+        }
+    }
+    Ok(handlers)
+}
+
+#[tauri::command(async)]
+pub fn plugin_command_contributions_list(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+) -> Result<Vec<PluginCommandContributionDto>, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let installations = lock(&db).enabled_plugin_installations()?;
+    let mut commands = Vec::new();
+    for (plugin_id, installed_path) in installations {
+        let manifest_path = std::path::Path::new(&installed_path).join("plugin.json");
+        let Ok(manifest) = crate::manifest::read_manifest(&manifest_path) else {
+            continue;
+        };
+        if manifest.manifest_version != Some(4) {
+            continue;
+        }
+        let Some(items) = manifest
+            .contributes
+            .get("commands")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for item in items {
+            let (Some(id), Some(title)) = (
+                item.get("id").and_then(serde_json::Value::as_str),
+                item.get("title").and_then(serde_json::Value::as_str),
+            ) else {
+                continue;
+            };
+            if id.is_empty() || title.is_empty() {
+                continue;
+            }
+            let keywords = item
+                .get("keywords")
+                .and_then(serde_json::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            commands.push(PluginCommandContributionDto {
+                plugin_id: plugin_id.clone(),
+                id: id.to_owned(),
+                title: title.to_owned(),
+                keywords,
+            });
+        }
+    }
+    Ok(commands)
 }
 
 #[tauri::command(async)]
@@ -313,15 +393,70 @@ pub fn plugin_get(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let db = lock(&db);
-    let guard = db.conn().lock().unwrap();
-    let sql = format!("SELECT {} FROM plugins WHERE id = ?1", PLUGIN_COLUMNS);
-    let mut stmt = guard.prepare(&sql).map_err(|e| e.to_string())?;
-    let mut rows = stmt
-        .query_map([id], row_to_meta)
-        .map_err(|e| e.to_string())?;
-    let first = rows.next().transpose().map_err(|e| e.to_string())?;
-    Ok(first)
+    lock(&db).metadata_get(id)
+}
+
+pub use cruciblebox_repository::management::UserPluginTagDto;
+
+#[tauri::command(async)]
+pub fn plugin_tags_list(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+) -> Result<Vec<UserPluginTagDto>, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).tags_list()
+}
+
+#[tauri::command(async)]
+pub fn plugin_tags_create(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    name: String,
+) -> Result<i64, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).tag_create(name)
+}
+
+#[tauri::command(async)]
+pub fn plugin_tags_rename(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: i64,
+    name: String,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).tag_rename(id, name)
+}
+
+#[tauri::command(async)]
+pub fn plugin_tags_delete(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: i64,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).tag_delete(id)
+}
+
+#[tauri::command(async)]
+pub fn plugin_tags_assign(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    plugin_ids: Vec<String>,
+    tag_ids: Vec<i64>,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).tags_assign(plugin_ids, tag_ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +471,7 @@ pub fn plugin_enable(
     backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
     install: State<'_, Arc<crate::install::InstallManager>>,
     db: State<'_, Arc<Mutex<Db>>>,
+    next_backend: State<'_, Arc<crate::next_backend::Manager>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
@@ -357,7 +493,22 @@ pub fn plugin_enable(
         .plugin_backend_record(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("plugin not found: {id}"))?;
-    if let Err(error) = backend.ensure_activated(&id, activation_record) {
+    let manifest =
+        crate::manifest::read_manifest(std::path::Path::new(&activation_record.installed_path));
+    let next = manifest
+        .as_ref()
+        .ok()
+        .filter(|manifest| manifest.manifest_version == Some(5));
+    let result = match next {
+        Some(manifest) if manifest.backend == Some(false) => Ok(()),
+        Some(_) => next_backend.activate(&id),
+        None => Err(match manifest {
+            Err(error) => format!("插件包读取失败：{error}"),
+            Ok(_) => "此插件是旧架构版本，请在插件市场升级到 Next 版本。原插件包和用户数据已保留。"
+                .into(),
+        }),
+    };
+    if let Err(error) = result {
         let _ = lock(&db).set_plugin_enabled(&id, false);
         return Err(format!("failed to activate plugin: {error}"));
     }
@@ -375,6 +526,7 @@ pub fn plugin_disable(
     backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
     install: State<'_, Arc<crate::install::InstallManager>>,
     db: State<'_, Arc<Mutex<Db>>>,
+    next_backend: State<'_, Arc<crate::next_backend::Manager>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
@@ -389,6 +541,7 @@ pub fn plugin_disable(
     }
     let _lifecycle = backend.begin_lifecycle_operation(&id)?;
     let _maintenance = backend.enter_maintenance(&id)?;
+    let _next_maintenance = next_backend.begin_maintenance(&id)?;
     let deactivate_result = backend.deactivate(&id);
     deactivate_result?;
     lock(&db)
@@ -419,16 +572,29 @@ pub fn plugin_reorder(
 #[tauri::command(async)]
 pub fn plugin_update_config(
     window: WebviewWindow,
-    db: State<'_, Arc<Mutex<Db>>>,
+    backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
     id: String,
     config: serde_json::Value,
+    db: State<'_, Arc<Mutex<Db>>>,
+    next_backend: State<'_, Arc<crate::next_backend::Manager>>,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let serialized = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    let record = lock(&db)
+        .plugin_find_by_id(&id)?
+        .ok_or("plugin not found")?;
+    let manifest = crate::manifest::read_manifest(std::path::Path::new(&record.installed_path))?;
+    if manifest.manifest_version != Some(5) {
+        return Err("LEGACY_RUNTIME_RETIRED".into());
+    }
+    let _lifecycle = backend.begin_lifecycle_operation(&id)?;
+    let _maintenance = next_backend.begin_maintenance(&id)?;
     lock(&db)
-        .plugin_update_config(&id, &serialized)
+        .plugin_update_config(
+            &id,
+            &serde_json::to_string(&config).map_err(|e| e.to_string())?,
+        )
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "success": true }))
 }
@@ -514,36 +680,108 @@ struct MarketplaceCatalog {
 #[serde(rename_all = "camelCase")]
 struct MarketplaceCatalogResponse {
     #[serde(flatten)]
-    catalog: MarketplaceCatalog,
-    source: String,
-    stale: bool,
-    fetched_at: u64,
-    network_route: String,
+    pub catalog: MarketplaceCatalog,
+    pub source: String,
+    pub stale: bool,
+    pub fetched_at: u64,
+    pub network_route: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct MarketplaceCatalogPlugin {
-    id: String,
-    version: String,
-    artifact: String,
-    size: u64,
+    pub id: String,
+    pub version: String,
+    pub artifact: String,
+    pub size: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub min_host_version: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub highlights: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+}
+
+pub use cruciblebox_repository::management::MarketplaceSourceDto;
+
+pub use cruciblebox_repository::management::PluginMarketplaceOriginDto;
+
+#[tauri::command(async)]
+pub fn marketplace_origins_list(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+) -> Result<Vec<PluginMarketplaceOriginDto>, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).marketplace_origins()
+}
+
+fn marketplace_source(db: &Arc<Mutex<Db>>, id: i64) -> Result<MarketplaceSourceDto, String> {
+    lock(db).marketplace_source(id)
+}
+
+#[tauri::command(async)]
+pub fn marketplace_sources_list(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+) -> Result<Vec<MarketplaceSourceDto>, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).marketplace_sources()
+}
+
+#[tauri::command(async)]
+pub fn marketplace_sources_add(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    name: String,
     url: String,
-    #[serde(default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    icon: Option<String>,
-    #[serde(default)]
-    category: Option<String>,
-    #[serde(default)]
-    min_host_version: Option<String>,
-    #[serde(default)]
-    publisher: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    highlights: Vec<String>,
+) -> Result<i64, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).marketplace_source_add(name, url)
+}
+
+#[tauri::command(async)]
+pub fn marketplace_sources_set_enabled(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).marketplace_source_enable(id, enabled)
+}
+
+#[tauri::command(async)]
+pub fn marketplace_sources_delete(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    id: i64,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    lock(&db).marketplace_source_delete(id)
 }
 
 const MARKETPLACE_MAX_CATALOG_BYTES: u64 = 4 * 1024 * 1024;
@@ -560,25 +798,38 @@ struct MarketplaceCatalogCache {
     checked_at: Instant,
 }
 
+fn read_catalog_cache(
+    db: &Arc<Mutex<Db>>,
+    source_key: &str,
+    channel: &str,
+) -> Option<(MarketplaceCatalog, String, u64)> {
+    let db = db.lock().ok()?;
+    let (json, url, fetched_at) = db
+        .marketplace_cache_read(source_key, channel)
+        .ok()
+        .flatten()?;
+    let catalog: MarketplaceCatalog = serde_json::from_str(&json).ok()?;
+    matches!(catalog.schema_version, 1 | 2).then_some((catalog, url, fetched_at.max(0) as u64))
+}
+
+fn write_catalog_cache(
+    db: &Arc<Mutex<Db>>,
+    source_key: &str,
+    channel: &str,
+    catalog: &MarketplaceCatalog,
+    url: &str,
+    fetched_at: u64,
+) -> Result<(), String> {
+    let json = serde_json::to_string(catalog).map_err(|error| error.to_string())?;
+    let db = db.lock().map_err(|error| error.to_string())?;
+    db.marketplace_cache_write(source_key, channel, &json, url, fetched_at)
+}
+
 static MARKETPLACE_CATALOG_CACHE: OnceLock<Mutex<Option<MarketplaceCatalogCache>>> =
     OnceLock::new();
-static MARKETPLACE_CANCELLED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
 
 fn marketplace_catalog_cache() -> &'static Mutex<Option<MarketplaceCatalogCache>> {
     MARKETPLACE_CATALOG_CACHE.get_or_init(|| Mutex::new(None))
-}
-
-fn marketplace_cancelled() -> &'static Mutex<std::collections::HashSet<String>> {
-    MARKETPLACE_CANCELLED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
-}
-
-fn marketplace_is_cancelled(task_id: Option<&str>) -> bool {
-    task_id.is_some_and(|id| {
-        marketplace_cancelled()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(id)
-    })
 }
 
 #[tauri::command]
@@ -586,11 +837,10 @@ pub fn marketplace_cancel_task(window: WebviewWindow, task_id: String) -> Result
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    marketplace_cancelled()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(task_id);
-    Ok(true)
+    let runtime = window
+        .try_state::<Arc<crate::task_runtime::TaskRuntime>>()
+        .ok_or("task runtime unavailable")?;
+    Ok(runtime.cancel("marketplace", &task_id))
 }
 
 type MarketplaceNetworkPolicy = crate::network_policy::NetworkPolicy;
@@ -601,30 +851,25 @@ fn marketplace_network_policy(db: &Arc<Mutex<Db>>) -> MarketplaceNetworkPolicy {
 }
 
 fn marketplace_agent(
+    url: &str,
     connect_secs: u64,
     read_secs: u64,
     policy: &MarketplaceNetworkPolicy,
 ) -> Result<ureq::Agent, String> {
-    policy.agent(connect_secs, read_secs)
+    policy
+        .agent_for_url(url, connect_secs, read_secs)
+        .map(|(agent, _)| agent)
 }
 
 fn marketplace_catalog_urls(channel: &str) -> Vec<String> {
-    let base_version = env!("CARGO_PKG_VERSION")
-        .split_once('-')
-        .map(|(version, _)| version)
-        .unwrap_or(env!("CARGO_PKG_VERSION"));
-    let current_release = format!(
-        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v{}/plugins.json",
-        env!("CARGO_PKG_VERSION")
-    );
-    let stable_release = format!(
-        "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v{base_version}/plugins.json"
-    );
-    if channel == "beta" {
-        vec![current_release, stable_release]
+    let rolling_tag = if channel == "beta" {
+        "tauri-beta"
     } else {
-        vec![stable_release]
-    }
+        "tauri-stable"
+    };
+    vec![format!(
+        "https://github.com/Xuancheng75/CrucibleBox/releases/download/{rolling_tag}/plugins.json"
+    )]
 }
 
 fn marketplace_channel(requested: Option<&str>) -> Result<String, String> {
@@ -658,12 +903,28 @@ fn marketplace_catalog_response(
 }
 
 fn fetch_marketplace_catalog(
+    db: &Arc<Mutex<Db>>,
     force_refresh: bool,
     requested_channel: Option<&str>,
     policy: &MarketplaceNetworkPolicy,
 ) -> Result<MarketplaceCatalogResponse, String> {
     let channel = marketplace_channel(requested_channel)?;
     if !force_refresh {
+        if let Some((catalog, source, fetched_at)) = read_catalog_cache(db, "official", &channel) {
+            let age = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs().saturating_sub(fetched_at))
+                .unwrap_or(u64::MAX);
+            if age < MARKETPLACE_CATALOG_CACHE_TTL.as_secs() {
+                return Ok(marketplace_catalog_response(
+                    catalog,
+                    source,
+                    false,
+                    fetched_at,
+                    policy.route(),
+                ));
+            }
+        }
         let cache = marketplace_catalog_cache()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -683,6 +944,7 @@ fn fetch_marketplace_catalog(
     }
 
     let mut catalog_errors = Vec::new();
+    let mut skip_ureq = false;
 
     #[cfg(windows)]
     if policy.mode != "manual" && !policy.uses_manual_proxy() {
@@ -694,11 +956,19 @@ fn fetch_marketplace_catalog(
             ) {
                 Ok(catalog_text) => match serde_json::from_str::<MarketplaceCatalog>(&catalog_text)
                 {
-                    Ok(value) if value.schema_version == 1 => {
+                    Ok(value) if matches!(value.schema_version, 1 | 2) => {
                         let fetched_at = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map(|duration| duration.as_secs())
                             .unwrap_or_default();
+                        write_catalog_cache(
+                            db,
+                            "official",
+                            &channel,
+                            &value,
+                            &catalog_url,
+                            fetched_at,
+                        )?;
                         marketplace_catalog_cache()
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -721,73 +991,100 @@ fn fetch_marketplace_catalog(
                     Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
                     Err(error) => catalog_errors.push(format!("{catalog_url}：解析失败：{error}")),
                 },
-                Err(error) => catalog_errors.push(format!("{catalog_url}（WinHTTP）：{error}")),
+                Err(error) => {
+                    let permanent = error.contains("响应状态异常：404");
+                    catalog_errors.push(format!("{catalog_url}（WinHTTP）：{error}"));
+                    if permanent {
+                        skip_ureq = true;
+                        break;
+                    }
+                }
             }
         }
     }
 
-    let agent = marketplace_agent(8, 30, policy)?;
-    for catalog_url in marketplace_catalog_urls(&channel) {
-        for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
-            let response = match agent
-                .get(&catalog_url)
-                .set("Accept", "application/json")
-                .set("Cache-Control", "no-cache")
-                .set(
-                    "User-Agent",
-                    concat!("CrucibleBox/", env!("CARGO_PKG_VERSION")),
-                )
-                .call()
-            {
-                Ok(response) => response,
+    if !skip_ureq {
+        for catalog_url in marketplace_catalog_urls(&channel) {
+            let agent = match marketplace_agent(&catalog_url, 8, 30, policy) {
+                Ok(agent) => agent,
                 Err(error) => {
-                    catalog_errors.push(format!("{catalog_url}（第 {attempt} 次）：{error}"));
-                    if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
-                        std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
-                    }
+                    catalog_errors.push(format!("{catalog_url}：路由解析失败：{error}"));
                     continue;
                 }
             };
-            let mut catalog_text = String::new();
-            if let Err(error) = response
-                .into_reader()
-                .take(MARKETPLACE_MAX_CATALOG_BYTES + 1)
-                .read_to_string(&mut catalog_text)
-            {
-                catalog_errors.push(format!("{catalog_url}（第 {attempt} 次）：{error}"));
-                continue;
-            }
-            if catalog_text.len() as u64 > MARKETPLACE_MAX_CATALOG_BYTES {
-                catalog_errors.push(format!("{catalog_url}：官方插件目录超过安全大小限制"));
-                continue;
-            }
-            match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
-                Ok(value) if value.schema_version == 1 => {
-                    let fetched_at = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|duration| duration.as_secs())
-                        .unwrap_or_default();
-                    marketplace_catalog_cache()
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .replace(MarketplaceCatalogCache {
-                            channel: channel.clone(),
-                            network_route: policy.cache_key(),
-                            catalog: value.clone(),
-                            source: catalog_url.to_string(),
-                            fetched_at,
-                            checked_at: Instant::now(),
-                        });
-                    return Ok(marketplace_catalog_response(
-                        value,
-                        catalog_url.to_string(),
-                        false,
-                        fetched_at,
-                        policy.route(),
-                    ));
+            for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
+                let response = match agent
+                    .get(&catalog_url)
+                    .set("Accept", "application/json")
+                    .set("Cache-Control", "no-cache")
+                    .set(
+                        "User-Agent",
+                        concat!("CrucibleBox/", env!("CARGO_PKG_VERSION")),
+                    )
+                    .call()
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let permanent = matches!(error, ureq::Error::Status(404, _));
+                        catalog_errors.push(format!("{catalog_url}（第 {attempt} 次）：{error}"));
+                        if permanent {
+                            break;
+                        }
+                        if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
+                            std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
+                        }
+                        continue;
+                    }
+                };
+                let mut catalog_text = String::new();
+                if let Err(error) = response
+                    .into_reader()
+                    .take(MARKETPLACE_MAX_CATALOG_BYTES + 1)
+                    .read_to_string(&mut catalog_text)
+                {
+                    catalog_errors.push(format!("{catalog_url}（第 {attempt} 次）：{error}"));
+                    continue;
                 }
-                Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
-                Err(error) => catalog_errors.push(format!("{catalog_url}：解析失败：{error}")),
+                if catalog_text.len() as u64 > MARKETPLACE_MAX_CATALOG_BYTES {
+                    catalog_errors.push(format!("{catalog_url}：官方插件目录超过安全大小限制"));
+                    continue;
+                }
+                match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
+                    Ok(value) if matches!(value.schema_version, 1 | 2) => {
+                        let fetched_at = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|duration| duration.as_secs())
+                            .unwrap_or_default();
+                        write_catalog_cache(
+                            db,
+                            "official",
+                            &channel,
+                            &value,
+                            &catalog_url,
+                            fetched_at,
+                        )?;
+                        marketplace_catalog_cache()
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .replace(MarketplaceCatalogCache {
+                                channel: channel.clone(),
+                                network_route: policy.cache_key(),
+                                catalog: value.clone(),
+                                source: catalog_url.to_string(),
+                                fetched_at,
+                                checked_at: Instant::now(),
+                            });
+                        return Ok(marketplace_catalog_response(
+                            value,
+                            catalog_url.to_string(),
+                            false,
+                            fetched_at,
+                            policy.route(),
+                        ));
+                    }
+                    Ok(_) => catalog_errors.push(format!("{catalog_url}：官方目录版本不受支持")),
+                    Err(error) => catalog_errors.push(format!("{catalog_url}：解析失败：{error}")),
+                }
             }
         }
     }
@@ -804,9 +1101,85 @@ fn fetch_marketplace_catalog(
             policy.route(),
         ));
     }
+    if let Some((catalog, source, fetched_at)) = read_catalog_cache(db, "official", &channel) {
+        return Ok(marketplace_catalog_response(
+            catalog,
+            source,
+            true,
+            fetched_at,
+            policy.route(),
+        ));
+    }
     Err(format!(
         "读取官方插件目录失败：{}",
         catalog_errors.join("；")
+    ))
+}
+
+fn fetch_custom_marketplace_catalog(
+    db: &Arc<Mutex<Db>>,
+    url: &str,
+    policy: &MarketplaceNetworkPolicy,
+) -> Result<MarketplaceCatalogResponse, String> {
+    let agent = match marketplace_agent(url, 8, 30, policy) {
+        Ok(agent) => agent,
+        Err(error) => {
+            if let Some((catalog, source, fetched_at)) = read_catalog_cache(db, url, "custom") {
+                return Ok(marketplace_catalog_response(
+                    catalog,
+                    source,
+                    true,
+                    fetched_at,
+                    policy.route(),
+                ));
+            }
+            return Err(error);
+        }
+    };
+    let response = agent.get(url).set("Accept", "application/json").call();
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if let Some((catalog, source, fetched_at)) = read_catalog_cache(db, url, "custom") {
+                return Ok(marketplace_catalog_response(
+                    catalog,
+                    source,
+                    true,
+                    fetched_at,
+                    policy.route(),
+                ));
+            }
+            return Err(format!("读取第三方插件目录失败：{error}"));
+        }
+    };
+    if !response.get_url().starts_with("https://") {
+        return Err("插件目录响应必须使用 HTTPS".into());
+    }
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(MARKETPLACE_MAX_CATALOG_BYTES + 1)
+        .read_to_string(&mut body)
+        .map_err(|error| error.to_string())?;
+    if body.len() as u64 > MARKETPLACE_MAX_CATALOG_BYTES {
+        return Err("插件目录过大".into());
+    }
+    let catalog: MarketplaceCatalog =
+        serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    if !matches!(catalog.schema_version, 1 | 2) {
+        return Err("不支持此插件目录版本".into());
+    }
+    let fetched_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    write_catalog_cache(db, url, "custom", &catalog, url, fetched_at)?;
+    Ok(marketplace_catalog_response(
+        catalog,
+        url.into(),
+        false,
+        fetched_at,
+        policy.route(),
     ))
 }
 
@@ -819,13 +1192,26 @@ pub fn marketplace_catalog(
     db: State<'_, Arc<Mutex<Db>>>,
     force_refresh: Option<bool>,
     channel: Option<String>,
+    source_id: Option<i64>,
 ) -> Result<Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
     let policy = marketplace_network_policy(&db);
-    let catalog =
-        fetch_marketplace_catalog(force_refresh.unwrap_or(false), channel.as_deref(), &policy)?;
+    let catalog = if let Some(id) = source_id {
+        let source = marketplace_source(&db, id)?;
+        if !source.enabled {
+            return Err("此插件目录已停用".into());
+        }
+        fetch_custom_marketplace_catalog(&db, &source.url, &policy)?
+    } else {
+        fetch_marketplace_catalog(
+            &db,
+            force_refresh.unwrap_or(false),
+            channel.as_deref(),
+            &policy,
+        )?
+    };
     serde_json::to_value(catalog).map_err(|error| format!("序列化插件目录失败: {error}"))
 }
 
@@ -839,6 +1225,52 @@ pub fn marketplace_download_plugin(
     channel: Option<String>,
     priority: Option<String>,
     task_id: Option<String>,
+    source_id: Option<i64>,
+) -> Result<String, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let runtime = window
+        .try_state::<Arc<crate::task_runtime::TaskRuntime>>()
+        .ok_or("task runtime unavailable")?
+        .inner()
+        .clone();
+    let result = runtime
+        .run_sync("marketplace", "download", task_id.as_deref(), |ctx| {
+            let path = marketplace_download_execute(
+                window.clone(),
+                db.inner().clone(),
+                id,
+                channel,
+                priority,
+                Some(ctx.task_id()),
+                source_id,
+                ctx,
+            )?;
+            Ok(serde_json::json!({"path":path}))
+        })
+        .map_err(|error| {
+            if error.contains("操作已取消") {
+                "CANCELLED".to_owned()
+            } else {
+                error
+            }
+        })?;
+    result["path"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "download result missing".into())
+}
+#[allow(clippy::too_many_arguments)]
+fn marketplace_download_execute(
+    window: WebviewWindow,
+    db: Arc<Mutex<Db>>,
+    id: String,
+    channel: Option<String>,
+    priority: Option<String>,
+    task_id: Option<String>,
+    source_id: Option<i64>,
+    ctx: &crate::task_runtime::Context,
 ) -> Result<String, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
@@ -853,32 +1285,40 @@ pub fn marketplace_download_plugin(
     }
     const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
     let policy = marketplace_network_policy(&db);
-    let agent = marketplace_agent(15, 90, &policy)?;
-    let catalog = fetch_marketplace_catalog(false, channel.as_deref(), &policy)?.catalog;
-    if catalog.schema_version != 1 {
+    let catalog = if let Some(id) = source_id {
+        let source = marketplace_source(&db, id)?;
+        if !source.enabled {
+            return Err("此插件目录已停用".into());
+        }
+        fetch_custom_marketplace_catalog(&db, &source.url, &policy)?.catalog
+    } else {
+        fetch_marketplace_catalog(&db, false, channel.as_deref(), &policy)?.catalog
+    };
+    if !matches!(catalog.schema_version, 1 | 2) {
         return Err("unsupported marketplace catalog schema".into());
     }
     let plugin = catalog
         .plugins
         .into_iter()
         .find(|plugin| plugin.id == id)
-        .ok_or_else(|| "官方目录中没有该插件".to_string())?;
+        .ok_or_else(|| "当前目录中没有该插件".to_string())?;
     if plugin.size == 0 || plugin.size > MAX_PLUGIN_BYTES {
         return Err("插件包大小超出安全限制".into());
     }
     let expected_artifact = format!("{}-{}.zip", plugin.id, plugin.version);
-    if plugin.artifact != expected_artifact
-        || !plugin
-            .url
-            .starts_with("https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v")
-    {
-        return Err("官方目录包含不受信任的下载地址".into());
+    if plugin.artifact != expected_artifact || !plugin.url.starts_with("https://") {
+        return Err("目录中的插件下载地址或文件名无效".into());
     }
-    let root = std::env::temp_dir().join("cruciblebox-marketplace");
+    let agent = marketplace_agent(&plugin.url, 15, 90, &policy)?;
+    let root = std::env::temp_dir().join("cruciblebox-marketplace").join(
+        source_id
+            .map(|id| format!("source-{id}"))
+            .unwrap_or_else(|| "official".into()),
+    );
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let target = root.join(&plugin.artifact);
     let partial = root.join(format!(".{}.part", plugin.artifact));
-    if marketplace_is_cancelled(task_id.as_deref()) {
+    if ctx.is_cancelled() {
         let _ = std::fs::remove_file(&partial);
         return Err("CANCELLED".into());
     }
@@ -887,6 +1327,7 @@ pub fn marketplace_download_plugin(
         if metadata.len() == plugin.size {
             emit_marketplace_progress(
                 &window,
+                &db,
                 &plugin.artifact,
                 plugin.size,
                 plugin.size,
@@ -898,13 +1339,10 @@ pub fn marketplace_download_plugin(
     }
     if let Ok(metadata) = std::fs::metadata(&partial) {
         if metadata.len() == plugin.size {
-            if target.exists() {
-                let _ = std::fs::remove_file(&target);
-            }
-            std::fs::rename(&partial, &target)
-                .map_err(|error| format!("无法复用已完成的插件包：{error}"))?;
+            publish_marketplace_stage(ctx, &partial, &target, plugin.size)?;
             emit_marketplace_progress(
                 &window,
+                &db,
                 &plugin.artifact,
                 plugin.size,
                 plugin.size,
@@ -918,7 +1356,7 @@ pub fn marketplace_download_plugin(
     let mut last_download_error = String::from("下载插件失败");
     let mut download_completed = false;
     for attempt in 1..=MARKETPLACE_DOWNLOAD_ATTEMPTS {
-        if marketplace_is_cancelled(task_id.as_deref()) {
+        if ctx.is_cancelled() {
             let _ = std::fs::remove_file(&partial);
             return Err("CANCELLED".into());
         }
@@ -953,6 +1391,7 @@ pub fn marketplace_download_plugin(
                 |downloaded, total| {
                     emit_marketplace_progress(
                         &window,
+                        &db,
                         &plugin.artifact,
                         downloaded,
                         total,
@@ -995,8 +1434,12 @@ pub fn marketplace_download_plugin(
         {
             Ok(response) => response,
             Err(error) => {
+                let permanent = matches!(error, ureq::Error::Status(404, _));
                 last_download_error =
                     format!("官方 Release 下载失败（自动代理，第 {attempt} 次）：{error}");
+                if permanent {
+                    break;
+                }
                 if attempt < MARKETPLACE_DOWNLOAD_ATTEMPTS {
                     std::thread::sleep(MARKETPLACE_RETRY_BASE_DELAY * attempt as u32);
                 }
@@ -1044,7 +1487,7 @@ pub fn marketplace_download_plugin(
         let mut last_progress_bytes = total;
         let mut last_progress_at = Instant::now();
         loop {
-            if marketplace_is_cancelled(task_id.as_deref()) {
+            if ctx.is_cancelled() {
                 let _ = std::fs::remove_file(&partial);
                 return Err("CANCELLED".into());
             }
@@ -1073,6 +1516,7 @@ pub fn marketplace_download_plugin(
             {
                 emit_marketplace_progress(
                     &window,
+                    &db,
                     &plugin.artifact,
                     total,
                     plugin.size,
@@ -1105,29 +1549,40 @@ pub fn marketplace_download_plugin(
     if !download_completed {
         return Err(last_download_error);
     }
-    if target.exists() {
-        std::fs::remove_file(&target).map_err(|error| error.to_string())?;
-    }
-    std::fs::rename(&partial, &target).map_err(|error| error.to_string())?;
+    publish_marketplace_stage(ctx, &partial, &target, plugin.size)?;
     emit_marketplace_progress(
         &window,
+        &db,
         &plugin.artifact,
         plugin.size,
         plugin.size,
         "downloaded",
         task_id.as_deref(),
     );
-    if let Some(task_id) = task_id.as_deref() {
-        marketplace_cancelled()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(task_id);
-    }
     Ok(target.to_string_lossy().into_owned())
+}
+
+fn publish_marketplace_stage(
+    ctx: &crate::task_runtime::Context,
+    partial: &std::path::Path,
+    target: &std::path::Path,
+    size: u64,
+) -> Result<(), String> {
+    ctx.check_cancelled()?;
+    let transaction =
+        crate::output_transaction::OutputTransaction::adopt_stage(target, partial, true)?;
+    transaction.publish_durable(ctx, true, |stage| {
+        if std::fs::metadata(stage).map_err(|e| e.to_string())?.len() != size {
+            return Err("插件包大小与目录记录不一致".into());
+        }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn emit_marketplace_progress(
     window: &WebviewWindow,
+    _db: &Arc<Mutex<Db>>,
     artifact: &str,
     downloaded: u64,
     total: u64,
@@ -1149,20 +1604,16 @@ fn emit_marketplace_progress(
         } else {
             downloaded.saturating_mul(70).saturating_div(total).min(70)
         };
-        let _ = window.emit(
-            "host:task",
-            serde_json::json!({
-                "id": task_id,
-                "source": "marketplace",
-                "status": "running",
-                "progress": percent,
-                "detail": match stage {
-                    "cached" => "使用已下载文件",
-                    "downloaded" => "下载完成，准备安装",
-                    _ => "正在下载插件",
-                }
-            }),
-        );
+        let detail = match stage {
+            "cached" => "使用已下载文件",
+            "downloaded" => "下载完成，准备安装",
+            _ => "正在下载插件",
+        };
+        if stage != "downloaded" && stage != "cached" {
+            if let Some(runtime) = window.try_state::<Arc<crate::task_runtime::TaskRuntime>>() {
+                runtime.report_progress("marketplace", task_id, stage, percent as u32, detail);
+            }
+        }
     }
 }
 
@@ -1189,12 +1640,33 @@ pub fn plugin_install_preview(
 pub fn plugin_install_commit(
     window: WebviewWindow,
     install: State<'_, Arc<crate::install::InstallManager>>,
+    db: State<'_, Arc<Mutex<Db>>>,
     token: String,
+    marketplace_source_id: Option<i64>,
+    task_id: Option<String>,
+    runtime: State<'_, Arc<crate::task_runtime::TaskRuntime>>,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    install.commit(token)
+    let result = install.commit_with_runtime(&runtime, token, task_id.as_deref())?;
+    if let (Some(source_id), Some(plugin_id)) = (
+        marketplace_source_id,
+        result
+            .get("data")
+            .and_then(|data| data.get("id"))
+            .and_then(Value::as_str),
+    ) {
+        let source_url = if source_id == 0 {
+            "official".to_string()
+        } else {
+            marketplace_source(&db, source_id)?.url
+        };
+        let db = lock(&db);
+        db.marketplace_origin_set(plugin_id, source_id, &source_url)
+            .map_err(|error| format!("插件安装成功，但记录目录来源失败：{error}"))?;
+    }
+    Ok(result)
 }
 
 /// 安装放弃：删除 token + 回滚事务 + 清理 stage（对等 discardInstall）。
@@ -1243,91 +1715,11 @@ pub fn create_renderer_session(
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
-    let (initial_background, scheme) = match color_scheme.as_deref() {
-        Some("light") => ("#ffffff", "light"),
-        _ => ("#0a0c10", "dark"),
-    };
-    // 读插件记录（enabled 校验 + 字段透传）
-    let db = lock(&db);
-    let guard = db.conn().lock().unwrap();
-    let row = guard
-        .query_row(
-            "SELECT name, entry_renderer, permissions, installed_path FROM plugins WHERE id = ?1 AND enabled = 1",
-            [&id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                ))
-            },
-        )
-        .map_err(|e| format!("plugin not found or disabled: {e}"))?;
-    let (name, entry_renderer, permissions_json, installed_path) = row;
-    if entry_renderer.is_empty() {
-        return Err("plugin has no renderer entry".into());
-    }
-    // v1 schema 无 renderer_api_version 列：从插件根目录重读 plugin.json（对等
-    // PluginManager 的 manifest 校验语义），并校验 manifest 与 DB 记录一致。
-    let manifest = crate::manifest::read_manifest(std::path::Path::new(&installed_path))
-        .map_err(|e| format!("failed to read plugin manifest: {e}"))?;
-    if manifest.name != name {
-        return Err("plugin manifest name mismatch".into());
-    }
-    if manifest.renderer != entry_renderer {
-        return Err("plugin manifest renderer entry mismatch".into());
-    }
-    let api_version = manifest.renderer_api_version.unwrap_or(1);
-    if !matches!(api_version, 1..=3) {
-        return Err("unsupported rendererApiVersion".into());
-    }
-    // Manifest v3 keeps the proven renderer wire protocol v2. v3 expands
-    // declared capabilities and trust metadata, not the frame encoding.
-    let runtime_api_version = if api_version == 3 { 2 } else { api_version };
-    let permissions: Vec<String> = serde_json::from_str(&permissions_json).unwrap_or_default();
-
-    // runtimePath：dev 态仓库 out/；打包态 exe 目录/resources/out/（tauri.conf resources）。
-    let runtime_path = {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(PathBuf::from));
-        let candidates = [
-            std::env::current_dir()
-                .ok()
-                .map(|d| d.join("out").join("plugin-frame").join("runtime.js")),
-            exe_dir
-                .clone()
-                .map(|d| d.join("out/plugin-frame/runtime.js")),
-            exe_dir.map(|d| d.join("resources/out/plugin-frame/runtime.js")),
-            Some(PathBuf::from("out/plugin-frame/runtime.js")),
-            std::env::current_dir()
-                .ok()
-                .and_then(|d| d.parent().map(|p| p.join("out/plugin-frame/runtime.js"))),
-        ];
-        candidates
-            .into_iter()
-            .flatten()
-            .find(|p| p.is_file())
-            .unwrap_or_else(|| PathBuf::from("out/plugin-frame/runtime.js"))
-    };
-
-    let session = {
-        let mut reg = protocol.registry.lock().unwrap();
-        reg.create(crate::plugin_session::CreateSessionInput {
-            initial_background: initial_background.into(),
-            color_scheme: scheme.into(),
-            plugin_id: id,
-            plugin_name: name,
-            plugin_directory: installed_path,
-            renderer_entry: entry_renderer,
-            runtime_path: runtime_path.to_string_lossy().into_owned(),
-            renderer_api_version: runtime_api_version,
-            permissions,
-            owner_webview_label: "main".into(),
-        })?
-    };
-    Ok(crate::plugin_protocol::session_dto(&session))
+    let _ = (&db, &protocol, &id, &color_scheme);
+    Err(
+        "LEGACY_RUNTIME_RETIRED: plugin package and user data retained; install a Next plugin"
+            .into(),
+    )
 }
 
 /// 释放 renderer 会话（对等 disposeRendererSession）。
@@ -1335,12 +1727,17 @@ pub fn create_renderer_session(
 pub fn dispose_renderer_session(
     window: WebviewWindow,
     protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
+    gateway: State<'_, Mutex<crate::next_renderer::Gateway>>,
     token: String,
 ) -> Result<bool, String> {
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
     let removed = protocol.registry.lock().unwrap().dispose(&token);
+    gateway
+        .lock()
+        .map_err(|_| "INTERNAL_ERROR")?
+        .forget_session(&token);
     Ok(removed)
 }
 
@@ -1364,39 +1761,11 @@ pub fn plugin_send_message(
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
-    // 解析 plugin_id：64-hex 视为 session token 反查；否则按 plugin id 直传
-    let mut plugin_id = id.clone();
-    if id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()) {
-        let access = protocol.registry.lock().unwrap().get(&id, "main");
-        match (&access.ok, &access.session) {
-            (true, Some(session)) => plugin_id = session.plugin_id.clone(),
-            _ => {
-                let reason = access
-                    .reason
-                    .map(|r| format!("{r:?}"))
-                    .unwrap_or_else(|| "unknown".into());
-                eprintln!(
-                    "[plugin_send_message] session lookup failed for token prefix {}…: {reason}",
-                    &id[..8.min(id.len())]
-                );
-                return Err(format!("SESSION_EXPIRED: renderer session no longer valid ({reason}); reopen the plugin"));
-            }
-        }
-    }
-    eprintln!(
-        "[plugin_send_message] route plugin_id={plugin_id} type={}",
-        message.get("type").and_then(|v| v.as_str()).unwrap_or("?")
-    );
-    // 惰性 spawn + 路由
-    let record = {
-        let db = lock(&db);
-        db.plugin_backend_record(&plugin_id)
-            .map_err(|e| format!("plugin lookup failed: {e}"))?
-            .ok_or_else(|| format!("plugin not found: {plugin_id}"))?
-    };
-    let proc = backend.ensure_activated(&plugin_id, record)?;
-    let result = proc.request("plugin.message", serde_json::json!({ "message": message }))?;
-    Ok(result)
+    let _ = (&backend, &protocol, &db, &id, &message);
+    Err(
+        "LEGACY_RUNTIME_RETIRED: plugin package and user data retained; install a Next plugin"
+            .into(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1417,35 +1786,57 @@ pub fn db_status(
 
 #[cfg(test)]
 mod tests {
-    use super::marketplace_catalog_urls;
+    use super::{
+        marketplace_catalog_urls, read_catalog_cache, write_catalog_cache, MarketplaceCatalog,
+    };
+    use crate::db::Db;
+    use std::sync::{Arc, Mutex};
 
     #[test]
-    fn stable_marketplace_catalog_uses_the_versioned_release() {
-        let urls = marketplace_catalog_urls("stable");
-        let base_version = env!("CARGO_PKG_VERSION")
-            .split('-')
-            .next()
-            .expect("package version has a core version");
-        assert_eq!(urls.len(), 1);
-        assert_eq!(
-            urls[0],
-            format!(
-                "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-v{}/plugins.json",
-                base_version
-            )
-        );
-        assert!(!urls[0].contains("tauri-stable"));
+    fn catalog_cache_survives_db_reopen_and_separates_channels() {
+        let path = std::env::temp_dir().join(format!(
+            "cruciblebox-catalog-test-{}.db",
+            crate::rand_token::random_token_hex().unwrap()
+        ));
+        let db = Arc::new(Mutex::new(Db::open(&path).unwrap()));
+        let catalog = MarketplaceCatalog {
+            schema_version: 2,
+            plugins: Vec::new(),
+        };
+        write_catalog_cache(
+            &db,
+            "official",
+            "beta",
+            &catalog,
+            "https://example.test/beta",
+            42,
+        )
+        .unwrap();
+        drop(db);
+        let db = Arc::new(Mutex::new(Db::open(&path).unwrap()));
+        assert!(read_catalog_cache(&db, "official", "stable").is_none());
+        assert!(read_catalog_cache(&db, "third-party", "beta").is_none());
+        let (loaded, source, fetched) = read_catalog_cache(&db, "official", "beta").unwrap();
+        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(source, "https://example.test/beta");
+        assert_eq!(fetched, 42);
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn beta_marketplace_catalog_never_uses_a_rolling_catalog() {
+    fn stable_marketplace_catalog_uses_its_channel() {
+        let urls = marketplace_catalog_urls("stable");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(
+            urls[0],
+            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-stable/plugins.json"
+        );
+    }
+
+    #[test]
+    fn beta_marketplace_catalog_is_channel_isolated() {
         let urls = marketplace_catalog_urls("beta");
-        assert_eq!(urls.len(), 2);
-        assert!(urls.iter().all(
-            |url| url.contains("/releases/download/tauri-v") && url.ends_with("/plugins.json")
-        ));
-        assert!(urls
-            .iter()
-            .all(|url| !url.contains("tauri-beta") && !url.contains("tauri-stable")));
+        assert_eq!(urls, vec!["https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-beta/plugins.json"]);
     }
 }

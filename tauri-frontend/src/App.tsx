@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import MainLayout from './layouts/MainLayout'
 import { useAppStore } from './store/app.store'
@@ -63,23 +63,31 @@ export default function App() {
   const { dragActive, dragTarget } = useGlobalPluginDrop()
 
   useEffect(() => {
-    void tauriApi.app.getVersion().then(setAppVersion).catch(() => undefined)
+    void tauriApi.app
+      .getVersion()
+      .then(setAppVersion)
+      .catch(() => undefined)
   }, [])
 
   useEffect(() => {
     let unlisten: (() => void) | undefined
-    void tauriApi.events.onHostTask((task) => {
-      const store = useTaskStore.getState()
-      const existing = store.tasks.find((item) => item.id === task.id)
-      if (existing) {
-        store.patchTask(task.id, task)
-      } else if (task.title) {
-        store.upsertTask({ ...task, title: task.title })
-      }
-    }).then((stop) => {
-      unlisten = stop
-    })
-    return () => unlisten?.()
+    let active = true
+    void tauriApi.events
+      .onHostTask((task) => useTaskStore.getState().applyEvent(task))
+      .then(async (stop) => {
+        if (!active) {
+          stop()
+          return
+        }
+        unlisten = stop
+        const snapshot = await tauriApi.hostTasks.list()
+        if (active) snapshot.forEach((task) => useTaskStore.getState().mergeSnapshot(task))
+      })
+      .catch((error: unknown) => console.error('[host-tasks] failed to load tasks', error))
+    return () => {
+      active = false
+      unlisten?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -163,7 +171,7 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <MainLayout>
+      <MainLayout appVersion={appVersion}>
         <Suspense fallback={<PageLoading />}>
           {currentPage === 'pluginView' && activePluginId ? (
             <div>
@@ -183,11 +191,6 @@ export default function App() {
       </Suspense>
       <PluginDropOverlay active={dragActive} target={dragTarget} />
       <PluginInstallPreviewModal />
-      {/-((beta|rc)\.)/i.test(appVersion) && (
-        <div className="ob-beta-badge" role="status" aria-label={`测试版 ${appVersion}`}>
-          测试版 · {appVersion}
-        </div>
-      )}
     </ThemeProvider>
   )
 }

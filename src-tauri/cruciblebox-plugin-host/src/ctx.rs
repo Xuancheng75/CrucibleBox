@@ -177,7 +177,9 @@ pub fn host_call(method: &str, params: Value) -> Result<Value, String> {
 }
 
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)] // Already const; this toolchain also lints macro-generated TLS state.
     static RPC_TOKEN: RefCell<String> = const { RefCell::new(String::new()) };
+    #[allow(clippy::missing_const_for_thread_local)]
     static NEXT_ID: RefCell<u64> = const { RefCell::new(0) };
 }
 
@@ -242,16 +244,13 @@ function __toBase64(data) {
   return out;
 }
 function __buildCtx(id, config) {
-  var ctxObj = { id: id, config: config || {}, logger: {}, database: {}, storage: {}, pluginData: {}, capabilities: {}, api: {} };
+  var ctxObj = { id: id, config: config || {}, logger: {}, storage: {}, pluginData: {}, capabilities: {}, api: {} };
   var logger = ctxObj.logger;
   ['info', 'warn', 'error', 'debug'].forEach(function (level) {
     logger[level] = function (message) {
       __ff('log.write', { pluginId: id, level: level, message: String(message) });
     };
   });
-  var database = ctxObj.database;
-  database.query = function (sql, params) { return __rpc('db.query', { sql: sql, params: params || [] }); };
-  database.execute = function (sql, params) { __rpc('db.execute', { sql: sql, params: params || [] }); };
   var storage = ctxObj.storage;
   storage.get = function (key) { return __rpc('storage.get', { pluginId: id, key: key }); };
   storage.set = function (key, value) { __rpc('storage.set', { pluginId: id, key: key, value: value }); };
@@ -260,9 +259,20 @@ function __buildCtx(id, config) {
   storage.batch = function (mutations) { __rpc('storage.batch', { pluginId: id, mutations: mutations || [] }); };
   ctxObj.pluginData = storage;
   var api = ctxObj.api;
+  api.getOwnDirectory = function () { return __rpc('plugin.root', {}); };
   api.notify = function (title, body) { __ff('notification.show', { title: title, body: body || '' }); };
   api.openDialog = function (type) { return __rpc('dialog.open', { type: type }); };
   api.fetch = function (url, opts) { return __rpc('network.fetch', { url: url, options: opts || {} }); };
+  api.runProcess = function (program, args, options) {
+    var opts = options || {};
+    return __rpc('process.run', { program: program, args: args || [], cwd: opts.cwd, timeoutMs: opts.timeoutMs });
+  };
+  api.startProcess = function (program, args, options) {
+    var opts = options || {};
+    return __rpc('process.start', { program: program, args: args || [], cwd: opts.cwd, timeoutMs: opts.timeoutMs, outputTarget: opts.outputTarget, outputValidation: opts.outputValidation, inputPaths: opts.inputPaths });
+  };
+  api.getProcessTask = function (taskId) { return __rpc('process.getTask', { taskId: taskId }); };
+  api.cancelProcessTask = function (taskId) { return __rpc('process.cancel', { taskId: taskId }); };
   api.readFile = function (path) { return __rpc('file.read', { path: path }); };
   api.writeFile = function (path, data) { __rpc('file.write', { path: path, base64: __toBase64(data) }); };
   api.clipboard = {
@@ -304,7 +314,8 @@ function __buildCtx(id, config) {
   };
   ctxObj.capabilities = {
     events: { emitEvent: api.emitEvent, onEvent: api.onEvent },
-    system: { clipboard: api.clipboard, getSystemInfo: api.getSystemInfo, registerShortcut: api.registerShortcut }
+    system: { clipboard: api.clipboard, getSystemInfo: api.getSystemInfo, registerShortcut: api.registerShortcut },
+    process: { run: api.runProcess, start: api.startProcess, getTask: api.getProcessTask, cancel: api.cancelProcessTask }
   };
   return ctxObj;
 }
@@ -339,8 +350,14 @@ mod tests {
         let ctx = rquickjs::Context::full(&rt).unwrap();
         ctx.with(|ctx| {
             ctx.eval::<(), _>(CTX_JS).unwrap();
-            assert_eq!(ctx.eval::<String, _>("__toBase64('hello')").unwrap(), "aGVsbG8=");
-            assert_eq!(ctx.eval::<String, _>("__toBase64('中文')").unwrap(), "5Lit5paH");
+            assert_eq!(
+                ctx.eval::<String, _>("__toBase64('hello')").unwrap(),
+                "aGVsbG8="
+            );
+            assert_eq!(
+                ctx.eval::<String, _>("__toBase64('中文')").unwrap(),
+                "5Lit5paH"
+            );
         });
     }
 

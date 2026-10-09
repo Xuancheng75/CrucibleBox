@@ -1,7 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import type { PluginRenderProps } from 'cruciblebox-plugin-api'
-import App from './renderer'
+import App from './ApiDebugger'
 declare global {
   interface Window {
     __OPENBOX_PLUGIN_RUNTIME__: {

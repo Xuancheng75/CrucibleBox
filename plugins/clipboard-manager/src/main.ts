@@ -15,12 +15,14 @@ const plugin: PluginMain = {
   async activate(pluginCtx: PluginContext) {
     ctx = pluginCtx
     historyMutation = Promise.resolve()
-    // 读取当前剪贴板作为初始 lastText（避免首次事件重复记录）
-    try {
-      const result = await ctx.api.clipboard.read()
-      lastText = result.text || ''
-    } catch {
-      // clipboard may be unavailable
+    // 暂停状态下不读取内容；宿主监听器恢复时自行建立新基线。
+    if ((await ctx.storage.get<boolean>('paused')) !== true) {
+      try {
+        const result = await ctx.api.clipboard.read()
+        lastText = result.text || ''
+      } catch {
+        // clipboard may be unavailable
+      }
     }
     // 加载已有历史，更新 lastText
     const stored = await ctx.storage.get<ClipItem[]>('history')
@@ -38,12 +40,14 @@ const plugin: PluginMain = {
     if (!ctx) return { error: 'not activated' }
     const msg = message as { type: string; id?: string; text?: string }
 
-    if (['clipboard:changed', 'deleteItem', 'togglePin', 'clearAll'].includes(msg.type)) {
-      return { error: '旧版剪贴板处于只读兼容期，请在“笔记与效率”中继续管理。' }
-    }
-
     switch (msg.type) {
+      case 'getPaused':
+        return { paused: (await ctx.storage.get<boolean>('paused')) === true }
+      case 'setPaused':
+        await ctx.storage.set('paused', (message as { paused?: boolean }).paused === true)
+        return { ok: true }
       case 'clipboard:changed': {
+        if ((await ctx.storage.get<boolean>('paused')) === true) return { ok: true, paused: true }
         // 宿主侧 clipboard_monitor 广播的事件
         const text = msg.text || ''
         if (text && text !== lastText) {

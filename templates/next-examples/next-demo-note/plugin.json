@@ -1,0 +1,15 @@
+{
+  "id": "next-demo-note",
+  "version": "1.0.0-alpha.4",
+  "displayName": "next-demo-note",
+  "manifestVersion": 5,
+  "sdkApiVersion": 5,
+  "wireVersion": 3,
+  "dataSchemaVersion": 1,
+  "renderer": "dist/renderer.js",
+  "backend": "dist/main.js",
+  "permissions": [
+    "storage:read",
+    "storage:write"
+  ]
+}

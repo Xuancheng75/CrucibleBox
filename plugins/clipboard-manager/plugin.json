@@ -1,16 +1,27 @@
 {
   "name": "clipboard-manager",
-  "version": "0.3.0",
-  "displayName": "旧版剪贴板（只读兼容）",
-  "description": "旧剪贴板历史保留与导出入口；新内容请使用“笔记与效率”。",
+  "version": "0.4.0-beta.3",
+  "displayName": "剪贴板管理",
+  "description": "后台收集剪贴板文本，支持搜索筛选、置顶、去重、导出与暂停记录。",
   "author": "CrucibleBox",
+  "category": "效率工具",
+  "tags": ["剪贴板", "历史记录", "效率"],
+  "keywords": ["复制", "置顶", "暂停记录", "去重"],
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
-  "manifestVersion": 2,
-  "backendApiVersion": 2,
-  "rendererApiVersion": 2,
+  "manifestVersion": 4,
+  "backendApiVersion": 4,
+  "rendererApiVersion": 4,
+  "minimumHostVersion": "2.1.0-beta.3",
   "permissions": ["clipboard", "storage:read", "storage:write", "notification"],
   "config": {
+    "excludedApps": {
+      "type": "string",
+      "label": "排除前台应用",
+      "description": "填写进程文件名，以分号分隔，例如 KeePass.exe;1Password.exe。排除期间不读取内容，恢复后重新建立基线。",
+      "default": "",
+      "required": false
+    },
     "maxItems": {
       "type": "number",
       "label": "最大历史记录数",

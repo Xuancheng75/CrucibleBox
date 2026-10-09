@@ -3,6 +3,6 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['tests/renderer-task.test.ts']
+    include: ['tests/renderer-task.test.ts', 'tests/next-task-service.test.ts']
   }
 })

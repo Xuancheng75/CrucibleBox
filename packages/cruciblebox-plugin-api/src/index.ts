@@ -33,9 +33,29 @@ export interface PluginLogger {
 }
 
 export interface PluginHostAPI {
+  getOwnDirectory?(): Promise<{ path: string }>
   notify(title: string, body?: string): void
   openDialog(type: 'file' | 'folder'): Promise<string | null>
   fetch(url: string, opts?: RequestInit): Promise<Response | PluginFetchResponse>
+  runProcess?(
+    program: string,
+    args: string[],
+    options?: { cwd?: string; timeoutMs?: number }
+  ): Promise<PluginProcessResult>
+  startProcess?(
+    program: string,
+    args: string[],
+    options?: {
+      cwd?: string
+      timeoutMs?: number
+      /** Replaces __CRUCIBLEBOX_OUTPUT__ in args with a staged sibling file. */
+      outputTarget?: string
+      outputValidation?: 'nonempty' | 'media'
+      inputPaths?: string[]
+    }
+  ): Promise<{ taskId: string }>
+  getProcessTask?(taskId: string): Promise<PluginProcessTask>
+  cancelProcessTask?(taskId: string): Promise<{ cancelled: boolean }>
   readFile(path: string): Promise<Uint8Array>
   writeFile(path: string, data: string | Uint8Array): Promise<void>
   registerShortcut(keys: string, handler: () => void): () => void
@@ -59,6 +79,22 @@ export interface PluginFetchResponse {
   statusText: string
   headers: Record<string, string>
   body: string
+}
+
+export interface PluginProcessResult {
+  exitCode: number | null
+  stdout: string
+  stderr: string
+  timedOut: boolean
+  outputPath?: string
+}
+
+export interface PluginProcessTask {
+  taskId: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  result?: PluginProcessResult
+  error?: { message: string }
+  progress?: { stage: string; percent: number; message: string }
 }
 
 export interface SystemInfo {
@@ -98,6 +134,12 @@ export interface PluginContext {
   capabilities: {
     events: Pick<PluginHostAPI, 'emitEvent' | 'onEvent'>
     system: Pick<PluginHostAPI, 'clipboard' | 'getSystemInfo' | 'registerShortcut'>
+    process?: {
+      run: NonNullable<PluginHostAPI['runProcess']>
+      start: NonNullable<PluginHostAPI['startProcess']>
+      getTask: NonNullable<PluginHostAPI['getProcessTask']>
+      cancel: NonNullable<PluginHostAPI['cancelProcessTask']>
+    }
   }
   api: PluginHostAPI
 }

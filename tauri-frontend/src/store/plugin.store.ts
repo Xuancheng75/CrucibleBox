@@ -9,6 +9,7 @@ export interface PendingInstall {
   path: string
   taskId?: string
   title?: string
+  marketplaceSourceId?: number
 }
 
 export interface InstallQueueState {
@@ -50,7 +51,7 @@ export interface PluginState {
   installPlugin: (
     source: 'zip' | 'directory',
     path: string,
-    task?: { id: string; title?: string }
+    task?: { id: string; title?: string; marketplaceSourceId?: number }
   ) => Promise<boolean>
   commitInstall: () => Promise<boolean>
   discardInstall: () => Promise<void>
@@ -84,6 +85,7 @@ type PluginStoreSet = (
 let pluginsFetchSequence = 0
 let pluginsFetchPromise: Promise<void> | null = null
 let activeInstallTaskId: string | null = null
+let activeMarketplaceSourceId: number | undefined
 
 async function runBatchLifecycle(
   get: () => PluginStore,
@@ -193,6 +195,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       return false
     const taskId = task?.id ?? `plugin-install-${Date.now()}-${Math.random().toString(16).slice(2)}`
     activeInstallTaskId = taskId
+    activeMarketplaceSourceId = task?.marketplaceSourceId
     useTaskStore.getState().upsertTask({
       id: taskId,
       title: task?.title ?? '准备安装插件',
@@ -236,6 +239,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   commitInstall: async () => {
     const preview = get().installPreview
     if (!preview?.installToken) return false
+    const taskId = activeInstallTaskId
     if (
       get().batchOperationBusy ||
       get().reorderBusy ||
@@ -243,15 +247,13 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     )
       return false
     set({ loading: true, error: null })
-    if (activeInstallTaskId) {
-      useTaskStore.getState().patchTask(activeInstallTaskId, {
-        title: preview.data?.isUpgrade ? '正在升级插件' : '正在安装插件',
-        status: 'running',
-        progress: 60
-      })
-    }
     try {
-      const result = await tauriApi.plugin.installCommit(preview.installToken)
+      const result = await tauriApi.plugin.installCommit(
+        preview.installToken,
+        activeMarketplaceSourceId,
+        taskId ?? undefined
+      )
+      activeMarketplaceSourceId = undefined
       if (result.success) {
         await get().fetchPlugins()
         set((state) => ({
@@ -260,23 +262,11 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
           loading: false,
           batchSucceeded: state.batchSucceeded + 1
         }))
+        activeInstallTaskId = null
         void get().processNextInQueue()
-        if (activeInstallTaskId) {
-          useTaskStore.getState().patchTask(activeInstallTaskId, {
-            status: 'completed',
-            progress: 100
-          })
-          activeInstallTaskId = null
-        }
         return true
       }
-      if (activeInstallTaskId) {
-        useTaskStore.getState().patchTask(activeInstallTaskId, {
-          status: 'failed',
-          error: result.error ?? '安装失败'
-        })
-        activeInstallTaskId = null
-      }
+      activeInstallTaskId = null
       set((state) => ({
         error: result.error ?? '安装失败',
         loading: false,
@@ -285,13 +275,8 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       void get().processNextInQueue()
       return false
     } catch (err) {
-      if (activeInstallTaskId) {
-        useTaskStore.getState().patchTask(activeInstallTaskId, {
-          status: 'failed',
-          error: toErrorMessage(err, '安装失败')
-        })
-        activeInstallTaskId = null
-      }
+      activeMarketplaceSourceId = undefined
+      activeInstallTaskId = null
       set((state) => ({
         error: toErrorMessage(err, '安装失败'),
         loading: false,
@@ -303,6 +288,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   },
 
   discardInstall: async () => {
+    activeMarketplaceSourceId = undefined
     const preview = get().installPreview
     set((state) => ({
       installPreview: null,
@@ -507,7 +493,9 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     const ok = await get().installPlugin(
       head.source,
       head.path,
-      head.taskId ? { id: head.taskId, title: head.title } : undefined
+      head.taskId
+        ? { id: head.taskId, title: head.title, marketplaceSourceId: head.marketplaceSourceId }
+        : undefined
     )
     set({ installQueue: rest, queueProcessing: false })
     if (ok) {

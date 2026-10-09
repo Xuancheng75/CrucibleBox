@@ -190,6 +190,23 @@ impl DirectoryTransaction {
         Ok(())
     }
 
+    /// Preserve the exact previous directory after the committed retention journal is durable.
+    pub fn commit_retaining_backup(&mut self) -> Result<PathBuf, String> {
+        if self.phase != Phase::Swapped || !self.original_target_existed {
+            return Err("Cannot retain backup outside an upgrade commit".into());
+        }
+        assert_plain_directory(&self.target_dir, "Installed plugin")?;
+        let retained = retain_internal_directory(
+            &self.plugins_dir,
+            &self.backup_dir,
+            &self.backup_basename(),
+            &self.plugin_name,
+            &self.transaction_id,
+        )?;
+        self.phase = Phase::Committed;
+        Ok(retained)
+    }
+
     /// 相位感知回滚：Created 直接标记；Staged 恢复 backup（若存在）并删 stage；
     /// Swapped 先 target→stage 再恢复 backup→target 并删 stage；Committed 拒绝。
     pub fn rollback(&mut self) -> Result<(), String> {
@@ -378,6 +395,21 @@ impl RemovalTransaction {
         )?;
         self.quarantined = false;
         Ok(())
+    }
+
+    pub fn commit_retaining_files(&mut self) -> Result<PathBuf, String> {
+        if !self.quarantined {
+            return Err("Cannot retain removal before quarantine".into());
+        }
+        let retained = retain_internal_directory(
+            &self.plugins_dir,
+            &self.quarantine_dir,
+            &self.quarantine_basename(),
+            &self.plugin_name,
+            &self.transaction_id,
+        )?;
+        self.quarantined = false;
+        Ok(retained)
     }
 
     pub fn target_dir(&self) -> &Path {
@@ -817,6 +849,23 @@ fn copy_allowed_files(
 fn is_optional_document_engine_asset(path: &str) -> bool {
     path.starts_with("assets/models/ppocrv4-mobile-zh-en/")
         || path.starts_with("assets/models/ppocrv6-small-det-v5-mobile-rec/")
+}
+
+/// Retained packages are never enumerated as active plugins or disposable transaction artifacts.
+pub(crate) fn retain_internal_directory(
+    plugins_dir: &Path,
+    source: &Path,
+    source_expected: &str,
+    name: &str,
+    txid: &str,
+) -> Result<PathBuf, String> {
+    if !is_plugin_name(name) || !is_transaction_id(txid) {
+        return Err("Invalid retained directory identity".into());
+    }
+    let basename = format!(".{name}.retained-{txid}");
+    let target = plugins_dir.join(&basename);
+    rename_internal_directory(plugins_dir, source, source_expected, &target, &basename)?;
+    Ok(target)
 }
 
 #[cfg(test)]

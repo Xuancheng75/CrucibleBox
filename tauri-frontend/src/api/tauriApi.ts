@@ -48,6 +48,24 @@ export interface PluginMetaDto {
   sortOrder: number
 }
 
+export interface UserPluginTag {
+  id: number
+  name: string
+  pluginIds: string[]
+}
+
+export interface PluginCommandContribution {
+  pluginId: string
+  id: string
+  title: string
+  keywords: string[]
+}
+
+export interface PluginFileHandler {
+  pluginId: string
+  extensions: string[]
+}
+
 /** plugin_get_logs 返回的日志条目（Rust 侧 snake_case 字段） */
 export interface PluginLogEntryDto {
   id: number
@@ -121,6 +139,8 @@ export interface MarketplaceCatalogPluginDto {
   publisher?: string
   description?: string
   highlights?: string[]
+  tags?: string[]
+  keywords?: string[]
 }
 
 export interface MarketplaceCatalogResponse {
@@ -130,6 +150,19 @@ export interface MarketplaceCatalogResponse {
   stale: boolean
   fetchedAt: number
   networkRoute: string
+}
+
+export interface MarketplaceSource {
+  id: number
+  name: string
+  url: string
+  enabled: boolean
+}
+
+export interface PluginMarketplaceOrigin {
+  pluginId: string
+  sourceId: number
+  sourceUrl: string
 }
 
 export interface NetworkDiagnostic {
@@ -205,13 +238,34 @@ export interface HostTaskEventPayload {
   status: 'queued' | 'running' | 'paused' | 'waiting-user' | 'completed' | 'failed' | 'cancelled'
   progress?: number
   error?: string
+  owner?: string
+  kind?: string
+  stage?: string
+  sequence?: number
+  createdAt?: number
+  updatedAt?: number
+  resultRefs?: string[]
+  executorKey?: string | null
+  checkpointRef?: string | null
+  parentTaskId?: string | null
 }
+
+export type HostTaskMutation = Partial<HostTaskEventPayload> & Pick<HostTaskEventPayload, 'id'>
 
 // ---------------------------------------------------------------------------
 // API 封装
 // ---------------------------------------------------------------------------
 
 export const tauriApi = {
+  hostTasks: {
+    cancel: (id: string): Promise<boolean> => invoke('host_task_cancel', { id }),
+    revealResult: (id: string, path: string): Promise<void> =>
+      invoke('host_task_reveal_result', { id, path }),
+    list: (): Promise<HostTaskEventPayload[]> => invoke('host_tasks_list'),
+    upsert: (change: HostTaskMutation): Promise<HostTaskEventPayload> =>
+      invoke('host_task_upsert', { change }),
+    removeTerminal: (id?: string): Promise<number> => invoke('host_tasks_remove_terminal', { id })
+  },
   settings: {
     get: (key: string): Promise<string | null> => invoke<string | null>('settings_get', { key }),
     set: (key: string, value: string): Promise<boolean> =>
@@ -226,6 +280,7 @@ export const tauriApi = {
   app: {
     getVersion: (): Promise<string> => invoke<string>('app_get_version'),
     getPlatform: (): Promise<string> => invoke<string>('app_get_platform'),
+    faultHistory: (): Promise<{ path: string; text: string }> => invoke('app_fault_history'),
     checkUpdate: (
       channel: 'stable' | 'beta',
       timeoutMs?: number
@@ -234,21 +289,47 @@ export const tauriApi = {
   },
 
   plugin: {
+    commandContributions: (): Promise<PluginCommandContribution[]> =>
+      invoke('plugin_command_contributions_list'),
+    fileHandlers: (): Promise<PluginFileHandler[]> => invoke('plugin_file_handlers_list'),
+    tags: {
+      list: (): Promise<UserPluginTag[]> => invoke<UserPluginTag[]>('plugin_tags_list'),
+      create: (name: string): Promise<number> => invoke<number>('plugin_tags_create', { name }),
+      rename: (id: number, name: string): Promise<void> =>
+        invoke<void>('plugin_tags_rename', { id, name }),
+      delete: (id: number): Promise<void> => invoke<void>('plugin_tags_delete', { id }),
+      assign: (pluginIds: string[], tagIds: number[]): Promise<void> =>
+        invoke<void>('plugin_tags_assign', { pluginIds, tagIds })
+    },
     marketplaceCatalog: (
       forceRefresh = false,
-      channel?: 'stable' | 'beta'
+      channel?: 'stable' | 'beta',
+      sourceId?: number
     ): Promise<MarketplaceCatalogResponse> =>
       invoke<MarketplaceCatalogResponse>('marketplace_catalog', {
         forceRefresh,
-        channel
+        channel,
+        sourceId
       }),
+    marketplaceSources: {
+      list: (): Promise<MarketplaceSource[]> =>
+        invoke<MarketplaceSource[]>('marketplace_sources_list'),
+      add: (name: string, url: string): Promise<number> =>
+        invoke<number>('marketplace_sources_add', { name, url }),
+      setEnabled: (id: number, enabled: boolean): Promise<void> =>
+        invoke<void>('marketplace_sources_set_enabled', { id, enabled }),
+      delete: (id: number): Promise<void> => invoke<void>('marketplace_sources_delete', { id })
+    },
+    marketplaceOrigins: (): Promise<PluginMarketplaceOrigin[]> =>
+      invoke<PluginMarketplaceOrigin[]>('marketplace_origins_list'),
     marketplaceDownload: (
       id: string,
       channel?: 'stable' | 'beta',
       priority: 'foreground' | 'normal' = 'foreground',
-      taskId?: string
+      taskId?: string,
+      sourceId?: number
     ): Promise<string> =>
-      invoke<string>('marketplace_download_plugin', { id, channel, priority, taskId }),
+      invoke<string>('marketplace_download_plugin', { id, channel, priority, taskId, sourceId }),
     marketplaceCancel: (taskId: string): Promise<boolean> =>
       invoke<boolean>('marketplace_cancel_task', { taskId }),
     list: async (): Promise<PluginMeta[]> => {
@@ -261,11 +342,9 @@ export const tauriApi = {
       return dto ? toPluginMeta(dto) : null
     },
 
-    enable: (id: string): Promise<IpcResult> =>
-      invoke<IpcResult>('plugin_enable', { id }),
+    enable: (id: string): Promise<IpcResult> => invoke<IpcResult>('plugin_enable', { id }),
 
-    disable: (id: string): Promise<IpcResult> =>
-      invoke<IpcResult>('plugin_disable', { id }),
+    disable: (id: string): Promise<IpcResult> => invoke<IpcResult>('plugin_disable', { id }),
 
     reorder: (orderedIds: string[]): Promise<IpcResult> =>
       invoke<IpcResult>('plugin_reorder', { orderedIds }),
@@ -292,8 +371,7 @@ export const tauriApi = {
     clearLogs: (pluginId?: string): Promise<IpcResult> =>
       invoke<IpcResult>('plugin_clear_logs', { pluginId }),
 
-    uninstall: (id: string): Promise<IpcResult> =>
-      invoke<IpcResult>('plugin_uninstall', { id }),
+    uninstall: (id: string): Promise<IpcResult> => invoke<IpcResult>('plugin_uninstall', { id }),
 
     createRendererSession: (
       id: string,
@@ -314,10 +392,18 @@ export const tauriApi = {
     installPreview: (source: InstallSource): Promise<PluginInstallPreviewResponse> =>
       invoke<PluginInstallPreviewResponse>('plugin_install_preview', { source }),
 
-    installCommit: (installToken: string): Promise<IpcResult> =>
+    installCommit: (
+      installToken: string,
+      marketplaceSourceId?: number,
+      taskId?: string
+    ): Promise<IpcResult> =>
       // Rust 形参名为 token（1.9.3 起即如此；此前误传 installToken 导致确认安装必报
       // "missing required key token"，1.9.13 修复）
-      invoke<IpcResult>('plugin_install_commit', { token: installToken }),
+      invoke<IpcResult>('plugin_install_commit', {
+        token: installToken,
+        marketplaceSourceId,
+        taskId
+      }),
 
     installDiscard: (installToken: string): Promise<IpcResult> =>
       invoke<IpcResult>('plugin_install_discard', { token: installToken })
@@ -381,12 +467,8 @@ export const tauriApi = {
         callback(event.payload)
       ),
 
-    onClipboard: (
-      callback: (payload: PluginClipboardEventPayload) => void
-    ): Promise<UnlistenFn> =>
-      listen<PluginClipboardEventPayload>('plugin:clipboard', (event) =>
-        callback(event.payload)
-      ),
+    onClipboard: (callback: (payload: PluginClipboardEventPayload) => void): Promise<UnlistenFn> =>
+      listen<PluginClipboardEventPayload>('plugin:clipboard', (event) => callback(event.payload)),
 
     onMarketplaceProgress: (
       callback: (payload: MarketplaceProgressEventPayload) => void

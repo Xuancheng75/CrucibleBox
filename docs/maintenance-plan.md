@@ -1,3 +1,5 @@
+> beta.4 当前执行边界：唯一活动运行线为 Tauri/Next，版本 2.1.0-beta.4。下面旧版本排期仅作维护历史，当前构建与交付命令以 AGENTS.md、development.md 和 release-runbook.md 为准。不要重新接入退役 Electron/PoC 工程；现行七官方插件与按需 document runtime 的验收按 docs/history/architecture-acceptance-2026-10-09.md 及后续复验记录追踪。
+
 # CrucibleBox 维护复杂度优化方案（整合版）
 
 > 状态：维护规范（2.0.0 正式版工作包）。历史规划数字仅作迁移背景，不作为当前验收结论。

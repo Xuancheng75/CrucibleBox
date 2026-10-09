@@ -5,6 +5,10 @@ release/
 artifacts/
 src-tauri/binaries/
 src-tauri/resources/7zip/
+src-tauri/resources/formula-ocr/python/
+src-tauri/resources/formula-ocr/models/
+src-tauri/resources/formula-ocr/formula-ocr-onnx-worker.py
+src-tauri/resources/formula-ocr/high/
 src-tauri/target/
 src-tauri/cruciblebox-plugin-host/target/
 ocr-worker/target/
@@ -12,3 +16,21 @@ ocr-worker/target/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+src-tauri/crates/*/target/
+document-runtime-output/
+
+# Local dependency caches, acceptance data and generated experiment outputs
+.cache/
+.npm-cache/
+.pnpm-store/
+**/__pycache__/
+.beta*-backup*/
+.beta*-baseline*/
+.beta*-tools/
+.beta*-smoke-appdata/
+.beta*-install-staging*/
+.beta*-crash-dumps/
+tmp/
+poc-*/
+tmp-model-test/
+workers/document/target/

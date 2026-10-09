@@ -73,6 +73,10 @@ export interface PluginBackendHostMethodMap {
       body: string
     }
   }
+  'process.run': {
+    params: { program: string; args: string[]; cwd?: string; timeoutMs?: number }
+    result: { exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }
+  }
   'file.read': {
     params: { path: string }
     result: { base64: string }
@@ -136,6 +140,10 @@ export interface PluginBackendWorkerMethodMap {
   }
   'lifecycle.dispose': {
     params: Record<string, never>
+    result: null
+  }
+  'lifecycle.configure': {
+    params: { config: Record<string, PluginBackendRpcJsonValue> }
     result: null
   }
   'plugin.message': {

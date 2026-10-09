@@ -38,6 +38,7 @@ const HOST_METHODS = new Set<PluginBackendHostMethod>([
   'notification.show',
   'dialog.open',
   'network.fetch',
+  'process.run',
   'file.read',
   'file.write',
   'shortcut.register',
@@ -53,6 +54,7 @@ const HOST_METHODS = new Set<PluginBackendHostMethod>([
 
 const WORKER_METHODS = new Set<PluginBackendWorkerMethod>([
   'lifecycle.initialize',
+  'lifecycle.configure',
   'lifecycle.dispose',
   'plugin.message',
   'host.event'
@@ -186,6 +188,21 @@ function validateParams(method: PluginBackendRpcMethod, value: unknown): void {
       if (params.options !== undefined) json(params.options)
       return
     }
+    case 'process.run': {
+      const params = exactObject(value, ['program', 'args'], ['cwd', 'timeoutMs'])
+      boundedString(params.program, 32768)
+      if (!Array.isArray(params.args) || params.args.length > 256) fail('invalid process arguments')
+      for (const arg of params.args) {
+        if (typeof arg !== 'string' || arg.length > 32768) fail('invalid process argument')
+      }
+      if (params.cwd !== undefined) boundedString(params.cwd, 32768)
+      if (
+        params.timeoutMs !== undefined &&
+        (typeof params.timeoutMs !== 'number' || params.timeoutMs < 1 || params.timeoutMs > 20000)
+      )
+        fail('invalid process timeout')
+      return
+    }
     case 'file.read': {
       const params = exactObject(value, ['path'])
       boundedString(params.path, 32768)
@@ -247,6 +264,12 @@ function validateParams(method: PluginBackendRpcMethod, value: unknown): void {
     case 'lifecycle.dispose':
       exactObject(value, [])
       return
+    case 'lifecycle.configure': {
+      const params = exactObject(value, ['config'])
+      if (!isPlainObject(params.config)) fail('config must be an object')
+      json(params.config)
+      return
+    }
     case 'plugin.message': {
       const params = exactObject(value, [], ['message'])
       if (params.message !== undefined) json(params.message)

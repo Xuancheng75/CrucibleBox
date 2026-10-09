@@ -1,3 +1,4 @@
+import type { ServiceRenderProps } from './next-types'
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import {
   assertTaskCancellationAccepted,
@@ -219,7 +220,9 @@ const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   running: '正在执行',
   succeeded: '执行成功',
   failed: '执行失败',
-  cancelled: '已取消'
+  cancelled: '已取消',
+  paused: '已暂停',
+  interrupted: '执行已中断，请检查已生成文件后重试'
 }
 
 function TaskProgressPanel({
@@ -321,23 +324,7 @@ function TaskProgressPanel({
 // 插件渲染入口
 // ============================================================
 
-export default function UniEnvUI({
-  api
-}: {
-  config: Record<string, unknown>
-  onConfigChange: (config: Record<string, unknown>) => void
-  api: {
-    sendToBackend(message: unknown): Promise<unknown>
-    notify(title: string, body?: string): void
-    confirm(options: {
-      title: string
-      message: string
-      confirmLabel?: string
-      cancelLabel?: string
-    }): Promise<boolean>
-    onBackendMessage(handler: (msg: unknown) => void): () => void
-  }
-}) {
+export default function UniEnvUI({ api }: ServiceRenderProps) {
   const [tools, setTools] = useState<ToolItem[]>([])
   const [combos, setCombos] = useState<ComboPack[]>([])
   const [activeKey, setActiveKey] = useState<string>('python')
@@ -398,7 +385,7 @@ export default function UniEnvUI({
 
   const send = useCallback(
     async (msg: Record<string, unknown>) => {
-      const result = await api.sendToBackend(msg)
+      const result = await api.service.call(msg)
       return result as Record<string, unknown>
     },
     [api]
@@ -709,6 +696,7 @@ export default function UniEnvUI({
         >
         if (result.error) {
           toast('error', result.error as string)
+          if (result.versionSwitched === true) await detectTool(toolId, true)
         } else {
           toast('success', (result.message as string) || `已切换到 ${version}`)
           await detectTool(toolId, true)
@@ -864,7 +852,7 @@ export default function UniEnvUI({
     gap: 6,
     padding: '8px 20px',
     background: COLORS.primary,
-    color: '#fff',
+    color: 'var(--ob-color-primary-contrast, #fff)',
     border: 'none',
     borderRadius: 6,
     cursor: 'pointer',
@@ -872,7 +860,7 @@ export default function UniEnvUI({
     fontWeight: 500,
     width: '100%',
     height: 38,
-    boxShadow: '0 2px 0 rgba(5,145,255,0.06)'
+    boxShadow: '0 2px 0 color-mix(in srgb, var(--ob-color-primary, #0591ff) 6%, transparent)'
   }
 
   const btnDefault: React.CSSProperties = {
@@ -1345,7 +1333,9 @@ export default function UniEnvUI({
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <div>
                       <span style={{ fontWeight: 600 }}>当前版本：</span>
-                      <span style={{ ...tagStyle, background: COLORS.success, color: '#fff' }}>
+                      <span
+                        style={{ ...tagStyle, background: COLORS.successBg, color: COLORS.success }}
+                      >
                         {activeStatus.version}
                       </span>
                     </div>
@@ -1395,7 +1385,9 @@ export default function UniEnvUI({
                   <div style={{ fontWeight: 600, fontSize: FONT.sizeLg, marginBottom: 8 }}>
                     已安装版本
                   </div>
-                  <span style={{ ...tagStyle, background: COLORS.success, color: '#fff' }}>
+                  <span
+                    style={{ ...tagStyle, background: COLORS.successBg, color: COLORS.success }}
+                  >
                     {activeStatus.version} (当前)
                   </span>
                   <p style={{ fontSize: FONT.sizeSm, color: COLORS.textSecondary, marginTop: 8 }}>
