@@ -3986,6 +3986,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the separately packaged document worker runtime"]
     fn chunk_task_returns_chunks_for_document_path() {
         let t = TempDb::new("chunk");
         let dir = std::env::temp_dir().join(format!("cb-de-chunk-{}", std::process::id()));
@@ -3997,7 +3998,11 @@ mod tests {
             &t.db,
             "document-engine",
             "message",
-            Some(&json!({ "type": "document.chunk", "path": path.to_string_lossy() })),
+            Some(&json!({
+                "type": "document.chunk",
+                "path": path.to_string_lossy(),
+                "options": { "outputDirectory": dir.join("chunks").to_string_lossy().into_owned() }
+            })),
         )
         .unwrap();
         let task_id = accepted["taskId"].as_str().unwrap().to_string();
@@ -4016,7 +4021,10 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(snapshot["status"], "succeeded");
+        assert_eq!(
+            snapshot["status"], "succeeded",
+            "document chunk task snapshot: {snapshot}"
+        );
         assert!(snapshot["result"]["count"].as_u64().unwrap() >= 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -214,6 +214,8 @@ jobs:
           $runtime = (Resolve-Path 'artifacts/document-runtime/0.1.0').Path
           $env:DOCUMENT_WORKER_ACCEPTANCE_EXE = Join-Path $runtime 'document-worker.exe'
           $env:DOCUMENT_WORKER_ACCEPTANCE_PDFIUM = Join-Path $runtime 'pdfium.dll'
+          cargo test --manifest-path src-tauri/Cargo.toml chunk_task_returns_chunks_for_document_path -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --manifest-path src-tauri/Cargo.toml parse_pdf_task_returns_unified_document -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --manifest-path src-tauri/Cargo.toml convert_task_writes_markdown_output -- --ignored --nocapture
