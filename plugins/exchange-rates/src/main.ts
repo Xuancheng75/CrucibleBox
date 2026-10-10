@@ -59,6 +59,15 @@ const plugin: PluginMain = {
         const rate = (cached.rates[to] || 1) / (cached.rates[from] || 1)
         return { result: amount * rate, rate }
       }
+      case 'getFavorites':
+        return { favorites: (await ctx.storage.get<string[]>('favorites')) ?? ['CNY', 'EUR', 'JPY', 'GBP'] }
+      case 'setFavorites': {
+        const favorites = (message as { favorites?: unknown }).favorites
+        if (!Array.isArray(favorites)) return { error: '收藏币种格式无效' }
+        const filtered = favorites.filter((value): value is string => typeof value === 'string' && /^[A-Z]{3}$/.test(value)).slice(0, 20)
+        await ctx.storage.set('favorites', filtered)
+        return { favorites: filtered }
+      }
       default:
         return { error: `unknown message: ${msg.type}` }
     }

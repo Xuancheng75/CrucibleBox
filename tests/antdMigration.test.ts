@@ -1,3 +1,4 @@
+import { validateManifest } from '../packages/cruciblebox-next-api/src/index.mjs'
 import { readFileSync, readdirSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -6,14 +7,9 @@ import { themeToCssVars } from '../shared/themes/css-vars'
 import { PRESET_THEMES } from '../shared/themes/presets'
 
 const projectRoot = resolve(import.meta.dirname, '..')
-const productionPlugins = [
-  'diary',
-  'dice-roller',
-  'gif-editor',
-  'theme-manager',
-  'turntable',
-  'unienv'
-] as const
+const nextPlugins = JSON.parse(
+  readFileSync(join(projectRoot, 'scripts', 'next-plugin-catalog.json'), 'utf8')
+) as { id: string }[]
 
 function collectSourceFiles(directory: string): string[] {
   const files: string[] = []
@@ -51,11 +47,13 @@ describe('Ant Design 6 migration boundary', () => {
 
   it('keeps a complete theme by plugin visual contract matrix', () => {
     expect(PRESET_THEMES.length).toBeGreaterThanOrEqual(6)
-    for (const plugin of productionPlugins) {
+    for (const { id: plugin } of nextPlugins) {
       const manifest = JSON.parse(
         readFileSync(join(projectRoot, 'plugins', plugin, 'plugin.json'), 'utf8')
-      ) as { rendererApiVersion?: number }
-      expect(manifest.rendererApiVersion, plugin).toBe(2)
+      ) as { rendererApiVersion?: number; manifestVersion?: number }
+      if (manifest.manifestVersion === 5)
+        expect(validateManifest(JSON.stringify(manifest)).sdkApiVersion).toBe(5)
+      else expect([2, 3, 4], plugin).toContain(manifest.rendererApiVersion)
       expect(
         readFileSync(join(projectRoot, 'plugins', plugin, 'dist', 'renderer.js'))
       ).not.toHaveLength(0)

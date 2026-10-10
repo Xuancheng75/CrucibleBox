@@ -425,13 +425,15 @@ pub fn download_urls(
                     "Node.js (TUNA)".into(),
                 ));
             }
-            urls.push((
-                format!(
-                    "https://npmmirror.com/mirrors/node/v{version}/{}",
-                    a.filename
-                ),
-                "Node.js (淘宝NPM)".into(),
-            ));
+            if mirror == "npmmirror" {
+                urls.push((
+                    format!(
+                        "https://npmmirror.com/mirrors/node/v{version}/{}",
+                        a.filename
+                    ),
+                    "Node.js (npmmirror)".into(),
+                ));
+            }
             urls.push((official_url(tool, version)?, "Node.js (官方)".into()));
         }
         "git" => {
@@ -556,10 +558,10 @@ mod tests {
     #[test]
     fn mirror_lists_match_frozen_semantics() {
         let node_direct = download_urls("node", "24.18.1", "direct").unwrap();
-        assert_eq!(node_direct.len(), 2);
-        assert!(node_direct[0].0.contains("npmmirror.com"));
+        assert_eq!(node_direct.len(), 1);
+        assert!(node_direct[0].0.contains("nodejs.org"));
         let node_tuna = download_urls("node", "24.18.1", "tuna").unwrap();
-        assert_eq!(node_tuna.len(), 3);
+        assert_eq!(node_tuna.len(), 2);
         assert!(node_tuna[0].0.contains("tuna"));
 
         let go_direct = download_urls("go", "1.26.5", "direct").unwrap();

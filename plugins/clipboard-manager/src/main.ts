@@ -15,12 +15,14 @@ const plugin: PluginMain = {
   async activate(pluginCtx: PluginContext) {
     ctx = pluginCtx
     historyMutation = Promise.resolve()
-    // 读取当前剪贴板作为初始 lastText（避免首次事件重复记录）
-    try {
-      const result = await ctx.api.clipboard.read()
-      lastText = result.text || ''
-    } catch {
-      // clipboard may be unavailable
+    // 暂停状态下不读取内容；宿主监听器恢复时自行建立新基线。
+    if ((await ctx.storage.get<boolean>('paused')) !== true) {
+      try {
+        const result = await ctx.api.clipboard.read()
+        lastText = result.text || ''
+      } catch {
+        // clipboard may be unavailable
+      }
     }
     // 加载已有历史，更新 lastText
     const stored = await ctx.storage.get<ClipItem[]>('history')
@@ -39,7 +41,13 @@ const plugin: PluginMain = {
     const msg = message as { type: string; id?: string; text?: string }
 
     switch (msg.type) {
+      case 'getPaused':
+        return { paused: (await ctx.storage.get<boolean>('paused')) === true }
+      case 'setPaused':
+        await ctx.storage.set('paused', (message as { paused?: boolean }).paused === true)
+        return { ok: true }
       case 'clipboard:changed': {
+        if ((await ctx.storage.get<boolean>('paused')) === true) return { ok: true, paused: true }
         // 宿主侧 clipboard_monitor 广播的事件
         const text = msg.text || ''
         if (text && text !== lastText) {
@@ -71,11 +79,6 @@ const plugin: PluginMain = {
       case 'copyToClipboard': {
         if (msg.text === undefined) return { error: 'missing text' }
         await ctx.api.clipboard.write(msg.text)
-        // Clipboard monitors are intentionally debounced by the host.  Add
-        // explicit copies immediately so a fast copy-and-open flow never
-        // loses the item before the native change event arrives.
-        lastText = msg.text
-        if (msg.text) await enqueueHistoryMutation(() => addToHistory(msg.text!))
         return { ok: true }
       }
       default:

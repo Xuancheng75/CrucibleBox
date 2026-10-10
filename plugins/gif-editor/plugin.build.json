@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "renderer": "src/renderer-entry.tsx",
+  "workers": [
+    {
+      "source": "src/workers/residue.worker.ts",
+      "target": "dist/workers/residue.js"
+    }
+  ],
+  "jsx": "automatic",
+  "css": "string",
+  "aliases": {
+    "@cruciblebox/next-api": "vendor/next-api/src/index.mjs"
+  }
+}

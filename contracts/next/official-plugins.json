@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "stage": "frozen",
+  "officialPlugins": [
+    {
+      "id": "document-engine",
+      "displayName": "文档与知识库"
+    },
+    {
+      "id": "theme-manager",
+      "displayName": "主题管理"
+    },
+    {
+      "id": "unienv",
+      "displayName": "开发环境管理"
+    },
+    {
+      "id": "diary",
+      "displayName": "日记与笔记"
+    },
+    {
+      "id": "turntable",
+      "displayName": "随机决策"
+    },
+    {
+      "id": "gif-editor",
+      "displayName": "GIF 动画编辑"
+    },
+    {
+      "id": "archive-extractor",
+      "displayName": "压缩与解压缩"
+    }
+  ],
+  "excludedFromNextOfficial": [
+    "clipboard-manager",
+    "exchange-rates",
+    "json-toolkit",
+    "media-toolkit",
+    "audio-video-processor",
+    "developer-toolkit",
+    "system-info"
+  ],
+  "legacyPolicy": {
+    "preserveInstalledPackages": true,
+    "preserveUserData": true,
+    "preservePairedRollback": true,
+    "protocolMigrationPaused": false,
+    "uiAdaptationAuthorized": true
+  }
+}

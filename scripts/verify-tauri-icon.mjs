@@ -48,6 +48,13 @@ function extractLargestPngPayload(ico) {
 }
 
 function validateRequiredLayers(ico) {
+  // tauri-codegen decodes the first ICO frame for the live window icon.
+  // A small first frame makes the taskbar blurry even with all DPI layers present.
+  const firstWidth = ico[6] === 0 ? 256 : ico[6]
+  const firstHeight = ico[7] === 0 ? 256 : ico[7]
+  if (firstWidth !== 256 || firstHeight !== 256) {
+    throw new Error('ICO must start with a 256px frame for the Tauri Windows window icon')
+  }
   const count = ico.readUInt16LE(4)
   const layers = new Map()
   for (let i = 0; i < count; i += 1) {

@@ -1,0 +1,14 @@
+{
+  "version": "0.1.0",
+  "wire_version": 1,
+  "files": {
+    "document-worker.exe": {
+      "bytes": 8542208,
+      "sha256": "ebd529eb01f3deb65fbfeada637d7be3689d9ea1e072f988299a730a2adfb4f4"
+    },
+    "pdfium.dll": {
+      "bytes": 7211520,
+      "sha256": "79d4676b656cfb1abcea88f9ade3b4b0826c5200382db5f4ec72a636c598c118"
+    }
+  }
+}

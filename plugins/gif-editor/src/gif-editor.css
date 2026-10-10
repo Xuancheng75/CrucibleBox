@@ -69,13 +69,13 @@
 .ge-btn-primary {
   background: var(--ob-color-primary, #2563eb);
   border-color: var(--ob-color-primary, #2563eb);
-  color: #fff;
+  color: var(--ob-color-primary-contrast, #fff);
   font-weight: 600;
 }
 
 .ge-btn-primary:hover:not(:disabled) {
   opacity: 0.9;
-  color: #fff;
+  color: var(--ob-color-primary-contrast, #fff);
 }
 
 .ge-btn-sm {
@@ -286,8 +286,8 @@
 
 .ge-select-overlay {
   position: absolute;
-  border: 2px dashed #e11d48;
-  background: rgba(225, 29, 72, 0.18);
+  border: 2px dashed var(--ob-color-error, #e11d48);
+  background: color-mix(in srgb, var(--ob-color-error, #e11d48) 18%, transparent);
   pointer-events: none;
   box-sizing: border-box;
 }
@@ -298,8 +298,8 @@
   left: 8px;
   padding: 4px 10px;
   border-radius: 6px;
-  background: rgba(225, 29, 72, 0.85);
-  color: #fff;
+  background: var(--ob-color-error-bg, #fff1f0);
+  color: var(--ob-color-error, #cf1322);
   font-size: 12px;
   pointer-events: none;
   z-index: 2;

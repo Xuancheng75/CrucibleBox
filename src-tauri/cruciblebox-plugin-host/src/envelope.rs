@@ -35,8 +35,9 @@ pub fn is_known_error_code(code: &str) -> bool {
 }
 
 /// 宿主→sidecar 的 4 个 worker 方法
-pub const WORKER_METHODS: [&str; 4] = [
+pub const WORKER_METHODS: [&str; 5] = [
     "lifecycle.initialize",
+    "lifecycle.configure",
     "lifecycle.dispose",
     "plugin.message",
     "host.event",
@@ -44,9 +45,7 @@ pub const WORKER_METHODS: [&str; 4] = [
 
 /// sidecar→宿主的 host 方法（契约清单；宿主侧消费，sidecar 出站白名单）
 /// v1.9.15：新增 clipboard.read / clipboard.write / system.info
-pub const HOST_METHODS: [&str; 22] = [
-    "db.query",
-    "db.execute",
+pub const HOST_METHODS: [&str; 21] = [
     "storage.get",
     "storage.set",
     "storage.delete",
@@ -56,6 +55,7 @@ pub const HOST_METHODS: [&str; 22] = [
     "notification.show",
     "dialog.open",
     "network.fetch",
+    "process.run",
     "file.read",
     "file.write",
     "shortcut.register",

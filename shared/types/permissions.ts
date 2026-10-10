@@ -13,7 +13,9 @@ export enum Permission {
   FileWrite = 'file:write',
   ThemeWrite = 'theme:write',
   TrustedUniEnv = 'trusted:unienv',
-  TrustedDocumentEngine = 'trusted:document-engine'
+  TrustedDocumentEngine = 'trusted:document-engine',
+  TrustedArchiveExtractor = 'trusted:archive-extractor',
+  HostFullTrust = 'host:full-trust'
 }
 
 export const ALL_PERMISSIONS: Permission[] = Object.values(Permission)
@@ -23,7 +25,7 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   [Permission.DatabaseWrite]: '写入数据库',
   [Permission.StorageRead]: '读取插件私有存储',
   [Permission.StorageWrite]: '写入插件私有存储',
-  [Permission.ShellExec]: '执行系统命令',
+  [Permission.ShellExec]: '运行本地程序（安装或升级时需确认）',
   [Permission.NetworkFetch]: '发起网络请求',
   [Permission.Notification]: '发送系统通知',
   [Permission.Clipboard]: '读写剪贴板',
@@ -33,5 +35,7 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   [Permission.FileWrite]: '写入本地文件',
   [Permission.ThemeWrite]: '修改工具箱主题',
   [Permission.TrustedUniEnv]: '调用宿主持有的 UniEnv 安装服务',
-  [Permission.TrustedDocumentEngine]: '调用宿主持有的 Document Engine 文档处理服务'
+  [Permission.TrustedDocumentEngine]: '调用宿主持有的文档与知识库处理服务',
+  [Permission.TrustedArchiveExtractor]: '调用宿主持有的本地归档解压服务',
+  [Permission.HostFullTrust]: '完整宿主能力（安装和升级时单独确认）'
 }

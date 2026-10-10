@@ -5,6 +5,7 @@ import {
   CopyOutlined,
   DashboardOutlined,
   FileSearchOutlined,
+  FileZipOutlined,
   GiftOutlined,
   GlobalOutlined,
   PictureOutlined,
@@ -49,7 +50,11 @@ interface PluginGlyphProps {
 
 const OFFICIAL_ICONS: Record<string, ComponentType<{ style?: CSSProperties }>> = {
   'document-engine': FileSearchOutlined,
+  'archive-extractor': FileZipOutlined,
   unienv: RocketOutlined,
+  'media-toolkit': PictureOutlined,
+  'developer-toolkit': CodeOutlined,
+  'productivity-toolkit': ReadOutlined,
   diary: ReadOutlined,
   'gif-editor': PictureOutlined,
   'clipboard-manager': CopyOutlined,

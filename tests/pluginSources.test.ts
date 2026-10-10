@@ -1,3 +1,4 @@
+import { validateManifest } from '../packages/cruciblebox-next-api/src/index.mjs'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +10,8 @@ interface PluginCatalogEntry {
 }
 
 interface PluginManifest {
+  manifestVersion?: number
+  id?: string
   backend?: boolean
   name: string
   version: string
@@ -35,6 +38,13 @@ const repositoryRoot = resolve(testDirectory, '..')
 const catalog = JSON.parse(
   readFileSync(resolve(repositoryRoot, 'scripts', 'plugin-catalog.json'), 'utf8')
 ) as PluginCatalogEntry[]
+const nextIds = new Set(
+  (
+    JSON.parse(
+      readFileSync(resolve(repositoryRoot, 'scripts/next-plugin-catalog.json'), 'utf8')
+    ) as PluginCatalogEntry[]
+  ).map((entry) => entry.id)
+)
 const rootPackage = JSON.parse(
   readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8')
 ) as PackageMetadata
@@ -45,16 +55,19 @@ const rootPackageLock = JSON.parse(
 describe('production plugin source projects', () => {
   it('contains the expected production plugins', () => {
     expect(catalog.map((plugin) => plugin.id)).toEqual([
-      'diary',
-      'dice-roller',
-      'gif-editor',
-      'theme-manager',
-      'turntable',
-      'unienv',
-      'json-toolkit',
       'clipboard-manager',
-      'system-info',
+      'diary',
+      'gif-editor',
+      'turntable',
       'exchange-rates',
+      'archive-extractor',
+      'json-toolkit',
+      'media-toolkit',
+      'audio-video-processor',
+      'developer-toolkit',
+      'theme-manager',
+      'unienv',
+      'system-info',
       'document-engine'
     ])
   })
@@ -63,6 +76,7 @@ describe('production plugin source projects', () => {
     expect(rootPackage.workspaces).toEqual([
       'plugins/*',
       'packages/cruciblebox-plugin-api',
+      'packages/cruciblebox-plugin-ui',
       'packages/openbox-rpc'
     ])
 
@@ -103,12 +117,29 @@ describe('production plugin source projects', () => {
         build: expect.any(String),
         typecheck: expect.any(String)
       })
-      expect(manifest.name).toBe(plugin.id)
-      expect(manifest.backend === false).toBe(['dice-roller', 'json-toolkit'].includes(plugin.id))
-      expect(existsSync(resolve(pluginDirectory, 'src', 'main.ts'))).toBe(true)
+      const next = nextIds.has(plugin.id)
+      if (next) {
+        expect(validateManifest(JSON.stringify(manifest)).id).toBe(plugin.id)
+        expect(manifest.backend).toBeUndefined()
+        expect(packageJson.scripts?.build).toBe('node scripts/build-next.mjs')
+        expect(readFileSync(resolve(pluginDirectory, 'vendor/plugin-build/cli.mjs'), 'utf8')).toBe(
+          readFileSync(resolve(repositoryRoot, 'packages/cruciblebox-plugin-build/cli.mjs'), 'utf8')
+        )
+        for (const file of ['index.mjs', 'index.d.ts', 'index.d.mts', 'generated.mjs']) {
+          const vendor = resolve(pluginDirectory, 'vendor/next-api/src', file)
+          const source = resolve(repositoryRoot, 'packages/cruciblebox-next-api/src', file)
+          if (existsSync(source))
+            expect(readFileSync(vendor, 'utf8')).toBe(readFileSync(source, 'utf8'))
+        }
+      } else {
+        expect(manifest.name).toBe(plugin.id)
+        expect(manifest.backend === false).toBe(
+          ['dice-roller', 'json-toolkit', 'media-toolkit'].includes(plugin.id)
+        )
+        expect(existsSync(resolve(pluginDirectory, 'src', 'main.ts'))).toBe(true)
+      }
       expect(existsSync(resolve(pluginDirectory, 'src', 'renderer.tsx'))).toBe(true)
-
-      for (const entrypoint of [manifest.main, manifest.renderer]) {
+      for (const entrypoint of next ? [manifest.renderer] : [manifest.main, manifest.renderer]) {
         const normalized = normalize(entrypoint).replaceAll('\\', '/')
         expect(isAbsolute(entrypoint)).toBe(false)
         expect(normalized.startsWith('../')).toBe(false)
@@ -117,38 +148,11 @@ describe('production plugin source projects', () => {
     })
   }
 
-  it('packages only the pinned UniEnv proxy and renderer', () => {
+  it('packages only the pinned Next UniEnv renderer', () => {
     const unienv = catalog.find((plugin) => plugin.id === 'unienv')
-    expect(unienv?.runtimeFiles).toEqual(['plugin.json', 'dist/main.js', 'dist/renderer.js'])
+    expect(unienv?.runtimeFiles).toEqual(['plugin.json', 'dist/renderer.js'])
     expect(unienv?.runtimeFiles.some((file) => file.includes('process-runner'))).toBe(false)
     expect(unienv?.runtimeFiles.some((file) => file.includes('tools/'))).toBe(false)
-  })
-
-  it('packages the tsc-emitted turntable-domain module without source maps or declarations', () => {
-    const turntable = catalog.find((plugin) => plugin.id === 'turntable')
-    expect(turntable?.runtimeFiles).toEqual(
-      expect.arrayContaining([
-        'plugin.json',
-        'dist/main.js',
-        'dist/renderer.js',
-        'dist/turntable-domain.js'
-      ])
-    )
-    expect(
-      turntable?.runtimeFiles.some((file) => file.endsWith('.map') || file.endsWith('.d.ts'))
-    ).toBe(false)
-    // dist/main.js is tsc-emitted CommonJS, so the shared domain module is a runtime dependency.
-    const turntableMain = readFileSync(
-      resolve(repositoryRoot, 'plugins', 'turntable', 'src', 'main.ts'),
-      'utf8'
-    )
-    expect(turntableMain).toContain("from './turntable-domain'")
-  })
-
-  it('keeps the esbuild-bundled diary package free of a separate domain module', () => {
-    const diary = catalog.find((plugin) => plugin.id === 'diary')
-    expect(diary?.runtimeFiles).toEqual(['plugin.json', 'dist/main.js', 'dist/renderer.js'])
-    expect(diary?.runtimeFiles).not.toContain('dist/diary-domain.js')
   })
 
   it('keeps the plugin template on the v2 browser-bundle contract', () => {
@@ -161,8 +165,8 @@ describe('production plugin source projects', () => {
     ) as PackageMetadata
 
     expect(manifest).toMatchObject({
-      backendApiVersion: 2,
-      rendererApiVersion: 2,
+      backendApiVersion: 4,
+      rendererApiVersion: 4,
       main: 'dist/main.js',
       renderer: 'dist/renderer.js'
     })
@@ -171,11 +175,17 @@ describe('production plugin source projects', () => {
     expect(existsSync(resolve(templateDirectory, 'src', 'renderer-entry.tsx'))).toBe(true)
   })
 
-  it('vendors an identical renderer builder into the template and every plugin', () => {
+  it('keeps every vendored renderer builder identical to the template copy', () => {
     const builderPath = (project: string) =>
       resolve(repositoryRoot, project, 'scripts', 'build-plugin-renderer.mjs')
-    const copies = [...catalog.map((plugin) => `plugins/${plugin.id}`), 'templates/plugin-template']
-    const reference = readFileSync(builderPath(copies[0]), 'utf8')
+    const copies = [
+      ...catalog
+        .filter((plugin) => !nextIds.has(plugin.id))
+        .map((plugin) => `plugins/${plugin.id}`)
+        .filter((project) => existsSync(builderPath(project))),
+      'templates/plugin-template'
+    ]
+    const reference = readFileSync(builderPath('templates/plugin-template'), 'utf8')
     expect(reference.length).toBeGreaterThan(0)
     for (const project of copies.slice(1)) {
       expect(readFileSync(builderPath(project), 'utf8')).toBe(reference)

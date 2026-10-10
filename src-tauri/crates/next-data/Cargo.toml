@@ -1,0 +1,11 @@
+[package]
+name = "cruciblebox-next-data"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+cruciblebox-next-protocol = { path = "../next-protocol" }

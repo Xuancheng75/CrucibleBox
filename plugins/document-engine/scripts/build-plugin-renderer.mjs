@@ -53,7 +53,11 @@ export async function buildPluginRenderer({ projectRoot, watch = false, addition
     define: {
       'process.env.NODE_ENV': '"production"'
     },
-    format: 'iife',
+    format: 'esm',
+    alias: {
+      '@cruciblebox/next-api': resolve(projectRoot, 'vendor/next-api/src/index.mjs'),
+      '@cruciblebox/plugin-ui': resolve(projectRoot, 'vendor/plugin-ui/dist/index.js')
+    },
     jsx: 'automatic',
     legalComments: 'none',
     minify: true,

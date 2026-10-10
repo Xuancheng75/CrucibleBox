@@ -157,6 +157,13 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
     fetchRates()
   }, [fetchRates])
 
+  useEffect(() => {
+    void api.sendToBackend({ type: 'getFavorites' }).then(value => {
+      const favorites = (value as { favorites?: unknown }).favorites
+      if (Array.isArray(favorites)) setFavorites(favorites.filter((item): item is string => typeof item === 'string'))
+    })
+  }, [api])
+
   const handleConvert = async () => {
     const num = parseFloat(amount)
     if (isNaN(num) || num <= 0) return
@@ -194,9 +201,9 @@ export default function ExchangeRatesPlugin({ api }: PluginRenderProps) {
   }
 
   const toggleFavorite = (code: string) => {
-    setFavorites((current) =>
-      current.includes(code) ? current.filter((item) => item !== code) : [...current, code].slice(-8)
-    )
+    const next = favorites.includes(code) ? favorites.filter(item => item !== code) : [...favorites, code].slice(-20)
+    setFavorites(next)
+    void api.sendToBackend({ type: 'setFavorites', favorites: next })
   }
 
   const displayRates = rates

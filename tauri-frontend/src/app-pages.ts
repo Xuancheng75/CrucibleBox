@@ -14,7 +14,7 @@ export type AppPage = (typeof APP_PAGE_IDS)[number]
 type PageModule = { default: ComponentType }
 
 export const APP_PAGE_LOADERS: Record<AppPage, () => Promise<PageModule>> = {
-  home: () => import('./pages/Home'),
+  home: () => import('./pages/HomeFocus'),
   marketplace: () => import('./pages/Marketplace'),
   tasks: () => import('./pages/TaskCenter'),
   logs: () => import('./pages/PluginLogs'),

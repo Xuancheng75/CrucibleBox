@@ -1,0 +1,17 @@
+{
+  "name": "productivity-toolkit",
+  "version": "0.1.0-beta.1",
+  "displayName": "笔记与效率",
+  "description": "笔记、日记、剪贴板、随机决策以及常用换算的统一工作台。",
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "manifestVersion": 3,
+  "backendApiVersion": 3,
+  "rendererApiVersion": 3,
+  "minimumHostVersion": "2.1.0-beta.1",
+  "trustLevel": "standard",
+  "capabilities": { "storage": true, "pluginData": true, "events": true, "ui": true },
+  "permissions": ["storage:read", "storage:write", "clipboard", "notification"],
+  "config": {}
+}

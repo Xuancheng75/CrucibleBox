@@ -23,6 +23,7 @@ import {
 import { SortableContext, rectSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import LauncherCard from '../components/LauncherCard'
+import UserTagManager from '../components/UserTagManager'
 import PluginConfig from '../components/PluginConfig'
 import PluginImport from '../components/PluginImport'
 import { usePlugins } from '../hooks/usePlugins'
@@ -46,6 +47,7 @@ interface SortableLauncherCardProps {
   onOpen: (plugin: PluginMeta) => void
   onMove: (id: string, direction: -1 | 1) => void
   operationsDisabled?: boolean
+  dragDisabled?: boolean
 }
 
 function SortableLauncherCard({
@@ -62,12 +64,13 @@ function SortableLauncherCard({
   onConfigure,
   onOpen,
   onMove,
-  operationsDisabled = false
+  operationsDisabled = false,
+  dragDisabled = false
 }: SortableLauncherCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: plugin.id,
     data: { plugin, index },
-    disabled: operationsDisabled
+    disabled: operationsDisabled || dragDisabled
   })
 
   const style = {
@@ -81,8 +84,8 @@ function SortableLauncherCard({
       ref={setNodeRef}
       className="ob-sortable-item"
       style={style}
-      {...(operationsDisabled ? {} : attributes)}
-      {...(operationsDisabled ? {} : listeners)}
+      {...(operationsDisabled || dragDisabled ? {} : attributes)}
+      {...(operationsDisabled || dragDisabled ? {} : listeners)}
       role="listitem"
       tabIndex={-1}
     >
@@ -138,6 +141,7 @@ export default function Home() {
   const setCommandOpen = useAppStore((s) => s.setCommandOpen)
   const [configPlugin, setConfigPlugin] = useState<PluginMeta | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [tagFilterIds, setTagFilterIds] = useState<string[] | null>(null)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
   // 批量管理（1.9.12）
@@ -154,6 +158,11 @@ export default function Home() {
 
   const isSorting = activeId !== null
   const pluginIds = useMemo(() => plugins.map((p) => p.id), [plugins])
+  const visiblePlugins = useMemo(
+    () => tagFilterIds === null ? plugins : plugins.filter((plugin) => tagFilterIds.includes(plugin.id)),
+    [plugins, tagFilterIds]
+  )
+  const visiblePluginIds = useMemo(() => visiblePlugins.map((plugin) => plugin.id), [visiblePlugins])
   const activeDragPlugins = useMemo(
     () => {
       if (!activeId) return []
@@ -552,6 +561,10 @@ export default function Home() {
         <span>搜索插件…（Ctrl K）</span>
       </button>
 
+      <UserTagManager plugins={plugins} selectedPluginIds={selectedIds} onFilterChange={setTagFilterIds} />
+
+      {tagFilterIds !== null && <div style={{ marginBottom: 12 }}>当前标签匹配 {visiblePlugins.length} 个插件；筛选期间暂停拖动排序。</div>}
+
       {error && (
         <Alert
           className="ob-alert-error"
@@ -618,8 +631,8 @@ export default function Home() {
               gap: 16
             }}
           >
-            <SortableContext items={pluginIds} strategy={rectSortingStrategy}>
-              {plugins.map((plugin, index) => (
+            <SortableContext items={visiblePluginIds} strategy={rectSortingStrategy}>
+              {visiblePlugins.map((plugin, index) => (
                 <SortableLauncherCard
                   key={plugin.id}
                   plugin={plugin}
@@ -636,6 +649,7 @@ export default function Home() {
                   onOpen={handleOpen}
                   onMove={handleMove}
                   operationsDisabled={lifecycleBusy}
+                  dragDisabled={tagFilterIds !== null}
                 />
               ))}
             </SortableContext>

@@ -4,36 +4,40 @@
 // 写同步更新缓存 + async 持久化（对等 Electron 侧 zustand store 的角色）。
 import { invoke } from '@tauri-apps/api/core'
 import type { ToolboxTheme } from '../../shared/types/theme.types'
+import { normalizeTheme } from '../../shared/themes/normalize'
 import { DEFAULT_THEME, PRESET_THEMES } from '../../shared/themes/presets'
 
 const THEME_SETTING_KEY = 'theme'
-
 let cached: ToolboxTheme | null = null
 let loaded = false
+let loading: Promise<ToolboxTheme> | null = null
 
 function parseTheme(raw: string | null): ToolboxTheme | null {
   if (raw === null) return null
   try {
     const parsed = JSON.parse(raw) as unknown
-    if (parsed && typeof parsed === 'object') return parsed as ToolboxTheme
+    return normalizeTheme(parsed)
   } catch {
     return null
   }
-  return null
 }
 
 /** 启动时载入持久化主题（返回当前主题）。幂等：只加载一次。 */
 export async function loadTheme(): Promise<ToolboxTheme> {
-  if (!loaded) {
-    loaded = true
+  if (loaded) return cached ?? DEFAULT_THEME
+  if (loading) return loading
+  loading = (async () => {
     try {
       const raw = await invoke<string | null>('settings_get', { key: THEME_SETTING_KEY })
+      // Validate for rendering only. A preset ID is not permission to rewrite user data.
       cached = parseTheme(raw)
     } catch {
       cached = null
     }
-  }
-  return cached ?? DEFAULT_THEME
+    loaded = true
+    return cached ?? DEFAULT_THEME
+  })()
+  return loading
 }
 
 /** 同步读当前主题（PluginFrameBridge theme.get 需要同步返回值）。 */
@@ -48,11 +52,13 @@ export function listThemes(): ToolboxTheme[] {
 
 /** 应用主题：更新缓存 + async 持久化。返回应用后的主题。 */
 export async function setTheme(theme: ToolboxTheme): Promise<ToolboxTheme | null> {
-  cached = theme
   try {
     await invoke('settings_set', { key: THEME_SETTING_KEY, value: JSON.stringify(theme) })
+    cached = theme
+    loaded = true
+    return theme
   } catch (e) {
     console.error('[theme] persist failed', e)
+    return null
   }
-  return theme
 }

@@ -11,6 +11,7 @@ import { useGlobalPluginDrop } from './hooks/useGlobalPluginDrop'
 import { PluginLifecycleStatus } from '../../shared/types/plugin.types'
 import { APP_PAGE_LOADERS, type AppPage } from './app-pages'
 import { tauriApi } from './api/tauriApi'
+import { useTaskStore } from './store/task.store'
 
 const PAGE_COMPONENTS: Record<AppPage, React.LazyExoticComponent<React.ComponentType>> = {
   home: lazy(APP_PAGE_LOADERS.home),
@@ -53,17 +54,40 @@ function PageLoading() {
 
 export default function App() {
   const [appVersion, setAppVersion] = useState('')
-  const [mountedPages, setMountedPages] = useState<AppPage[]>(['home'])
   const currentPage = useAppStore((s) => s.currentPage)
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const activePluginId = useAppStore((s) => s.activePluginId)
   const setActivityTab = useAppStore((s) => s.setActivityTab)
   const setPluginImportOpen = useAppStore((s) => s.setPluginImportOpen)
-  // 全窗口拖拽导入（插件 zip/目录或 Document Engine 文档）+ 全局安装确认弹窗
+  // 全窗口拖拽导入（插件 zip/目录或文档与知识库文件）+ 全局安装确认弹窗
   const { dragActive, dragTarget } = useGlobalPluginDrop()
 
   useEffect(() => {
-    void tauriApi.app.getVersion().then(setAppVersion).catch(() => undefined)
+    void tauriApi.app
+      .getVersion()
+      .then(setAppVersion)
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    let active = true
+    void tauriApi.events
+      .onHostTask((task) => useTaskStore.getState().applyEvent(task))
+      .then(async (stop) => {
+        if (!active) {
+          stop()
+          return
+        }
+        unlisten = stop
+        const snapshot = await tauriApi.hostTasks.list()
+        if (active) snapshot.forEach((task) => useTaskStore.getState().mergeSnapshot(task))
+      })
+      .catch((error: unknown) => console.error('[host-tasks] failed to load tasks', error))
+    return () => {
+      active = false
+      unlisten?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -71,11 +95,6 @@ export default function App() {
     setActivityTab('logs')
     setCurrentPage('tasks')
   }, [currentPage, setActivityTab, setCurrentPage])
-
-  useEffect(() => {
-    if (currentPage === 'pluginView' || currentPage === 'logs') return
-    setMountedPages((pages) => (pages.includes(currentPage) ? pages : [...pages, currentPage]))
-  }, [currentPage])
 
   // 菜单「导入插件」事件（Tauri 2 菜单点击经 tauri://menu 事件下发，payload 为菜单项 id）。
   // 后端菜单尚未定义（1.9.3 后端 lane 并行处理），此处按契约订阅，payload 匹配
@@ -148,34 +167,22 @@ export default function App() {
   }, [])
 
   const PluginPage = PAGE_COMPONENTS.pluginView
+  const CurrentPage = PAGE_COMPONENTS[currentPage === 'logs' ? 'tasks' : currentPage]
 
   return (
     <ThemeProvider>
-      <MainLayout>
+      <MainLayout appVersion={appVersion}>
         <Suspense fallback={<PageLoading />}>
-          {mountedPages.map((page) => {
-            const MountedPage = PAGE_COMPONENTS[page]
-            return (
-              <div
-                key={page}
-                aria-hidden={currentPage !== page}
-                style={{ display: currentPage === page ? 'block' : 'none' }}
-              >
-                <PageErrorBoundary pageName={PAGE_NAMES[page]}>
-                  <MountedPage />
-                </PageErrorBoundary>
-              </div>
-            )
-          })}
-          {activePluginId && (
-            <div
-              aria-hidden={currentPage !== 'pluginView'}
-              style={{ display: currentPage === 'pluginView' ? 'block' : 'none' }}
-            >
+          {currentPage === 'pluginView' && activePluginId ? (
+            <div>
               <PageErrorBoundary key={activePluginId} pageName={PAGE_NAMES.pluginView}>
                 <PluginPage />
               </PageErrorBoundary>
             </div>
+          ) : (
+            <PageErrorBoundary pageName={PAGE_NAMES[currentPage]}>
+              <CurrentPage />
+            </PageErrorBoundary>
           )}
         </Suspense>
       </MainLayout>
@@ -184,11 +191,6 @@ export default function App() {
       </Suspense>
       <PluginDropOverlay active={dragActive} target={dragTarget} />
       <PluginInstallPreviewModal />
-      {/-((beta|rc)\.)/i.test(appVersion) && (
-        <div className="ob-beta-badge" role="status" aria-label={`测试版 ${appVersion}`}>
-          测试版 · {appVersion}
-        </div>
-      )}
     </ThemeProvider>
   )
 }

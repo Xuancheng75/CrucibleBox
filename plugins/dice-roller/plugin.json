@@ -1,8 +1,8 @@
 {
   "name": "dice-roller",
   "version": "0.3.0",
-  "displayName": "骰子与随机数",
-  "description": "支持骰子表达式、快捷预设、优势/劣势投掷与本次会话历史的轻量随机工具。",
+  "displayName": "旧版骰子（兼容入口）",
+  "description": "旧版随机工具入口；新的随机决策请使用“笔记与效率”。",
   "author": "CrucibleBox",
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",

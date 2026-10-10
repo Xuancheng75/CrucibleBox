@@ -5,6 +5,9 @@
   "hostRendererStartupJavaScriptBytes": 2300000,
   "pluginFrameRuntimeBytes": 280000,
   "pluginRendererBytes": {
+    "media-toolkit": 650000,
+    "developer-toolkit": 500000,
+    "productivity-toolkit": 650000,
     "diary": 2300000,
     "dice-roller": 250000,
     "gif-editor": 360000,

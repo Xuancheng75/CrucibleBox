@@ -4,11 +4,21 @@
   "displayName": "{{displayName}}",
   "description": "描述您的插件功能",
   "author": "您的名称",
+  "category": "效率工具",
+  "tags": ["示例", "效率"],
+  "keywords": ["示例插件"],
   "main": "dist/main.js",
   "renderer": "dist/renderer.js",
-  "manifestVersion": 2,
-  "backendApiVersion": 2,
-  "rendererApiVersion": 2,
+  "manifestVersion": 4,
+  "backendApiVersion": 4,
+  "rendererApiVersion": 4,
+  "minimumHostVersion": "2.1.0-beta.2",
+  "trustLevel": "standard",
+  "capabilities": { "storage": true, "events": true, "ui": true },
+  "contributes": {
+    "commands": [],
+    "fileHandlers": [{ "extensions": ["txt", "md"] }]
+  },
   "permissions": ["notification", "storage:read", "storage:write"],
   "config": {
     "apiKey": {

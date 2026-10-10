@@ -1,16 +1,14 @@
 {
   "name": "cruciblebox-plugin-diary",
-  "version": "0.5.0",
+  "version": "0.7.0-alpha.1",
   "private": true,
-  "description": "Diary plugin for OpenBox",
-  "main": "dist/main.js",
+  "description": "Diary and notes plugin for CrucibleBox",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && node esbuild.config.mjs",
+    "build": "node scripts/build-next.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --configLoader runner",
-    "check": "npm run typecheck && npm run test && npm run build",
-    "watch": "node esbuild.config.mjs --watch"
+    "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
     "katex": "^0.16.21",
@@ -18,11 +16,16 @@
     "react-dom": "19.2.8",
     "react-markdown": "^9.0.3",
     "rehype-katex": "^7.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "@cruciblebox/next-api": "file:vendor/next-api"
   },
   "devDependencies": {
-    "esbuild": "0.28.2",
+    "esbuild": "0.25.12",
     "typescript": "6.0.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "adm-zip": "0.6.0",
+    "@types/node": "22.20.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3"
   }
 }

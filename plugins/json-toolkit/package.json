@@ -1,20 +1,26 @@
 {
   "name": "cruciblebox-plugin-json-toolkit",
-  "version": "0.3.0",
+  "version": "0.4.0-beta.2",
   "private": true,
   "description": "JSON and text toolkit plugin for CrucibleBox",
   "main": "dist/main.js",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc && node scripts/build-plugin-renderer.mjs .",
+    "build": "npm run clean && tsc && node scripts/build-plugin-renderer.mjs . && node scripts/patch-browser-bundle.mjs",
     "typecheck": "tsc --noEmit",
     "watch": "node scripts/build-plugin-renderer.mjs . --watch"
   },
   "dependencies": {
+    "@iarna/toml": "2.2.5",
+    "fast-xml-parser": "5.11.1",
+    "json5": "2.2.3",
+    "papaparse": "5.7.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
+    "@types/papaparse": "5.5.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "esbuild": "0.28.2",

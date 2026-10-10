@@ -4,23 +4,25 @@
 
 use std::collections::HashSet;
 
-/// 对等 shared/types/permissions.ts 的 15 个权限串
+/// 对等 shared/types/permissions.ts 的 16 个权限串
 pub const ALL_PERMISSIONS: &[&str] = &[
-    "database:read",
-    "database:write",
-    "storage:read",
-    "storage:write",
+    DATABASE_READ,
+    DATABASE_WRITE,
+    STORAGE_READ,
+    STORAGE_WRITE,
     "shell:exec",
-    "network:fetch",
-    "notification",
+    NETWORK_FETCH,
+    NOTIFICATION,
     "clipboard",
-    "dialog",
-    "shortcut",
-    "file:read",
-    "file:write",
+    DIALOG,
+    SHORTCUT,
+    FILE_READ,
+    FILE_WRITE,
     "theme:write",
     "trusted:unienv",
     "trusted:document-engine",
+    "trusted:archive-extractor",
+    "host:full-trust",
 ];
 
 pub const DATABASE_READ: &str = "database:read";
@@ -40,6 +42,8 @@ pub const FILE_WRITE: &str = "file:write";
 pub const THEME_WRITE: &str = "theme:write";
 pub const TRUSTED_UNIENV: &str = "trusted:unienv";
 pub const TRUSTED_DOCUMENT_ENGINE: &str = "trusted:document-engine";
+pub const TRUSTED_ARCHIVE_EXTRACTOR: &str = "trusted:archive-extractor";
+pub const HOST_FULL_TRUST: &str = "host:full-trust";
 
 pub struct PermissionGuard {
     granted: HashSet<&'static str>,
@@ -61,20 +65,23 @@ impl PermissionGuard {
     }
 
     pub fn has(&self, permission: &str) -> bool {
-        self.granted.contains(permission)
+        self.granted.contains(HOST_FULL_TRUST) || self.granted.contains(permission)
     }
 
-    /// trusted.invoke 门控：宿主固定可信服务（UniEnv / Document Engine 等）共用
-    /// 同一 host 方法，故接受任一 trusted:* 权限即可。
-    pub fn assert_trusted_service(&self) -> Result<(), String> {
-        if self.has(TRUSTED_UNIENV) || self.has(TRUSTED_DOCUMENT_ENGINE) {
-            Ok(())
-        } else {
-            Err(
-                "Permission denied: trusted service (trusted:unienv or trusted:document-engine)"
-                    .into(),
-            )
-        }
+    /// trusted.invoke 门控：服务名与权限必须一一对应。
+    /// 这一步是宿主可信服务的权限边界，不能接受任意 trusted:* 权限。
+    pub fn assert_trusted_service(&self, service: &str) -> Result<(), String> {
+        let required = match service {
+            "unienv" => TRUSTED_UNIENV,
+            "document-engine" => TRUSTED_DOCUMENT_ENGINE,
+            "archive-extractor" => TRUSTED_ARCHIVE_EXTRACTOR,
+            _ => {
+                return Err(format!(
+                    "Permission denied: unknown trusted service: {service}"
+                ))
+            }
+        };
+        self.assert(required)
     }
 
     /// 断言权限；拒绝返回 NOT_ALLOWED 错误文本（对等 assert 抛错语义）
@@ -88,15 +95,17 @@ impl PermissionGuard {
 }
 
 /// host 方法 → 所需权限映射（1.9.2-a 实现面；None = 无权限门禁，如日志/事件天然限本插件）
+#[cfg(test)]
 pub fn permission_for_host_method(method: &str) -> Option<&'static str> {
     match method {
-        "db.query" => Some(DATABASE_READ),
-        "db.execute" => Some(DATABASE_WRITE),
         "storage.get" | "storage.list" => Some(STORAGE_READ),
         "storage.set" | "storage.delete" | "storage.batch" => Some(STORAGE_WRITE),
         "notification.show" => Some(NOTIFICATION),
         "dialog.open" => Some(DIALOG),
         "network.fetch" => Some(NETWORK_FETCH),
+        "process.run" | "process.start" | "process.getTask" | "process.cancel" => {
+            Some("shell:exec")
+        }
         "file.read" => Some(FILE_READ),
         "file.write" => Some(FILE_WRITE),
         "shortcut.register" | "shortcut.unregister" => Some(SHORTCUT),
@@ -110,11 +119,11 @@ pub fn permission_for_host_method(method: &str) -> Option<&'static str> {
 /// 判断 host 方法是否为已实现面（未实现 → NOT_ALLOWED）
 /// v1.9.15：扩展实现面，新增 network.fetch / notification.show / file.read / file.write /
 /// clipboard.read / clipboard.write / system.info
+#[cfg(test)]
 pub fn is_host_method_implemented(method: &str) -> bool {
     matches!(
         method,
-        "db.query"
-            | "db.execute"
+        "plugin.root"
             | "storage.get"
             | "storage.set"
             | "storage.delete"
@@ -126,12 +135,19 @@ pub fn is_host_method_implemented(method: &str) -> bool {
             | "event.unsubscribe"
             | "trusted.invoke"
             | "network.fetch"
+            | "process.run"
+            | "process.start"
+            | "process.getTask"
+            | "process.cancel"
             | "notification.show"
+            | "dialog.open"
             | "file.read"
             | "file.write"
             | "clipboard.read"
             | "clipboard.write"
             | "system.info"
+            | "shortcut.register"
+            | "shortcut.unregister"
     )
 }
 
@@ -163,8 +179,19 @@ mod tests {
     }
 
     #[test]
+    fn trusted_service_permission_is_scoped_to_service() {
+        let archive = PermissionGuard::parse(&[TRUSTED_ARCHIVE_EXTRACTOR.into()]);
+        assert!(archive.assert_trusted_service("archive-extractor").is_ok());
+        assert!(archive.assert_trusted_service("unienv").is_err());
+        assert!(archive.assert_trusted_service("document-engine").is_err());
+        assert!(archive.assert_trusted_service("unknown").is_err());
+    }
+
+    #[test]
     fn permission_mapping() {
-        assert_eq!(permission_for_host_method("db.query"), Some(DATABASE_READ));
+        assert_eq!(permission_for_host_method("db.query"), None);
+        assert!(!is_host_method_implemented("db.query"));
+        assert!(!is_host_method_implemented("db.execute"));
         assert_eq!(
             permission_for_host_method("storage.set"),
             Some(STORAGE_WRITE)
@@ -181,7 +208,8 @@ mod tests {
     fn implemented_surface() {
         assert!(is_host_method_implemented("storage.get"));
         assert!(is_host_method_implemented("log.write"));
-        assert!(!is_host_method_implemented("dialog.open"));
+        assert!(is_host_method_implemented("dialog.open"));
+        assert!(is_host_method_implemented("shortcut.register"));
         assert!(is_host_method_implemented("network.fetch"));
         assert!(is_host_method_implemented("notification.show"));
         assert!(is_host_method_implemented("clipboard.read"));

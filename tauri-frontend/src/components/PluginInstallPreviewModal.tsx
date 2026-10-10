@@ -194,6 +194,14 @@ export function InstallPreviewDetail({ preview }: { preview: PluginInstallPrevie
           style={{ marginBottom: 16 }}
         />
       )}
+      {preview.fullTrust && (
+        <Alert
+          type="error"
+          showIcon
+          message="该插件申请完整宿主权限"
+          description="完整信任插件可以调用全部宿主能力。请确认来源和用途后再继续安装。"
+        />
+      )}
 
       <div style={{ fontSize: 13, color: token.colorTextSecondary, marginBottom: 8 }}>
         权限清单

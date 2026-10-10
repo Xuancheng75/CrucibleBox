@@ -13,11 +13,12 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DISPOSE_TIMEOUT: Duration = Duration::from_secs(3);
+const ACTIVATION_WAIT_TIMEOUT: Duration = Duration::from_secs(40);
 #[allow(dead_code)] // 崩溃恢复（1.9.2-a 步骤 6 接入后消除）
 const BACKOFFS: [Duration; 3] = [
     Duration::from_secs(1),
@@ -32,6 +33,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 事件发射回调类型（event, payload）——main.rs setup 注入 app.emit
 type Emitter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+type EventRouter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+type CrashCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 pub struct BackendProcess {
     plugin_id: String,
@@ -43,12 +46,15 @@ pub struct BackendProcess {
     /// spawn 时注入 sidecar 的 token（响应帧必须回显；sidecar validate_host_response 要求）
     token: String,
     db: Arc<Mutex<Db>>,
+    services: Arc<crate::host_services::Services>,
     /// dispose 显式触发时为 true（读线程 EOF 走正常退出，不触发崩溃恢复）
     expected_stop: std::sync::atomic::AtomicBool,
     /// 崩溃上报回调（Manager 注入；读线程 EOF 且非 expected_stop 时调用）
-    on_crash: Arc<dyn Fn(&str) + Send + Sync>,
+    on_crash: CrashCallback,
     /// 事件发射回调（Manager 注入；plugin:log / plugin:message 经它广播）
     emitter: Emitter,
+    /// 将插件事件转发给所有已激活 backend；订阅过滤在各 sidecar 内完成。
+    event_router: EventRouter,
 }
 
 impl BackendProcess {
@@ -60,9 +66,20 @@ impl BackendProcess {
         sidecar_exe: PathBuf,
         plugin_dir: PathBuf,
         entry_main: String,
-        on_crash: Arc<dyn Fn(&str) + Send + Sync>,
+        on_crash: CrashCallback,
         emitter: Emitter,
+        event_router: EventRouter,
+        services: Arc<crate::host_services::Services>,
     ) -> Result<Arc<BackendProcess>, String> {
+        // Never execute a verified Next package through legacy wire 2.
+        if plugin_dir.join("plugin.json").is_file() {
+            let manifest = crate::manifest::read_manifest(&plugin_dir)?;
+            if manifest.manifest_version == Some(5) {
+                return Err(
+                    "Next backend transport is not available; legacy activation refused".into(),
+                );
+            }
+        }
         // token：32 位随机 [A-Za-z0-9_-]
         let token = crate::rand_token::random_token_alnum(32)?;
         let mut cmd = Command::new(&sidecar_exe);
@@ -109,9 +126,11 @@ impl BackendProcess {
             next_request_id: AtomicU64::new(1),
             token,
             db,
+            services,
             expected_stop: std::sync::atomic::AtomicBool::new(false),
             on_crash,
             emitter,
+            event_router,
         });
 
         // 读线程：独占 ChildStdout
@@ -151,7 +170,7 @@ impl BackendProcess {
                     let expected = self.expected_stop.load(Ordering::SeqCst);
                     if !expected {
                         let plugin = self.plugin_id.clone();
-                        (self.on_crash)(&plugin);
+                        (self.on_crash)(&plugin, &self.token);
                     }
                     return;
                 }
@@ -236,9 +255,9 @@ impl BackendProcess {
         }
         // 2) 权限校验（宿主权威边界）
         if method == "trusted.invoke" {
-            // 宿主固定可信服务（unienv / document-engine 等）共用 trusted.invoke，
-            // 接受任一 trusted:* 权限（见 PermissionGuard::assert_trusted_service）。
-            if let Err(e) = self.permissions.assert_trusted_service() {
+            // trusted.invoke 共用 host 方法，但权限必须按 service 精确匹配。
+            let service = params.get("service").and_then(Value::as_str).unwrap_or("");
+            if let Err(e) = self.permissions.assert_trusted_service(service) {
                 let _ = self.send_host_response(&request_id, Err(e));
                 return;
             }
@@ -251,6 +270,7 @@ impl BackendProcess {
         // 3) 执行
         let result = crate::envelope_host::host_dispatch(
             &self.db,
+            &self.services,
             &self.plugin_id,
             &method,
             &params,
@@ -260,7 +280,13 @@ impl BackendProcess {
             "[host-method] done {method} rid={request_id} ok={}",
             result.is_ok()
         );
+        let succeeded = result.is_ok();
         let _ = self.send_host_response(&request_id, result);
+        if succeeded && method == "event.emit" {
+            if let Some(event) = params.get("event").and_then(Value::as_str) {
+                (self.event_router)(event, params.get("data").cloned().unwrap_or(Value::Null));
+            }
+        }
     }
 
     /// 响应写回 stdin（与 worker 请求共用 stdin 锁，帧原子写）
@@ -279,7 +305,7 @@ impl BackendProcess {
             Err(msg) => json!({
                 "v": 2, "kind": "response", "token": self.token,
                 "requestId": request_id, "ok": false,
-                "error": { "code": "NOT_ALLOWED", "message": msg },
+                "error": { "code": rpc_error_code(&msg), "message": msg },
             }),
         };
         let bytes = serde_json::to_vec(&payload)
@@ -382,6 +408,22 @@ impl BackendProcess {
     }
 }
 
+fn rpc_error_code(message: &str) -> &'static str {
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("permission denied") || normalized == "not_allowed" {
+        "NOT_ALLOWED"
+    } else if normalized.contains("timeout") || normalized.contains("timed out") {
+        "TIMEOUT"
+    } else if normalized.contains("invalid")
+        || normalized.contains("missing")
+        || normalized.contains("must be")
+    {
+        "INVALID_MESSAGE"
+    } else {
+        "INTERNAL_ERROR"
+    }
+}
+
 /// 从 reader 读一帧（复用 sidecar frame.rs 语义，宿主侧内联实现避免跨 crate 依赖）
 fn read_frame<R: Read>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
@@ -438,6 +480,40 @@ pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> std::io::Result<
 // Manager：进程注册表 + 惰性 spawn + 生命周期
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
+struct ActivationState {
+    generation: u64,
+    starting: bool,
+    result: Option<Result<Arc<BackendProcess>, String>>,
+}
+
+#[derive(Default)]
+struct ActivationSlot {
+    state: Mutex<ActivationState>,
+    changed: Condvar,
+}
+
+impl ActivationSlot {
+    fn invalidate(&self) {
+        let mut state = lock(&self.state);
+        state.generation = state.generation.wrapping_add(1);
+        state.result = None;
+        self.changed.notify_all();
+    }
+
+    fn wait_until_idle(&self) -> Result<(), String> {
+        let state = lock(&self.state);
+        let (state, timeout) = self
+            .changed
+            .wait_timeout_while(state, ACTIVATION_WAIT_TIMEOUT, |state| state.starting)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if timeout.timed_out() && state.starting {
+            return Err("timed out waiting for plugin activation to stop".into());
+        }
+        Ok(())
+    }
+}
+
 pub struct BackendProcessManager {
     processes: Mutex<HashMap<String, Arc<BackendProcess>>>,
     /// 崩溃历史（plugin_id → 最近崩溃时间戳，跨进程/跨重启计数）
@@ -446,9 +522,10 @@ pub struct BackendProcessManager {
     maintenance: Mutex<HashSet<String>>,
     /// 每个插件的生命周期操作单飞锁。导入、升级、启停、卸载和恢复不得并行。
     lifecycle: Mutex<HashSet<String>>,
-    /// 激活单飞锁。只保护同一插件的 spawn/initialize，绝不跨插件串行化。
-    activating: Mutex<HashSet<String>>,
+    /// 每插件共享启动结果；维护窗口递增 generation 使旧启动失效。
+    activation_slots: Mutex<HashMap<String, Arc<ActivationSlot>>>,
     db: Arc<Mutex<Db>>,
+    services: Arc<crate::host_services::Services>,
     sidecar_exe: PathBuf,
     /// 事件发射回调（main.rs setup 注入 app.emit；未注入时 no-op）
     emitter: Mutex<Option<Emitter>>,
@@ -457,7 +534,19 @@ pub struct BackendProcessManager {
 }
 
 impl BackendProcessManager {
+    #[cfg(test)]
     pub fn new(db: Arc<Mutex<Db>>) -> Arc<Self> {
+        Self::with_services(
+            db,
+            Arc::new(crate::host_services::Services::new(
+                crate::task_runtime::TaskRuntime::memory(),
+            )),
+        )
+    }
+    pub fn with_services(
+        db: Arc<Mutex<Db>>,
+        services: Arc<crate::host_services::Services>,
+    ) -> Arc<Self> {
         let sidecar_exe = Self::resolve_sidecar_exe(
             std::env::current_exe()
                 .ok()
@@ -477,8 +566,9 @@ impl BackendProcessManager {
             crash_history: Mutex::new(HashMap::new()),
             maintenance: Mutex::new(HashSet::new()),
             lifecycle: Mutex::new(HashSet::new()),
-            activating: Mutex::new(HashSet::new()),
+            activation_slots: Mutex::new(HashMap::new()),
             db,
+            services,
             sidecar_exe,
             emitter: Mutex::new(None),
             self_weak: std::sync::OnceLock::new(),
@@ -563,6 +653,79 @@ impl BackendProcessManager {
             .unwrap_or_else(|| Arc::new(|_, _| {}))
     }
 
+    fn event_router(&self) -> EventRouter {
+        let weak = self
+            .self_weak
+            .get()
+            .expect("BackendProcessManager::new must set self_weak")
+            .clone();
+        Arc::new(move |event, data| {
+            if let Some(manager) = weak.upgrade() {
+                manager.broadcast_host_event(event, data);
+            }
+        })
+    }
+
+    /// 向所有已激活插件投递宿主事件。sidecar 的订阅表决定是否调用处理器。
+    pub fn broadcast_host_event(&self, event: &str, data: Value) {
+        let processes: Vec<Arc<BackendProcess>> =
+            self.processes.lock().unwrap().values().cloned().collect();
+        for process in processes {
+            let event = event.to_string();
+            let data = data.clone();
+            std::thread::spawn(move || {
+                if let Err(error) =
+                    process.request("host.event", json!({ "event": event, "data": data }))
+                {
+                    eprintln!("[backend] host event delivery failed: {error}");
+                }
+            });
+        }
+    }
+
+    pub fn update_config(&self, plugin_id: &str, config: Value) -> Result<(), String> {
+        if !config.is_object() {
+            return Err("plugin config must be an object".into());
+        }
+        let _lifecycle = self.begin_lifecycle_operation(plugin_id)?;
+        let slot = self.activation_slot(plugin_id);
+        let state = lock(&slot.state);
+        let (state, timeout) = slot
+            .changed
+            .wait_timeout_while(state, ACTIVATION_WAIT_TIMEOUT, |state| state.starting)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if timeout.timed_out() && state.starting {
+            return Err("timed out waiting for plugin activation".into());
+        }
+        if self.is_in_maintenance(plugin_id) {
+            return Err("plugin is in maintenance".into());
+        }
+        let mut record = lock(&self.db)
+            .plugin_backend_record(plugin_id)
+            .map_err(|error| error.to_string())?
+            .ok_or("plugin not found")?;
+        let previous = record.config_data.clone();
+        record.config_data = serde_json::to_string(&config).map_err(|error| error.to_string())?;
+        let resolved = record.resolved_config()?;
+        lock(&self.db)
+            .plugin_update_config(plugin_id, &record.config_data)
+            .map_err(|error| error.to_string())?;
+        let process = lock(&self.processes).get(plugin_id).cloned();
+        if let Some(process) = process {
+            if let Err(error) = process.request("lifecycle.configure", json!({"config":resolved})) {
+                lock(&self.db)
+                    .plugin_update_config(plugin_id, &previous)
+                    .map_err(|restore| format!("{error}; config restore failed: {restore}"))?;
+                return Err(error);
+            }
+            if process.permissions.has(crate::permissions::CLIPBOARD) {
+                self.sync_clipboard_monitor(plugin_id)?;
+            }
+        }
+        drop(state);
+        Ok(())
+    }
+
     /// 惰性 spawn：返回已激活进程（若不存在则创建）
     /// 注入 on_crash 回调：读线程 EOF（非 dispose）时上报，触发崩溃恢复策略。
     pub fn ensure_activated(
@@ -570,26 +733,49 @@ impl BackendProcessManager {
         plugin_id: &str,
         record: crate::db::PluginBackendRecord,
     ) -> Result<Arc<BackendProcess>, String> {
-        // Do not hold the maintenance registry lock while spawning a process
-        // or waiting for lifecycle.initialize.  A slow plugin must not block
-        // maintenance checks for unrelated plugins.
-        if self.maintenance.lock().unwrap().contains(plugin_id) {
-            return Err("plugin is in maintenance".into());
-        }
-        if let Some(p) = self.processes.lock().unwrap().get(plugin_id) {
-            return Ok(p.clone());
-        }
         if !record.enabled {
             return Err("plugin is disabled".into());
         }
-        {
-            let mut activating = self.activating.lock().unwrap();
-            if !activating.insert(plugin_id.to_string()) {
-                return Err("plugin activation already in progress".into());
+        let slot = self.activation_slot(plugin_id);
+        let generation = {
+            let mut state = lock(&slot.state);
+            if self.is_in_maintenance(plugin_id) {
+                return Err("plugin is in maintenance".into());
             }
-        }
+            if let Some(process) = lock(&self.processes).get(plugin_id) {
+                return Ok(process.clone());
+            }
+            if state.starting {
+                let generation = state.generation;
+                let (next, timeout) = slot
+                    .changed
+                    .wait_timeout_while(state, ACTIVATION_WAIT_TIMEOUT, |current| {
+                        current.starting && current.generation == generation
+                    })
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state = next;
+                if timeout.timed_out() && state.starting && state.generation == generation {
+                    return Err("timed out waiting for plugin activation".into());
+                }
+                if state.generation != generation {
+                    return Err("plugin activation was cancelled".into());
+                }
+                return state
+                    .result
+                    .clone()
+                    .unwrap_or_else(|| Err("plugin activation ended without a result".into()));
+            }
+            state.starting = true;
+            state.result = None;
+            state.generation
+        };
         let guard = crate::permissions::PermissionGuard::from_json(&record.permissions);
         let result = (|| {
+            let config = lock(&self.db)
+                .plugin_backend_record(plugin_id)
+                .map_err(|error| error.to_string())?
+                .ok_or("plugin not found")?
+                .resolved_config()?;
             let proc = BackendProcess::spawn(
                 plugin_id.to_string(),
                 guard,
@@ -599,27 +785,79 @@ impl BackendProcessManager {
                 record.entry_main,
                 self.crash_callback(),
                 self.emitter(),
+                self.event_router(),
+                self.services.clone(),
             )?;
             // initialize
             if let Err(error) = proc.request(
                 "lifecycle.initialize",
-                json!({ "pluginId": plugin_id, "config": {} }),
+                json!({ "pluginId": plugin_id, "config": config }),
             ) {
                 let _ = proc.dispose();
                 return Err(error);
             }
-            self.processes
-                .lock()
-                .unwrap()
-                .insert(plugin_id.to_string(), proc.clone());
-            // 1.9.17：clipboard 权限插件自动启动宿主侧剪贴板监控
-            if proc.permissions.has(crate::permissions::CLIPBOARD) {
-                let _ = crate::clipboard_monitor::start(plugin_id, self.emitter());
-            }
             Ok(proc)
         })();
-        self.activating.lock().unwrap().remove(plugin_id);
+        let mut dispose = None;
+        let result = {
+            let state = lock(&slot.state);
+            if state.generation != generation || self.is_in_maintenance(plugin_id) {
+                dispose = result.as_ref().ok().cloned();
+                Err("plugin activation was cancelled".into())
+            } else if let Ok(process) = &result {
+                // The slot lock serializes publication with stop/upgrade invalidation.
+                let enabled = lock(&self.db)
+                    .plugin_backend_record(plugin_id)
+                    .map(|current| current.is_some_and(|current| current.enabled))
+                    .map_err(|error| error.to_string());
+                match enabled {
+                    Ok(true) => {
+                        lock(&self.processes).insert(plugin_id.to_string(), process.clone());
+                        result
+                    }
+                    Ok(false) => {
+                        dispose = Some(process.clone());
+                        Err("plugin is disabled".into())
+                    }
+                    Err(error) => {
+                        dispose = Some(process.clone());
+                        Err(error)
+                    }
+                }
+            } else {
+                result
+            }
+        };
+        // Keep starting=true until cleanup completes, so upgrade cannot swap files
+        // while the old sidecar is still exiting.
+        if let Some(process) = dispose {
+            let _ = process.dispose();
+        }
+        if let Ok(process) = &result {
+            if process.permissions.has(crate::permissions::CLIPBOARD) {
+                let paused = lock(&self.db)
+                    .storage_get(plugin_id, "paused")
+                    .ok()
+                    .flatten()
+                    .and_then(|value| serde_json::from_str::<bool>(&value).ok())
+                    .unwrap_or(false);
+                if !paused {
+                    let _ = self.sync_clipboard_monitor(plugin_id);
+                }
+            }
+        }
+        let mut state = lock(&slot.state);
+        state.result = Some(result.clone());
+        state.starting = false;
+        slot.changed.notify_all();
         result
+    }
+
+    fn activation_slot(&self, plugin_id: &str) -> Arc<ActivationSlot> {
+        lock(&self.activation_slots)
+            .entry(plugin_id.to_string())
+            .or_default()
+            .clone()
     }
 
     /// 标记插件进入维护窗口。调用方必须在完成操作后调用 end_maintenance。
@@ -628,6 +866,8 @@ impl BackendProcessManager {
         if !maintenance.insert(plugin_id.to_string()) {
             return Err("plugin maintenance already in progress".into());
         }
+        drop(maintenance);
+        self.activation_slot(plugin_id).invalidate();
         Ok(())
     }
 
@@ -704,23 +944,37 @@ impl BackendProcessManager {
 
     /// 崩溃恢复策略：记录崩溃 → backoff 重启或隔离。
     /// 返回 self 的崩溃回调（Arc<dyn Fn(&str)>），读线程 EOF 非 dispose 时触发。
-    fn crash_callback(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+    fn crash_callback(&self) -> CrashCallback {
         let weak = self
             .self_weak
             .get()
             .expect("BackendProcessManager::new must set self_weak")
             .clone();
-        Arc::new(move |pid| {
+        Arc::new(move |pid, token| {
             if let Some(mgr) = weak.upgrade() {
-                mgr.handle_crash(pid);
+                mgr.handle_crash(pid, token);
             }
         })
     }
 
     /// 崩溃处理：记录 → 判断隔离或 backoff 重启。
-    fn handle_crash(&self, plugin_id: &str) {
-        // 从进程表移除（读线程已死，进程对象应清理）
-        let exited = self.processes.lock().unwrap().remove(plugin_id);
+    fn handle_crash(&self, plugin_id: &str, token: &str) {
+        crate::diagnostics::record("plugin-sidecar-exit", Some(plugin_id));
+        // 初始化失败或已被替换的旧进程不能移除新进程，也不能触发重启。
+        let exited = {
+            let mut processes = lock(&self.processes);
+            if processes
+                .get(plugin_id)
+                .is_some_and(|process| process.token == token)
+            {
+                processes.remove(plugin_id)
+            } else {
+                None
+            }
+        };
+        if exited.is_none() {
+            return;
+        }
         if self.is_in_maintenance(plugin_id) || self.is_lifecycle_busy(plugin_id) {
             let _ = exited;
             return;
@@ -777,10 +1031,42 @@ impl BackendProcessManager {
 
     #[allow(dead_code)] // 1.9.2-b 插件写路径（deactivate 命令）接入
     pub fn deactivate(&self, plugin_id: &str) -> Result<(), String> {
+        let slot = self.activation_slot(plugin_id);
+        slot.invalidate();
+        slot.wait_until_idle()?;
         if let Some(p) = self.processes.lock().unwrap().remove(plugin_id) {
             p.dispose()?;
         }
         Ok(())
+    }
+
+    fn sync_clipboard_monitor(&self, plugin_id: &str) -> Result<(), String> {
+        let db = lock(&self.db);
+        let paused = db
+            .storage_get(plugin_id, "paused")
+            .map_err(|error| error.to_string())?
+            .and_then(|value| serde_json::from_str::<bool>(&value).ok())
+            .unwrap_or(false);
+        if paused {
+            crate::clipboard_monitor::stop(plugin_id);
+            return Ok(());
+        }
+        let config = db
+            .plugin_backend_record(plugin_id)
+            .map_err(|error| error.to_string())?
+            .ok_or("plugin not found")?
+            .resolved_config()?;
+        let excluded_apps = config
+            .get("excludedApps")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .split([';', ',', '\n'])
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect();
+        drop(db);
+        crate::clipboard_monitor::start(plugin_id, self.emitter(), excluded_apps)
     }
 
     pub fn kill_all(&self) {
@@ -915,8 +1201,12 @@ mod tests {
             exe,
             plugin_dir.clone(),
             "dist/main.js".into(),
-            Arc::new(|_pid: &str| {}), // 测试：崩溃回调 no-op
+            Arc::new(|_pid: &str, _token: &str| {}), // 测试：崩溃回调 no-op
             Arc::new(|_event: &str, _payload: serde_json::Value| {}), // 测试：发射回调 no-op
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(crate::host_services::Services::new(
+                crate::task_runtime::TaskRuntime::memory(),
+            )),
         )
         .expect("spawn sidecar");
 
@@ -995,8 +1285,12 @@ mod tests {
             exe,
             plugin_dir.clone(),
             "dist/main.js".into(),
-            Arc::new(|_pid: &str| {}),
+            Arc::new(|_pid: &str, _token: &str| {}),
             Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(crate::host_services::Services::new(
+                crate::task_runtime::TaskRuntime::memory(),
+            )),
         )
         .expect("spawn diary sidecar");
 
@@ -1097,6 +1391,260 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_activation_shares_one_process() {
+        let db = temp_db();
+        let plugin_dir = gif_plugin_dir();
+        if !sidecar_exe().exists() || !plugin_dir.join("dist/main.js").exists() {
+            eprintln!("skipping concurrent activation: sidecar or plugin dist not built");
+            return;
+        }
+        lock(&db)
+            .set_plugin_enabled("gif-editor", true)
+            .expect("enable fixture plugin");
+        let manager = BackendProcessManager::new(db.clone());
+        let barrier = Arc::new(std::sync::Barrier::new(21));
+        let threads: Vec<_> = (0..20)
+            .map(|_| {
+                let manager = manager.clone();
+                let db = db.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let record = lock(&db)
+                        .plugin_backend_record("gif-editor")
+                        .unwrap()
+                        .unwrap();
+                    barrier.wait();
+                    manager.ensure_activated("gif-editor", record)
+                })
+            })
+            .collect();
+        barrier.wait();
+        let processes: Vec<_> = threads
+            .into_iter()
+            .map(|thread| {
+                thread
+                    .join()
+                    .expect("activation thread")
+                    .expect("activation")
+            })
+            .collect();
+        assert!(processes
+            .iter()
+            .all(|process| Arc::ptr_eq(process, &processes[0])));
+        assert_eq!(lock(&manager.processes).len(), 1);
+        manager.deactivate("gif-editor").unwrap();
+    }
+
+    #[test]
+    fn failed_activation_can_be_retried_after_entry_is_repaired() {
+        let db = temp_db();
+        let plugin_dir = gif_plugin_dir();
+        if !sidecar_exe().exists() || !plugin_dir.join("dist/main.js").exists() {
+            eprintln!("skipping activation retry: sidecar or plugin dist not built");
+            return;
+        }
+        lock(&db)
+            .set_plugin_enabled("gif-editor", true)
+            .expect("enable fixture plugin");
+        let manager = BackendProcessManager::new(db.clone());
+        let mut record = lock(&db)
+            .plugin_backend_record("gif-editor")
+            .unwrap()
+            .unwrap();
+        record.entry_main = "dist/missing-main.js".into();
+        assert!(manager.ensure_activated("gif-editor", record).is_err());
+        assert!(!manager.has("gif-editor"));
+        let repaired = lock(&db)
+            .plugin_backend_record("gif-editor")
+            .unwrap()
+            .unwrap();
+        manager
+            .ensure_activated("gif-editor", repaired)
+            .expect("a failed attempt must not poison the activation slot");
+        assert!(manager.has("gif-editor"));
+        manager.deactivate("gif-editor").unwrap();
+    }
+
+    #[test]
+    fn activation_receives_defaults_and_saved_config() {
+        assert!(
+            sidecar_exe().is_file(),
+            "build the real sidecar before this test"
+        );
+        let db = temp_db();
+        let directory = std::env::temp_dir().join(format!(
+            "cb-config-{}-{}",
+            std::process::id(),
+            TEMP_DB_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("main.js"),
+            r#"let config;
+            module.exports = { activate(ctx) { config = ctx.config; }, deactivate() {},
+                onMessage() { return config; } };"#,
+        )
+        .unwrap();
+        lock(&db).conn().lock().unwrap().execute(
+            "UPDATE plugins SET enabled=1, installed_path=?1, entry_main='main.js',
+             config_schema=?2, config_data=?3 WHERE id='gif-editor'",
+            rusqlite::params![directory.to_string_lossy(),
+                json!({"maxItems":{"default":100},"monitor":{"default":true},"label":{"default":"默认"}}).to_string(),
+                json!({"maxItems":20,"monitor":false,"label":"用户配置"}).to_string()]
+        ).unwrap();
+        let manager = BackendProcessManager::new(db.clone());
+        let record = lock(&db)
+            .plugin_backend_record("gif-editor")
+            .unwrap()
+            .unwrap();
+        let process = manager.ensure_activated("gif-editor", record).unwrap();
+        assert_eq!(
+            process
+                .request("plugin.message", json!({"message":{}}))
+                .unwrap(),
+            json!({"maxItems":20,"monitor":false,"label":"用户配置"})
+        );
+        manager
+            .update_config("gif-editor", json!({"maxItems":30}))
+            .unwrap();
+        assert_eq!(
+            process
+                .request("plugin.message", json!({"message":{}}))
+                .unwrap(),
+            json!({"maxItems":30,"monitor":true,"label":"默认"})
+        );
+        let current = lock(&db)
+            .plugin_backend_record("gif-editor")
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &process,
+            &manager.ensure_activated("gif-editor", current).unwrap()
+        ));
+        assert!(manager.update_config("gif-editor", json!([])).is_err());
+        assert_eq!(
+            lock(&db)
+                .plugin_backend_record("gif-editor")
+                .unwrap()
+                .unwrap()
+                .config_data,
+            json!({"maxItems":30}).to_string()
+        );
+        manager.deactivate("gif-editor").unwrap();
+        lock(&db).plugin_update_config("gif-editor", "{}").unwrap();
+        let record = lock(&db)
+            .plugin_backend_record("gif-editor")
+            .unwrap()
+            .unwrap();
+        let process = manager.ensure_activated("gif-editor", record).unwrap();
+        assert_eq!(
+            process
+                .request("plugin.message", json!({"message":{}}))
+                .unwrap(),
+            json!({"maxItems":100,"monitor":true,"label":"默认"})
+        );
+        manager.deactivate("gif-editor").unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn maintenance_cancels_in_flight_activation_before_update_or_uninstall() {
+        assert!(
+            sidecar_exe().is_file(),
+            "build the real sidecar before this test"
+        );
+        for uninstall in [false, true] {
+            let db = temp_db();
+            let directory = std::env::temp_dir().join(format!(
+                "cb-activation-race-{}-{}",
+                std::process::id(),
+                TEMP_DB_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("main.js"),
+                r#"module.exports = {
+                    async activate(ctx) {
+                        await ctx.storage.set('activation-entered', true);
+                        const end = Date.now() + 1000;
+                        while (Date.now() < end) {}
+                    },
+                    deactivate() {},
+                    onMessage() { return { version: 1 }; }
+                };"#,
+            )
+            .unwrap();
+            lock(&db)
+                .conn()
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE plugins SET enabled=1, installed_path=?1, entry_main='main.js', permissions='[\"storage:write\"]' WHERE id='gif-editor'",
+                    rusqlite::params![directory.to_string_lossy()],
+                )
+                .unwrap();
+            let record = lock(&db)
+                .plugin_backend_record("gif-editor")
+                .unwrap()
+                .unwrap();
+            let manager = BackendProcessManager::new(db.clone());
+            let activating = manager.clone();
+            let thread =
+                std::thread::spawn(move || activating.ensure_activated("gif-editor", record));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if lock(&db)
+                    .storage_get("gif-editor", "activation-entered")
+                    .unwrap()
+                    .is_some()
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "sidecar did not enter initialize"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let lifecycle = manager.begin_lifecycle_operation("gif-editor").unwrap();
+            let maintenance = manager.enter_maintenance("gif-editor").unwrap();
+            manager.deactivate("gif-editor").unwrap();
+            assert!(
+                thread.join().unwrap().is_err(),
+                "old startup must be cancelled"
+            );
+            assert!(!manager.has("gif-editor"));
+            assert!(!lock(&manager.activation_slot("gif-editor").state).starting);
+            if uninstall {
+                lock(&db)
+                    .conn()
+                    .lock()
+                    .unwrap()
+                    .execute("DELETE FROM plugins WHERE id='gif-editor'", [])
+                    .unwrap();
+                std::fs::remove_dir_all(&directory).unwrap();
+            } else {
+                std::fs::write(directory.join("main.js"),
+                    "module.exports = { activate() {}, deactivate() {}, onMessage() { return { version: 2 }; } };")
+                    .unwrap();
+                drop(maintenance);
+                drop(lifecycle);
+                let record = lock(&db)
+                    .plugin_backend_record("gif-editor")
+                    .unwrap()
+                    .unwrap();
+                let updated = manager.ensure_activated("gif-editor", record).unwrap();
+                let response = updated
+                    .request("plugin.message", json!({ "message": {} }))
+                    .unwrap();
+                assert_eq!(response["version"], 2);
+                manager.deactivate("gif-editor").unwrap();
+                std::fs::remove_dir_all(&directory).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn lifecycle_operation_covers_legacy_id_and_name_aliases() {
         let db = temp_db();
         lock(&db)
@@ -1192,8 +1740,14 @@ mod tests {
             exe,
             plugin_dir.clone(),
             "dist/main.js".into(),
-            Arc::new(|pid: &str| panic!("sidecar crashed during unienv sequence: {pid}")),
+            Arc::new(|pid: &str, _token: &str| {
+                panic!("sidecar crashed during unienv sequence: {pid}")
+            }),
             Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(crate::host_services::Services::new(
+                crate::task_runtime::TaskRuntime::memory(),
+            )),
         )
         .expect("spawn unienv sidecar");
 
@@ -1331,8 +1885,14 @@ mod tests {
             exe,
             plugin_dir.clone(),
             "dist/main.js".into(),
-            Arc::new(|pid: &str| panic!("sidecar crashed during document-engine sequence: {pid}")),
+            Arc::new(|pid: &str, _token: &str| {
+                panic!("sidecar crashed during document-engine sequence: {pid}")
+            }),
             Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(|_event: &str, _payload: serde_json::Value| {}),
+            Arc::new(crate::host_services::Services::new(
+                crate::task_runtime::TaskRuntime::memory(),
+            )),
         )
         .expect("spawn document-engine sidecar");
 
@@ -1358,6 +1918,23 @@ mod tests {
             models["models"].is_array(),
             "invalid models envelope: {models}"
         );
+        let preview_path = dir.join("preview.png");
+        image::RgbImage::from_pixel(1600, 800, image::Rgb([242, 248, 255]))
+            .save(&preview_path)
+            .unwrap();
+        let preview = send(json!({
+            "type": "document.ocr.preview",
+            "path": preview_path,
+        }));
+        assert_eq!(
+            preview["width"], 1600,
+            "invalid preview envelope: {preview}"
+        );
+        assert_eq!(preview["height"], 800);
+        assert!(preview["dataUrl"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("data:image/jpeg;base64,")));
+        assert!(serde_json::to_vec(&preview).unwrap().len() < 256 * 1024);
 
         let _ = proc.request("lifecycle.dispose", json!({}));
         proc.kill_now("test cleanup");

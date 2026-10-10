@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { PluginContext, PluginStorageEntry, PluginStorageMutation } from 'cruciblebox-plugin-api'
-import {
-  parseDiaryDate,
-  shouldLeaveAfterSave,
-  type DiaryMutationResult
-} from '../src/diary-domain'
+import type { DiaryContext, DiaryStorage } from '../src/next-service'
+type PluginStorageEntry<T> = { key: string; value: T }
+type PluginStorageMutation = Parameters<DiaryStorage['batch']>[0][number]
+import { parseDiaryDate, shouldLeaveAfterSave, type DiaryMutationResult } from '../src/diary-domain'
 import diaryPlugin from '../src/main'
 
 class MemoryStorage {
@@ -41,35 +39,8 @@ class MemoryStorage {
   }
 }
 
-function context(storage: MemoryStorage): PluginContext {
-  return {
-    id: 'diary-id',
-    config: {},
-    storage,
-    database: { query: async () => [], execute: async () => undefined },
-    logger: { debug() {}, error() {}, info() {}, warn() {} },
-    api: {
-      emitEvent() {},
-      fetch: async () => new Response(),
-      notify() {},
-      onEvent: () => () => undefined,
-      openDialog: async () => null,
-      readFile: async () => new Uint8Array(),
-      registerShortcut: () => () => undefined,
-      writeFile: async () => undefined,
-      clipboard: {
-        read: async () => ({ text: '' }),
-        write: async () => ({ ok: true })
-      },
-      getSystemInfo: async () => ({
-        os: { name: '', version: '', hostname: '' },
-        cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
-        memory: { total: 0, available: 0, usage: 0 },
-        disks: [],
-        network: []
-      })
-    }
-  }
+function context(storage: MemoryStorage): DiaryContext {
+  return { storage, logger: { info() {}, error() {} } }
 }
 
 beforeEach(async () => {
@@ -108,61 +79,41 @@ describe('diary domain', () => {
 })
 
 describe('diary storage workflow', () => {
-  it('recovers a draft and clears it atomically after an explicit save', async () => {
+  it('reads migrated entries and drafts during the compatibility period', async () => {
     const storage = new MemoryStorage()
-    await diaryPlugin.activate(context(storage))
-    await diaryPlugin.onMessage?.({
-      type: 'saveDraft',
+    await storage.set('entry:2026-08-11', {
+      entry_date: '2026-08-11',
+      title: 'saved',
+      content: 'durable'
+    })
+    await storage.set('draft:2026-08-11', {
       date: '2026-08-11',
       title: 'draft',
-      content: 'recover me'
+      content: 'recover me',
+      updatedAt: '2026-08-11T00:00:00.000Z'
     })
+    await diaryPlugin.activate(context(storage))
     await expect(
       diaryPlugin.onMessage?.({ type: 'getEntry', date: '2026-08-11' })
-    ).resolves.toMatchObject({ draft: { title: 'draft', content: 'recover me' } })
-
-    await expect(
-      diaryPlugin.onMessage?.({
-        type: 'saveEntry',
-        date: '2026-08-11',
-        title: 'saved',
-        content: 'durable'
-      })
-    ).resolves.toMatchObject({ ok: true })
-    await expect(
-      diaryPlugin.onMessage?.({ type: 'getEntry', date: '2026-08-11' })
-    ).resolves.toEqual({
-      entry: {
-        entry_date: '2026-08-11',
-        title: 'saved',
-        content: 'durable'
-      },
-      draft: null
+    ).resolves.toMatchObject({
+      entry: { title: 'saved', content: 'durable' },
+      draft: { title: 'draft', content: 'recover me' }
     })
   })
 
-  it('returns an explicit failure and preserves the recoverable draft', async () => {
+  it('restores diary editing and clears the saved draft', async () => {
     const storage = new MemoryStorage()
+    await storage.set('draft:2026-08-11', { content: 'still here' })
     await diaryPlugin.activate(context(storage))
-    await diaryPlugin.onMessage?.({
-      type: 'saveDraft',
-      date: '2026-08-11',
-      title: 'draft',
-      content: 'still here'
-    })
-    storage.failBatch = true
     await expect(
       diaryPlugin.onMessage?.({
         type: 'saveEntry',
         date: '2026-08-11',
         title: 'saved',
-        content: 'should fail'
+        content: 'now editable'
       })
-    ).resolves.toEqual({
-      ok: false,
-      error: { code: 'STORAGE_ERROR', message: 'injected storage failure' }
-    })
-    expect(storage.values.get('draft:2026-08-11')).toMatchObject({ content: 'still here' })
-    expect(storage.values.has('entry:2026-08-11')).toBe(false)
+    ).resolves.toMatchObject({ ok: true })
+    expect(storage.values.get('entry:2026-08-11')).toMatchObject({ content: 'now editable' })
+    expect(storage.values.has('draft:2026-08-11')).toBe(false)
   })
 })

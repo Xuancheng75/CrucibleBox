@@ -12,7 +12,7 @@ export default function PluginDropOverlay({
   target
 }: {
   active: boolean
-  target: 'plugin' | 'document' | 'mixed'
+  target: 'plugin' | 'document' | 'archive' | 'mixed'
 }) {
   const { token } = theme.useToken()
   if (!active) return null
@@ -46,7 +46,9 @@ export default function PluginDropOverlay({
         <div style={{ marginTop: 12 }}>
           <Text strong style={{ fontSize: 16, color: token.colorText }}>
             {target === 'document'
-              ? '松开鼠标，导入到 Document Engine'
+              ? '松开鼠标，导入到文档与知识库'
+              : target === 'archive'
+                ? '松开鼠标，加入快速解压队列'
               : target === 'mixed'
                 ? '松开鼠标，分别处理文档和插件包'
                 : '松开鼠标，导入插件包'}
@@ -56,8 +58,10 @@ export default function PluginDropOverlay({
           <Text type="secondary" style={{ fontSize: 12 }}>
             {target === 'document'
               ? '支持文件和文件夹；ZIP 仍会进入插件安装流程'
+              : target === 'archive'
+                ? '支持 ZIP、7z、RAR、TAR、GZ、BZ2、XZ 和 CAB'
               : target === 'mixed'
-                ? '文档交给 Document Engine，ZIP 进入插件安装确认'
+                ? '文档交给文档与知识库，ZIP 进入插件安装确认'
                 : '支持 .zip 插件包与插件目录（可多选）'}
           </Text>
         </div>

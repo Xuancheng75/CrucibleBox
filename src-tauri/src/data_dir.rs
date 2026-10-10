@@ -116,22 +116,10 @@ fn checkpoint_wal(db_path: &Path) -> CheckpointResult {
     if !wal_path.exists() {
         return CheckpointResult::NoWal;
     }
-    match rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
-        Ok(conn) => {
-            let ok = conn
-                .pragma_update(None, "wal_checkpoint", "TRUNCATE")
-                .is_ok();
-            drop(conn);
-            if ok {
-                CheckpointResult::Done
-            } else {
-                CheckpointResult::Failed
-            }
-        }
-        Err(_) => CheckpointResult::Failed,
+    if cruciblebox_repository::checkpoint_wal_before_copy(db_path).is_ok() {
+        CheckpointResult::Done
+    } else {
+        CheckpointResult::Failed
     }
 }
 

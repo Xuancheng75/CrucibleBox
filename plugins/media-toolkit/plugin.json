@@ -1,0 +1,17 @@
+{
+  "name": "media-toolkit",
+  "version": "0.2.0-beta.2",
+  "displayName": "图片处理",
+  "description": "图片编辑与导出。音视频处理已移至独立插件。",
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "backend": false,
+  "manifestVersion": 3,
+  "rendererApiVersion": 3,
+  "minimumHostVersion": "2.1.0-beta.1",
+  "trustLevel": "standard",
+  "capabilities": { "fs": true, "tasks": true, "ui": true, "pluginData": true },
+  "permissions": ["dialog"],
+  "config": {}
+}

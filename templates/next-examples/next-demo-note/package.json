@@ -1,0 +1,17 @@
+{
+  "name": "next-demo-note",
+  "version": "1.0.0-alpha.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cruciblebox-plugin-build build .",
+    "pack:plugin": "cruciblebox-plugin-build pack .",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@cruciblebox/next-api": "5.0.0-alpha.7"
+  },
+  "devDependencies": {
+    "@cruciblebox/plugin-build": "1.0.0-alpha.7"
+  }
+}

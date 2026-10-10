@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "node16",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "jsx": "react-jsx",
     "strict": true,
     "esModuleInterop": true,
@@ -13,8 +13,11 @@
     "declaration": false,
     "sourceMap": false,
     "newLine": "lf",
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@cruciblebox/next-api": ["./vendor/next-api/src/index.d.ts"]
+    }
   },
-  "include": ["src/**/*", "../../plugin-system/trusted-services/unienv/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/main.ts"]
 }

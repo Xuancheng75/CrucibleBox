@@ -1,0 +1,21 @@
+{
+  "name": "developer-toolkit",
+  "version": "0.2.0-beta.2",
+  "displayName": "接口调试",
+  "description": "HTTP 与 GraphQL 请求、环境变量、Bearer 认证、集合、历史与导出。",
+  "category": "开发工具",
+  "tags": ["接口", "HTTP", "GraphQL"],
+  "keywords": ["REST", "请求", "调试", "认证", "集合"],
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "backend": true,
+  "manifestVersion": 4,
+  "backendApiVersion": 4,
+  "rendererApiVersion": 4,
+  "minimumHostVersion": "2.1.0-beta.2",
+  "trustLevel": "standard",
+  "capabilities": { "network": true, "storage": true, "pluginData": true, "ui": true },
+  "permissions": ["network:fetch", "storage:read", "storage:write"],
+  "config": {}
+}

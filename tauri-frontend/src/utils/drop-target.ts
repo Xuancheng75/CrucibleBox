@@ -26,7 +26,7 @@ export function isZipPath(path: string): boolean {
 }
 
 /**
- * Document Engine 的窗口级拖放分类。
+ * “文档与知识库”的窗口级拖放分类。
  *
  * Tauri 的 OS 拖放事件提供真实路径；iframe 内的 File 对象在 sandbox 下
  * 只有文件名，因此所有非 ZIP 路径都必须由宿主转发，不能由 iframe 自行解析。

@@ -1,4 +1,4 @@
-import type { PluginContext, PluginMain } from 'cruciblebox-plugin-api'
+import type { DiaryContext, DiaryDomain } from './next-service'
 import {
   normalizeDiaryText,
   parseDiaryDate,
@@ -16,7 +16,7 @@ interface DiaryMessage {
   content?: string
 }
 
-let ctx: PluginContext | null = null
+let ctx: DiaryContext | null = null
 let mutationQueue: Promise<void> = Promise.resolve()
 
 function storage() {
@@ -85,10 +85,7 @@ async function handleGetMonthEntries(msg: DiaryMessage) {
 async function handleGetEntry(msg: DiaryMessage) {
   const date = parseDiaryDate(msg.date)
   if (!date) return { error: '缺少或无效的日期参数' }
-  const [entry, draft] = await Promise.all([
-    getEntryByDate(date.value),
-    getDraftByDate(date.value)
-  ])
+  const [entry, draft] = await Promise.all([getEntryByDate(date.value), getDraftByDate(date.value)])
   return { entry, draft }
 }
 
@@ -196,8 +193,8 @@ async function handleExportMonth(msg: DiaryMessage) {
   return { content: parts.join('\n\n---\n\n') }
 }
 
-const plugin: PluginMain = {
-  activate(pluginCtx: PluginContext) {
+const plugin: DiaryDomain = {
+  activate(pluginCtx: DiaryContext) {
     ctx = pluginCtx
     mutationQueue = Promise.resolve()
     ctx.logger.info('日记插件已激活')
@@ -210,6 +207,11 @@ const plugin: PluginMain = {
   async onMessage(message: unknown) {
     const msg = message as DiaryMessage
     switch (msg.type) {
+      case 'getNotes':
+        return (await storage().get('notes')) ?? []
+      case 'setNotes':
+        await storage().set('notes', (message as { notes?: unknown }).notes ?? [])
+        return { ok: true }
       case 'getMonthEntries':
         return await handleGetMonthEntries(msg)
       case 'getEntry':

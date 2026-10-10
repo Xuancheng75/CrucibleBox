@@ -1,412 +1,140 @@
-// Document Engine 任务管理器（Phase 2 骨架）
-// 复用 UniEnv TaskManager 的可观测语义（queued → running → succeeded|failed|cancelled），
-// 但支持多 resource key（ocr / parse / chunk / convert / batch），各资源默认单飞。
-// 后续 Phase 可在此扩展 Worker 池与断点 checkpoint。
-
+//! Compatibility projection over the shared durable task authority.
+use crate::task_runtime::{Context, TaskRuntime};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
-
+type TaskObserver = Arc<dyn Fn(Value) + Send + Sync>;
+pub type ProgressEmitter = Arc<dyn Fn(&str, Value) + Send + Sync>;
+pub struct TaskContext {
+    inner: Context,
+    progress_emitter: Option<ProgressEmitter>,
+}
+impl TaskContext {
+    pub fn runtime_context(&self) -> &Context {
+        &self.inner
+    }
+    pub fn emit_progress(&self, plugin_id: &str, progress: &Value) {
+        if let Some(emitter) = &self.progress_emitter {
+            emitter(
+                "plugin:message",
+                json!({"pluginId":plugin_id,"message":{"type":"document.progress","taskId":self.task_id(),"progress":progress}}),
+            );
+        }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+    pub fn cancel_flag(&self) -> &AtomicBool {
+        self.inner.cancel_flag()
+    }
+    pub fn check_cancelled(&self) -> Result<(), String> {
+        self.inner.check_cancelled()
+    }
+    pub fn task_id(&self) -> String {
+        self.inner.task_id()
+    }
+    pub fn wait_if_paused(&self) -> Result<(), String> {
+        self.inner.wait_if_paused()
+    }
+    pub fn progress_snapshot(&self) -> Value {
+        self.inner.progress_snapshot()
+    }
+    pub fn update_progress(&self, stage: &str, percent: u32, message: &str, extra: Option<Value>) {
+        self.inner.update_progress(stage, percent, message, extra);
+    }
+}
+pub type TaskExecutor = Box<dyn FnOnce(&TaskContext) -> Result<Value, String> + Send>;
+pub struct TaskManager {
+    runtime: Mutex<Arc<TaskRuntime>>,
+    progress_emitter: Mutex<Option<ProgressEmitter>>,
+}
+#[cfg(test)]
+impl Default for TaskManager {
+    fn default() -> Self {
+        Self {
+            runtime: Mutex::new(TaskRuntime::memory()),
+            progress_emitter: Mutex::new(None),
+        }
+    }
+}
+impl TaskManager {
+    pub fn with_runtime(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime: Mutex::new(runtime),
+            progress_emitter: Mutex::new(None),
+        }
+    }
+    fn runtime(&self) -> Arc<TaskRuntime> {
+        self.runtime.lock().unwrap().clone()
+    }
+    pub fn set_progress_emitter(&self, emitter: ProgressEmitter) {
+        *self.progress_emitter.lock().unwrap() = Some(emitter);
+    }
+    pub fn set_observer(&self, observer: TaskObserver) {
+        self.runtime().set_observer("document-engine", observer);
+    }
+    pub fn start(
+        self: &Arc<Self>,
+        resource: &str,
+        executor: TaskExecutor,
+    ) -> Result<String, String> {
+        let progress_emitter = self.progress_emitter.lock().unwrap().clone();
+        self.runtime().start(
+            "document-engine",
+            resource,
+            Box::new(move |context| {
+                let context = TaskContext {
+                    inner: context.clone(),
+                    progress_emitter,
+                };
+                executor(&context)
+                    .map(|result| compact_snapshot(&json!({"result":result}))["result"].clone())
+            }),
+        )
+    }
+    pub fn cancel(&self, id: &str) -> bool {
+        self.runtime().cancel("document-engine", id)
+    }
+    pub fn get(&self, id: &str) -> Option<Value> {
+        self.runtime()
+            .get("document-engine", id)
+            .map(|v| compact_snapshot(&v))
+    }
+    pub fn active_task(&self, resource: &str) -> Option<String> {
+        self.runtime().active("document-engine", resource)
+    }
+    pub fn cancel_all_active(&self) -> usize {
+        self.runtime()
+            .list("document-engine")
+            .iter()
+            .filter_map(|v| v["taskId"].as_str())
+            .filter(|id| self.cancel(id))
+            .count()
+    }
+    pub fn pause(&self, id: &str) -> bool {
+        self.runtime().pause("document-engine", id)
+    }
+    pub fn resume(&self, id: &str) -> bool {
+        self.runtime().resume("document-engine", id)
+    }
+    pub fn list(&self) -> Vec<Value> {
+        self.runtime()
+            .list("document-engine")
+            .iter()
+            .map(compact_snapshot)
+            .collect()
+    }
+}
 pub const RESOURCE_OCR: &str = "ocr";
 pub const RESOURCE_PARSE: &str = "parse";
 pub const RESOURCE_CHUNK: &str = "chunk";
 pub const RESOURCE_SPLIT: &str = "split";
 pub const RESOURCE_CONVERT: &str = "convert";
 pub const RESOURCE_BATCH: &str = "batch";
-const MAX_RETAINED_TASKS: usize = 100;
-/// Keep task polling below the renderer RPC budget. Large documents remain
-/// available in the on-disk cache, while the task view receives a useful
-/// preview and byte/count metadata.
+pub const RESOURCE_MODELS: &str = "models";
 const MAX_RESULT_PREVIEW_BYTES: usize = 192 * 1024;
-/// The renderer also enforces a node/depth budget. A result can be below the
-/// byte limit and still exceed that budget when it contains many short fields.
 const MAX_RESULT_PREVIEW_NODES: usize = 3072;
 const MAX_RESULT_PREVIEW_DEPTH: usize = 12;
-
-pub struct TaskContext {
-    cancelled: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
-    record: Arc<TaskRecord>,
-}
-
-#[allow(dead_code)]
-impl TaskContext {
-    /// Stable identifier allocated before the executor thread starts.  Worker
-    /// requests use the same value so progress/result frames can be correlated
-    /// with `document.jobs.get` snapshots.
-    pub fn task_id(&self) -> String {
-        self.record
-            .core
-            .lock()
-            .unwrap()
-            .snapshot
-            .get("taskId")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
-    }
-
-    pub fn cancel_flag(&self) -> &AtomicBool {
-        &self.cancelled
-    }
-
-    pub fn check_cancelled(&self) -> Result<(), String> {
-        if self.is_cancelled() {
-            Err("操作已取消".into())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn wait_if_paused(&self) -> Result<(), String> {
-        while self.paused.load(Ordering::SeqCst) {
-            self.check_cancelled()?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        self.check_cancelled()
-    }
-
-    /// 进度上报：stage + percent + message（可选 page / speed 用于长任务）
-    pub fn update_progress(&self, stage: &str, percent: u32, message: &str, extra: Option<Value>) {
-        self.record.update_progress(stage, percent, message, extra);
-    }
-
-    /// Return the canonical progress snapshot after monotonic normalization.
-    /// Real-time events and polling must expose the same value so the renderer
-    /// cannot regress when a late worker frame arrives.
-    pub fn progress_snapshot(&self) -> Value {
-        self.record
-            .core
-            .lock()
-            .unwrap()
-            .snapshot
-            .get("progress")
-            .cloned()
-            .unwrap_or_else(|| json!({ "stage": "queued", "percent": 0, "message": "" }))
-    }
-
-    fn mark_running(&self) {
-        let mut core = self.record.core.lock().unwrap();
-        if core.settled {
-            return;
-        }
-        if core.snapshot["status"] != "paused" {
-            core.snapshot["status"] = json!("running");
-        }
-        core.snapshot["startedAt"] = json!(now_ms());
-    }
-}
-
-pub type TaskExecutor = Box<dyn FnOnce(&TaskContext) -> Result<Value, String> + Send>;
-
-struct TaskCore {
-    snapshot: Value,
-    settled: bool,
-}
-
-struct TaskRecord {
-    cancelled: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
-    core: Mutex<TaskCore>,
-}
-
-impl TaskRecord {
-    fn update_progress(&self, stage: &str, percent: u32, message: &str, extra: Option<Value>) {
-        let mut core = self.core.lock().unwrap();
-        if core.settled {
-            return;
-        }
-        let status = core.snapshot["status"].as_str().unwrap_or("");
-        if status != "queued" && status != "running" {
-            return;
-        }
-        let previous_percent = core.snapshot["progress"]["percent"]
-            .as_u64()
-            .unwrap_or(0)
-            .min(100) as u32;
-        let percent_value = percent.clamp(0, 100).max(previous_percent);
-        let mut progress = json!({
-            "stage": stage,
-            "percent": percent_value,
-            "message": message,
-        });
-        let sequence = core.snapshot["progress"]["sequence"]
-            .as_u64()
-            .unwrap_or(0)
-            .saturating_add(1);
-        progress["sequence"] = json!(sequence);
-        if let Some(started_at) = core.snapshot["startedAt"].as_u64() {
-            let elapsed_ms = now_ms().saturating_sub(started_at);
-            progress["elapsedMs"] = json!(elapsed_ms);
-            if percent_value > 0 && elapsed_ms > 0 {
-                let speed = percent_value as f64 / elapsed_ms as f64 * 1000.0;
-                progress["speedPercentPerSecond"] = json!(speed);
-                progress["etaMs"] =
-                    json!(((100 - percent_value) as f64 / speed * 1000.0).round() as u64);
-            }
-        }
-        if let Some(extra) = extra {
-            if let Some(obj) = extra.as_object() {
-                for (k, v) in obj {
-                    progress[k] = v.clone();
-                }
-            }
-        }
-        core.snapshot["progress"] = progress;
-    }
-
-    fn complete_succeeded(&self, result: Value) {
-        let mut core = self.core.lock().unwrap();
-        if core.settled {
-            return;
-        }
-        core.settled = true;
-        core.snapshot["status"] = json!("succeeded");
-        core.snapshot["completedAt"] = json!(now_ms());
-        // Executors persist the complete document/chunk result in the disk
-        // cache. Keep only the same bounded preview used by polling in the
-        // retained task record, otherwise 100 completed large PDFs can pin
-        // hundreds of megabytes (or more) until task eviction.
-        let compact = compact_snapshot(&json!({ "result": result }));
-        core.snapshot["result"] = compact["result"].clone();
-        if let Some(bytes) = compact.get("resultBytes") {
-            core.snapshot["resultBytes"] = bytes.clone();
-        }
-        if let Some(truncated) = compact.get("resultTruncated") {
-            core.snapshot["resultTruncated"] = truncated.clone();
-        }
-    }
-
-    fn complete_failed(&self, message: String) {
-        let mut core = self.core.lock().unwrap();
-        if core.settled {
-            return;
-        }
-        core.settled = true;
-        core.snapshot["status"] = json!("failed");
-        core.snapshot["completedAt"] = json!(now_ms());
-        core.snapshot["error"] = json!({ "name": "TaskError", "message": message });
-    }
-
-    fn complete_cancelled(&self) {
-        let mut core = self.core.lock().unwrap();
-        if core.settled {
-            return;
-        }
-        core.settled = true;
-        core.snapshot["status"] = json!("cancelled");
-        core.snapshot["completedAt"] = json!(now_ms());
-        core.snapshot["error"] = json!({ "name": "AbortError", "message": "用户取消了任务" });
-    }
-
-    fn status_is_active(&self) -> bool {
-        let core = self.core.lock().unwrap();
-        matches!(
-            core.snapshot["status"].as_str(),
-            Some("queued") | Some("running")
-        )
-    }
-}
-
-#[derive(Default)]
-pub struct TaskManager {
-    inner: Mutex<Inner>,
-}
-
-#[derive(Default)]
-struct Inner {
-    tasks: HashMap<String, Arc<TaskRecord>>,
-    active_resources: HashMap<String, String>,
-    terminal_order: Vec<String>,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-#[allow(dead_code)]
-fn random_task_id() -> Result<String, String> {
-    let mut buf = [0u8; 16];
-    getrandom::getrandom(&mut buf).map_err(|e| format!("rng failure: {e}"))?;
-    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-#[allow(dead_code)]
-impl TaskManager {
-    /// 启动任务。resource_key 已有活跃任务时返回 Err(冲突消息)。
-    pub fn start(
-        self: &Arc<Self>,
-        resource_key: &str,
-        executor: TaskExecutor,
-    ) -> Result<String, String> {
-        let resource_key = resource_key.trim().to_string();
-        if resource_key.is_empty() {
-            return Err("resourceKey must not be empty".into());
-        }
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(active_id) = inner.active_resources.get(&resource_key) {
-            return Err(format!(
-                "Resource \"{resource_key}\" is already owned by task \"{active_id}\""
-            ));
-        }
-        let task_id = random_task_id()?;
-        let record = Arc::new(TaskRecord {
-            cancelled: Arc::new(AtomicBool::new(false)),
-            paused: Arc::new(AtomicBool::new(false)),
-            core: Mutex::new(TaskCore {
-                snapshot: json!({
-                    "taskId": task_id.clone(),
-                    "resourceKey": resource_key.clone(),
-                    "status": "queued",
-                    "createdAt": now_ms(),
-                }),
-                settled: false,
-            }),
-        });
-        inner.tasks.insert(task_id.clone(), record.clone());
-        inner
-            .active_resources
-            .insert(resource_key.clone(), task_id.clone());
-        drop(inner);
-
-        let ctx = TaskContext {
-            cancelled: Arc::clone(&record.cancelled),
-            paused: Arc::clone(&record.paused),
-            record,
-        };
-        let manager = Arc::clone(self);
-        let release_id = task_id.clone();
-        std::thread::Builder::new()
-            .name(format!("doceng-task-{}", &task_id[..8.min(task_id.len())]))
-            .spawn(move || {
-                ctx.mark_running();
-                let result = executor(&ctx);
-                match result {
-                    Ok(value) => ctx.record.complete_succeeded(value),
-                    Err(message) => ctx.record.complete_failed(message),
-                }
-                manager.release_resource(&release_id);
-            })
-            .map_err(|e| format!("spawn task thread failed: {e}"))?;
-
-        Ok(task_id)
-    }
-
-    pub fn cancel(&self, task_id: &str) -> bool {
-        let record = {
-            let inner = self.inner.lock().unwrap();
-            match inner.tasks.get(task_id) {
-                Some(r) => Arc::clone(r),
-                None => return false,
-            }
-        };
-        if !record.status_is_active() {
-            return false;
-        }
-        record.cancelled.store(true, Ordering::SeqCst);
-        record.complete_cancelled();
-        self.release_resource(task_id);
-        true
-    }
-
-    pub fn pause(&self, task_id: &str) -> bool {
-        let record = {
-            let inner = self.inner.lock().unwrap();
-            match inner.tasks.get(task_id) {
-                Some(record) => Arc::clone(record),
-                None => return false,
-            }
-        };
-        let mut core = record.core.lock().unwrap();
-        if core.settled
-            || !matches!(
-                core.snapshot["status"].as_str(),
-                Some("queued") | Some("running")
-            )
-        {
-            return false;
-        }
-        record.paused.store(true, Ordering::SeqCst);
-        core.snapshot["status"] = json!("paused");
-        true
-    }
-
-    pub fn resume(&self, task_id: &str) -> bool {
-        let record = {
-            let inner = self.inner.lock().unwrap();
-            match inner.tasks.get(task_id) {
-                Some(record) => Arc::clone(record),
-                None => return false,
-            }
-        };
-        let mut core = record.core.lock().unwrap();
-        if core.settled || core.snapshot["status"] != "paused" {
-            return false;
-        }
-        record.paused.store(false, Ordering::SeqCst);
-        core.snapshot["status"] = json!("running");
-        true
-    }
-
-    pub fn get(&self, task_id: &str) -> Option<Value> {
-        let inner = self.inner.lock().unwrap();
-        inner.tasks.get(task_id).map(|r| {
-            let core = r.core.lock().unwrap();
-            compact_snapshot(&core.snapshot)
-        })
-    }
-
-    pub fn list(&self) -> Vec<Value> {
-        let inner = self.inner.lock().unwrap();
-        inner
-            .tasks
-            .values()
-            .map(|r| {
-                let core = r.core.lock().unwrap();
-                compact_snapshot(&core.snapshot)
-            })
-            .collect()
-    }
-
-    pub fn active_task(&self, resource_key: &str) -> Option<String> {
-        let inner = self.inner.lock().unwrap();
-        inner.active_resources.get(resource_key.trim()).cloned()
-    }
-
-    pub fn cancel_all_active(&self) -> usize {
-        let ids: Vec<String> = {
-            let inner = self.inner.lock().unwrap();
-            inner.active_resources.values().cloned().collect()
-        };
-        ids.iter().filter(|id| self.cancel(id)).count()
-    }
-
-    fn release_resource(&self, task_id: &str) {
-        let mut inner = self.inner.lock().unwrap();
-        let resource = inner
-            .active_resources
-            .iter()
-            .find(|(_, id)| id == &task_id)
-            .map(|(k, _)| k.clone());
-        if let Some(key) = resource {
-            inner.active_resources.remove(&key);
-        }
-        inner.terminal_order.push(task_id.to_string());
-        while inner.terminal_order.len() > MAX_RETAINED_TASKS {
-            let oldest = inner.terminal_order.remove(0);
-            inner.tasks.remove(&oldest);
-        }
-    }
-}
 
 /// Return a bounded task envelope. The full result is written to the
 /// Document Engine cache by each executor; transporting thousands of pages in
@@ -597,6 +325,31 @@ fn compact_nested(value: &Value, max_chars: usize, budget: &mut CompactBudget) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn executor_panic_records_failure_and_releases_resource() {
+        let mgr = Arc::new(TaskManager::default());
+        let id = mgr
+            .start(
+                "panic-resource",
+                Box::new(|_| panic!("injected executor crash")),
+            )
+            .unwrap();
+        for _ in 0..200 {
+            if mgr.active_task("panic-resource").is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(mgr.get(&id).unwrap()["status"], "failed");
+        assert!(mgr.get(&id).unwrap()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("异常退出"));
+        assert!(mgr.active_task("panic-resource").is_none());
+        mgr.start("panic-resource", Box::new(|_| Ok(Value::Null)))
+            .unwrap();
+    }
+
     use super::*;
     use std::time::Duration;
 
@@ -653,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_terminalizes() {
+    fn cancel_terminalizes_after_worker_exits() {
         let mgr = manager();
         let id = mgr
             .start(
@@ -670,6 +423,12 @@ mod tests {
             )
             .unwrap();
         assert!(mgr.cancel(&id));
+        for _ in 0..100 {
+            if mgr.get(&id).unwrap()["status"] == "cancelled" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert_eq!(mgr.get(&id).unwrap()["status"], "cancelled");
     }
 
@@ -690,6 +449,13 @@ mod tests {
             .unwrap();
         std::thread::sleep(Duration::from_millis(10));
         assert!(mgr.pause(&id));
+        // Paused is published only when the cooperative executor acknowledges stopping.
+        for _ in 0..100 {
+            if mgr.get(&id).unwrap()["status"] == "paused" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(mgr.get(&id).unwrap()["status"], "paused");
         assert!(mgr.resume(&id));
         assert_eq!(mgr.get(&id).unwrap()["status"], "running");

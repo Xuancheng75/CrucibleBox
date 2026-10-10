@@ -9,7 +9,6 @@ import { useTaskStore } from '../store/task.store'
 const STARTUP_CHECK_KEY = 'ob-startup-stable-update-check-v1'
 const UPDATE_CHECK_TIMEOUT_MS = 30_000
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 5 * 60_000
-const UPDATE_TASK_ID = 'app-update-download'
 
 type PromptPhase = 'available' | 'downloading' | 'downloaded' | 'error'
 
@@ -79,12 +78,13 @@ export default function StartupUpdatePrompt() {
   const handleDownload = async () => {
     const initialUpdate = activeUpdateRef.current
     if (!initialUpdate || phase === 'downloading') return
+    const updateTaskId = `app-update-${Date.now()}-${Math.random().toString(16).slice(2)}`
     setPhase('downloading')
     progressRef.current = 0
     setProgress(0)
     setMessage(null)
     upsertTask({
-      id: UPDATE_TASK_ID,
+      id: updateTaskId,
       title: '下载 CrucibleBox 更新',
       detail: '更新通道：稳定版',
       source: 'update',
@@ -116,7 +116,7 @@ export default function StartupUpdatePrompt() {
                   const value = Math.max(progressRef.current, next)
                   progressRef.current = value
                   setProgress(value)
-                  patchTask(UPDATE_TASK_ID, { progress: value, detail: `已下载 ${value}%` })
+                  patchTask(updateTaskId, { progress: value, detail: `已下载 ${value}%` })
                 }
               }
             },
@@ -131,12 +131,12 @@ export default function StartupUpdatePrompt() {
       progressRef.current = 100
       setProgress(100)
       setPhase('downloaded')
-      patchTask(UPDATE_TASK_ID, { status: 'completed', progress: 100, detail: '下载完成，等待安装' })
+      patchTask(updateTaskId, { status: 'completed', progress: 100, detail: '下载完成，等待安装' })
     } catch (error) {
       const detail = formatUpdateError(error)
       setMessage(detail)
       setPhase('error')
-      patchTask(UPDATE_TASK_ID, { status: 'failed', error: detail, detail: '下载失败' })
+      patchTask(updateTaskId, { status: 'failed', error: detail, detail: '下载失败' })
     }
   }
 

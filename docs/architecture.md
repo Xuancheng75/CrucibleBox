@@ -1,10 +1,10 @@
-# CrucibleBox 架构（Tauri 2 基线，2.0.0）
+# CrucibleBox 架构（Tauri 2 与冻结的 Next beta.1）
 
-> 运行时基线自 1.9.1 起为 **Tauri 2 + Rust core + WebView2 + 插件 Rust sidecar**；本文按 2.0.0
-> 发布基线维护。
+> 当前宿主基线为 2.1.0-beta.4，Tauri 2 + Rust core + WebView2；Next beta.1 已冻结，架构进度与 beta.3 OCR 验收分别记录。
+> beta.3 OCR、安装器与正式发布门禁按各自证据追踪；Next 架构成果不表示这些计划已全部完成。
 > Electron 43 历史架构（1.5.23 ~ 1.7.3 生产线）已冻结并归档至 `docs/history/` 与
 > `docs/electron-legacy-registry.md`（快照 tag `electron-1.7.3-production`）。
-> 插件生态契约（Manifest v2 / renderer RPC / backend RPC / 主题 / UniEnv）跨两条线保留。
+> Next 使用冻结的 Manifest/API 5、wire 3；旧 v2-v4 执行运行时已退役，原始数据、旧包与成对回滚仍保留。
 
 ## 总览
 
@@ -12,10 +12,11 @@
 flowchart LR
   UI["tauri-frontend React renderer (WebView2)"] -->|"tauri invoke / event"| CORE["Rust core"]
   UI -->|"sandboxed iframe + MessagePort RPC"| FRAME["插件 renderer"]
-  CORE -->|"stdin/stdout 帧协议 v2"| SIDECAR["cruciblebox-plugin-host (quickjs-ng)"]
+  CORE -->|"stdin/stdout Next wire 3"| SIDECAR["cruciblebox-plugin-host (quickjs-ng)"]
   CORE --> SESSION["renderer session registry + 自定义协议"]
   CORE --> DB["rusqlite bundled WAL"]
   CORE --> TRUSTED["宿主可信服务 (UniEnv)"]
+  CORE --> DOCWORKER["独立文档 worker（PDFium + Document IR）"]
   TRUSTED --> UNIENV["UniEnv 安装能力"]
   CORE --> UPDATER["tauri-plugin-updater"]
 ```
@@ -27,13 +28,14 @@ WebView2（Chromium）承载宿主 React UI 与插件 sandboxed iframe；Rust co
 
 ## 进程与信任边界
 
-| 区域                     | 能力                                                   | 信任假设                         |
-| ------------------------ | ------------------------------------------------------ | -------------------------------- |
-| Rust core                | 窗口、文件、通知、SQLite、会话管理、协议 handler、更新 | 应用信任根                       |
-| WebView2 (宿主 renderer) | React UI，无 Node integration，Chromium sandbox        | 宿主代码，不能直接使用 Node/Rust |
-| 插件 renderer frame      | 唯一跨源、sandboxed iframe、MessagePort RPC            | 不可信 UI                        |
-| 插件 backend sidecar     | quickjs-ng 内的 JS + 帧协议 RPC（无 Node builtin）     | 用户明确确认安装的可信代码       |
-| UniEnv 可信服务          | 进程、下载、文件、解压和安装                           | 宿主固定摘要代码                 |
+| 区域                     | 能力                                                   | 信任假设                             |
+| ------------------------ | ------------------------------------------------------ | ------------------------------------ |
+| Rust core                | 窗口、文件、通知、SQLite、会话管理、协议 handler、更新 | 应用信任根                           |
+| WebView2 (宿主 renderer) | React UI，无 Node integration，Chromium sandbox        | 宿主代码，不能直接使用 Node/Rust     |
+| 插件 renderer frame      | opaque sandboxed iframe、MessagePort RPC               | 不可信 UI                            |
+| 插件 backend sidecar     | quickjs-ng 内的 JS + 帧协议 RPC（无 Node builtin）     | 用户明确确认安装的可信代码           |
+| UniEnv 可信服务          | 进程、下载、文件、解压和安装                           | 宿主固定摘要代码                     |
+| 文档 worker              | PDFium、解析器与 Document IR，仅由独立 worker 进程加载 | 宿主故障隔离，不承诺恶意输入 OS 沙箱 |
 
 Rust sidecar 是故障隔离，不是恶意 JS 的强制沙箱（quickjs 无 fs/net + 单一管道，隔离仅到
 "无 Node 能力"）。普通 backend 必须被用户视为可信代码；高权限 UniEnv 实现不随插件包分发，
@@ -51,9 +53,7 @@ renderer JavaScript 分别受独立字节预算约束（`scripts/performance-bud
 
 ## 插件安装与生命周期
 
-> 安装事务链（staging / journal / 原子替换 / 崩溃恢复）当前仍是 **Electron 层冻结实现**
-> （`plugin-system/PluginInstallationService.ts` 及事务族，见 `docs/electron-legacy-registry.md`
-> §二）。Rust 侧等价随 1.9.2 宿主集成落地；本章描述**契约语义**，两线一致。
+> 当前 Next 安装路径由 Rust 宿主执行 staging、journal、同卷原子替换与启动恢复，源码位于 src-tauri/src/install.rs、transaction.rs 和独立 repository。升级/卸载保留旧目录与用户文件；v2-v4 旧执行入口已退役，历史程序需与原数据库配对回滚。
 
 安装分为不可变准备和提交两段。ZIP/目录先经过普通文件、大小、条目数、路径、symlink、manifest、
 SemVer 和权限校验，再创建一次性 stage token。用户确认和最终提交消费同一个快照，避免 TOCTOU。
@@ -73,55 +73,35 @@ stop、deactivate 和维护操作使用 single-flight/维护租约，配置重�
 
 ## Renderer 隔离
 
-每次打开插件，Rust core 签发随机 session token、handshake token 与唯一 origin。Tauri 自定义协议
-在 Windows 使用 **path 型**形式（`http://cruciblebox-plugin.localhost/<token>/index.html`，
-PoC 结论：`scheme://` 形式不被支持）。`src-tauri/src/plugin_session.rs`（session registry：
-token/handshakeToken、owner-webview 绑定、TTL、一次性 index 消费）与 `src-tauri/src/plugin_protocol.rs`
-（资源路由：index 生成 / runtime.js / renderer.js + MIME 白名单 + 穿越防护）为对等实现。
+每次打开 Next 插件，Rust core 签发会话身份、握手密钥和资源租约，并绑定 owner WebView。tauri-frontend/src/components/NextPluginFrame.tsx 创建不含 allow-same-origin 的 sandboxed iframe，因此插件 origin 为 opaque。src-tauri/src/next_renderer.rs 和 next_frame_runtime.js 提供当前 renderer 会话与握手；plugin_session.rs 管理租约，plugin_protocol.rs 只提供白名单静态资源。
 
-frame 没有 Electron preload / Node / Rust 访问能力。宿主与 frame 只通过专用 MessagePort 通信
-（`src/plugin-runtime/PluginFrameBridge.ts` + `frame-entry.ts`，握手消息
-`cruciblebox-plugin-connect/port`）；envelope、方法、结果、事件、requestId、深度、节点、字节和
-最多 64 个 pending request 均严格验证（`shared/plugin-renderer-rpc.ts`）。
+frame 无 Node、Rust 或宿主 DOM 访问能力。宿主与插件通过专用 MessagePort 执行冻结的 Next wire 契约，逐次校验方法、权限、会话期限、requestId、结果与预算。每会话最多 32 个在途请求，JSON 帧上限 64 KiB，未知方法失败关闭。旧 PluginFrameBridge 与 frame-entry 保留用于历史 fixture，不再装配为当前插件执行入口。
 
-GIF Editor 的重型残影检测与修复在 frame 内创建一次性 Blob Worker，源码在插件构建时嵌入自包含
-renderer，运行时不扩大协议资源白名单。
+GIF 编辑器的残影检测与修复使用插件包内独立 worker，通过冻结的资源接口访问；运行文件与其他 renderer 文件一起纳入固定白名单。
 
-## Backend SDK（Rust sidecar）
+## 退役的 v2-v4 Backend SDK（历史参照）
 
-插件 backend 是**纯 JS + 宿主注入 ctx**（零 Node builtin，6 生产插件已核验）。`cruciblebox-plugin-host`
-（独立 Rust crate）用 quickjs-ng 在独立进程内加载插件 `dist/main.js`（CJS），注入
-`ctx = { id, config, logger, database, storage, api }` 全量方法面，经 `__hostRequest` 与宿主同步往返。
-
-- **帧协议**：stdin/stdout 长度前缀 JSON 帧（4 字节大端，8MB 上限），`frame.rs`。
-- **信封 v2**：token/requestId 正则、WORKER_METHODS（4：initialize/dispose/plugin.message/host.event）、
-  HOST_METHODS（19：db/storage/log/notification/dialog/network/file/shortcut/event/trusted）、
-  payload 预算（256KB/深度 16/数组 512/对象键 256/字符串 64KB），`envelope.rs`。
-- **CJS loader**：esbuild 单文件（`module.exports.default`）与 tsc 多文件（`exports.default` + 相对
-  require）双流派；路径防逃逸（normalize + plugin 根前缀 + `__cjsLoad` 二次校验）。
-- **同步往返模型**：`ctx.with` + job-drain（`execute_pending_job`）解析同步 settle 的 Promise，
-  无需 AsyncRuntime/tokio 桥接（1.8.2 PoC 结论）。
-
-旧 manifest 缺 API 版本时按 v1 语义兼容；带 backend 的新插件必须同时声明：
-
-```json
-{ "manifestVersion": 2, "backendApiVersion": 2, "rendererApiVersion": 2 }
-```
-
-纯 renderer 插件可声明 `"backend": false` 并省略 `backendApiVersion`；宿主仍校验兼容 `main` 入口，
-但不会加载它或创建 sidecar 进程。
+旧 Manifest/API v2-v4 的执行入口、旧 SQL RPC 与旧 renderer loader 已从当前 Next 宿主运行路径退役。旧安装记录、原始配置和插件存储仍保留用于迁移与诊断，程序回滚必须配对恢复原数据库。Next API 5 若构建 backend，使用独立的 Next executor；其中受限 CJS loader 属于 Next backend 格式支持，不是旧 renderer loader，也不提供 Node 或 SQL 能力。
 
 ## 数据层
 
-Rust core 使用 **rusqlite（bundled SQLite 3.53.x）**，与 better-sqlite3 文件格式零迁移兼容。
-`src-tauri/src/db.rs` 对等实现：WAL + `foreign_keys=ON` + v1-v3 迁移（`BEGIN IMMEDIATE` 事务内
-`user_version`）+ legacy sql.js 插件存储迁移 + 30 天日志清理。schema v3 含 `plugins.sort_order`。
+Rust core 通过独立 repository 使用 rusqlite（bundled SQLite），WAL 与 v1-v10 迁移在 repository 内完成；宿主 db.rs 只适配 repository，不向生产模块公开 SQLite Connection。L3 搬迁前的 WAL checkpoint 也通过 repository API 执行。旧 sql.js 与 v2-v4 插件数据迁移保留原始值；Next schema v10 在卸载与重装事务中保存配置、storage 和迁移标记。
 
-引擎或 migration 失败会回滚、关闭数据库并在窗口创建前终止启动（`show_fatal_error` 用户提示）；
-宿主不会以缺表或半迁移状态继续运行。
+schema v3 的插件排序与早期复制标记是历史迁移来源，不代表当前数据库版本。引擎或迁移失败会回滚、关闭数据库并在窗口创建前终止启动；宿主不会以缺表或半迁移状态继续运行。
 
-插件业务数据使用 `ctx.storage`（表主键 `(plugin_id, key)`，单值最多 1 MiB 严格 JSON，
-`storage.batch` 原子提交最多 64 个预校验 set/delete）。
+## 冻结 Next 协议与数据边界
+
+contracts/next/contract.json 状态为 frozen，是 manifest/API 5、wire 3、data 1 的唯一生成来源。wire JSON 上限 64 KiB、每会话 32 个在途请求；renderer 期限 10 秒，backend.call 单独为 30 秒。存储以准入身份确定命名空间，单值最多 4 MiB、事务最多 8 MiB/32 操作、24 KiB 分块，SQLite 原子提交；读取为会话绑定快照。
+
+独立 `src-tauri/crates/repository` 管理 WAL 和 v1–v10 事务迁移，宿主 `db.rs` 只做适配。v8 增加 Next 暂存表，v9 增加任务投影的执行器版本守卫，v10 按稳定插件 ID 保存卸载配置、存储原值和迁移标记，并在重装事务中恢复；保留旧身份、配置与存储原值。回滚须配对恢复旧程序和旧库。
+
+组合根创建一个 `task-runtime`，通过 `host_services` 和 `platform_service` 显式注入服务、事件端口、可选 worker 和资源。取消先记录意图，执行器停止后确认终态；发布预约拒绝晚到取消，批量发布保留已完成结果引用。文件 I/O 不持任务或主 DB 锁。任务中心投影使用独立执行器版本守卫拒绝迟到事件和 renderer 修改，启动后重放核心快照。
+
+文件发布采用独立 WAL 日志及摘要收据；PDF、归档、环境安装与导出适配器通过统一 runtime 发布结果。批量结果按输出目录记录有界引用。升级及卸载保留旧插件目录与空目录，不自动清理用户文件。`scripts/next-paired-rollback.mjs` 保存并验证旧程序与一致性数据库配对，只向新目录恢复。
+
+七个官方 Next 插件为文档与知识库、主题管理、开发环境管理、日记与笔记、随机决策、GIF 动画编辑、压缩与解压缩。使用 Manifest/API 5、wire 3，自包含 SDK/CLI，renderer-only；GIF 包另含 worker。其余旧插件包和用户数据保留。独立构建从根锁文件导出精确依赖，并验证重复 ZIP 和运行文件一致性。Next CLI 使用 esbuild 0.25.12；旧插件构建器继续保留其原版本。
+
+基础宿主无需文档 worker 即可启动；PDFium 与 document-worker.exe 作为独立校验包按需安装，catalog 摘要由同一目标构建在 CI/发布前生成。OCR worker、模型和公式能力另有资源门禁；文档架构改动不代表 OCR 精度提高或 beta.3 全计划完成。
 
 ## 主题系统
 
@@ -132,21 +112,19 @@ Rust core 使用 **rusqlite（bundled SQLite 3.53.x）**，与 better-sqlite3 �
 `shared/themes/presets.ts` 是内置主题单一注册表（静态数据，前端直读，不跨 Rust 边界）。
 插件 frame 经 `theme.list` RPC 获取快照、`theme.changed` 事件接收变更。ThemeManager 使用
 renderer-safe 语义 CSS 变量原语（`plugins/theme-manager/src/theme-vars.ts`，1.9.0 从 `@openbox/ui`
-内联）。宿主侧 theme 命令接线（get/set/list + 广播）随 1.9.2 前端完整迁移落地。
+内联）。宿主通过 theme API 提供读取、更新和变化通知；插件按需声明 theme:write。
 
 ## 可观测性与恢复
 
 - Rust core 启动里程碑记录到 stderr/日志；进程内存探针（`get_process_memory`，P4 A/B 基准）已于 1.9.3 移除。
-- 日志与指标：Electron 时代的 JSONL/指标实现冻结中；Rust 侧等价随 1.9.2 落地。
+- Rust 生产线按任务和插件故障定位记录必要信息；历史 Electron 日志实现不属于活动运行时。
 - 插件日志按插件限制 2,000 行并清理 30 天前记录（DB `plugin_logs`）。
 - 构建对宿主（tauri-frontend dist）、frame runtime（`out/plugin-frame/runtime.js`）和当前正式插件
   renderer 分别执行体积预算。
 
 ## 发布边界
 
-当前正式插件构建为自包含 browser renderer（1.9.0 独立化：插件自包含 `scripts/` 构建器 + 统一 esbuild
-0.28.2，宿主只消费 `plugin.json + dist/main.js + dist/renderer.js`）。确定性 ZIP 清单记录版本、
-执行模式、API、ZIP 与逐文件 SHA-256；Ed25519 插件签名（canonical JSON，`plugin-artifact-provenance.mjs`）。
+七官方 Next 插件由独立 CLI 构建，宿主消费 Manifest v5 和声明的 renderer/worker 文件。确定性 ZIP 清单记录版本、执行模式、API、ZIP 与逐文件 SHA-256；Ed25519 签名和供应链校验沿用现有发布机制。
 
 - **Tauri 发布链**（`tauri-release.yml`，`tauri-v*` tag）：NSIS 安装器（WebView2 downloadBootstrapper
   兜底）+ tauri-plugin-updater（minisign 强制签名 JSON `latest.json`）+ cargo-cyclonedx Rust SBOM +
@@ -159,5 +137,4 @@ renderer-safe 语义 CSS 变量原语（`plugins/theme-manager/src/theme-vars.ts
 
 - `shared/themes/presets.ts` 单一内置注册表；宿主拥有持久化与归一化，发布规范 `--ob-color-*`
   变量与迁移别名；隔离插件 frame 经 `theme.list` RPC 获取快照、`theme.changed` 接收变更。
-- Manifest v1 仅对已安装插件可读；安装/升级边界拒绝 Legacy Full Trust 包，生态分发仅
-  Manifest v2。
+- 安装和运行只接受 Next Manifest v5；旧包与数据保留，旧运行时已退出。七个官方插件通过发布目录提供升级。

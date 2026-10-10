@@ -442,6 +442,84 @@ fn detect_text(
     image: &DynamicImage,
     profile: &str,
 ) -> Result<Vec<Polygon>, String> {
+    let (image_width, image_height) = image.dimensions();
+    const TILE_SIZE: u32 = 1280;
+    const TILE_OVERLAP: u32 = 256;
+    if image_width <= TILE_SIZE && image_height <= TILE_SIZE {
+        return detect_text_single(session, image, profile);
+    }
+    let x_starts = tile_starts(image_width, TILE_SIZE, TILE_OVERLAP);
+    let y_starts = tile_starts(image_height, TILE_SIZE, TILE_OVERLAP);
+    if x_starts.len().saturating_mul(y_starts.len()) > 64 {
+        return Err("OCR image requires too many detection tiles".into());
+    }
+    let mut candidates = Vec::new();
+    for y in y_starts {
+        for &x in &x_starts {
+            let tile_width = TILE_SIZE.min(image_width - x);
+            let tile_height = TILE_SIZE.min(image_height - y);
+            let tile = image.crop_imm(x, y, tile_width, tile_height);
+            for mut polygon in detect_text_single(session, &tile, profile)? {
+                for point in &mut polygon {
+                    point[0] += x as i32;
+                    point[1] += y as i32;
+                }
+                candidates.push(polygon);
+            }
+        }
+    }
+    candidates.sort_by_key(|polygon| {
+        let [x1, y1, x2, y2] = polygon_bbox(polygon);
+        -((x2 - x1).max(0) as i64 * (y2 - y1).max(0) as i64)
+    });
+    let mut selected = Vec::new();
+    for candidate in candidates {
+        if selected
+            .iter()
+            .any(|accepted| polygon_overlap(&candidate, accepted) > 0.65)
+        {
+            continue;
+        }
+        selected.push(candidate);
+    }
+    selected.sort_by_key(|polygon| {
+        let [x1, y1, _, _] = polygon_bbox(polygon);
+        (y1, x1)
+    });
+    Ok(selected)
+}
+
+fn tile_starts(length: u32, tile_size: u32, overlap: u32) -> Vec<u32> {
+    if length <= tile_size {
+        return vec![0];
+    }
+    let stride = tile_size - overlap;
+    let mut starts = vec![0];
+    while starts.last().copied().unwrap_or(0) + tile_size < length {
+        let next = (starts.last().copied().unwrap_or(0) + stride).min(length - tile_size);
+        if next == *starts.last().unwrap_or(&0) {
+            break;
+        }
+        starts.push(next);
+    }
+    starts
+}
+
+fn polygon_overlap(left: &Polygon, right: &Polygon) -> f32 {
+    let [lx1, ly1, lx2, ly2] = polygon_bbox(left);
+    let [rx1, ry1, rx2, ry2] = polygon_bbox(right);
+    let intersection =
+        (lx2.min(rx2) - lx1.max(rx1)).max(0) as f32 * (ly2.min(ry2) - ly1.max(ry1)).max(0) as f32;
+    let left_area = ((lx2 - lx1).max(0) * (ly2 - ly1).max(0)) as f32;
+    let right_area = ((rx2 - rx1).max(0) * (ry2 - ry1).max(0)) as f32;
+    intersection / left_area.min(right_area).max(1.0)
+}
+
+fn detect_text_single(
+    session: &mut Session,
+    image: &DynamicImage,
+    profile: &str,
+) -> Result<Vec<Polygon>, String> {
     let (original_width, original_height) = image.dimensions();
     let max_size = 960.0f32;
     let scale = (max_size / original_width.max(original_height) as f32).min(1.0);

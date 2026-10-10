@@ -30,6 +30,13 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "backendApiVersion",
     "rendererApiVersion",
     "minHostVersion",
+    "minimumHostVersion",
+    "trustLevel",
+    "capabilities",
+    "category",
+    "tags",
+    "keywords",
+    "contributes",
     "permissions",
     "config",
 ];
@@ -53,7 +60,7 @@ const CONFIG_FIELD_TYPES: &[&str] = &["string", "number", "boolean", "select", "
 /// 插件 manifest（对等 PluginManifest 类型）
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Manifest {
-    pub manifest_version: Option<u8>, // 1 | 2
+    pub manifest_version: Option<u8>, // 1 | 2 | 3 | 4
     pub name: String,
     pub version: String,
     pub display_name: String,
@@ -66,6 +73,12 @@ pub struct Manifest {
     pub backend_api_version: Option<u8>,
     pub renderer_api_version: Option<u8>,
     pub min_host_version: Option<String>,
+    pub trust_level: String,
+    pub capabilities: serde_json::Value,
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub keywords: Vec<String>,
+    pub contributes: serde_json::Value,
     pub permissions: Vec<String>,
     pub config: serde_json::Map<String, serde_json::Value>,
 }
@@ -77,6 +90,43 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "manifest: must be a plain object".to_string())?;
+
+    // Next is parsed by the shared contract, then mapped only to installation metadata.
+    // Runtime API 5 stays distinct from legacy renderer/backend wire 2.
+    if object
+        .get("manifestVersion")
+        .and_then(serde_json::Value::as_f64)
+        == Some(5.0)
+    {
+        let next = cruciblebox_next_protocol::validate_manifest(text).map_err(str::to_owned)?;
+        let has_backend = next.backend.is_some();
+        return Ok(Manifest {
+            manifest_version: Some(5),
+            name: next.id,
+            version: next.version,
+            display_name: next.display_name,
+            description: next.description.unwrap_or_default(),
+            author: next.author.unwrap_or_default(),
+            icon: next.icon,
+            main: next.backend.unwrap_or_default(),
+            renderer: next.renderer,
+            backend: Some(has_backend),
+            backend_api_version: has_backend.then_some(5),
+            renderer_api_version: Some(5),
+            min_host_version: None,
+            trust_level: "standard".into(),
+            capabilities: serde_json::json!({}),
+            category: next.category,
+            tags: Vec::new(),
+            keywords: Vec::new(),
+            contributes: serde_json::json!({}),
+            permissions: next.permissions,
+            config: next
+                .config
+                .and_then(|value| value.as_object().cloned())
+                .unwrap_or_default(),
+        });
+    }
 
     // 规则 1：顶层字段白名单 + 原型污染键拒绝
     for key in object.keys() {
@@ -97,7 +147,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     validate_string(&version, "manifest.version", 100, false)?;
     parse_semver(&version).map_err(|error| format!("manifest.version: {error}"))?;
 
-    // 规则 4：manifestVersion/backendApiVersion/rendererApiVersion 可选，必须为 1 或 2
+    // 规则 4：manifestVersion/backendApiVersion/rendererApiVersion 可选，支持 v1-v3
     let manifest_version = get_api_version(object, "manifestVersion", "manifest.manifestVersion")?;
     let backend_api_version =
         get_api_version(object, "backendApiVersion", "manifest.backendApiVersion")?;
@@ -105,13 +155,29 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         get_api_version(object, "rendererApiVersion", "manifest.rendererApiVersion")?;
     let min_host_version = get_optional_string(
         object,
-        "minHostVersion",
-        "manifest.minHostVersion",
+        if object.contains_key("minimumHostVersion") {
+            "minimumHostVersion"
+        } else {
+            "minHostVersion"
+        },
+        "manifest.minimumHostVersion",
         100,
         false,
     )?;
     if let Some(version) = &min_host_version {
         parse_semver(version).map_err(|error| format!("manifest.minHostVersion: {error}"))?;
+    }
+    let trust_level = get_optional_string(object, "trustLevel", "manifest.trustLevel", 16, false)?
+        .unwrap_or_else(|| "standard".into());
+    if !matches!(trust_level.as_str(), "standard" | "full") {
+        return Err("manifest.trustLevel: must be standard or full".into());
+    }
+    let capabilities = object
+        .get("capabilities")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !capabilities.is_object() {
+        return Err("manifest.capabilities: must be an object".into());
     }
 
     // 规则 5：backend 可选，必须 boolean
@@ -131,6 +197,18 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
                 .to_string(),
         );
     }
+    if manifest_version == Some(3)
+        && (renderer_api_version != Some(3)
+            || (backend != Some(false) && backend_api_version != Some(3)))
+    {
+        return Err("manifest: version 3 requires rendererApiVersion 3 and backendApiVersion 3 when backend is enabled".into());
+    }
+    if manifest_version == Some(4)
+        && (renderer_api_version != Some(4)
+            || (backend != Some(false) && backend_api_version != Some(4)))
+    {
+        return Err("manifest: version 4 requires rendererApiVersion 4 and backendApiVersion 4 when backend is enabled".into());
+    }
 
     // 规则 6：displayName 必填 ≤100；description ≤2000 allowEmpty；author ≤200 allowEmpty；icon ≤512 allowEmpty
     let display_name = get_string(object, "displayName", "manifest.displayName")?;
@@ -141,6 +219,16 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let author =
         get_optional_string(object, "author", "manifest.author", 200, true)?.unwrap_or_default();
     let icon = get_optional_string(object, "icon", "manifest.icon", 512, true)?;
+    let category = get_optional_string(object, "category", "manifest.category", 100, false)?;
+    let tags = get_string_list(object, "tags", 24, 40)?;
+    let keywords = get_string_list(object, "keywords", 40, 80)?;
+    let contributes = object
+        .get("contributes")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !contributes.is_object() {
+        return Err("manifest.contributes: must be an object".into());
+    }
 
     // 规则 7：main/renderer 必填，normalize_plugin_entry
     let main_raw = get_string(object, "main", "manifest.main")?;
@@ -149,7 +237,18 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let renderer = normalize_plugin_entry(&renderer_raw, "manifest.renderer")?;
 
     // 规则 8：permissions 必填数组，长度 ≤ ALL_PERMISSIONS.len()，已知集合内，不允许重复
-    let permissions = parse_permissions(object.get("permissions"))?;
+    let mut permissions =
+        if matches!(manifest_version, Some(3) | Some(4)) && object.get("permissions").is_none() {
+            Vec::new()
+        } else {
+            parse_permissions(object.get("permissions"))?
+        };
+    if matches!(manifest_version, Some(3) | Some(4)) {
+        apply_capabilities(&capabilities, &mut permissions);
+        if trust_level == "full" && !permissions.iter().any(|value| value == "host:full-trust") {
+            permissions.push("host:full-trust".into());
+        }
+    }
 
     // 规则 9：config 可选，字段数 ≤100，key 匹配且非 FORBIDDEN_KEYS，字段 schema 校验
     let config = parse_config(object.get("config"))?;
@@ -168,6 +267,12 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         backend_api_version,
         renderer_api_version,
         min_host_version,
+        trust_level,
+        capabilities,
+        category,
+        tags,
+        keywords,
+        contributes,
         permissions,
         config,
     })
@@ -213,20 +318,21 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
     parse_manifest(&text)
 }
 
-/// 安装策略：manifestVersion==2 或 allow_legacy_full_trust 通过，否则拒绝 v1
-/// （对等 assertPluginManifestInstallable）
+/// Next accepts only Manifest v5. Old manifests remain readable for data retention and paired rollback.
 pub fn assert_manifest_installable(
     manifest: &Manifest,
     allow_legacy_full_trust: bool,
 ) -> Result<(), String> {
-    if manifest.manifest_version == Some(2) || allow_legacy_full_trust {
-        Ok(())
-    } else {
-        Err(
-            "manifest.manifestVersion: legacy v1 packages can no longer be installed; migrate this plugin to Manifest v2"
-                .to_string(),
-        )
+    if manifest.manifest_version == Some(5) {
+        return Ok(());
     }
+    // Explicit historical installation fixtures exercise old journal/data recovery; production cannot opt in.
+    #[cfg(test)]
+    if allow_legacy_full_trust {
+        return Ok(());
+    }
+    let _ = allow_legacy_full_trust;
+    Err("LEGACY_RUNTIME_RETIRED: only Next Manifest v5 packages can be installed; existing packages and data are retained".into())
 }
 
 /// Reject a plugin whose declared minimum host version is newer than this
@@ -258,7 +364,9 @@ pub fn validate_entrypoints(root: &Path, manifest: &Manifest) -> Result<(), Stri
     }
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|error| format!("manifest.entry: failed to canonicalize plugin root: {error}"))?;
-    resolve_entrypoint(&canonical_root, &manifest.main)?;
+    if manifest.manifest_version != Some(5) || !manifest.main.is_empty() {
+        resolve_entrypoint(&canonical_root, &manifest.main)?;
+    }
     resolve_entrypoint(&canonical_root, &manifest.renderer)?;
     Ok(())
 }
@@ -434,7 +542,7 @@ fn get_optional_string(
     }
 }
 
-/// 可选 API 版本字段：必须为 1 或 2（对等 manifestVersion 等检查）
+/// 可选 API 版本字段：支持 1、2、3、4。
 fn get_api_version(
     object: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -445,13 +553,76 @@ fn get_api_version(
         Some(value) => {
             let number = value
                 .as_f64()
-                .ok_or_else(|| format!("{path}: must be 1 or 2"))?;
+                .ok_or_else(|| format!("{path}: must be 1, 2, 3 or 4"))?;
             if number == 1.0 {
                 Ok(Some(1))
             } else if number == 2.0 {
                 Ok(Some(2))
+            } else if number == 3.0 {
+                Ok(Some(3))
+            } else if number == 4.0 {
+                Ok(Some(4))
             } else {
-                Err(format!("{path}: must be 1 or 2"))
+                Err(format!("{path}: must be 1, 2, 3 or 4"))
+            }
+        }
+    }
+}
+
+fn get_string_list(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    max_items: usize,
+    max_chars: usize,
+) -> Result<Vec<String>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(Vec::new());
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| format!("manifest.{key}: must be an array"))?;
+    if items.len() > max_items {
+        return Err(format!("manifest.{key}: too many entries"));
+    }
+    items
+        .iter()
+        .map(|item| {
+            let text = item
+                .as_str()
+                .ok_or_else(|| format!("manifest.{key}: entries must be strings"))?
+                .trim();
+            if text.is_empty() || text.chars().count() > max_chars {
+                return Err(format!("manifest.{key}: invalid entry length"));
+            }
+            Ok(text.to_string())
+        })
+        .collect()
+}
+
+fn apply_capabilities(value: &serde_json::Value, permissions: &mut Vec<String>) {
+    let Some(capabilities) = value.as_object() else {
+        return;
+    };
+    let mappings: &[(&str, &[&str])] = &[
+        ("storage", &["storage:read", "storage:write"]),
+        ("pluginData", &["storage:read", "storage:write"]),
+        ("fs", &["file:read", "file:write", "dialog"]),
+        ("network", &["network:fetch"]),
+        ("process", &["shell:exec"]),
+        ("archive", &["trusted:archive-extractor"]),
+        ("ui", &["dialog", "notification"]),
+        ("system", &["clipboard", "shortcut"]),
+    ];
+    for (capability, mapped) in mappings {
+        let enabled = capabilities
+            .get(*capability)
+            .is_some_and(|entry| entry.as_bool().unwrap_or(true));
+        if !enabled {
+            continue;
+        }
+        for permission in *mapped {
+            if !permissions.iter().any(|existing| existing == permission) {
+                permissions.push((*permission).to_string());
             }
         }
     }
@@ -1005,11 +1176,23 @@ mod tests {
         })
         .is_ok());
 
-        // manifestVersion 必须为 1 或 2
+        // Manifest v4 沿用现有运行帧协议，但声明与 API 版本需一致。
+        assert!(parse_with(|value| {
+            value["manifestVersion"] = json!(4);
+            value["rendererApiVersion"] = json!(4);
+            value["backendApiVersion"] = json!(4);
+            value["category"] = json!("效率工具");
+            value["tags"] = json!(["搜索", "插件"]);
+            value["keywords"] = json!(["示例"]);
+            value["contributes"] = json!({"commands": []});
+        })
+        .is_ok());
+
+        // A legacy-shaped package cannot opt into Next by changing only its version.
         let error = expect_err(parse_with(|value| {
-            value["manifestVersion"] = json!(3);
+            value["manifestVersion"] = json!(5);
         }));
-        assert!(error.contains("manifest.manifestVersion"), "error: {error}");
+        assert_eq!(error, "INVALID_MANIFEST");
 
         // backend 必须为 boolean
         let error = expect_err(parse_with(|value| {
@@ -1163,7 +1346,8 @@ mod tests {
     #[test]
     fn installable_policy() {
         let v2 = expect_ok(parse_with(|_| {}));
-        assert!(assert_manifest_installable(&v2, false).is_ok());
+        assert!(assert_manifest_installable(&v2, false).is_err());
+        assert!(assert_manifest_installable(&v2, true).is_ok());
 
         let v1 = expect_ok(parse_with(|value| {
             value["manifestVersion"] = json!(1);

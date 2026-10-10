@@ -1,0 +1,1 @@
+Version 5.0.0-beta.1; manifest/API 5, wire 3, data schema 1. This is the frozen Next contract snapshot. Earlier alpha.6 and alpha.7 consumer packages remain immutable. Contract changes require a new versioned snapshot and handoff.

@@ -53,7 +53,7 @@ export async function buildPluginRenderer({ projectRoot, watch = false, addition
     define: {
       'process.env.NODE_ENV': '"production"'
     },
-    format: 'iife',
+    format: 'esm',
     jsx: 'automatic',
     legalComments: 'none',
     minify: true,

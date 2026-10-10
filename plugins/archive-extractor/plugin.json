@@ -1,0 +1,72 @@
+{
+  "id": "archive-extractor",
+  "version": "0.3.0-alpha.1",
+  "displayName": "压缩与解压",
+  "description": "使用内置 7-Zip 创建 ZIP/7z 归档，或离线解压常见格式。",
+  "author": "CrucibleBox",
+  "category": "文件工具",
+  "manifestVersion": 5,
+  "sdkApiVersion": 5,
+  "wireVersion": 3,
+  "dataSchemaVersion": 1,
+  "renderer": "dist/renderer.js",
+  "permissions": [
+    "trusted:archive-extractor",
+    "dialog",
+    "notification",
+    "storage:read",
+    "storage:write",
+    "tasks:read",
+    "tasks:control"
+  ],
+  "config": {
+    "destinationMode": {
+      "type": "select",
+      "label": "默认解压位置",
+      "description": "同名归档默认解压到归档所在目录的同名文件夹。",
+      "default": "same",
+      "required": false,
+      "options": [
+        {
+          "label": "归档旁边的同名文件夹",
+          "value": "same"
+        },
+        {
+          "label": "每次选择目录",
+          "value": "choose"
+        }
+      ]
+    },
+    "conflictPolicy": {
+      "type": "select",
+      "label": "文件冲突",
+      "description": "询问会在开始前展示一次冲突摘要。",
+      "default": "ask",
+      "required": false,
+      "options": [
+        {
+          "label": "询问",
+          "value": "ask"
+        },
+        {
+          "label": "覆盖",
+          "value": "overwrite"
+        },
+        {
+          "label": "跳过",
+          "value": "skip"
+        },
+        {
+          "label": "自动重命名",
+          "value": "rename"
+        }
+      ]
+    },
+    "openAfterExtract": {
+      "type": "boolean",
+      "label": "完成后打开目录",
+      "default": true,
+      "required": false
+    }
+  }
+}

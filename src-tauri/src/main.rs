@@ -8,11 +8,15 @@
 
 mod app;
 mod archive;
+mod archive_service;
+#[path = "retired_backend.rs"]
 mod backend_process;
+#[cfg(all(test, feature = "legacy-fixtures"))]
 mod clipboard_monitor;
 mod commands;
 mod data_dir;
 mod db;
+mod diagnostics;
 mod document_analyzer;
 mod document_chunker;
 mod document_converter;
@@ -20,24 +24,38 @@ mod document_engine_cache;
 mod document_engine_service;
 mod document_engine_task;
 mod document_layout;
-mod document_math;
 mod document_parser;
 mod document_quality;
 mod document_structure;
 mod document_text;
+mod document_worker;
 mod envelope_host;
 mod formula_ocr;
+mod host_services;
+mod host_task;
 mod install;
 mod journal;
+#[cfg(all(test, feature = "legacy-fixtures"))]
+#[path = "backend_process.rs"]
+mod legacy_backend_fixture;
 mod manifest;
 mod marketplace_download;
 mod marketplace_transport;
+mod network_policy;
+mod next_backend;
+mod next_renderer;
+mod next_results;
+mod next_storage;
+mod next_trusted;
 mod ocr_worker;
+mod output_transaction;
 mod pdf_parser;
 mod permissions;
+mod platform_service;
 mod plugin_protocol;
 mod plugin_session;
 mod rand_token;
+mod task_runtime;
 mod transaction;
 mod unienv_catalog;
 mod unienv_install;
@@ -90,8 +108,30 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // tauri-plugin-dialog（1.9.6：插件导入 zip/目录选择）
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let keys = shortcut.to_string();
+                        let _ = app.emit(
+                            "plugin:shortcut",
+                            serde_json::json!({ "keys": keys.clone() }),
+                        );
+                        if let Some(manager) =
+                            app.try_state::<Arc<backend_process::BackendProcessManager>>()
+                        {
+                            manager.broadcast_host_event(
+                                &format!("cruciblebox:shortcut:{keys}"),
+                                serde_json::Value::Null,
+                            );
+                        }
+                    }
+                })
+                .build(),
+        )
         // 插件 renderer 自定义协议（1.8.3）：http://cruciblebox-plugin.localhost/<token>/<res>
         // handler 经 app_handle.state 取 registry（setup 中 manage）
+        .manage(Mutex::new(next_renderer::Gateway::default()))
         .register_uri_scheme_protocol(plugin_session::PLUGIN_RENDERER_SCHEME, |ctx, request| {
             let protocol = ctx
                 .app_handle()
@@ -110,6 +150,7 @@ fn main() {
                 )),
             };
             let data_dir = migration.target.clone();
+            diagnostics::initialize(&data_dir);
             if migration.migrated {
                 eprintln!(
                     "[DB] L3 data migration: {} -> {} ({} entries copied, checkpoint={})",
@@ -138,6 +179,9 @@ fn main() {
                     err
                 )),
             };
+            if let Err(error) = host_task::recover(&db) {
+                show_fatal_error(&format!("恢复任务记录失败：{error}"));
+            }
             eprintln!(
                 "[DB] engine: rusqlite bundled (WAL) @ {}",
                 db_path.display()
@@ -145,12 +189,28 @@ fn main() {
 
             // 4) manage 状态（commands 以 State<Arc<Mutex<Db>>> 访问）+ 数据目录 + backend 管理器
             let db = Arc::new(Mutex::new(db));
-            let backend = backend_process::BackendProcessManager::new(db.clone());
+            diagnostics::record("database-ready", None);
+            network_policy::reload(&db);
+            let task_runtime = task_runtime::TaskRuntime::open(&data_dir.join("next-tasks.sqlite"))
+                .unwrap_or_else(|error| show_fatal_error(&format!("任务日志无法初始化：{error}")));
             let ocr_worker = Arc::new(ocr_worker::OcrWorkerManager::discover(
                 std::time::Duration::from_secs(15 * 60),
             ));
-            document_engine_service::configure_worker_manager(ocr_worker.clone());
+            let services = Arc::new(host_services::Services::with_document_worker(
+                task_runtime.clone(),
+                Some(ocr_worker.clone()),
+                app.path().resource_dir().ok(),
+                Some(app.handle().clone()),
+                Some(data_dir.join("runtimes/document")),
+            ));
+            let backend =
+                backend_process::BackendProcessManager::with_services(db.clone(), services.clone());
             app.manage(db.clone());
+            let next_backend = Arc::new(next_backend::Manager::with_services(
+                db.clone(),
+                services.clone(),
+            ));
+            app.manage(next_backend.clone());
             app.manage(data_dir.clone());
             app.manage(backend.clone());
             app.manage(ocr_worker);
@@ -162,8 +222,12 @@ fn main() {
             if let Err(err) = std::fs::create_dir_all(&plugins_dir) {
                 show_fatal_error(&format!("无法创建插件目录：{}", err));
             }
-            let install_mgr =
-                install::InstallManager::new(plugins_dir, db.clone(), backend.clone());
+            let install_mgr = install::InstallManager::new(
+                plugins_dir,
+                db.clone(),
+                backend.clone(),
+                next_backend.clone(),
+            );
             // 1.9.14：把 Tauri identifier 根（com.cruciblebox.app\plugins，1.9.12 及之前误用）
             // 下的插件目录迁移到统一根。
             let legacy_roots: Vec<PathBuf> = std::env::var("APPDATA")
@@ -179,10 +243,32 @@ fn main() {
             let emitter: AppEmitter = Arc::new(move |event, payload| {
                 let _ = app_handle.emit(event, payload);
             });
+            app.manage(task_runtime.clone());
             backend.set_emitter(emitter.clone());
-            document_engine_service::configure_emitter(emitter);
+            services.document.set_emitter(emitter.clone());
+            services.document.set_observer(host_task::executor_observer(
+                db.clone(),
+                emitter.clone(),
+                "document-engine",
+            ));
+            services.unienv.set_observer(host_task::executor_observer(
+                db.clone(),
+                emitter.clone(),
+                "unienv",
+            ));
+            task_runtime.set_observer(
+                "marketplace",
+                host_task::executor_observer(db.clone(), emitter.clone(), "marketplace"),
+            );
+            for owner in ["archive-extractor", "plugin-process", "plugin-install"] {
+                task_runtime.set_observer(
+                    owner,
+                    host_task::executor_observer(db.clone(), emitter.clone(), owner),
+                );
+            }
             // 1.9.18：剪贴板插件的监控必须在应用启动时就运行，不能依赖用户先打开插件页面。
             backend.activate_enabled_with_permission(crate::permissions::CLIPBOARD);
+            diagnostics::record("plugins-ready", None);
 
             // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）
             let registry = Arc::new(Mutex::new(plugin_session::RendererSessionRegistry::new(
@@ -203,11 +289,21 @@ fn main() {
             commands::settings_get,
             commands::settings_set,
             commands::settings_get_all,
+            commands::network_diagnose,
             commands::app_get_version,
             commands::app_get_platform,
+            commands::app_fault_history,
             commands::app_check_update,
+            commands::window_apply_theme,
             commands::plugin_list,
+            commands::plugin_command_contributions_list,
+            commands::plugin_file_handlers_list,
             commands::plugin_get,
+            commands::plugin_tags_list,
+            commands::plugin_tags_create,
+            commands::plugin_tags_rename,
+            commands::plugin_tags_delete,
+            commands::plugin_tags_assign,
             commands::plugin_enable,
             commands::plugin_disable,
             commands::plugin_reorder,
@@ -217,11 +313,24 @@ fn main() {
             commands::plugin_uninstall,
             commands::plugin_install_preview,
             commands::marketplace_download_plugin,
+            commands::marketplace_cancel_task,
             commands::marketplace_catalog,
+            commands::marketplace_sources_list,
+            commands::marketplace_sources_add,
+            commands::marketplace_sources_set_enabled,
+            commands::marketplace_sources_delete,
+            commands::marketplace_origins_list,
             commands::plugin_install_commit,
             commands::plugin_install_discard,
             commands::plugin_register_import_path,
             commands::db_status,
+            host_task::host_tasks_list,
+            host_task::host_task_upsert,
+            host_task::host_task_cancel,
+            host_task::host_task_reveal_result,
+            host_task::host_tasks_remove_terminal,
+            next_renderer::create_next_renderer_session,
+            next_renderer::next_renderer_request,
             commands::create_renderer_session,
             commands::dispose_renderer_session,
             commands::plugin_send_message,
@@ -231,6 +340,8 @@ fn main() {
         .run(|app_handle, event| {
             // RunEvent::Exit：清理全部存活 backend 进程 + 剪贴板监控线程
             if let tauri::RunEvent::Exit = event {
+                diagnostics::record("exit", None);
+                #[cfg(all(test, feature = "legacy-fixtures"))]
                 clipboard_monitor::stop_all();
                 if let Some(backend) =
                     app_handle.try_state::<Arc<backend_process::BackendProcessManager>>()
@@ -241,6 +352,9 @@ fn main() {
                     app_handle.try_state::<Arc<ocr_worker::OcrWorkerManager>>()
                 {
                     ocr_worker.shutdown();
+                    if let Some(next) = app_handle.try_state::<Arc<next_backend::Manager>>() {
+                        next.shutdown();
+                    }
                 }
             }
         });

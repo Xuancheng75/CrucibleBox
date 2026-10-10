@@ -1,15 +1,27 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import type { PluginRenderProps } from 'cruciblebox-plugin-api'
+import type { ServiceRenderProps } from './next-types'
+import {
+  Button,
+  EmptyState,
+  Field,
+  FileList,
+  SplitPane,
+  TextInput,
+  Toolbar
+} from '@cruciblebox/plugin-ui'
+import RagChunkEditor from './RagChunkEditor'
+import OcrResultEditor from './OcrResultEditor'
 import {
   backendErrorMessage,
   cancelTask,
   clearCache,
+  getOcrPreview,
   getStatus,
   getTask,
+  importFormulaAddon,
   installModel,
   installModelBundle,
   installRemoteModel,
-  isDocumentProgressMessage,
   isOcrResult,
   isParsedDocumentResult,
   isTerminalTask,
@@ -23,10 +35,15 @@ import {
   startChunk,
   startConvert,
   startPdfSplit,
+  startPdfMerge,
+  startPdfReorder,
+  startPdfRotate,
+  startPdfExtractImages,
   startParse,
   startOcr,
   updateRemoteModel,
   type DocumentTaskSnapshot,
+  type ChunkResult,
   type EngineStatus,
   type ModelCatalogEntry,
   type ModelListResponse,
@@ -84,9 +101,7 @@ function mergeProgress(current: OcrProgress | null, incoming: OcrProgress): OcrP
   ) {
     return current
   }
-  return incoming.percent < current.percent
-    ? { ...incoming, percent: current.percent }
-    : incoming
+  return incoming.percent < current.percent ? { ...incoming, percent: current.percent } : incoming
 }
 
 function setMergedProgress(
@@ -105,9 +120,12 @@ const renderArtifactResult = (value: unknown, kind: 'chunk' | 'convert'): React.
   const result = value as Record<string, unknown>
   const outputPath = typeof result.outputPath === 'string' ? result.outputPath : ''
   const files = Array.isArray(result.files)
-    ? result.files.filter(
-        (file): file is { path: string; startPage?: number; endPage?: number } =>
-          Boolean(file && typeof file === 'object' && typeof (file as Record<string, unknown>).path === 'string')
+    ? result.files.filter((file): file is { path: string; startPage?: number; endPage?: number } =>
+        Boolean(
+          file &&
+          typeof file === 'object' &&
+          typeof (file as Record<string, unknown>).path === 'string'
+        )
       )
     : []
   return (
@@ -120,13 +138,15 @@ const renderArtifactResult = (value: unknown, kind: 'chunk' | 'convert'): React.
       {files.length > 0 && (
         <div>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>
-            {kind === 'chunk' ? '拆分后的 PDF 文件' : '生成的文件'}
+            {'imageCount' in result
+              ? '提取的图片'
+              : kind === 'chunk'
+                ? '拆分后的 PDF 文件'
+                : '生成的文件'}
           </div>
           {files.map((file) => (
             <div key={file.path} style={{ marginTop: 3, wordBreak: 'break-all' }}>
-              {file.startPage && file.endPage
-                ? `第 ${file.startPage}-${file.endPage} 页：`
-                : ''}
+              {file.startPage && file.endPage ? `第 ${file.startPage}-${file.endPage} 页：` : ''}
               {file.path}
             </div>
           ))}
@@ -152,15 +172,15 @@ const displayPath = (path: string): string => {
 }
 
 const NAV_ITEMS = [
-  { key: 'overview', label: '概览', icon: '📄' },
-  { key: 'ocr', label: 'OCR', icon: '🔍' },
-  { key: 'parse', label: 'PDF 解析', icon: '📑' },
-  { key: 'convert', label: '转换', icon: '🔄' },
-  { key: 'chunk', label: '切分', icon: '✂️' },
-  { key: 'batch', label: '批量处理', icon: '📚' },
-  { key: 'jobs', label: '任务', icon: '📋' },
-  { key: 'history', label: '历史', icon: '🕘' },
-  { key: 'models', label: '模型', icon: '🧠' }
+  { key: 'overview', label: '文件工作台', icon: '📄' },
+  { key: 'pdf-tools', label: 'PDF 工具', icon: '📑' },
+  { key: 'convert', label: '格式转换', icon: '🔄' },
+  { key: 'ocr', label: '文字识别', icon: '🔍' },
+  { key: 'extract', label: '内容提取', icon: '🧾' },
+  { key: 'rag', label: '知识库预处理', icon: '🧩' },
+  { key: 'workflows', label: '自动化流程', icon: '⚙️' },
+  { key: 'quality', label: '任务与质量', icon: '📋' },
+  { key: 'models', label: '模型与缓存', icon: '🧠' }
 ]
 
 interface RecentTask {
@@ -184,7 +204,8 @@ const STATUS_LABELS: Record<string, string> = {
   succeeded: '完成',
   completed: '完成',
   failed: '失败',
-  cancelled: '已取消'
+  cancelled: '已取消',
+  interrupted: '已中断（请检查已生成文件）'
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -194,7 +215,8 @@ const STATUS_COLORS: Record<string, string> = {
   completed: COLORS.success,
   succeeded: COLORS.success,
   failed: COLORS.danger,
-  cancelled: COLORS.warning
+  cancelled: COLORS.warning,
+  interrupted: COLORS.warning
 }
 
 // ============================================================
@@ -289,14 +311,16 @@ function QuickAction({
 // 插件渲染入口
 // ============================================================
 
-export default function DocumentEngineUI({ api }: PluginRenderProps) {
+export default function DocumentEngineUI({ api }: ServiceRenderProps) {
   const [activeKey, setActiveKey] = useState('overview')
   const [activeDocument, setActiveDocument] = useState<ImportedDocument | null>(null)
   const [status, setStatus] = useState<EngineStatus | null>(null)
   const [recentTasks, setRecentTasks] = useState<RecentTask[]>([])
   const [loadingStatus, setLoadingStatus] = useState(false)
+  const [installingRuntime, setInstallingRuntime] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [ocrPath, setOcrPath] = useState('')
+  const [ocrSourcePath, setOcrSourcePath] = useState('')
   const [ocrLanguage, setOcrLanguage] = useState<'auto' | 'zh' | 'en' | 'mix'>('auto')
   const [ocrTaskId, setOcrTaskId] = useState<string | null>(null)
   const [ocrTask, setOcrTask] = useState<DocumentTaskSnapshot | null>(null)
@@ -319,10 +343,27 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [chunkResult, setChunkResult] = useState<unknown>(null)
   const [chunkError, setChunkError] = useState<string | null>(null)
   const [chunkBusy, setChunkBusy] = useState(false)
-  const [chunkStrategy, setChunkStrategy] = useState<'hybrid' | 'pages' | 'chapters' | 'structure' | 'semantic' | 'pdf-pages' | 'pdf-fixed' | 'pdf-chapters' | 'pdf-ranges'>('hybrid')
+  const [chunkStrategy, setChunkStrategy] = useState<
+    | 'hybrid'
+    | 'pages'
+    | 'chapters'
+    | 'structure'
+    | 'semantic'
+    | 'pdf-pages'
+    | 'pdf-fixed'
+    | 'pdf-chapters'
+    | 'pdf-ranges'
+  >('hybrid')
   const [chunkOutputDirectory, setChunkOutputDirectory] = useState('')
   const [splitPagesPerFile, setSplitPagesPerFile] = useState(50)
   const [splitRanges, setSplitRanges] = useState('1-10\n11-20')
+  const [pdfOperation, setPdfOperation] = useState<'merge' | 'reorder' | 'rotate' | 'images'>(
+    'merge'
+  )
+  const [pdfSourcePaths, setPdfSourcePaths] = useState<string[]>([])
+  const [pdfPageOrder, setPdfPageOrder] = useState('1,2,3')
+  const [pdfRotation, setPdfRotation] = useState<90 | 180 | 270>(90)
+  const [pdfOutputPath, setPdfOutputPath] = useState('')
   const [convertPath, setConvertPath] = useState('')
   const [convertTarget, setConvertTarget] = useState('md')
   const [convertOutputDirectory, setConvertOutputDirectory] = useState('')
@@ -351,8 +392,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
   const [modelSource, setModelSource] = useState('')
   const [modelName, setModelName] = useState('')
   const [modelUrl, setModelUrl] = useState('')
-  const [modelSha256, setModelSha256] = useState('')
   const [modelsBusy, setModelsBusy] = useState(false)
+  const [formulaAddonTaskId, setFormulaAddonTaskId] = useState<string | null>(null)
+  const [formulaAddonProgress, setFormulaAddonProgress] = useState<OcrProgress | null>(null)
   const mounted = useRef(false)
 
   useEffect(() => {
@@ -362,7 +404,8 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     }
   }, [])
 
-  const send = useCallback(async (msg: unknown): Promise<unknown> => api.sendToBackend(msg), [api])
+  const send = useCallback(async (msg: unknown): Promise<unknown> => api.service.call(msg), [api])
+  const loadOcrPreview = useCallback((path: string) => getOcrPreview(send, path), [send])
 
   const selectPaths = useCallback(
     async (options: {
@@ -450,6 +493,28 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     }
   }, [send])
 
+  const installDocumentRuntime = useCallback(async () => {
+    const [directory] = await selectPaths({ type: 'folder' })
+    if (!directory) return
+    setInstallingRuntime(true)
+    try {
+      const response = await send({ type: 'document.runtime.install', directory })
+      if (
+        !response ||
+        typeof response !== 'object' ||
+        (response as { installed?: unknown }).installed !== true
+      ) {
+        throw new Error(backendErrorMessage(response, '文档处理组件安装失败'))
+      }
+      await refreshStatus()
+      api.notify('安装完成', '文档处理组件已就绪')
+    } catch (error) {
+      api.notify('安装失败', error instanceof Error ? error.message : String(error))
+    } finally {
+      if (mounted.current) setInstallingRuntime(false)
+    }
+  }, [api, refreshStatus, selectPaths, send])
+
   const refreshJobs = useCallback(async () => {
     try {
       const response = await send({ type: 'document.jobs.list' })
@@ -487,19 +552,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     }
   }, [send])
 
-  // Worker 进度通过宿主既有 plugin:message → api.onBackendMessage 桥接到 iframe。
-  useEffect(() => {
-    return api.onBackendMessage((message) => {
-      if (!isDocumentProgressMessage(message)) return
-      if (ocrTaskId && message.taskId === ocrTaskId) setMergedProgress(setOcrProgress, message.progress)
-      if (parseTaskId && message.taskId === parseTaskId) setMergedProgress(setParseProgress, message.progress)
-      if (chunkTaskId && message.taskId === chunkTaskId) setMergedProgress(setChunkProgress, message.progress)
-      if (convertTaskId && message.taskId === convertTaskId) setMergedProgress(setConvertProgress, message.progress)
-      if (batchTaskId && message.taskId === batchTaskId) setMergedProgress(setBatchProgress, message.progress)
-    })
-  }, [api, ocrTaskId, parseTaskId, chunkTaskId, convertTaskId, batchTaskId])
-
-  // 任务接口是异步的；事件用于即时进度，轮询用于最终结果和崩溃/取消状态。
+  // Next 使用任务快照获取进度和终态；不再消费旧后端消息事件。
   useEffect(() => {
     if (!ocrTaskId) return
     let active = true
@@ -511,7 +564,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         if (snapshot.progress) setMergedProgress(setOcrProgress, snapshot.progress)
         if (snapshot.status === 'succeeded' && isOcrResult(snapshot.result))
           setOcrResult(snapshot.result)
-        if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
+        if (
+          snapshot.status === 'failed' ||
+          snapshot.status === 'cancelled' ||
+          snapshot.status === 'interrupted'
+        ) {
           setOcrError(
             snapshot.error?.message ??
               (snapshot.status === 'cancelled' ? '任务已取消' : 'OCR 任务失败')
@@ -549,7 +606,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         if (snapshot.status === 'succeeded' && isParsedDocumentResult(snapshot.result)) {
           setParseResult(snapshot.result)
         }
-        if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
+        if (
+          snapshot.status === 'failed' ||
+          snapshot.status === 'cancelled' ||
+          snapshot.status === 'interrupted'
+        ) {
           setParseError(
             snapshot.error?.message ??
               (snapshot.status === 'cancelled' ? '任务已取消' : 'PDF 解析任务失败')
@@ -587,7 +648,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         setTask(snapshot)
         if (snapshot.progress) setMergedProgress(setProgress, snapshot.progress)
         if (snapshot.status === 'succeeded') setResult(snapshot.result)
-        if (snapshot.status === 'failed' || snapshot.status === 'cancelled') {
+        if (
+          snapshot.status === 'failed' ||
+          snapshot.status === 'cancelled' ||
+          snapshot.status === 'interrupted'
+        ) {
           setError(
             snapshot.error?.message ?? (snapshot.status === 'cancelled' ? '任务已取消' : '任务失败')
           )
@@ -684,6 +749,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     setOcrBusy(true)
     setOcrError(null)
     setOcrResult(null)
+    setOcrSourcePath(path)
     setOcrProgress(null)
     setOcrTask(null)
     try {
@@ -785,7 +851,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         ? await startPdfSplit(send, path, {
             outputDirectory: chunkOutputDirectory.trim() || undefined,
             pagesPerFile: splitPagesPerFile,
-            mode: chunkStrategy === 'pdf-pages' ? 'pages' : chunkStrategy === 'pdf-ranges' ? 'ranges' : chunkStrategy === 'pdf-chapters' ? 'chapters' : 'fixed',
+            mode:
+              chunkStrategy === 'pdf-pages'
+                ? 'pages'
+                : chunkStrategy === 'pdf-ranges'
+                  ? 'ranges'
+                  : chunkStrategy === 'pdf-chapters'
+                    ? 'chapters'
+                    : 'fixed',
             ranges: chunkStrategy === 'pdf-ranges' ? ranges : undefined
           })
         : await startChunk(send, path, {
@@ -810,6 +883,66 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       setChunkBusy(false)
     }
   }, [api, chunkPath, chunkOutputDirectory, chunkStrategy, send, splitPagesPerFile, splitRanges])
+
+  const runPdfPages = useCallback(async () => {
+    const output = pdfOutputPath.trim()
+    if (!output || (pdfOperation !== 'images' && !output.toLowerCase().endsWith('.pdf'))) {
+      setChunkError(
+        pdfOperation === 'images' ? '请填写图片输出目录' : '请填写以 .pdf 结尾的输出路径'
+      )
+      return
+    }
+    setChunkBusy(true)
+    setChunkError(null)
+    setChunkResult(null)
+    setChunkTask(null)
+    try {
+      const pages = pdfPageOrder
+        .split(/[,，\s]+/)
+        .filter(Boolean)
+        .map(Number)
+      if (
+        pdfOperation === 'reorder' &&
+        (pages.length === 0 || pages.some((page) => !Number.isInteger(page) || page < 1))
+      ) {
+        throw new Error('页码顺序应为用逗号分隔的正整数')
+      }
+      if (pdfOperation === 'rotate' && pages.some((page) => !Number.isInteger(page) || page < 1)) {
+        throw new Error('页码应为用逗号分隔的正整数；留空表示全部页面')
+      }
+      const accepted =
+        pdfOperation === 'merge'
+          ? await startPdfMerge(send, pdfSourcePaths, output)
+          : pdfOperation === 'images'
+            ? await startPdfExtractImages(send, pdfSourcePaths[0] ?? '', output)
+            : pdfOperation === 'rotate'
+              ? await startPdfRotate(send, pdfSourcePaths[0] ?? '', pages, pdfRotation, output)
+              : await startPdfReorder(send, pdfSourcePaths[0] ?? '', pages, output)
+      setChunkTaskId(accepted.taskId)
+      setRecentTasks((previous) =>
+        [
+          {
+            id: accepted.taskId,
+            name: output.split(/[\\/]/).pop() || output,
+            action:
+              pdfOperation === 'merge'
+                ? 'PDF 合并'
+                : pdfOperation === 'rotate'
+                  ? 'PDF 旋转'
+                  : pdfOperation === 'images'
+                    ? '提取内嵌图片'
+                    : 'PDF 重排',
+            status: accepted.status
+          },
+          ...previous
+        ].slice(0, 10)
+      )
+    } catch (error) {
+      setChunkError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setChunkBusy(false)
+    }
+  }, [pdfOperation, pdfOutputPath, pdfPageOrder, pdfRotation, pdfSourcePaths, send])
 
   const runConvert = useCallback(async () => {
     const path = convertPath.trim()
@@ -914,6 +1047,54 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     }
   }, [api, modelName, modelSource, refreshModels, send])
 
+  const importHighFormulaAddon = useCallback(async () => {
+    const [sourcePath] = await selectPaths({ type: 'file', extensions: ['7z'] })
+    if (!sourcePath) return
+    setModelsBusy(true)
+    setModelsError(null)
+    setFormulaAddonProgress(null)
+    try {
+      const accepted = await importFormulaAddon(send, sourcePath)
+      setFormulaAddonTaskId(accepted.taskId)
+    } catch (error) {
+      setModelsError(error instanceof Error ? error.message : String(error))
+      setModelsBusy(false)
+    }
+  }, [selectPaths, send])
+
+  useEffect(() => {
+    if (!formulaAddonTaskId) return
+    let active = true
+    const poll = async () => {
+      try {
+        const snapshot = await getTask(send, formulaAddonTaskId)
+        if (!active) return
+        if (snapshot.progress) setFormulaAddonProgress(snapshot.progress)
+        if (isTerminalTask(snapshot)) {
+          setFormulaAddonTaskId(null)
+          setModelsBusy(false)
+          if (snapshot.status === 'succeeded') {
+            await Promise.all([refreshModels(), refreshStatus()])
+            api.notify('附加包已导入', '如需使用，请在插件详情中主动选择 L 模型方案')
+          } else {
+            setModelsError(snapshot.error?.message ?? '高精度公式附加包导入失败')
+          }
+        }
+      } catch (error) {
+        if (!active) return
+        setFormulaAddonTaskId(null)
+        setModelsBusy(false)
+        setModelsError(error instanceof Error ? error.message : String(error))
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 800)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [api, formulaAddonTaskId, refreshModels, refreshStatus, send])
+
   const installCatalogModel = useCallback(
     async (modelId: string) => {
       setModelsBusy(true)
@@ -921,7 +1102,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       try {
         await installModelBundle(send, modelId)
         await refreshModels()
-        api.notify('模型安装完成', 'OCR 模型已通过 SHA-256 校验并启用')
+        api.notify('模型安装完成', 'OCR 模型已经启用')
       } catch (error) {
         setModelsError(error instanceof Error ? error.message : String(error))
       } finally {
@@ -933,16 +1114,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
 
   const installRemote = useCallback(async () => {
     const url = modelUrl.trim()
-    const sha256 = modelSha256.trim()
-    if (!url || !sha256) {
-      api.notify('请输入 HTTPS 模型地址和 SHA-256')
+    if (!url) {
+      api.notify('请输入 HTTPS 模型地址')
       return
     }
     setModelsBusy(true)
     try {
-      await installRemoteModel(send, url, sha256, modelName.trim() || undefined)
+      await installRemoteModel(send, url, modelName.trim() || undefined)
       setModelUrl('')
-      setModelSha256('')
       setModelName('')
       await refreshModels()
     } catch (error) {
@@ -950,19 +1129,18 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     } finally {
       setModelsBusy(false)
     }
-  }, [api, modelName, modelSha256, modelUrl, refreshModels, send])
+  }, [api, modelName, modelUrl, refreshModels, send])
 
   const updateRemote = useCallback(
     async (name: string) => {
       const url = modelUrl.trim()
-      const sha256 = modelSha256.trim()
-      if (!url || !sha256) {
-        api.notify('请输入更新地址和 SHA-256')
+      if (!url) {
+        api.notify('请输入更新地址')
         return
       }
       setModelsBusy(true)
       try {
-        await updateRemoteModel(send, url, sha256, name)
+        await updateRemoteModel(send, url, name)
         await refreshModels()
       } catch (error) {
         setModelsError(error instanceof Error ? error.message : String(error))
@@ -970,7 +1148,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         setModelsBusy(false)
       }
     },
-    [api, modelSha256, modelUrl, refreshModels, send]
+    [api, modelUrl, refreshModels, send]
   )
 
   const deleteModel = useCallback(
@@ -1132,7 +1310,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
     <div>
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ margin: '0 0 4px', fontSize: FONT.sizeTitle, fontWeight: 600 }}>
-          📄 Document Engine
+          📄 文档与知识库
         </h2>
         <p style={{ margin: 0, color: COLORS.textSecondary, fontSize: FONT.sizeLg }}>
           统一本地文档处理基础设施
@@ -1227,6 +1405,11 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           >
             {loadingStatus ? '刷新中…' : '刷新'}
           </button>
+          {!status?.pdfium?.available && (
+            <Button disabled={installingRuntime} onClick={() => void installDocumentRuntime()}>
+              {installingRuntime ? '安装中…' : '选择组件文件夹并安装'}
+            </Button>
+          )}
         </div>
         {status ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -1269,9 +1452,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                     label={
                       pdfium
                         ? pdfium.error
-                          ? 'PDFium 绑定失败'
-                          : `PDFium ${pdfium.initialized ? '已绑定' : pdfium.available ? '可用' : '缺失'}`
-                        : 'PDFium 状态未知'
+                          ? '文档处理组件未就绪'
+                          : `文档处理组件${pdfium.initialized || pdfium.available ? '已就绪' : '未安装'}`
+                        : '文档处理组件状态未知'
                     }
                   />
                   <StatusBadge
@@ -1303,7 +1486,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                         marginTop: 2
                       }}
                     >
-                      PDFium 诊断：{pdfium.error}
+                      文档处理诊断：{pdfium.error}
                     </div>
                   )}
                 </>
@@ -1450,7 +1633,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             border: 0,
             borderRadius: 6,
             background: COLORS.primary,
-            color: '#fff',
+            color: 'var(--ob-color-primary-contrast, #fff)',
             cursor: 'pointer'
           }}
         >
@@ -1509,23 +1692,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       )}
       {ocrResult && (
         <div style={{ marginTop: 16 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>识别结果</div>
-          <pre
-            style={{
-              whiteSpace: 'pre-wrap',
-              margin: 0,
-              padding: 12,
-              background: COLORS.bgGray,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 6,
-              fontSize: FONT.sizeMd
-            }}
-          >
-            {ocrResult.text || '（未识别到文字）'}
-          </pre>
-          <div style={{ marginTop: 6, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-            文本块：{ocrResult.blocks.length}
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>
+            识别结果 · {ocrResult.blocks.length} 个区域
           </div>
+          <OcrResultEditor
+            result={ocrResult}
+            sourcePath={ocrSourcePath}
+            loadPreview={loadOcrPreview}
+          />
         </div>
       )}
     </div>
@@ -1585,7 +1759,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             value={displayPath(parseOutputDirectory)}
             readOnly
             title={parseOutputDirectory || undefined}
-            placeholder="解析结果目录（默认使用 Document Engine/output）"
+            placeholder="解析结果目录（默认使用文档与知识库/output）"
             style={{
               flex: 1,
               minWidth: 0,
@@ -1624,7 +1798,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
               border: 0,
               borderRadius: 6,
               background: COLORS.primary,
-              color: '#fff',
+              color: 'var(--ob-color-primary-contrast, #fff)',
               cursor: 'pointer'
             }}
           >
@@ -1765,8 +1939,12 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             <div style={{ fontWeight: 600, marginBottom: 6 }}>可直接交给 AI 的完整结果</div>
             {parseResult.outputs.files.map((file) => (
               <div key={file.path} style={{ marginTop: 4, wordBreak: 'break-all' }}>
-                {file.kind === 'markdown' ? 'Markdown' : file.kind === 'text' ? 'TXT' : 'Document JSON'}：
-                {file.path}
+                {file.kind === 'markdown'
+                  ? 'Markdown'
+                  : file.kind === 'text'
+                    ? 'TXT'
+                    : 'Document JSON'}
+                ：{file.path}
               </div>
             ))}
           </div>
@@ -1843,29 +2021,36 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           <option value="pdf-ranges">PDF 按页码范围拆分</option>
         </select>
       </label>
-      {chunkStrategy.startsWith('pdf-') && !['pdf-ranges', 'pdf-chapters'].includes(chunkStrategy) && (
-        <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
-          每个 PDF 页数
-          <input
-            type="number"
-            min={1}
-            max={2000}
-            value={splitPagesPerFile}
-            onChange={(event) => setSplitPagesPerFile(Math.max(1, Math.min(2000, Number(event.target.value) || 1)))}
-            style={{
-              display: 'block',
-              width: 140,
-              marginTop: 6,
-              padding: '8px 10px',
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 6,
-              fontSize: FONT.sizeMd
-            }}
-          />
-        </label>
-      )}
+      {chunkStrategy.startsWith('pdf-') &&
+        !['pdf-ranges', 'pdf-chapters'].includes(chunkStrategy) && (
+          <label
+            style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}
+          >
+            每个 PDF 页数
+            <input
+              type="number"
+              min={1}
+              max={2000}
+              value={splitPagesPerFile}
+              onChange={(event) =>
+                setSplitPagesPerFile(Math.max(1, Math.min(2000, Number(event.target.value) || 1)))
+              }
+              style={{
+                display: 'block',
+                width: 140,
+                marginTop: 6,
+                padding: '8px 10px',
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 6,
+                fontSize: FONT.sizeMd
+              }}
+            />
+          </label>
+        )}
       {chunkStrategy === 'pdf-ranges' && (
-        <label style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}>
+        <label
+          style={{ display: 'block', marginTop: 12, fontSize: FONT.sizeMd, color: COLORS.text }}
+        >
           页码范围（每行一个，如 1-10）
           <textarea
             value={splitRanges}
@@ -1892,7 +2077,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             value={displayPath(chunkOutputDirectory)}
             readOnly
             title={chunkOutputDirectory || undefined}
-            placeholder="默认使用 Document Engine/output"
+            placeholder="默认使用文档与知识库/output"
             style={{
               flex: 1,
               minWidth: 0,
@@ -1920,7 +2105,14 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             选择文件夹
           </button>
         </div>
-        <span style={{ display: 'block', marginTop: 4, color: COLORS.textTertiary, fontSize: FONT.sizeSm }}>
+        <span
+          style={{
+            display: 'block',
+            marginTop: 4,
+            color: COLORS.textTertiary,
+            fontSize: FONT.sizeSm
+          }}
+        >
           切分结果会写入所选文件夹，并在任务结果中显示完整路径。
         </span>
       </label>
@@ -1934,11 +2126,15 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             border: 0,
             borderRadius: 6,
             background: COLORS.primary,
-            color: '#fff',
+            color: 'var(--ob-color-primary-contrast, #fff)',
             cursor: 'pointer'
           }}
         >
-          {chunkBusy ? '启动中…' : chunkStrategy.startsWith('pdf-') ? '开始拆分 PDF' : '开始文本分块'}
+          {chunkBusy
+            ? '启动中…'
+            : chunkStrategy.startsWith('pdf-')
+              ? '开始拆分 PDF'
+              : '开始文本分块'}
         </button>
         {(chunkTask?.status === 'running' || chunkTask?.status === 'queued') && (
           <button
@@ -1988,8 +2184,142 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           }}
         >
           {renderArtifactResult(chunkResult, 'chunk')}
+          {typeof chunkResult === 'object' &&
+            chunkResult !== null &&
+            Array.isArray((chunkResult as ChunkResult).chunks) && (
+              <RagChunkEditor key={chunkTaskId ?? 'chunks'} result={chunkResult as ChunkResult} />
+            )}
         </div>
       )}
+    </div>
+  )
+
+  const renderPdfTools = () => (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={cardStyle}>
+        <h3 style={{ margin: '0 0 8px', fontSize: FONT.sizeXl }}>PDF 页面处理</h3>
+        <p style={{ color: COLORS.textSecondary, fontSize: FONT.sizeMd }}>
+          合并多个 PDF，或按指定页码重新生成 PDF。源文件不会被覆盖。
+        </p>
+        <Toolbar>
+          <Field label="操作">
+            <select
+              className="cbx-plugin-input"
+              aria-label="PDF 操作"
+              value={pdfOperation}
+              onChange={(event) => {
+                setPdfOperation(event.target.value as 'merge' | 'reorder' | 'rotate' | 'images')
+                setPdfSourcePaths([])
+                setPdfOutputPath('')
+                setPdfPageOrder(event.target.value === 'rotate' ? '' : '1,2,3')
+              }}
+            >
+              <option value="merge">合并 PDF</option>
+              <option value="reorder">重排或提取页面</option>
+              <option value="rotate">旋转页面</option>
+              <option value="images">提取内嵌图片</option>
+            </select>
+          </Field>
+          <Button
+            onClick={async () => {
+              const paths = await selectPaths({
+                type: 'file',
+                multiple: pdfOperation === 'merge',
+                extensions: ['pdf']
+              })
+              if (paths.length === 0) return
+              setPdfSourcePaths(paths)
+              setPdfOutputPath(
+                paths[0].replace(
+                  /\.pdf$/i,
+                  pdfOperation === 'merge'
+                    ? '_合并.pdf'
+                    : pdfOperation === 'rotate'
+                      ? '_旋转.pdf'
+                      : pdfOperation === 'images'
+                        ? '_图片'
+                        : '_重排.pdf'
+                )
+              )
+            }}
+          >
+            {pdfOperation === 'merge' ? '选择多个 PDF' : '选择 PDF'}
+          </Button>
+        </Toolbar>
+        <SplitPane>
+          <div>
+            {pdfSourcePaths.length ? (
+              <FileList
+                items={pdfSourcePaths.map((path, index) => ({
+                  id: `${index}-${path}`,
+                  name: `${index + 1}. ${path.split(/[\\/]/).pop() || path}`,
+                  detail: path
+                }))}
+              />
+            ) : (
+              <EmptyState title="尚未选择文件" detail="先选择要处理的 PDF" />
+            )}
+          </div>
+          <div style={{ display: 'grid', alignContent: 'start', gap: 12 }}>
+            {(pdfOperation === 'reorder' || pdfOperation === 'rotate') && (
+              <Field
+                label={
+                  pdfOperation === 'rotate'
+                    ? '旋转页码（留空表示全部页面）'
+                    : '页码顺序（可重复或省略页码）'
+                }
+              >
+                <TextInput
+                  aria-label="PDF 页码"
+                  value={pdfPageOrder}
+                  onChange={(event) => setPdfPageOrder(event.target.value)}
+                  placeholder={pdfOperation === 'rotate' ? '例如：1,3' : '例如：3,1,2'}
+                />
+              </Field>
+            )}
+            {pdfOperation === 'rotate' && (
+              <Field label="顺时针旋转角度">
+                <select
+                  className="cbx-plugin-input"
+                  aria-label="旋转角度"
+                  value={pdfRotation}
+                  onChange={(event) => setPdfRotation(Number(event.target.value) as 90 | 180 | 270)}
+                >
+                  <option value={90}>90°</option>
+                  <option value={180}>180°</option>
+                  <option value={270}>270°</option>
+                </select>
+              </Field>
+            )}
+            <Field label={pdfOperation === 'images' ? '图片输出目录' : '输出 PDF 路径'}>
+              <TextInput
+                aria-label={pdfOperation === 'images' ? '图片输出目录' : '输出 PDF 路径'}
+                value={pdfOutputPath}
+                onChange={(event) => setPdfOutputPath(event.target.value)}
+                placeholder={
+                  pdfOperation === 'images'
+                    ? '选择源文件后可修改输出目录'
+                    : '选择源文件后可修改输出文件名'
+                }
+              />
+            </Field>
+            <Button
+              variant="primary"
+              disabled={chunkBusy || pdfSourcePaths.length < (pdfOperation === 'merge' ? 2 : 1)}
+              onClick={() => void runPdfPages()}
+            >
+              {pdfOperation === 'merge'
+                ? '开始合并'
+                : pdfOperation === 'rotate'
+                  ? '开始旋转'
+                  : pdfOperation === 'images'
+                    ? '提取图片'
+                    : '开始重排'}
+            </Button>
+          </div>
+        </SplitPane>
+      </div>
+      {renderChunk()}
     </div>
   )
 
@@ -2050,7 +2380,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
           value={displayPath(convertOutputDirectory)}
           readOnly
           title={convertOutputDirectory || undefined}
-          placeholder="转换结果目录（默认使用 Document Engine/output）"
+          placeholder="转换结果目录（默认使用文档与知识库/output）"
           style={{
             flex: 1,
             minWidth: 0,
@@ -2089,7 +2419,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             border: 0,
             borderRadius: 6,
             background: COLORS.primary,
-            color: '#fff',
+            color: 'var(--ob-color-primary-contrast, #fff)',
             cursor: 'pointer'
           }}
         >
@@ -2233,7 +2563,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
             border: 0,
             borderRadius: 6,
             background: COLORS.primary,
-            color: '#fff',
+            color: 'var(--ob-color-primary-contrast, #fff)',
             cursor: 'pointer'
           }}
         >
@@ -2404,7 +2734,9 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                   </button>
                 </div>
               )}
-              {(task.status === 'failed' || task.status === 'cancelled') && (
+              {(task.status === 'failed' ||
+                task.status === 'cancelled' ||
+                task.status === 'interrupted') && (
                 <button
                   type="button"
                   onClick={() => void run('retry')}
@@ -2463,10 +2795,67 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
         >
           <div style={{ fontWeight: 600, fontSize: FONT.sizeLg }}>推荐模型</div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-            首次使用推荐 PP-OCRv6-small-det + 通用 PP-OCRv5-mobile-rec 轻量方案；公式区域按需进入独立 Formula Recognizer。
+            快速档优先响应速度，只识别文字，无法识别公式。旧公式方案仅为现有配置兼容； 标准档使用
+            UniMERNet，需安装对应运行时。深度档延期开发，暂不开放。
           </div>
           <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
-            下载地址已固定并逐文件校验 SHA-256，安装完成后即可用于本地 OCR。
+            数学公式可能有符号或版式错误；使用旧公式方案时请逐式核对原图。
+          </div>
+          <div
+            style={{
+              marginTop: 6,
+              color: status?.models?.formula?.lowMemoryReady
+                ? COLORS.primary
+                : COLORS.textSecondary,
+              fontSize: FONT.sizeSm
+            }}
+          >
+            旧公式模型：
+            {status?.models?.formula?.lowMemoryReady ? '已安装（结果需核对）' : '未安装'}
+          </div>
+          <div style={{ marginTop: 4, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
+            标准档：{status?.models?.formula?.standardReady ? '已安装' : '未安装 UniMERNet 运行时'}
+            ， 固定九式严格匹配 4/9，结果需核对。深度档目标 7/9，延期开发。
+          </div>
+          {!status?.models?.formula?.highPrecisionReady && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+              <button
+                type="button"
+                disabled={modelsBusy}
+                onClick={() => void importHighFormulaAddon()}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 5,
+                  border: `1px solid ${COLORS.primary}`,
+                  background: COLORS.bgWhite,
+                  color: COLORS.primary
+                }}
+              >
+                导入旧版高精度实验附加包
+              </button>
+              {formulaAddonTaskId && (
+                <button
+                  type="button"
+                  onClick={() => void cancelTask(send, formulaAddonTaskId)}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: 5,
+                    border: `1px solid ${COLORS.border}`,
+                    background: COLORS.bgWhite
+                  }}
+                >
+                  取消导入
+                </button>
+              )}
+            </div>
+          )}
+          {formulaAddonProgress && (
+            <div style={{ marginTop: 6, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
+              {formulaAddonProgress.message} · {formulaAddonProgress.percent}%
+            </div>
+          )}
+          <div style={{ marginTop: 6, color: COLORS.textSecondary, fontSize: FONT.sizeSm }}>
+            离线导入仅接受与此版本校验值一致的附加包；导入完成后仍需主动切换模型方案。
           </div>
           {modelCatalog.length === 0 ? (
             <div
@@ -2516,7 +2905,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                           ? `缺少 ${bundle.missing.length} 个文件`
                           : entry.offline
                             ? '插件内置，可离线安装'
-                            : '按官方地址下载并校验 SHA-256'}
+                            : '按官方地址下载并安装'}
                     </div>
                   </div>
                   <button
@@ -2529,7 +2918,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                       border: 0,
                       borderRadius: 5,
                       background: ready ? COLORS.successBg : COLORS.primary,
-                      color: ready ? COLORS.success : '#fff'
+                      color: ready ? COLORS.success : 'var(--ob-color-primary-contrast, #fff)'
                     }}
                   >
                     {ready ? '已安装' : modelsBusy ? '安装中…' : '下载并安装'}
@@ -2590,7 +2979,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
               border: 0,
               borderRadius: 6,
               background: COLORS.primary,
-              color: '#fff'
+              color: 'var(--ob-color-primary-contrast, #fff)'
             }}
           >
             安装
@@ -2606,18 +2995,6 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
               padding: '8px 10px',
               border: `1px solid ${COLORS.border}`,
               borderRadius: 6
-            }}
-          />
-          <input
-            value={modelSha256}
-            onChange={(event) => setModelSha256(event.target.value)}
-            placeholder="SHA-256"
-            style={{
-              flex: 1,
-              padding: '8px 10px',
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 6,
-              fontFamily: 'monospace'
             }}
           />
           <button
@@ -2760,6 +3137,36 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
                   {task.error.message}
                 </div>
               )}
+              {task.resultRefs?.map((reference) => (
+                <div
+                  key={reference}
+                  style={{ fontSize: FONT.sizeXs, overflowWrap: 'anywhere', userSelect: 'text' }}
+                >
+                  已保存：{reference}
+                </div>
+              ))}
+              {task.result == null && task.status === 'succeeded' && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void getTask(send, task.taskId)
+                      .then((detail) => {
+                        if (mounted.current)
+                          setAllTasks((previous) =>
+                            previous.map((current) =>
+                              current.taskId === detail.taskId ? detail : current
+                            )
+                          )
+                      })
+                      .catch((error) => {
+                        if (mounted.current)
+                          setJobsError(error instanceof Error ? error.message : String(error))
+                      })
+                  }
+                >
+                  查看结果
+                </button>
+              )}
               {task.result != null && (
                 <pre
                   style={{
@@ -2787,14 +3194,20 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
       case 'ocr':
         return renderOcr()
       case 'parse':
+      case 'extract':
         return renderParse()
       case 'convert':
         return renderConvert()
       case 'chunk':
+      case 'rag':
         return renderChunk()
+      case 'pdf-tools':
+        return renderPdfTools()
       case 'batch':
+      case 'workflows':
         return renderBatch()
       case 'jobs':
+      case 'quality':
         return renderJobs()
       case 'history':
         return renderHistory()
@@ -2838,7 +3251,7 @@ export default function DocumentEngineUI({ api }: PluginRenderProps) {
               color: COLORS.text
             }}
           >
-            📄 Document Engine
+            📄 文档与知识库
           </div>
           {NAV_ITEMS.map((item) => (
             <div

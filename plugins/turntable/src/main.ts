@@ -1,4 +1,4 @@
-import type { PluginContext, PluginMain } from 'cruciblebox-plugin-api'
+import type { DecisionContext, DecisionDomain } from './next-service'
 import { secureRandomUnit, selectWeightedItem } from './turntable-domain'
 import type {
   AddItemPayload,
@@ -29,11 +29,11 @@ const DEFAULT_COLORS = [
   '#82E0AA'
 ]
 
-let storage: PluginContext['storage'] | null = null
-let logger: PluginContext['logger'] | null = null
+let storage: DecisionContext['storage'] | null = null
+let logger: DecisionContext['logger'] | null = null
 let mutationQueue: Promise<void> = Promise.resolve()
 
-function currentStorage(): PluginContext['storage'] {
+function currentStorage(): DecisionContext['storage'] {
   if (!storage) throw new Error('插件存储未初始化')
   return storage
 }
@@ -66,7 +66,9 @@ function normalizeStoredItems(value: unknown): TurntableItem[] {
       label,
       weight,
       color: typeof raw.color === 'string' && raw.color ? raw.color.slice(0, 64) : '#1677ff',
-      sort_order: Number.isSafeInteger(Number(raw.sort_order)) ? Number(raw.sort_order) : items.length,
+      sort_order: Number.isSafeInteger(Number(raw.sort_order))
+        ? Number(raw.sort_order)
+        : items.length,
       created_at: typeof raw.created_at === 'string' ? raw.created_at : ''
     })
   }
@@ -78,7 +80,7 @@ async function loadItems(store = currentStorage()): Promise<TurntableItem[]> {
 }
 
 async function saveItems(
-  store: PluginContext['storage'],
+  store: DecisionContext['storage'],
   items: TurntableItem[]
 ): Promise<TurntableItem[]> {
   const normalized = items.map((item, sortOrder) => ({ ...item, sort_order: sortOrder }))
@@ -87,7 +89,7 @@ async function saveItems(
 }
 
 async function runMutation<Result>(
-  operation: (store: PluginContext['storage']) => Promise<Result>
+  operation: (store: DecisionContext['storage']) => Promise<Result>
 ): Promise<Result> {
   const store = currentStorage()
   const result = mutationQueue.then(
@@ -158,7 +160,11 @@ async function handleMessage(message: unknown): Promise<unknown> {
         const items = await loadItems(store)
         const itemIndex = items.findIndex((item) => item.id === id)
         if (itemIndex < 0) return { error: '更新选项失败：未找到该选项' }
-        if (payload.label === undefined && payload.weight === undefined && payload.color === undefined) {
+        if (
+          payload.label === undefined &&
+          payload.weight === undefined &&
+          payload.color === undefined
+        ) {
           return { error: '没有要更新的字段' }
         }
         const updated = { ...items[itemIndex] }
@@ -220,28 +226,30 @@ async function handleMessage(message: unknown): Promise<unknown> {
         )
       })
 
-    case 'spin': {
-      const store = currentStorage()
-      await mutationQueue
-      const items = await loadItems(store)
-      if (items.length === 0) return { error: '没有可抽奖的选项' }
-      const payload = (msg.payload && typeof msg.payload === 'object' ? msg.payload : {}) as { noRepeat?: unknown }
-      const previous = await store.get<number>('lastWinnerId')
-      const pool = payload.noRepeat === true && items.length > 1 && Number.isSafeInteger(previous)
-        ? items.filter((item) => item.id !== previous)
-        : items
-      const winner = selectWeightedItem(pool, secureRandomUnit())
-      await store.set('lastWinnerId', winner.id)
-      return { winner } satisfies SpinResult
-    }
+    case 'spin':
+      return await runMutation(async (store) => {
+        const items = await loadItems(store)
+        if (items.length === 0) return { error: '没有可抽奖的选项' }
+        const payload = (msg.payload && typeof msg.payload === 'object' ? msg.payload : {}) as {
+          noRepeat?: unknown
+        }
+        const previous = await store.get<number>('lastWinnerId')
+        const pool =
+          payload.noRepeat === true && items.length > 1 && Number.isSafeInteger(previous)
+            ? items.filter((item) => item.id !== previous)
+            : items
+        const winner = selectWeightedItem(pool, secureRandomUnit())
+        await store.set('lastWinnerId', winner.id)
+        return { winner } satisfies SpinResult
+      })
 
     default:
       return { error: `未知消息类型: ${String(msg.type)}` }
   }
 }
 
-const plugin: PluginMain = {
-  activate(ctx: PluginContext) {
+const plugin: DecisionDomain = {
+  activate(ctx: DecisionContext) {
     storage = ctx.storage
     logger = ctx.logger
     mutationQueue = Promise.resolve()

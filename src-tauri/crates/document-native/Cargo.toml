@@ -1,0 +1,20 @@
+[package]
+name = "cruciblebox-document-native"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cruciblebox-document = { path = "../document" }
+cruciblebox-task-runtime = { path = "../task-runtime" }
+serde_json = "1"
+sha2 = "0.10"
+flate2 = "1.1"
+getrandom = "0.2"
+pdfium-bundled = "0.1.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "tiff", "bmp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+quick-xml = "0.41"
+
+[dev-dependencies]
+tempfile = "=3.27.0"

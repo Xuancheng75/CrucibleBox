@@ -190,6 +190,23 @@ impl DirectoryTransaction {
         Ok(())
     }
 
+    /// Preserve the exact previous directory after the committed retention journal is durable.
+    pub fn commit_retaining_backup(&mut self) -> Result<PathBuf, String> {
+        if self.phase != Phase::Swapped || !self.original_target_existed {
+            return Err("Cannot retain backup outside an upgrade commit".into());
+        }
+        assert_plain_directory(&self.target_dir, "Installed plugin")?;
+        let retained = retain_internal_directory(
+            &self.plugins_dir,
+            &self.backup_dir,
+            &self.backup_basename(),
+            &self.plugin_name,
+            &self.transaction_id,
+        )?;
+        self.phase = Phase::Committed;
+        Ok(retained)
+    }
+
     /// 相位感知回滚：Created 直接标记；Staged 恢复 backup（若存在）并删 stage；
     /// Swapped 先 target→stage 再恢复 backup→target 并删 stage；Committed 拒绝。
     pub fn rollback(&mut self) -> Result<(), String> {
@@ -380,6 +397,21 @@ impl RemovalTransaction {
         Ok(())
     }
 
+    pub fn commit_retaining_files(&mut self) -> Result<PathBuf, String> {
+        if !self.quarantined {
+            return Err("Cannot retain removal before quarantine".into());
+        }
+        let retained = retain_internal_directory(
+            &self.plugins_dir,
+            &self.quarantine_dir,
+            &self.quarantine_basename(),
+            &self.plugin_name,
+            &self.transaction_id,
+        )?;
+        self.quarantined = false;
+        Ok(retained)
+    }
+
     pub fn target_dir(&self) -> &Path {
         &self.target_dir
     }
@@ -463,6 +495,13 @@ pub fn trusted_allowlist(permissions: &[String]) -> Option<Vec<String>> {
         ]);
     }
     if permissions.iter().any(|p| p == "trusted:unienv") {
+        return Some(vec![
+            "dist/main.js".to_string(),
+            "dist/renderer.js".to_string(),
+            "plugin.json".to_string(),
+        ]);
+    }
+    if permissions.iter().any(|p| p == "trusted:archive-extractor") {
         return Some(vec![
             "dist/main.js".to_string(),
             "dist/renderer.js".to_string(),
@@ -812,6 +851,23 @@ fn is_optional_document_engine_asset(path: &str) -> bool {
         || path.starts_with("assets/models/ppocrv6-small-det-v5-mobile-rec/")
 }
 
+/// Retained packages are never enumerated as active plugins or disposable transaction artifacts.
+pub(crate) fn retain_internal_directory(
+    plugins_dir: &Path,
+    source: &Path,
+    source_expected: &str,
+    name: &str,
+    txid: &str,
+) -> Result<PathBuf, String> {
+    if !is_plugin_name(name) || !is_transaction_id(txid) {
+        return Err("Invalid retained directory identity".into());
+    }
+    let basename = format!(".{name}.retained-{txid}");
+    let target = plugins_dir.join(&basename);
+    rename_internal_directory(plugins_dir, source, source_expected, &target, &basename)?;
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,6 +1202,14 @@ mod tests {
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".into(),
                 "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt".into()
+            ])
+        );
+        assert_eq!(
+            trusted_allowlist(&["trusted:archive-extractor".into()]),
+            Some(vec![
+                "dist/main.js".into(),
+                "dist/renderer.js".into(),
+                "plugin.json".into()
             ])
         );
         assert_eq!(trusted_allowlist(&["storage:read".into()]), None);

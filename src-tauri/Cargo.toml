@@ -1,33 +1,46 @@
 [package]
 name = "cruciblebox"
-version = "2.0.0"
+version = "2.1.0-beta.4"
 edition = "2021"
 description = "CrucibleBox - extensible Windows toolbox (Tauri 2)"
 authors = ["CrucibleBox"]
+
+[features]
+default = []
+legacy-fixtures = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+cruciblebox-document = { path = "crates/document" }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+cruciblebox-next-protocol = { path = "crates/next-protocol" }
+cruciblebox-task-core = { path = "crates/task-core" }
+cruciblebox-task-store = { path = "crates/task-store" }
+cruciblebox-task-runtime = { path = "crates/task-runtime" }
+cruciblebox-repository = { path = "crates/repository" }
+cruciblebox-next-data = { path = "crates/next-data" }
 quick-xml = "0.41"
 getrandom = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env", "socks-proxy"] }
+ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "proxy-from-env", "socks-proxy"] }
 sha2 = "0.10"
 junction = "1.2"
 arboard = "3"
 sysinfo = "0.33"
 base64 = "0.22"
 flate2 = "1.1"
-pdfium-bundled = "0.1.1"
-image = { version = "0.25", default-features = false, features = ["png"] }
+cruciblebox-document-worker = { path = "../workers/document", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "tiff"] }
 unicode-normalization = "0.1"
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
@@ -41,11 +54,16 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_ProcessStatus",
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_Registry",
+  "Win32_Graphics_Dwm",
   "Win32_Networking_WinHttp"
 ] }
+
+[dev-dependencies]
+cruciblebox-repository = { path = "crates/repository", features = ["test-fixtures"] }
+tempfile = "=3.27.0"
 
 [profile.release]
 strip = true
 lto = true
 codegen-units = 1
-panic = "abort"
+panic = "unwind"

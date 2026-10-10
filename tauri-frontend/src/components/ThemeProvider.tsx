@@ -1,4 +1,5 @@
 import React from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { useEffect } from 'react'
 import { App as AntdApp, ConfigProvider } from 'antd'
 import { themeToCssVars } from '../../../shared/themes/css-vars'
@@ -25,6 +26,16 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
     }
     root.style.colorScheme = toolboxTheme.mode
     root.dataset.obTheme = toolboxTheme.id
+    const colorRef = (color: string) => {
+      const hex = color.replace(/^#/, '')
+      const full = hex.length === 3 ? [...hex].map((c) => c + c).join('') : hex
+      return parseInt(full.slice(4, 6) + full.slice(2, 4) + full.slice(0, 2), 16)
+    }
+    void invoke('window_apply_theme', {
+      dark: toolboxTheme.mode === 'dark',
+      caption: colorRef(toolboxTheme.tokens.colorBgContainer),
+      text: colorRef(toolboxTheme.tokens.colorText)
+    }).catch((error) => console.error('标题栏主题同步失败', error))
   }, [toolboxTheme])
 
   return (

@@ -4,9 +4,9 @@ import {
   pollTask,
   readStartedTaskId,
   TaskPollingAbortedError,
-  TaskPollingTimeoutError
+  TaskPollingTimeoutError,
+  type TaskSnapshot
 } from '../src/renderer-task'
-import type { TaskSnapshot } from '../../../plugin-system/trusted-services/unienv/task-manager'
 
 function snapshot(status: TaskSnapshot['status'], progress?: { percent: number }): TaskSnapshot {
   return {
@@ -128,4 +128,22 @@ describe('pollTask', () => {
     await rejection
     vi.useRealTimers()
   })
+})
+
+it('stops polling interrupted tasks without retrying or losing partial output references', async () => {
+  const fetchTask = vi
+    .fn()
+    .mockResolvedValue({ ...snapshot('interrupted'), resultRefs: ['C:/output/part.txt'] })
+  const onSnapshot = vi.fn()
+  const result = await pollTask({
+    taskId: 'task-1',
+    signal: new AbortController().signal,
+    fetchTask,
+    onSnapshot
+  })
+  expect(result.status).toBe('interrupted')
+  expect(fetchTask).toHaveBeenCalledTimes(1)
+  expect(onSnapshot).toHaveBeenCalledWith(
+    expect.objectContaining({ resultRefs: ['C:/output/part.txt'] })
+  )
 })

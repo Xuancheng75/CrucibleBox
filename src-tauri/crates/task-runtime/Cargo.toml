@@ -1,0 +1,15 @@
+[package]
+name = "cruciblebox-task-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cruciblebox-task-core = { path = "../task-core" }
+cruciblebox-task-store = { path = "../task-store" }
+cruciblebox-file-publication = { path = "../file-publication" }
+serde_json = "1"
+getrandom = "0.2"
+
+[dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "=3.27.0"

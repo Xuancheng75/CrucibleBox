@@ -51,6 +51,7 @@ pub struct InstallManager {
     plugins_dir: PathBuf,
     db: Arc<Mutex<Db>>,
     backend: Arc<BackendProcessManager>,
+    next_backend: Arc<crate::next_backend::Manager>,
     prepared: Mutex<HashMap<String, PreparedInstall>>,
     in_flight: Mutex<HashSet<String>>,
     blocked: Mutex<HashSet<String>>,
@@ -63,17 +64,40 @@ impl InstallManager {
         plugins_dir: PathBuf,
         db: Arc<Mutex<Db>>,
         backend: Arc<BackendProcessManager>,
+        next_backend: Arc<crate::next_backend::Manager>,
     ) -> Arc<Self> {
         Arc::new(InstallManager {
             plugins_dir,
             db,
             backend,
+            next_backend,
             prepared: Mutex::new(HashMap::new()),
             in_flight: Mutex::new(HashSet::new()),
             blocked: Mutex::new(HashSet::new()),
             allow_legacy_full_trust: false,
             trusted_paths: Mutex::new(Vec::new()),
         })
+    }
+
+    fn activate_installed(
+        &self,
+        id: &str,
+        record: crate::db::PluginBackendRecord,
+    ) -> Result<(), String> {
+        let manifest = read_manifest(Path::new(&record.installed_path))?;
+        if manifest.manifest_version == Some(5) {
+            if manifest.backend == Some(false) {
+                Ok(())
+            } else {
+                self.next_backend.activate(id)
+            }
+        } else {
+            #[cfg(test)]
+            if self.allow_legacy_full_trust {
+                return Ok(());
+            }
+            self.backend.ensure_activated(id, record).map(|_| ())
+        }
     }
 
     /// 启动恢复：调 journal::recover_interrupted，以当前恢复报告重建 blocked 集合。
@@ -227,6 +251,30 @@ impl InstallManager {
         result
     }
 
+    /// Execute the reviewed install through the shared task authority.
+    pub fn commit_with_runtime(
+        &self,
+        runtime: &Arc<crate::task_runtime::TaskRuntime>,
+        token: String,
+        task_id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        runtime.run_sync("plugin-install", "installation", task_id, |ctx| {
+            ctx.check_cancelled()?;
+            ctx.commit_result(|| {
+                let mut result = self.commit(token)?;
+                if let Some(path) = result
+                    .get("data")
+                    .and_then(|data| data.get("installedPath"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                {
+                    result["path"] = json!(path);
+                }
+                Ok(result)
+            })
+        })
+    }
+
     /// discard：删除 token + rollback 事务（未 committed）+ 清理 stage 目录。
     pub fn discard(&self, token: String) -> Result<(), String> {
         let mut install = {
@@ -266,6 +314,7 @@ impl InstallManager {
         }
         let _lifecycle = self.backend.begin_lifecycle_operation(id)?;
         let _maintenance = self.backend.enter_maintenance(id)?;
+        let _next_maintenance = self.next_backend.begin_maintenance(id)?;
         if let Err(error) = self.backend.deactivate(id) {
             return Err(format!("failed to deactivate plugin: {error}"));
         }
@@ -293,7 +342,11 @@ impl InstallManager {
             phase: "prepared".into(),
             plugin_name: row.name.clone(),
             transaction_id,
-            previous_metadata: Some(plugin_row_to_metadata(row)),
+            previous_metadata: Some({
+                let mut metadata = plugin_row_to_metadata(row);
+                metadata["retainPreviousFiles"] = json!(true);
+                metadata
+            }),
             created_at: now_iso(),
         };
         write_journal(txn.target_dir(), &journal)?;
@@ -331,10 +384,14 @@ impl InstallManager {
             self.block(&row.name);
             return Err(error);
         }
-        if let Err(error) = txn.commit() {
-            self.block(&row.name);
-            return Err(error);
-        }
+        let retained = match txn.commit_retaining_files() {
+            Ok(path) => path,
+            Err(error) => {
+                self.block(&row.name);
+                return Err(error);
+            }
+        };
+        let _ = clear_journal(&retained, &committed);
         Ok(json!({
             "success": true,
             "data": { "id": row.id, "name": row.name, "directoryMissing": false }
@@ -438,7 +495,17 @@ impl InstallManager {
             transaction_id: transaction_id.clone(),
             source_dir: root.to_path_buf(),
             expected_target_exists: is_upgrade,
-            allowed_files: trusted_allowlist(&manifest.permissions),
+            allowed_files: if manifest.manifest_version == Some(5)
+                && manifest
+                    .permissions
+                    .iter()
+                    .any(|p| p.starts_with("trusted:"))
+            {
+                crate::next_trusted::verify(&manifest.name, &root, &manifest.permissions)?;
+                Some(crate::next_trusted::files(&manifest.name)?)
+            } else {
+                trusted_allowlist(&manifest.permissions)
+            },
         })?;
         txn.stage()?;
 
@@ -449,6 +516,19 @@ impl InstallManager {
             return Err("plugin manifest changed while it was being staged".into());
         }
 
+        if manifest.manifest_version == Some(5)
+            && manifest
+                .permissions
+                .iter()
+                .any(|p| p.starts_with("trusted:"))
+        {
+            if let Err(error) =
+                crate::next_trusted::verify(&manifest.name, txn.stage_dir(), &manifest.permissions)
+            {
+                let _ = txn.rollback();
+                return Err(error);
+            }
+        }
         let previous_metadata = existing.as_ref().map(plugin_row_to_metadata);
 
         let token = random_token_hex()?;
@@ -492,11 +572,30 @@ impl InstallManager {
                 "addedPermissions": added,
                 "removedPermissions": removed,
                 "legacyFullTrust": manifest.permissions.iter().any(|p| p == "trusted:unienv"),
+                "trustLevel": manifest.trust_level,
+                "fullTrust": manifest.permissions.iter().any(|p| p == "host:full-trust"),
+                "capabilities": manifest.capabilities,
             }
         }))
     }
 
     fn perform_commit(&self, install: &mut PreparedInstall) -> Result<serde_json::Value, String> {
+        if install.manifest.manifest_version == Some(5)
+            && install
+                .manifest
+                .permissions
+                .iter()
+                .any(|p| p.starts_with("trusted:"))
+        {
+            if let Err(error) = crate::next_trusted::verify(
+                &install.manifest.name,
+                install.transaction.stage_dir(),
+                &install.manifest.permissions,
+            ) {
+                let _ = install.transaction.rollback();
+                return Err(error);
+            }
+        }
         let name = install.manifest.name.clone();
         let target_dir = self.plugins_dir.join(&name);
         if install.previous_metadata.is_some() {
@@ -576,6 +675,10 @@ impl InstallManager {
             self.rollback_fresh(install);
             return Err(e);
         }
+        if let Err(error) = lock(&self.db).migrate_consolidated_plugin_data(&id, name) {
+            self.rollback_fresh(install);
+            return Err(format!("旧插件数据迁移失败: {error}"));
+        }
         let committed = Journal {
             phase: "committed".into(),
             ..journal.clone()
@@ -617,13 +720,24 @@ impl InstallManager {
             }
         };
 
+        let next_maintenance = match self.next_backend.begin_maintenance(&id) {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = install.transaction.rollback();
+                return Err(error);
+            }
+        };
         let journal = Journal {
             version: JOURNAL_VERSION,
             operation: "upgrade".into(),
             phase: "prepared".into(),
             plugin_name: name.to_string(),
             transaction_id: install.transaction_id.clone(),
-            previous_metadata: Some(previous_metadata.clone()),
+            previous_metadata: Some({
+                let mut metadata = previous_metadata.clone();
+                metadata["retainPreviousFiles"] = json!(true);
+                metadata
+            }),
             created_at: now_iso(),
         };
         if let Err(e) = write_journal(install.transaction.stage_dir(), &journal) {
@@ -670,13 +784,25 @@ impl InstallManager {
                 }
             };
         }
+        if let Err(error) = lock(&self.db).migrate_consolidated_plugin_data(&id, name) {
+            return match self.rollback_upgrade(install, &previous_metadata) {
+                Ok(()) => Err(format!("旧插件数据迁移失败: {error}")),
+                Err(rollback_error) => {
+                    self.block(name);
+                    Err(format!(
+                        "旧插件数据迁移失败: {error}; rollback failed: {rollback_error}"
+                    ))
+                }
+            };
+        }
         if was_enabled {
             // commit() 仍持有插件生命周期单飞锁；先释放维护窗口，重新激活才不会
             // 被 ensure_activated() 以 "plugin is in maintenance" 必然拒绝。
             drop(maintenance);
+            drop(next_maintenance);
             let record = lock(&self.db).plugin_backend_record(&id).ok().flatten();
             if let Some(record) = record {
-                if let Err(error) = self.backend.ensure_activated(&id, record) {
+                if let Err(error) = self.activate_installed(&id, record) {
                     if let Err(rollback_error) = self.rollback_upgrade(install, &previous_metadata)
                     {
                         self.block(name);
@@ -686,7 +812,7 @@ impl InstallManager {
                     }
                     let restored = lock(&self.db).plugin_backend_record(&id).ok().flatten();
                     if let Some(restored) = restored {
-                        if let Err(restored_error) = self.backend.ensure_activated(&id, restored) {
+                        if let Err(restored_error) = self.activate_installed(&id, restored) {
                             let _ = lock(&self.db).set_plugin_enabled(&id, false);
                             return Err(format!(
                                 "failed to reactivate plugin after upgrade: {error}; upgrade rolled back, but the previous plugin could not be reactivated: {restored_error}"
@@ -707,7 +833,7 @@ impl InstallManager {
             self.block(name);
             return Err(e);
         }
-        if let Err(e) = install.transaction.commit() {
+        if let Err(e) = install.transaction.commit_retaining_backup() {
             self.block(name);
             return Err(e);
         }
@@ -1071,10 +1197,46 @@ mod tests {
         std::fs::create_dir_all(root.join("data")).unwrap();
         let db = Arc::new(Mutex::new(Db::open(&db_path).unwrap()));
         let backend = BackendProcessManager::new(db.clone());
-        let mgr = InstallManager::new(plugins_dir.clone(), db, backend);
+        let next_backend = Arc::new(crate::next_backend::Manager::new(db.clone()));
+        let mut mgr = InstallManager::new(plugins_dir.clone(), db, backend, next_backend);
+        Arc::get_mut(&mut mgr).unwrap().allow_legacy_full_trust = true;
         (mgr, plugins_dir, root)
     }
 
+    #[test]
+    fn next_trusted_install_refuses_source_and_staged_tampering_without_installing() {
+        let (mgr, plugins, root) = setup("next-trusted-tamper");
+        let original = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/archive-extractor");
+        let source = root.join("source");
+        for name in crate::next_trusted::files("archive-extractor").unwrap() {
+            let destination = source.join(&name);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(original.join(name), destination).unwrap();
+        }
+        mgr.remember_trusted_path(source.clone());
+        std::fs::write(source.join("dist/renderer.js"), "changed").unwrap();
+        assert_eq!(
+            mgr.preview(directory_source(&source)).unwrap_err(),
+            "PERMISSION_DENIED"
+        );
+        std::fs::copy(
+            original.join("dist/renderer.js"),
+            source.join("dist/renderer.js"),
+        )
+        .unwrap();
+        let preview = mgr.preview(directory_source(&source)).unwrap();
+        let token = preview["installToken"].as_str().unwrap().to_string();
+        let stage = lock(&mgr.prepared).get(&token).unwrap().stage_dir.clone();
+        std::fs::write(stage.join("dist/renderer.js"), "changed after preview").unwrap();
+        assert_eq!(mgr.commit(token.clone()).unwrap_err(), "PERMISSION_DENIED");
+        assert!(mgr.commit(token).is_err());
+        assert!(!plugins.join("archive-extractor").exists());
+        assert!(!stage.exists());
+        assert!(lock(&mgr.db)
+            .plugin_find_by_name("archive-extractor")
+            .unwrap()
+            .is_none());
+    }
     fn has_prefix(dir: &Path, prefix: &str) -> bool {
         std::fs::read_dir(dir)
             .map(|entries| {
@@ -1089,6 +1251,285 @@ mod tests {
         InstallSource {
             source_type: "directory".into(),
             path: path.to_string_lossy().into_owned(),
+        }
+    }
+
+    #[test]
+    fn next_examples_install_and_upgrade_preserves_namespaced_data() {
+        let (mgr, plugins, root) = setup("next-install");
+        for (name, backend) in [("next-demo-ping", false), ("next-demo-note", true)] {
+            let source = root.join(name);
+            std::fs::create_dir_all(source.join("dist")).unwrap();
+            let mut manifest = json!({"id":name,"version":"1.0.0-alpha.1","displayName":name,
+                "manifestVersion":5,"sdkApiVersion":5,"wireVersion":3,"dataSchemaVersion":1,
+                "renderer":"dist/renderer.js","permissions":[]});
+            if backend {
+                manifest["backend"] = json!("dist/main.js");
+                manifest["permissions"] = json!(["storage:read", "storage:write"]);
+                std::fs::write(
+                    source.join("dist/main.js"),
+                    "module.exports={activate(){}};",
+                )
+                .unwrap();
+            }
+            std::fs::write(source.join("dist/renderer.js"), "export function mount(){}").unwrap();
+            std::fs::write(source.join("plugin.json"), manifest.to_string()).unwrap();
+            mgr.remember_trusted_path(source.clone());
+            let preview = mgr.preview(directory_source(&source)).unwrap();
+            let installed = mgr
+                .commit(preview["installToken"].as_str().unwrap().into())
+                .unwrap();
+            assert_eq!(installed["data"]["enabled"], false);
+            assert_eq!(installed["data"]["name"], name);
+            assert!(plugins.join(name).join("dist/renderer.js").is_file());
+            assert_eq!(
+                read_manifest(&plugins.join(name))
+                    .unwrap()
+                    .renderer_api_version,
+                Some(5)
+            );
+            lock(&mgr.db)
+                .storage_set(name, "note.v1", "{\"schema\":1,\"text\":\"保留\"}")
+                .unwrap();
+            manifest["version"] = json!("1.0.0-alpha.2");
+            std::fs::write(source.join("plugin.json"), manifest.to_string()).unwrap();
+            let preview = mgr.preview(directory_source(&source)).unwrap();
+            let upgraded = mgr
+                .commit(preview["installToken"].as_str().unwrap().into())
+                .unwrap();
+            assert_eq!(upgraded["data"]["version"], "1.0.0-alpha.2");
+            assert_eq!(
+                lock(&mgr.db)
+                    .storage_get(name, "note.v1")
+                    .unwrap()
+                    .as_deref(),
+                Some("{\"schema\":1,\"text\":\"保留\"}")
+            );
+            if backend {
+                lock(&mgr.db).set_plugin_enabled(name, true).unwrap();
+                let record = lock(&mgr.db).plugin_backend_record(name).unwrap().unwrap();
+                let error = match mgr.backend.ensure_activated(name, record) {
+                    Ok(_) => panic!("Next must not execute through legacy backend"),
+                    Err(error) => error,
+                };
+                assert!(error.contains("legacy activation refused"), "{error}");
+                lock(&mgr.db).set_plugin_enabled(name, false).unwrap();
+            }
+            manifest["owner"] = json!("other-plugin");
+            std::fs::write(source.join("plugin.json"), manifest.to_string()).unwrap();
+            assert!(mgr.preview(directory_source(&source)).is_err());
+            assert_eq!(
+                read_manifest(&plugins.join(name)).unwrap().version,
+                "1.0.0-alpha.2"
+            );
+            assert!(!has_prefix(&plugins, &format!(".{name}.stage-")));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires seven independent ZIPs in CRUCIBLEBOX_NEXT_OFFICIAL_PACKAGES"]
+    fn seven_official_packages_preserve_data_and_files_across_upgrade_uninstall_reinstall() {
+        let packages = PathBuf::from(
+            std::env::var("CRUCIBLEBOX_NEXT_OFFICIAL_PACKAGES")
+                .expect("explicit packages required"),
+        );
+        let (mgr, plugins, root) = setup("seven-official-retention");
+        for name in [
+            "document-engine",
+            "theme-manager",
+            "unienv",
+            "diary",
+            "turntable",
+            "gif-editor",
+            "archive-extractor",
+        ] {
+            let old = root.join(format!("legacy-{name}"));
+            write_fixture(&old, "0.0.1");
+            let manifest_path = old.join("plugin.json");
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+            manifest["name"] = json!(name);
+            std::fs::write(manifest_path, manifest.to_string()).unwrap();
+            mgr.remember_trusted_path(old.clone());
+            let preview = mgr.preview(directory_source(&old)).unwrap();
+            mgr.commit(preview["installToken"].as_str().unwrap().into())
+                .unwrap();
+            let raw = "{\"text\":\"旧用户值 保留\",\"unknown\":[1,2]}";
+            lock(&mgr.db)
+                .storage_set(name, "retention.acceptance", raw)
+                .unwrap();
+            std::fs::write(plugins.join(name).join("user-note.txt"), "旧文件 原样保留").unwrap();
+            std::fs::create_dir(plugins.join(name).join("user-empty")).unwrap();
+            let package = packages.join(name).join(format!("{name}-a.zip"));
+            let install_package = || {
+                mgr.remember_trusted_path(package.clone());
+                let preview = mgr
+                    .preview(InstallSource {
+                        source_type: "zip".into(),
+                        path: package.to_string_lossy().into_owned(),
+                    })
+                    .unwrap();
+                assert_eq!(
+                    mgr.commit(preview["installToken"].as_str().unwrap().into())
+                        .unwrap()["success"],
+                    true
+                );
+            };
+            install_package();
+            assert_eq!(
+                read_manifest(&plugins.join(name)).unwrap().manifest_version,
+                Some(5)
+            );
+            assert_eq!(
+                lock(&mgr.db)
+                    .storage_get(name, "retention.acceptance")
+                    .unwrap()
+                    .as_deref(),
+                Some(raw)
+            );
+            let retained: Vec<_> = std::fs::read_dir(&plugins)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(&format!(".{name}.retained-"))
+                })
+                .collect();
+            assert_eq!(retained.len(), 1);
+            assert_eq!(
+                std::fs::read_to_string(retained[0].join("user-note.txt")).unwrap(),
+                "旧文件 原样保留"
+            );
+            assert!(retained[0].join("user-empty").is_dir());
+            std::fs::write(plugins.join(name).join("new-user.txt"), "Next 用户文件").unwrap();
+            assert_eq!(mgr.uninstall(name).unwrap()["success"], true);
+            install_package();
+            assert_eq!(
+                lock(&mgr.db)
+                    .storage_get(name, "retention.acceptance")
+                    .unwrap()
+                    .as_deref(),
+                Some(raw)
+            );
+            let retained: Vec<_> = std::fs::read_dir(&plugins)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(&format!(".{name}.retained-"))
+                })
+                .collect();
+            assert_eq!(retained.len(), 2);
+            assert!(retained
+                .iter()
+                .any(|p| std::fs::read_to_string(p.join("new-user.txt"))
+                    .ok()
+                    .as_deref()
+                    == Some("Next 用户文件")));
+        }
+    }
+    #[test]
+    #[ignore = "requires independently installed packages in CRUCIBLEBOX_NEXT_HANDOFF"]
+    fn independently_packed_next_examples_upgrade_and_execute_with_preserved_data() {
+        let handoff = PathBuf::from(
+            std::env::var("CRUCIBLEBOX_NEXT_HANDOFF").expect("explicit handoff directory required"),
+        );
+        let (mgr, plugins, root) = setup("next-packed-examples");
+        for (name, filename, backend) in [
+            ("next-demo-ping", "next-demo-ping-v4-a.zip", false),
+            ("next-demo-note", "next-demo-note-v3-a.zip", true),
+        ] {
+            let old = root.join(format!("old-{name}"));
+            std::fs::create_dir_all(old.join("dist")).unwrap();
+            let mut manifest = json!({"id":name,"version":"0.0.1","displayName":name,"manifestVersion":5,"sdkApiVersion":5,"wireVersion":3,"dataSchemaVersion":1,"renderer":"dist/renderer.js","permissions":["storage:read","storage:write"]});
+            std::fs::write(old.join("dist/renderer.js"), "export function mount(){}").unwrap();
+            if backend {
+                manifest["backend"] = json!("dist/main.js");
+                std::fs::write(
+                    old.join("dist/main.js"),
+                    "module.exports={activate(){return {}}};",
+                )
+                .unwrap();
+            }
+            std::fs::write(old.join("plugin.json"), manifest.to_string()).unwrap();
+            mgr.remember_trusted_path(old.clone());
+            let preview = mgr.preview(directory_source(&old)).unwrap();
+            mgr.commit(preview["installToken"].as_str().unwrap().into())
+                .unwrap();
+            lock(&mgr.db)
+                .storage_set(name, "note.v1", "{\"schema\":1,\"text\":\"保留原值\"}")
+                .unwrap();
+            let package = handoff.join(filename);
+            let package = if package.is_file() {
+                package
+            } else {
+                handoff.join(match name {
+                    "next-demo-ping" => "next-demo-ping-v5-a.zip",
+                    "next-demo-note" => "next-demo-note-v4-a.zip",
+                    _ => unreachable!(),
+                })
+            };
+            assert!(package.is_file());
+            mgr.remember_trusted_path(package.clone());
+            let preview = mgr
+                .preview(InstallSource {
+                    source_type: "zip".into(),
+                    path: package.to_string_lossy().into_owned(),
+                })
+                .unwrap();
+            let installed = mgr
+                .commit(preview["installToken"].as_str().unwrap().into())
+                .unwrap();
+            assert_eq!(installed["success"], true);
+            assert_eq!(
+                lock(&mgr.db)
+                    .storage_get(name, "note.v1")
+                    .unwrap()
+                    .as_deref(),
+                Some("{\"schema\":1,\"text\":\"保留原值\"}")
+            );
+            assert_eq!(
+                read_manifest(&plugins.join(name)).unwrap().manifest_version,
+                Some(5)
+            );
+            if backend {
+                lock(&mgr.db).set_plugin_enabled(name, true).unwrap();
+                mgr.next_backend.activate(name).unwrap();
+                assert_eq!(
+                    mgr.next_backend.call(name, "load", &[]).unwrap(),
+                    json!({"schema":1,"text":"保留原值"})
+                );
+                mgr.next_backend
+                    .call(name, "save", &[json!("Next 实测")])
+                    .unwrap();
+                assert_eq!(
+                    mgr.next_backend.call(name, "load", &[]).unwrap()["text"],
+                    "Next 实测"
+                );
+                mgr.next_backend.shutdown();
+                lock(&mgr.db).set_plugin_enabled(name, false).unwrap();
+            }
+            let before = lock(&mgr.db).storage_get(name, "note.v1").unwrap();
+            assert_eq!(mgr.uninstall(name).unwrap()["success"], true);
+            assert!(lock(&mgr.db).plugin_find_by_name(name).unwrap().is_none());
+            assert!(!plugins.join(name).exists());
+            mgr.remember_trusted_path(package.clone());
+            let preview = mgr
+                .preview(InstallSource {
+                    source_type: "zip".into(),
+                    path: package.to_string_lossy().into_owned(),
+                })
+                .unwrap();
+            assert_eq!(
+                mgr.commit(preview["installToken"].as_str().unwrap().into())
+                    .unwrap()["success"],
+                true
+            );
+            assert_eq!(lock(&mgr.db).storage_get(name, "note.v1").unwrap(), before);
         }
     }
 
@@ -1121,7 +1562,25 @@ mod tests {
         assert_eq!(preview["data"]["legacyFullTrust"], false);
         let token = preview["installToken"].as_str().unwrap().to_string();
 
-        let commit = mgr.commit(token).unwrap();
+        let runtime_path = root.join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&runtime_path).unwrap();
+        let commit = mgr
+            .commit_with_runtime(&runtime, token, Some("install-demo"))
+            .unwrap();
+        assert_eq!(
+            runtime.get("plugin-install", "install-demo").unwrap()["status"],
+            "succeeded"
+        );
+        assert_eq!(
+            runtime.get("plugin-install", "install-demo").unwrap()["resultRefs"],
+            json!([plugins.join("demo").to_string_lossy()])
+        );
+        drop(runtime);
+        let reopened = crate::task_runtime::TaskRuntime::open(&runtime_path).unwrap();
+        assert_eq!(
+            reopened.get("plugin-install", "install-demo").unwrap()["status"],
+            "succeeded"
+        );
         assert_eq!(commit["success"], true);
         assert_eq!(commit["data"]["name"], "demo");
         assert_eq!(commit["data"]["version"], "1.0.0");

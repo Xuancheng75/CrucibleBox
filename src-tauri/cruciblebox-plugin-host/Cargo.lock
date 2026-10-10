@@ -30,9 +30,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "cruciblebox-plugin-host"
-version = "2.0.0"
+name = "cruciblebox-next-protocol"
+version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cruciblebox-plugin-host"
+version = "2.1.0-beta.4"
+dependencies = [
+ "cruciblebox-next-protocol",
  "rquickjs",
  "serde",
  "serde_json",

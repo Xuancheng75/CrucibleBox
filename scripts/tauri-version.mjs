@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /**
- * Tauri 是当前唯一的生产运行线。根 package.json 保留 1.7.3 仅供冻结
- * Electron 工具链使用，因此发布脚本不得从根 package.json 推导版本。
+ * Tauri 是当前唯一的生产运行线。发布版本以 Tauri 配置为权威来源；
+ * 根工程、前端与 Rust 包须由版本校验统一核对。
  */
 export function readTauriVersion(repositoryRoot) {
   const configPath = resolve(repositoryRoot, 'src-tauri', 'tauri.conf.json')

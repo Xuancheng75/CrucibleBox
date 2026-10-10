@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "renderer": "src/renderer-entry.tsx",
+  "jsx": "automatic",
+  "css": "string",
+  "aliases": {
+    "@cruciblebox/next-api": "vendor/next-api/src/index.mjs"
+  }
+}

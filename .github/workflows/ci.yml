@@ -17,77 +17,20 @@ jobs:
   verify:
     name: Verify Windows x64
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 24.15.0
           cache: npm
-          cache-dependency-path: package-lock.json
+      - run: npm ci --prefix tauri-frontend
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm run build
+      - run: npm run package:plugins:tauri
+      - run: npm run verify:plugins:tauri
 
-      - name: Install dependencies
-        run: npm ci
-
-      # Keep the precheck plugin build explicit so a failure identifies the
-      # exact gate instead of being collapsed into npm's lifecycle wrapper.
-      - name: Quality gate - build plugins
-        run: npm run build:plugins:only
-
-      - name: Quality gate - verify plugin renderers
-        run: npm run verify:plugin-renderers
-
-      - name: Quality gate - verify trusted services
-        run: npm run verify:trusted-services
-
-      - name: Quality gate - format
-        run: npm run format:check
-
-      - name: Quality gate - lint
-        run: npm run lint
-
-      - name: Quality gate - typecheck
-        run: npm run typecheck
-
-      - name: Quality gate - tests
-        run: npm test
-
-      - name: Build host and plugins
-        run: npm run build
-
-      - name: Clean checkout gate (clean tree + LF line endings)
-        run: npm run verify:clean-checkout
-
-      - name: Audit dependency graph
-        run: npm run audit:dependencies
-
-      - name: Package and verify plugins
-        run: npm run package:plugins && npm run verify:plugins
-
-      - name: Generate CycloneDX SBOMs
-        run: npm run generate:sbom
-
-      - name: Package unpacked Windows application
-        run: npm run package:dir
-
-      - name: Verify Electron native runtime
-        run: npm run smoke:native
-
-      - name: Launch packaged Windows application
-        run: npm run smoke:packaged
-
-      - name: Upload supply-chain artifacts
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
-        with:
-          name: cruciblebox-windows-supply-chain
-          if-no-files-found: error
-          path: |
-            artifacts/plugins/
-            artifacts/sbom/
-
-  # 1.9.1: Rust/Tauri 线接入 CI（并行，独立于 Electron verify）。
-  # 在 Electron 冻结/删除前先把 Rust 门禁跑进 CI；1.9.2 冻结时提升为唯一门禁。
   tauri-verify:
     name: Verify Tauri (Rust) x64
     runs-on: windows-latest
@@ -118,6 +61,58 @@ jobs:
       - name: Install root deps (frame runtime)
         run: npm ci --ignore-scripts
 
+      - name: Fetch document runtime dependencies
+        run: cargo fetch --locked --manifest-path workers/document/Cargo.toml
+
+      - name: Build optional pinned document runtime
+        run: npm run package:document-runtime -- --output artifacts/document-runtime --target-dir workers/document/target --pin-source shared/document-runtime-catalog.json
+
+      - name: Verify document worker tests and process isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path workers/document/Cargo.toml --check
+          cargo clippy --manifest-path workers/document/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path workers/document/Cargo.toml --features acceptance-faults --locked
+
+      - name: Measure controlled document worker performance
+        shell: pwsh
+        run: |
+          $env:DOCUMENT_WORKER_PERF_RESULT = Join-Path $env:GITHUB_WORKSPACE 'artifacts/document-runtime/performance.json'
+          $env:DOCUMENT_WORKER_STRESS_RESULT = Join-Path $env:GITHUB_WORKSPACE 'artifacts/document-runtime/stress-2000-pages.json'
+          cargo test --release --manifest-path workers/document/Cargo.toml --test performance -- --ignored --nocapture --test-threads=1
+
+      - name: Upload controlled document worker performance evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: document-worker-performance
+          path: |
+            artifacts/document-runtime/performance.json
+            artifacts/document-runtime/stress-2000-pages.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Verify application and plugin gates
+        run: npm run check
+
+      - name: Verify seven-plugin distribution metadata
+        run: npm run package:plugins:tauri && npm run verify:plugins:tauri
+
+      - name: Verify independently built official Next plugins
+        run: npm run verify:next-independent
+
+      - name: Verify frozen Next contract and SDK
+        run: npm run test:next
+
+      - name: Verify frozen Next Rust protocol
+        working-directory: src-tauri/crates/next-protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
       - name: Build frontend
         working-directory: tauri-frontend
         run: npm run build
@@ -128,7 +123,29 @@ jobs:
       - name: Verify plugin frame runtime
         run: npm run verify:plugin-frame-runtime
 
+      - name: Prepare bundled 7-Zip runtime
+        run: npm run prepare:7zip
+
       # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
+      - name: Verify frozen Next task core and journal
+        shell: bash
+        run: |
+          set -euo pipefail
+          for crate in task-core task-store file-publication task-runtime repository next-data; do
+            cargo fmt --manifest-path "src-tauri/crates/$crate/Cargo.toml" --check
+            cargo clippy --manifest-path "src-tauri/crates/$crate/Cargo.toml" --all-targets --locked -- -D warnings
+            cargo test --manifest-path "src-tauri/crates/$crate/Cargo.toml" --locked
+          done
+
+      - name: Verify plugin host sidecar
+        working-directory: src-tauri/cruciblebox-plugin-host
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
       - name: Build plugin host sidecar
         working-directory: src-tauri/cruciblebox-plugin-host
         run: cargo build --release --locked
@@ -140,6 +157,9 @@ jobs:
           mkdir -p src-tauri/binaries
           cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
             src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
+          mkdir -p src-tauri/target/debug
+          cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
+            src-tauri/target/debug/cruciblebox-plugin-host.exe
 
       - name: Build OCR worker
         working-directory: ocr-worker
@@ -157,7 +177,7 @@ jobs:
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP 'onnxruntime-win-x64-1.28.1.zip'
-          $url = 'https://sourceforge.net/projects/onnx-runtime.mirror/files/v1.28.1/onnxruntime-win-x64-1.28.1.zip/download?use_mirror=master'
+          $url = 'https://github.com/microsoft/onnxruntime/releases/download/v1.28.1/onnxruntime-win-x64-1.28.1.zip'
           curl.exe --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 --max-time 900 --output $archive $url
           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne 'e46ac7652def5da0e5223372be21185ffff553e0419459f66e0114d460c38162') { throw "ONNX Runtime archive SHA-256 mismatch: $hash" }
@@ -182,6 +202,30 @@ jobs:
         working-directory: src-tauri
         run: cargo test --workspace --locked
 
+      - name: Verify separately packaged document runtime installation and restart
+        shell: pwsh
+        run: |
+          $env:DOCUMENT_RUNTIME_ACCEPTANCE_DIRECTORY = (Resolve-Path 'artifacts/document-runtime/0.1.0').Path
+          cargo test --manifest-path src-tauri/Cargo.toml pinned_document_runtime_installs_and_runs_without_ocr_resources -- --ignored --nocapture
+
+      - name: Verify durable document PDF publication, cancellation, failure and restart
+        shell: pwsh
+        run: |
+          $runtime = (Resolve-Path 'artifacts/document-runtime/0.1.0').Path
+          $env:DOCUMENT_WORKER_ACCEPTANCE_EXE = Join-Path $runtime 'document-worker.exe'
+          $env:DOCUMENT_WORKER_ACCEPTANCE_PDFIUM = Join-Path $runtime 'pdfium.dll'
+          cargo test --manifest-path src-tauri/Cargo.toml chunk_task_returns_chunks_for_document_path -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml parse_pdf_task_returns_unified_document -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml convert_task_writes_markdown_output -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml native_document_artifacts_publish_durably_and_survive_restart -- --ignored --nocapture
+
       - name: Cargo build (main app)
         working-directory: src-tauri
         run: cargo build --locked
+
+      - name: Verify seven official plugin upgrade and reinstall retention
+        working-directory: src-tauri
+        run: cargo test --locked seven_official_packages_preserve_data_and_files -- --ignored --nocapture

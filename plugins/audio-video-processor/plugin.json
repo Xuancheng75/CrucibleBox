@@ -1,0 +1,21 @@
+{
+  "name": "audio-video-processor",
+  "version": "0.1.0-beta.2",
+  "displayName": "音视频处理",
+  "description": "使用本地 FFmpeg 裁剪、转码、提取音频与画面，支持任务取消。",
+  "category": "图像与媒体",
+  "tags": ["音频", "视频", "转码", "裁剪"],
+  "keywords": ["FFmpeg", "抽帧", "格式转换"],
+  "author": "CrucibleBox",
+  "main": "dist/main.js",
+  "renderer": "dist/renderer.js",
+  "backend": true,
+  "manifestVersion": 4,
+  "backendApiVersion": 4,
+  "rendererApiVersion": 4,
+  "minimumHostVersion": "2.1.0-beta.2",
+  "trustLevel": "standard",
+  "capabilities": { "process": true, "storage": true, "ui": true },
+  "permissions": ["shell:exec", "storage:read", "storage:write", "dialog"],
+  "config": {}
+}

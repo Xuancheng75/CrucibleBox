@@ -51,10 +51,9 @@ fn generated_index(session: &RendererSession) -> String {
     // Bug E：首帧关键 CSS 直接内联进 index.html。runtime.js 的深色兜底要等脚本
     // 下载+执行后才生效，WebView2 在此之前按默认白底渲染 → 深色主题闪白屏。
     let critical_style = format!(
-        "html{{background:{};color-scheme:{}}}body{{margin:0;background:{};min-height:100%}}html,body{{width:100%;min-height:100%;overflow-x:hidden}}#root{{min-height:100%;background:inherit;overflow:hidden}}",
+        "html{{background:{};color-scheme:{}}}body{{margin:0;background:inherit;min-height:100%}}html,body{{width:100%;min-height:100%;overflow-x:hidden}}#root{{min-height:100%;background:inherit;overflow:hidden}}",
         escape_html_attr(&session.initial_background),
-        escape_html_attr(&session.color_scheme),
-        escape_html_attr(&session.initial_background)
+        escape_html_attr(&session.color_scheme)
     );
     format!(
         "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <style>{}</style>\n    <title></title>\n  </head>\n  <body>\n    <div id=\"root\" data-session-token=\"{}\" data-api-version=\"{}\" data-renderer-url=\"renderer.js\"></div>\n    <script src=\"runtime.js\"></script>{}\n  </body>\n</html>",
@@ -62,19 +61,31 @@ fn generated_index(session: &RendererSession) -> String {
         escape_html_attr(&session.handshake_token),
         session.renderer_api_version,
         renderer_script
-    )
+    ).replace("data-api-version=", &format!("data-max-inflight=\"{}\" data-handshake-timeout=\"{}\" data-request-timeout=\"{}\" data-backend-timeout=\"{}\" data-api-version=", cruciblebox_next_protocol::MAX_INFLIGHT, cruciblebox_next_protocol::HANDSHAKE_TIMEOUT_MS, cruciblebox_next_protocol::RPC_TIMEOUT_MS, cruciblebox_next_protocol::BACKEND_TIMEOUT_MS))
 }
 
 /// 从 URL path 提取 session token（path 型 /<token>/<resource>）。
 fn token_from_path(pathname: &str) -> Option<(String, String)> {
     let path = pathname.split('?').next().unwrap_or(pathname);
-    let mut segments = path.split('/').filter(|s| !s.is_empty());
-    let token = segments.next()?;
-    let resource = segments.next().unwrap_or("index.html").to_string();
+    let tail = path.strip_prefix('/')?;
+    let (token, resource) = tail.split_once('/').unwrap_or((tail, "index.html"));
     if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
-    Some((token.to_string(), resource))
+    let resource = if resource.is_empty() {
+        "index.html"
+    } else {
+        resource
+    };
+    if resource.contains('\\')
+        || resource.contains('\0')
+        || resource
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    Some((token.to_string(), resource.to_string()))
 }
 
 /// 资源解析：仅允许 session.pluginDirectory 内（对等 resolveSafeAsset + isContained）。
@@ -99,8 +110,10 @@ fn resolve_safe_asset(session: &RendererSession, resource: &str) -> Option<PathB
     if !norm_candidate.starts_with(&norm_root) {
         return None;
     }
-    if candidate.is_file() {
-        Some(candidate)
+    let real_root = root.canonicalize().ok()?;
+    let real_candidate = candidate.canonicalize().ok()?;
+    if real_candidate.starts_with(real_root) && real_candidate.is_file() {
+        Some(real_candidate)
     } else {
         None
     }
@@ -200,8 +213,26 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
             let reg = ctx.registry.lock().unwrap();
             let access = reg.get(&token, &ctx.owner_label);
             let session = access.session.ok_or((403, "session denied".into()))?;
-            let body = std::fs::read(&session.runtime_path)
-                .map_err(|e| (404, format!("runtime missing: {e}")))?;
+            let body = if session.renderer_api_version == 5 {
+                include_bytes!("next_frame_runtime.js").to_vec()
+            } else {
+                std::fs::read(&session.runtime_path)
+                    .map_err(|e| (404, format!("runtime missing: {e}")))?
+            };
+            Ok((200, "text/javascript; charset=utf-8", body))
+        }
+        "next-api.mjs" | "generated.mjs" => {
+            let reg = ctx.registry.lock().unwrap();
+            let access = reg.get(&token, &ctx.owner_label);
+            let session = access.session.ok_or((403, "session denied".into()))?;
+            if session.renderer_api_version != 5 {
+                return Err((403, "Next only".into()));
+            }
+            let body = if resource == "next-api.mjs" {
+                include_bytes!("../../packages/cruciblebox-next-api/src/index.mjs").to_vec()
+            } else {
+                include_bytes!("../../packages/cruciblebox-next-api/src/generated.mjs").to_vec()
+            };
             Ok((200, "text/javascript; charset=utf-8", body))
         }
         "renderer.js" => {
@@ -236,6 +267,7 @@ pub fn session_dto(session: &RendererSession) -> serde_json::Value {
         "indexUrl": session.index_url,
         "rendererApiVersion": session.renderer_api_version,
         "expiresAt": session.expires_at_ms,
+        "permissions": session.permissions,
     })
 }
 
@@ -294,7 +326,7 @@ mod tests {
             body.contains("<style>html{background:#0a0c10;color-scheme:dark}"),
             "inline first-frame dark style missing: {body}"
         );
-        assert!(body.contains("body{margin:0;background:#0a0c10;min-height:100%}"));
+        assert!(body.contains("body{margin:0;background:inherit;min-height:100%}"));
         // 二次访问 index → 403 already-consumed
         let again = handle_inner(&ctx, &uri);
         assert!(again.is_err());
@@ -363,6 +395,23 @@ mod tests {
         let resp = handle_inner(&ctx, &renderer_uri).unwrap();
         assert_eq!(resp.0, 200);
         assert_eq!(String::from_utf8(resp.2).unwrap(), "// renderer");
+        let worker = dir.join("dist/workers/run.js");
+        std::fs::create_dir_all(worker.parent().unwrap()).unwrap();
+        std::fs::write(&worker, "postMessage('worker-ok')").unwrap();
+        let worker_uri = format!("http://cruciblebox-plugin.localhost/{token}/dist/workers/run.js");
+        let worker_response = handle_inner(&ctx, &worker_uri).unwrap();
+        assert_eq!(worker_response.0, 200);
+        assert_eq!(
+            String::from_utf8(worker_response.2).unwrap(),
+            "postMessage('worker-ok')"
+        );
+        assert!(handle_inner(
+            &ctx,
+            &format!("http://cruciblebox-plugin.localhost/{token}/dist/../run.js")
+        )
+        .is_err());
+        ctx.registry.lock().unwrap().dispose(&token);
+        assert!(handle_inner(&ctx, &worker_uri).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -376,6 +425,16 @@ mod tests {
         let (t2, r2) = token_from_path(&format!("/{token}/renderer.js")).unwrap();
         assert_eq!(t2, token);
         assert_eq!(r2, "renderer.js");
+        let (_, nested) = token_from_path(&format!("/{token}/dist/workers/run.js?v=1")).unwrap();
+        assert_eq!(nested, "dist/workers/run.js");
+        for resource in [
+            "dist/../run.js",
+            "dist//run.js",
+            "dist/./run.js",
+            "dist\\run.js",
+        ] {
+            assert!(token_from_path(&format!("/{token}/{resource}")).is_none());
+        }
         assert!(token_from_path("/bad/index.html").is_none());
     }
 

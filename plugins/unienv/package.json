@@ -1,27 +1,27 @@
 {
   "name": "unienv",
-  "version": "0.11.0",
+  "version": "0.13.0-alpha.1",
   "private": true,
-  "description": "UniEnv - 一键式开发环境配置工具（Python/Node/Go/Java/Rust/PHP/Ruby/Zig/Deno/Bun）",
-  "main": "dist/main.js",
+  "description": "开发环境管理（Python/Node/Go/Java/Rust/PHP/Ruby/Zig/Deno/Bun）",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/build-plugin-renderer.mjs .",
+    "build": "node scripts/build-next.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --configLoader runner",
-    "check": "npm run typecheck && npm test && npm run build",
-    "watch": "node scripts/build-plugin-renderer.mjs . --watch"
+    "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "@cruciblebox/next-api": "file:vendor/next-api"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "esbuild": "0.28.2",
+    "@types/node": "22.20.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "esbuild": "0.25.12",
     "typescript": "6.0.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "adm-zip": "0.6.0"
   }
 }

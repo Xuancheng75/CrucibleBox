@@ -122,6 +122,7 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
   const [pinnedOnly, setPinnedOnly] = useState(false)
   const [kind, setKind] = useState<ContentKind>('all')
   const [loading, setLoading] = useState(true)
+  const [paused, setPaused] = useState(false)
 
   const refresh = useCallback(async () => {
     const res = await api.sendToBackend({ type: 'getHistory' }) as { items: ClipItem[] }
@@ -131,6 +132,7 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
 
   useEffect(() => {
     void refresh()
+    void api.sendToBackend({ type: 'getPaused' }).then((value) => setPaused((value as { paused?: boolean }).paused === true))
     return api.onBackendMessage((message) => {
       const event = message as { type?: unknown }
       if (event.type === 'clipboard:changed') void refresh()
@@ -196,6 +198,9 @@ export default function ClipboardManagerPlugin({ api }: PluginRenderProps) {
     <div style={s.page}>
       <h2 style={{ margin: '0 0 16px', fontSize: 20 }}>剪贴板管理器</h2>
       <div style={s.toolbar}>
+        <button style={s.iconBtn} onClick={() => void api.sendToBackend({ type: 'setPaused', paused: !paused }).then(() => setPaused(!paused))}>
+          {paused ? '恢复记录' : '暂停记录'}
+        </button>
         <input
           style={s.search}
           placeholder="搜索..."

@@ -177,7 +177,9 @@ pub fn host_call(method: &str, params: Value) -> Result<Value, String> {
 }
 
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)] // Already const; this toolchain also lints macro-generated TLS state.
     static RPC_TOKEN: RefCell<String> = const { RefCell::new(String::new()) };
+    #[allow(clippy::missing_const_for_thread_local)]
     static NEXT_ID: RefCell<u64> = const { RefCell::new(0) };
 }
 
@@ -217,37 +219,73 @@ function __rpc(method, params) {
   var raw = __hostRequest(method, JSON.stringify(params || {}));
   return raw === undefined ? null : JSON.parse(raw);
 }
+function __toBase64(data) {
+  var bytes = [];
+  if (typeof data === 'string') {
+    for (var i = 0; i < data.length; i++) {
+      var code = data.charCodeAt(i);
+      if (code < 0x80) bytes.push(code);
+      else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 63));
+      else bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 63), 0x80 | (code & 63));
+    }
+  } else if (data && typeof data.length === 'number') {
+    for (var j = 0; j < data.length; j++) bytes.push(Number(data[j]) & 255);
+  } else {
+    throw new Error('writeFile data must be a string or Uint8Array');
+  }
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  var out = '';
+  for (var p = 0; p < bytes.length; p += 3) {
+    var a = bytes[p], b = p + 1 < bytes.length ? bytes[p + 1] : 0, c = p + 2 < bytes.length ? bytes[p + 2] : 0;
+    out += chars[a >> 2] + chars[((a & 3) << 4) | (b >> 4)] +
+      (p + 1 < bytes.length ? chars[((b & 15) << 2) | (c >> 6)] : '=') +
+      (p + 2 < bytes.length ? chars[c & 63] : '=');
+  }
+  return out;
+}
 function __buildCtx(id, config) {
-  var ctxObj = { id: id, config: config || {}, logger: {}, database: {}, storage: {}, api: {} };
+  var ctxObj = { id: id, config: config || {}, logger: {}, storage: {}, pluginData: {}, capabilities: {}, api: {} };
   var logger = ctxObj.logger;
   ['info', 'warn', 'error', 'debug'].forEach(function (level) {
     logger[level] = function (message) {
       __ff('log.write', { pluginId: id, level: level, message: String(message) });
     };
   });
-  var database = ctxObj.database;
-  database.query = function (sql, params) { return __rpc('db.query', { sql: sql, params: params || [] }); };
-  database.execute = function (sql, params) { __rpc('db.execute', { sql: sql, params: params || [] }); };
   var storage = ctxObj.storage;
   storage.get = function (key) { return __rpc('storage.get', { pluginId: id, key: key }); };
   storage.set = function (key, value) { __rpc('storage.set', { pluginId: id, key: key, value: value }); };
   storage.delete = function (key) { __rpc('storage.delete', { pluginId: id, key: key }); };
   storage.list = function (prefix) { return __rpc('storage.list', { pluginId: id, prefix: prefix || undefined }); };
   storage.batch = function (mutations) { __rpc('storage.batch', { pluginId: id, mutations: mutations || [] }); };
+  ctxObj.pluginData = storage;
   var api = ctxObj.api;
+  api.getOwnDirectory = function () { return __rpc('plugin.root', {}); };
   api.notify = function (title, body) { __ff('notification.show', { title: title, body: body || '' }); };
   api.openDialog = function (type) { return __rpc('dialog.open', { type: type }); };
   api.fetch = function (url, opts) { return __rpc('network.fetch', { url: url, options: opts || {} }); };
+  api.runProcess = function (program, args, options) {
+    var opts = options || {};
+    return __rpc('process.run', { program: program, args: args || [], cwd: opts.cwd, timeoutMs: opts.timeoutMs });
+  };
+  api.startProcess = function (program, args, options) {
+    var opts = options || {};
+    return __rpc('process.start', { program: program, args: args || [], cwd: opts.cwd, timeoutMs: opts.timeoutMs, outputTarget: opts.outputTarget, outputValidation: opts.outputValidation, inputPaths: opts.inputPaths });
+  };
+  api.getProcessTask = function (taskId) { return __rpc('process.getTask', { taskId: taskId }); };
+  api.cancelProcessTask = function (taskId) { return __rpc('process.cancel', { taskId: taskId }); };
   api.readFile = function (path) { return __rpc('file.read', { path: path }); };
-  api.writeFile = function (path, data) { __rpc('file.write', { path: path, data: data }); };
+  api.writeFile = function (path, data) { __rpc('file.write', { path: path, base64: __toBase64(data) }); };
   api.clipboard = {
     read: function () { return __rpc('clipboard.read', {}); },
     write: function (text) { return __rpc('clipboard.write', { text: text }); }
   };
   api.getSystemInfo = function () { return __rpc('system.info', {}); };
   api.registerShortcut = function (keys, handler) {
+    if (typeof handler !== 'function') { throw new Error('registerShortcut requires a handler function'); }
+    var event = 'cruciblebox:shortcut:' + keys;
+    var unsubscribe = api.onEvent(event, handler);
     __ff('shortcut.register', { keys: keys });
-    return function () { __ff('shortcut.unregister', { keys: keys }); };
+    return function () { unsubscribe(); __ff('shortcut.unregister', { keys: keys }); };
   };
   api.emitEvent = function (event, data) { __ff('event.emit', { event: event, data: data }); };
   api.onEvent = function (event, handler) {
@@ -274,6 +312,11 @@ function __buildCtx(id, config) {
   api.invokeTrustedService = function (service, operation, payload) {
     return __rpc('trusted.invoke', { service: service, operation: operation, payload: payload });
   };
+  ctxObj.capabilities = {
+    events: { emitEvent: api.emitEvent, onEvent: api.onEvent },
+    system: { clipboard: api.clipboard, getSystemInfo: api.getSystemInfo, registerShortcut: api.registerShortcut },
+    process: { run: api.runProcess, start: api.startProcess, getTask: api.getProcessTask, cancel: api.cancelProcessTask }
+  };
   return ctxObj;
 }
 globalThis.__cbCtx = null;
@@ -298,6 +341,23 @@ mod tests {
                 .unwrap()
                 .is_undefined();
             assert!(has_storage);
+        });
+    }
+
+    #[test]
+    fn file_payloads_are_base64_encoded() {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let ctx = rquickjs::Context::full(&rt).unwrap();
+        ctx.with(|ctx| {
+            ctx.eval::<(), _>(CTX_JS).unwrap();
+            assert_eq!(
+                ctx.eval::<String, _>("__toBase64('hello')").unwrap(),
+                "aGVsbG8="
+            );
+            assert_eq!(
+                ctx.eval::<String, _>("__toBase64('中文')").unwrap(),
+                "5Lit5paH"
+            );
         });
     }
 

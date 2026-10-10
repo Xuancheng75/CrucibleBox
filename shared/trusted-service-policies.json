@@ -1,25 +1,50 @@
 {
   "unienv": {
     "name": "unienv",
-    "version": "0.11.0",
-    "digest": "75d84102ff8db835e60021d76d611a0a995ebdbb0e14cfdc28c71f21ccca3c92",
-    "files": ["dist/main.js", "dist/renderer.js", "plugin.json"]
+    "version": "0.13.0-alpha.1",
+    "digest": "20d6f434e8ea35fae2c74609b4ecdaa76b6045ce170189b089dc0d71c99f24b0",
+    "files": ["dist/renderer.js", "plugin.json"],
+    "permissions": [
+      "trusted:unienv",
+      "dialog",
+      "notification",
+      "storage:read",
+      "storage:write",
+      "tasks:read",
+      "tasks:control"
+    ],
+    "manifestVersion": 5
   },
   "document-engine": {
     "name": "document-engine",
-    "version": "0.10.0",
-    "permissions": ["trusted:document-engine", "dialog"],
-    "digest": "e1d7bba1695ed2fc35ef6b48db72a6a463a8450d9c2a0df8e60a21c8b1de0a85",
-    "files": [
-      "dist/main.js",
-      "dist/renderer.js",
-      "plugin.json",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx",
-      "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt"
-    ]
+    "version": "0.12.0-alpha.1",
+    "permissions": [
+      "trusted:document-engine",
+      "dialog",
+      "notification",
+      "storage:read",
+      "storage:write",
+      "tasks:read",
+      "tasks:control"
+    ],
+    "digest": "8d55521ab68b263fe1153aca81faffd9acc6054aaefaf41c608d66553990ceb7",
+    "files": ["dist/renderer.js", "plugin.json"],
+    "manifestVersion": 5
+  },
+  "archive-extractor": {
+    "name": "archive-extractor",
+    "version": "0.3.0-alpha.1",
+    "permissions": [
+      "trusted:archive-extractor",
+      "dialog",
+      "notification",
+      "storage:read",
+      "storage:write",
+      "tasks:read",
+      "tasks:control"
+    ],
+    "digest": "69dbc6cc36fabbd498176644b12c2d73ae9b1366aa845abd5153debc0891b16e",
+    "files": ["dist/renderer.js", "plugin.json"],
+    "manifestVersion": 5
   }
 }

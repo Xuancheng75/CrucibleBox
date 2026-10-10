@@ -64,8 +64,29 @@ jobs:
         run: npm ci
 
       # 根依赖仅用于 build:frame（out/plugin-frame/runtime.js，协议硬依赖）
-      - name: Install root deps (frame runtime)
+      - name: Install root deps (frame and document runtime)
         run: npm ci --ignore-scripts
+
+      - name: Fetch document runtime dependencies
+        run: cargo fetch --locked --manifest-path workers/document/Cargo.toml
+
+      - name: Build optional pinned document runtime
+        run: npm run package:document-runtime -- --output artifacts/document-runtime --target-dir workers/document/target --pin-source shared/document-runtime-catalog.json
+
+      - name: Stage separately installable document runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'artifacts/tauri' | Out-Null
+          Compress-Archive -Path 'artifacts/document-runtime/0.1.0/*' -DestinationPath 'artifacts/tauri/document-runtime-0.1.0-win-x64.zip' -CompressionLevel Optimal
+          Copy-Item -LiteralPath 'artifacts/document-runtime/0.1.0.catalog.json' -Destination 'artifacts/tauri/document-runtime-0.1.0.catalog.json'
+
+      - name: Verify document worker production dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path workers/document/Cargo.toml --check
+          cargo clippy --manifest-path workers/document/Cargo.toml --all-targets --locked -- -D warnings
+          cargo test --manifest-path workers/document/Cargo.toml --features acceptance-faults --locked
 
       - name: Build plugin frame runtime
         run: npm run build:frame
@@ -73,7 +94,19 @@ jobs:
       - name: Verify plugin frame runtime
         run: npm run verify:plugin-frame-runtime
 
+      - name: Prepare bundled 7-Zip runtime
+        run: npm run prepare:7zip
+
       # externalBin + resources 需在 Rust 门禁（tauri-build 校验）前就位
+      - name: Verify plugin host sidecar
+        working-directory: src-tauri/cruciblebox-plugin-host
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
       - name: Build plugin host sidecar
         working-directory: src-tauri/cruciblebox-plugin-host
         run: cargo build --release --locked
@@ -85,6 +118,9 @@ jobs:
           mkdir -p src-tauri/binaries
           cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
             src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe
+          mkdir -p src-tauri/target/debug
+          cp src-tauri/cruciblebox-plugin-host/target/release/cruciblebox-plugin-host.exe \
+            src-tauri/target/debug/cruciblebox-plugin-host.exe
 
       - name: Build OCR worker
         working-directory: ocr-worker
@@ -102,7 +138,7 @@ jobs:
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP 'onnxruntime-win-x64-1.28.1.zip'
-          $url = 'https://sourceforge.net/projects/onnx-runtime.mirror/files/v1.28.1/onnxruntime-win-x64-1.28.1.zip/download?use_mirror=master'
+          $url = 'https://github.com/microsoft/onnxruntime/releases/download/v1.28.1/onnxruntime-win-x64-1.28.1.zip'
           curl.exe --fail --location --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 --max-time 900 --output $archive $url
           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne 'e46ac7652def5da0e5223372be21185ffff553e0419459f66e0114d460c38162') { throw "ONNX Runtime archive SHA-256 mismatch: $hash" }
@@ -111,6 +147,9 @@ jobs:
           New-Item -ItemType Directory -Path 'src-tauri/binaries' -Force | Out-Null
           Copy-Item -LiteralPath (Join-Path $extract 'onnxruntime-win-x64-1.28.1/lib/onnxruntime.dll') -Destination 'src-tauri/binaries/onnxruntime.dll' -Force
           Copy-Item -LiteralPath (Join-Path $extract 'onnxruntime-win-x64-1.28.1/lib/onnxruntime_providers_shared.dll') -Destination 'src-tauri/binaries/onnxruntime_providers_shared.dll' -Force
+
+      - name: Stage bundled 7-Zip runtime
+        run: node scripts/prepare-7zip.mjs
 
       - name: Verify Tauri runtime assets
         run: node scripts/verify-tauri-runtime-assets.mjs --staged .
@@ -127,6 +166,26 @@ jobs:
       - name: Cargo test (workspace)
         working-directory: src-tauri
         run: cargo test --workspace --locked
+
+      - name: Verify separately packaged document runtime installation and restart
+        shell: pwsh
+        run: |
+          $env:DOCUMENT_RUNTIME_ACCEPTANCE_DIRECTORY = (Resolve-Path 'artifacts/document-runtime/0.1.0').Path
+          cargo test --manifest-path src-tauri/Cargo.toml pinned_document_runtime_installs_and_runs_without_ocr_resources -- --ignored --nocapture
+
+      - name: Verify durable document PDF publication, cancellation, failure and restart
+        shell: pwsh
+        run: |
+          $runtime = (Resolve-Path 'artifacts/document-runtime/0.1.0').Path
+          $env:DOCUMENT_WORKER_ACCEPTANCE_EXE = Join-Path $runtime 'document-worker.exe'
+          $env:DOCUMENT_WORKER_ACCEPTANCE_PDFIUM = Join-Path $runtime 'pdfium.dll'
+          cargo test --manifest-path src-tauri/Cargo.toml chunk_task_returns_chunks_for_document_path -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml parse_pdf_task_returns_unified_document -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml convert_task_writes_markdown_output -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml native_document_artifacts_publish_durably_and_survive_restart -- --ignored --nocapture
 
       - name: Build frontend
         working-directory: tauri-frontend
@@ -328,8 +387,27 @@ jobs:
           # 1.9.13：官方插件包随 release 附带（供已装用户导入升级）
           cp artifacts/plugins/*.zip artifacts/tauri/
           # 1.9.24：发布可消费的官方插件更新目录，避免宿主升级后插件版本漂移。
-          node -e "const fs=require('fs'); const path='artifacts/plugins/manifest.json'; const source=JSON.parse(fs.readFileSync(path,'utf8')); const tag='${{ steps.release.outputs.tag }}'; const plugins=source.plugins.map(p=>({...p,url:'https://github.com/${{ github.repository }}/releases/download/'+tag+'/'+p.artifact})); fs.writeFileSync('artifacts/tauri/plugins.json', JSON.stringify({schemaVersion:1,application:source.application,plugins},null,2)+'\\n');"
+          node -e "const fs=require('fs'); const path='artifacts/plugins/manifest.json'; const source=JSON.parse(fs.readFileSync(path,'utf8')); const tag='${{ steps.release.outputs.tag }}'; const plugins=source.plugins.map(p=>({...p,url:'https://github.com/${{ github.repository }}/releases/download/'+tag+'/'+p.artifact})); fs.writeFileSync('artifacts/tauri/plugins.json', JSON.stringify({schemaVersion:2,application:source.application,plugins},null,2)+'\\n');"
           ls -la artifacts/tauri/
+
+      - name: Package portable toolbox with Next plugin upgrade bundles
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $portable = 'artifacts/portable/CrucibleBox'
+          New-Item -ItemType Directory -Force -Path $portable, "$portable/plugins", "$portable/7zip" | Out-Null
+          Copy-Item 'src-tauri/target/release/cruciblebox.exe' "$portable/cruciblebox.exe"
+          Copy-Item 'src-tauri/binaries/cruciblebox-plugin-host-x86_64-pc-windows-msvc.exe' "$portable/cruciblebox-plugin-host.exe"
+          Copy-Item 'src-tauri/binaries/ocr-worker-x86_64-pc-windows-msvc.exe' "$portable/ocr-worker.exe"
+          Copy-Item 'src-tauri/binaries/onnxruntime*.dll' $portable
+          Copy-Item 'src-tauri/resources/7zip/*' "$portable/7zip"
+          Copy-Item 'src-tauri/resources/formula-ocr' "$portable/formula-ocr" -Recurse
+          Copy-Item 'artifacts/plugins/*.zip' "$portable/plugins"
+          Copy-Item 'artifacts/tauri/plugins.json' "$portable/plugins/plugins.json"
+          '首次运行或旧插件升级：在工作台导入 plugins 目录里的七个 Next 插件 ZIP。升级宿主不会自动改写已有插件或删除用户数据。文档 runtime 单独下载安装。' | Set-Content "$portable/README.txt" -Encoding utf8
+          node scripts/verify-tauri-runtime-assets.mjs --packaged $portable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path $portable -DestinationPath 'artifacts/tauri/CrucibleBox_${{ steps.release.outputs.version }}_win-x64-portable.zip' -CompressionLevel Optimal
 
       - name: Attest artifacts
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4

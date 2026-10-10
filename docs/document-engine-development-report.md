@@ -1,8 +1,10 @@
 # Document Engine Development Report
 
 日期：2026-09-02
-发布基线：CrucibleBox 2.0.0（Document Engine 0.10.0）
+发布基线：CrucibleBox 2.0.1（Document Engine 0.10.0）
 范围：`plugins/document-engine`、Rust trusted service、Rust OCR worker、Tauri Windows 打包链。
+
+> 历史实现报告：本文记录 beta.3 / Document Engine 0.10.0 的 OCR、PDFium 与 IR 能力及其限制。Next beta.1 已将 PDFium/Document IR 移入独立按需 document-worker；当前隔离、运行时安装、任务发布和性能证据以 [architecture.md](architecture.md) 与 [document-engine-status.md](document-engine-status.md) 为准。本文的 OCR 精度数值不因该架构迁移改变。
 
 ## 结论
 

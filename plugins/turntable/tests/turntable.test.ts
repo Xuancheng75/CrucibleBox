@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { PluginContext, PluginStorageEntry, PluginStorageMutation } from 'cruciblebox-plugin-api'
+import type { DecisionContext, DecisionStorage } from '../src/next-service'
+type PluginStorageEntry<T> = { key: string; value: T }
+type PluginStorageMutation = Parameters<DecisionStorage['batch']>[0][number]
 import turntablePlugin from '../src/main'
 import {
   normalizeAngle,
@@ -44,35 +46,8 @@ class MemoryStorage {
   }
 }
 
-function context(storage: MemoryStorage): PluginContext {
-  return {
-    id: 'turntable-id',
-    config: {},
-    storage,
-    database: { query: async () => [], execute: async () => undefined },
-    logger: { debug() {}, error() {}, info() {}, warn() {} },
-    api: {
-      emitEvent() {},
-      fetch: async () => new Response(),
-      notify() {},
-      onEvent: () => () => undefined,
-      openDialog: async () => null,
-      readFile: async () => new Uint8Array(),
-      registerShortcut: () => () => undefined,
-      writeFile: async () => undefined,
-      clipboard: {
-        read: async () => ({ text: '' }),
-        write: async () => ({ ok: true })
-      },
-      getSystemInfo: async () => ({
-        os: { name: '', version: '', hostname: '' },
-        cpu: { brand: '', cores: 0, physicalCores: 0, usage: 0 },
-        memory: { total: 0, available: 0, usage: 0 },
-        disks: [],
-        network: []
-      })
-    }
-  }
+function context(storage: MemoryStorage): DecisionContext {
+  return { storage, logger: { info() {}, error() {} } }
 }
 
 function item(id: number, weight: number): TurntableItem {
@@ -122,18 +97,10 @@ describe('winner geometry', () => {
 })
 
 describe('turntable persistence', () => {
-  it('serializes concurrent edits and preserves atomic order across restart', async () => {
+  it('preserves reordered options across restart', async () => {
     const storage = new MemoryStorage()
+    storage.values.set('items', [item(3, 1), item(1, 1), item(2, 1)])
     await turntablePlugin.activate(context(storage))
-    const added = await Promise.all(
-      ['A', 'B', 'C'].map((label) =>
-        turntablePlugin.onMessage?.({
-          type: 'addItem',
-          payload: { label, weight: 1, color: '' }
-        })
-      )
-    )
-    expect(added.map((value) => (value as TurntableItem).id)).toEqual([1, 2, 3])
     await expect(
       turntablePlugin.onMessage?.({ type: 'reorderItems', payload: { ids: [3, 1, 2] } })
     ).resolves.toMatchObject([

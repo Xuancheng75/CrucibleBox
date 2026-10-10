@@ -17,6 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const PROTOCOL_VERSION: u32 = 1;
+const QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const MAX_RESPONSE_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -85,6 +86,8 @@ struct WorkerState {
 /// a frame, so cancellation can terminate the child immediately.
 pub struct OcrWorkerManager {
     worker_exe: PathBuf,
+    worker_args: Vec<String>,
+    requires_ort: bool,
     timeout: Duration,
     state: Mutex<WorkerState>,
     request_gate: Mutex<()>,
@@ -94,6 +97,20 @@ impl OcrWorkerManager {
     pub fn new(worker_exe: PathBuf, timeout: Duration) -> Self {
         Self {
             worker_exe,
+            worker_args: Vec::new(),
+            requires_ort: true,
+            timeout,
+            state: Mutex::new(WorkerState::default()),
+            request_gate: Mutex::new(()),
+        }
+    }
+
+    /// Run a worker implementing the same framed protocol without the ONNX runtime.
+    pub fn new_external(worker_exe: PathBuf, worker_args: Vec<String>, timeout: Duration) -> Self {
+        Self {
+            worker_exe,
+            worker_args,
+            requires_ort: false,
             timeout,
             state: Mutex::new(WorkerState::default()),
             request_gate: Mutex::new(()),
@@ -217,10 +234,33 @@ impl OcrWorkerManager {
         cancelled: &AtomicBool,
         on_progress: &dyn Fn(Value),
     ) -> Result<Value, String> {
-        let _gate = self
-            .request_gate
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let admission_timeout = self.timeout.min(QUEUE_TIMEOUT);
+        let admission_deadline = Instant::now() + admission_timeout;
+        let _gate = loop {
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("操作已取消".into());
+            }
+            match self.request_gate.try_lock() {
+                Ok(gate) => break gate,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    let _gate = poisoned.into_inner();
+                    self.terminate();
+                    self.request_gate.clear_poison();
+                    return Err(
+                        "OCR worker previous request panicked; retry with a new task".into(),
+                    );
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if Instant::now() >= admission_deadline {
+                        return Err(format!(
+                            "OCR worker busy; request admission exceeded {}ms",
+                            admission_timeout.as_millis()
+                        ));
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
         if cancelled.load(Ordering::SeqCst) {
             return Err("操作已取消".into());
         }
@@ -331,8 +371,17 @@ impl OcrWorkerManager {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
+                    let exit_status = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .child
+                        .as_mut()
+                        .and_then(|child| child.try_wait().ok().flatten());
                     self.terminate();
-                    return Err("OCR worker stdout closed unexpectedly".into());
+                    return Err(format!(
+                        "OCR worker stdout closed unexpectedly (exit status: {exit_status:?})"
+                    ));
                 }
             }
         }
@@ -376,19 +425,22 @@ impl OcrWorkerManager {
             ));
         }
         let mut command = Command::new(&self.worker_exe);
-        let ort_runtime = Self::resolve_ort_runtime(&self.worker_exe)?;
         command
+            .args(&self.worker_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("ORT_DYLIB_PATH", &ort_runtime);
-        if let Some(runtime_dir) = ort_runtime.parent() {
-            let mut search_paths = vec![runtime_dir.to_path_buf()];
-            if let Some(existing) = std::env::var_os("PATH") {
-                search_paths.extend(std::env::split_paths(&existing));
-            }
-            if let Ok(joined) = std::env::join_paths(search_paths) {
-                command.env("PATH", joined);
+            .stderr(Stdio::piped());
+        if self.requires_ort {
+            let ort_runtime = Self::resolve_ort_runtime(&self.worker_exe)?;
+            command.env("ORT_DYLIB_PATH", &ort_runtime);
+            if let Some(runtime_dir) = ort_runtime.parent() {
+                let mut search_paths = vec![runtime_dir.to_path_buf()];
+                if let Some(existing) = std::env::var_os("PATH") {
+                    search_paths.extend(std::env::split_paths(&existing));
+                }
+                if let Ok(joined) = std::env::join_paths(search_paths) {
+                    command.env("PATH", joined);
+                }
             }
         }
         if let Some(parent) = self.worker_exe.parent() {
@@ -472,6 +524,121 @@ impl Drop for OcrWorkerManager {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn external_worker_crash_is_diagnostic_and_next_request_can_spawn_again() {
+        let powershell = PathBuf::from(std::env::var_os("WINDIR").expect("Windows directory"))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let manager = OcrWorkerManager::new_external(
+            powershell,
+            vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "$null=[Console]::In.ReadLine(); exit 42".into(),
+            ],
+            Duration::from_secs(10),
+        );
+        for attempt in 0..2 {
+            let request = OcrWorkerRequest::new(
+                format!("crash-{attempt}"),
+                "input.png".into(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+            let started = std::time::Instant::now();
+            let error = manager
+                .run(&request, &AtomicBool::new(false), &|_| {})
+                .unwrap_err();
+            assert!(
+                error.contains("stdout closed") || error.contains("exited"),
+                "{error}"
+            );
+            assert!(started.elapsed() < Duration::from_secs(10));
+            let state = manager.state.lock().unwrap();
+            assert!(state.child.is_none() && state.stdin.is_none() && state.responses.is_none());
+            assert!(!manager.request_gate.is_poisoned());
+        }
+    }
+
+    #[test]
+    fn queued_worker_request_is_cancellable_and_has_bounded_admission() {
+        for cancel_request in [true, false] {
+            let manager = std::sync::Arc::new(OcrWorkerManager::new(
+                PathBuf::from("C:/definitely-missing/ocr-worker.exe"),
+                Duration::from_millis(60),
+            ));
+            let held = manager.request_gate.lock().unwrap();
+            let cancellation = std::sync::Arc::new(AtomicBool::new(false));
+            let (tx, rx) = mpsc::channel();
+            let (worker_manager, cancel) = (manager.clone(), cancellation.clone());
+            let thread = thread::spawn(move || {
+                let request = OcrWorkerRequest::new(
+                    "queued".into(),
+                    "input.png".into(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                tx.send(worker_manager.run(&request, &cancel, &|_| {}))
+                    .unwrap();
+            });
+            if cancel_request {
+                thread::sleep(Duration::from_millis(10));
+                cancellation.store(true, Ordering::SeqCst);
+            }
+            let response = rx.recv_timeout(Duration::from_millis(300));
+            drop(held);
+            thread.join().unwrap();
+            let error = response.expect("queued request waited for another executor instead of acknowledging cancellation/deadline").unwrap_err();
+            assert!(
+                error.contains(if cancel_request {
+                    "已取消"
+                } else {
+                    "admission exceeded"
+                }),
+                "{error}"
+            );
+        }
+    }
+    #[test]
+    fn poisoned_worker_admission_recovers_without_poisoning_host() {
+        let manager = std::sync::Arc::new(OcrWorkerManager::new(
+            PathBuf::from("C:/definitely-missing/ocr-worker.exe"),
+            Duration::from_millis(60),
+        ));
+        let fault = manager.clone();
+        assert!(thread::spawn(move || {
+            let _held = fault.request_gate.lock().unwrap();
+            panic!("injected executor panic");
+        })
+        .join()
+        .is_err());
+        let request = OcrWorkerRequest::new(
+            "recovery".into(),
+            "input.png".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let cancel = AtomicBool::new(false);
+        assert!(manager
+            .run(&request, &cancel, &|_| {})
+            .unwrap_err()
+            .contains("previous request panicked"));
+        assert!(!manager.request_gate.is_poisoned());
+        assert!(manager
+            .run(&request, &cancel, &|_| {})
+            .unwrap_err()
+            .contains("unavailable"));
+    }
     use super::*;
     use std::fs;
 
