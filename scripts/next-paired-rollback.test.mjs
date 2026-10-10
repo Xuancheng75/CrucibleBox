@@ -72,6 +72,12 @@ test('linked data inputs and nested destinations fail closed while arbitrary non
   const f = await fixture()
   await writeFile(join(f.data, 'attachment.db'), 'not a SQLite database')
   await assert.rejects(capturePair(f.program, f.data, join(f.data, 'recursive')), /disjoint/)
+  const dataAlias = join(f.root, 'data-alias')
+  await symlink(f.data, dataAlias, 'junction')
+  await assert.rejects(
+    capturePair(f.program, f.data, join(dataAlias, 'recursive-through-alias')),
+    /disjoint/
+  )
   const pair = join(f.root, 'pair')
   await capturePair(f.program, f.data, pair)
   assert.equal(await readFile(join(pair, 'data/attachment.db'), 'utf8'), 'not a SQLite database')

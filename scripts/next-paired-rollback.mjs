@@ -12,7 +12,7 @@ import {
   rename,
   unlink
 } from 'node:fs/promises'
-import { join, resolve, relative, isAbsolute, dirname } from 'node:path'
+import { join, resolve, relative, isAbsolute, dirname, basename } from 'node:path'
 import { backup, DatabaseSync } from 'node:sqlite'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +22,17 @@ const inside = (parent, child) => {
     rel === '' ||
     (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('..\\') && !rel.startsWith('../'))
   )
+}
+async function canonicalOutput(path) {
+  let existing = resolve(path)
+  const suffix = []
+  while (!existsSync(existing)) {
+    suffix.unshift(basename(existing))
+    const parent = dirname(existing)
+    if (parent === existing) return existing
+    existing = parent
+  }
+  return join(await realpath(existing), ...suffix)
 }
 async function hash(file) {
   const digest = createHash('sha256')
@@ -223,7 +234,7 @@ export async function verifyPair(snapshot) {
 export async function capturePair(program, data, output) {
   program = await realpath(program)
   data = await realpath(data)
-  output = resolve(output)
+  output = await canonicalOutput(output)
   if (
     inside(program, output) ||
     inside(data, output) ||
@@ -263,7 +274,7 @@ export async function capturePair(program, data, output) {
 }
 export async function restorePair(snapshot, output) {
   snapshot = await realpath(snapshot)
-  output = resolve(output)
+  output = await canonicalOutput(output)
   if (inside(snapshot, output) || inside(output, snapshot) || existsSync(output))
     throw Error('Restore requires a new external directory')
   const manifest = await verifyPair(snapshot)
