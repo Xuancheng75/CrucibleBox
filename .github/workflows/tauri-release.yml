@@ -154,6 +154,9 @@ jobs:
       - name: Verify Tauri runtime assets
         run: node scripts/verify-tauri-runtime-assets.mjs --staged .
 
+      - name: Build official plugin renderers and verify trusted digests
+        run: npm run build:plugins
+
       # M2 (1.9.1): Tauri 原生门禁替代 Electron 链的 npm run check
       - name: Cargo fmt check
         working-directory: src-tauri
@@ -258,14 +261,12 @@ jobs:
           fi
           echo "cleared ${REMOVED} cruciblebox build output dir(s) for icon resource regeneration"
 
-      # 1.9.13：打包官方插件 zip（unienv/diary），随 release 附带供已装用户
-      # 导入升级（NSIS 不更新 %APPDATA% 内的插件）。build:plugins 同时重跑
-      # renderer 自包含与 trusted digest 校验。
+      # 1.9.13：打包官方插件 zip，供已安装用户导入升级（NSIS 不更新用户数据）。
+      # Next renderer 与 trusted digest 已在 Cargo 测试前构建并验证。
       - name: Package official plugin bundles
         shell: bash
         run: |
           set -euo pipefail
-          npm run build:plugins
           npm run package:plugins:tauri
           npm run verify:plugins:tauri
 
