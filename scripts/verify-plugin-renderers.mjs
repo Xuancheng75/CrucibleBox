@@ -2,24 +2,11 @@ import { readFile, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { validateManifest } from '../packages/cruciblebox-next-api/src/index.mjs'
 
-const PLUGINS = [
-  'media-toolkit',
-  'audio-video-processor',
-  'developer-toolkit',
-  'productivity-toolkit',
-  'diary',
-  'dice-roller',
-  'gif-editor',
-  'theme-manager',
-  'turntable',
-  'unienv',
-  'json-toolkit',
-  'clipboard-manager',
-  'system-info',
-  'exchange-rates',
-  'document-engine',
-  'archive-extractor'
-]
+const PLUGINS = JSON.parse(
+  await readFile(new URL('./next-plugin-catalog.json', import.meta.url), 'utf8')
+)
+  .filter((plugin) => plugin.runtimeFiles.includes('dist/renderer.js'))
+  .map((plugin) => plugin.id)
 const FORBIDDEN = [
   ['CommonJS require', /\brequire\s*\(/],
   ['ES module import', /(^|[;\n])\s*import(?:\s|\()/m],
