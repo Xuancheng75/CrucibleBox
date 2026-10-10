@@ -24,6 +24,7 @@ jobs:
         with:
           node-version: 24.15.0
           cache: npm
+      - run: npm ci --prefix tauri-frontend
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm run build
