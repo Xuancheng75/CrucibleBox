@@ -1,12 +1,9 @@
 import { createNextUiController } from '../features/plugins/runtime/NextUiController'
 import { useThemeStore } from '../store/theme.store'
 import { themeToCssVars } from '../../../shared/themes/css-vars'
-import {
-  validateAppearance,
-  validateFilesDropped,
-  validateResponse
-} from '../../../packages/cruciblebox-next-api/src/index.mjs'
+import { validateAppearance, validateFilesDropped } from '../../../shared/frame-validation.mjs'
 import { useEffect, useRef, useState } from 'react'
+import { validateResponse as validateNext2Response } from '../../../packages/cruciblebox-next2-api/src/index.mjs'
 import { Alert } from 'antd'
 import { invoke } from '@tauri-apps/api/core'
 import {
@@ -68,11 +65,7 @@ export function NextPluginFrame({
         /* Invalid or oversized OS drop leaves the session usable. */
       }
     }
-    const dropEvents = [
-      'cruciblebox:document-files-dropped',
-      'cruciblebox:archive-files-dropped',
-      'cruciblebox:plugin-files-dropped'
-    ]
+    const dropEvents = ['cruciblebox:plugin-files-dropped']
     dropEvents.forEach((name) => window.addEventListener(name, drop))
     const clearLease = scheduleNextLease(session, () => shutdown('插件会话已过期，请重新打开'))
     const getAppearance = () =>
@@ -101,11 +94,13 @@ export function NextPluginFrame({
       dispatcher = createNextDispatcher(
         session,
         async (raw) => {
-          const nativeResponse = await invoke<
-            import('../../../packages/cruciblebox-next-api/src/index.mjs').Response
-          >('next_renderer_request', { raw }, { headers: { Origin: window.location.origin } })
+          const nativeResponse = await invoke<unknown>(
+            'next_renderer_request',
+            { raw },
+            { headers: { Origin: window.location.origin } }
+          )
           const requestId = (JSON.parse(raw) as { requestId: string }).requestId
-          const response = validateResponse(JSON.stringify(nativeResponse), requestId)
+          const response = validateNext2Response(JSON.stringify(nativeResponse), requestId)
           if (!active || !response.ok) return response
           const request = JSON.parse(raw) as { method: string; params: Record<string, unknown> }
           if (
@@ -149,7 +144,7 @@ export function NextPluginFrame({
       frame.contentWindow?.postMessage(
         {
           kind: 'next-connect',
-          wireVersion: 3,
+          wireVersion: 4,
           nonce: session.handshakeToken,
           session: session.token,
           appearance: getAppearance()
@@ -181,7 +176,7 @@ export function NextPluginFrame({
         sandbox={nextSandbox(session)}
         referrerPolicy="no-referrer"
         data-plugin-ready={ready ? 'true' : 'false'}
-        data-renderer-api-version="5"
+        data-renderer-api-version={session.rendererApiVersion}
         allow="camera 'none'; microphone 'none'; geolocation 'none'; payment 'none'; usb 'none'; serial 'none'; clipboard-read 'none'; clipboard-write 'none'"
         style={{
           display: 'block',

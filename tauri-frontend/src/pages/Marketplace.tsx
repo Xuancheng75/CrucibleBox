@@ -23,11 +23,7 @@ import {
   SearchOutlined,
   SafetyCertificateOutlined
 } from '@ant-design/icons'
-import {
-  OFFICIAL_MARKETPLACE_CATALOG,
-  isNextOfficialPlugin,
-  type MarketplacePlugin
-} from '../marketplace-catalog'
+import { marketplaceEntry, type MarketplacePlugin } from '../marketplace-catalog'
 import { pluginIdentity } from '../plugin-identity'
 import { searchPlugins } from '../plugin-search'
 import SearchDialog, { type SearchResult } from '../components/SearchDialog'
@@ -43,7 +39,6 @@ import { useTaskStore } from '../store/task.store'
 import { compareVersions } from '../features/marketplace/selectors/compareVersions'
 
 const { Title, Text, Paragraph } = Typography
-const RETIRED_PLUGIN_IDS = new Set(['dice-roller', 'productivity-toolkit'])
 
 export default function Marketplace() {
   const { token } = theme.useToken()
@@ -69,9 +64,11 @@ export default function Marketplace() {
   const [origins, setOrigins] = useState<PluginMarketplaceOrigin[]>([])
   const [selectedSourceId, setSelectedSourceId] = useState<number | undefined>()
   const [sourceDialogOpen, setSourceDialogOpen] = useState(false)
+  const [offlineDialogOpen, setOfflineDialogOpen] = useState(false)
+  const [offlineText, setOfflineText] = useState('')
   const [sourceName, setSourceName] = useState('')
   const [sourceUrl, setSourceUrl] = useState('')
-  const [catalogSource, setCatalogSource] = useState('内置目录')
+  const [catalogSource, setCatalogSource] = useState('尚未加载目录')
   const [catalogStale, setCatalogStale] = useState(false)
 
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
@@ -82,6 +79,7 @@ export default function Marketplace() {
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchResult, setBatchResult] = useState<string | null>(null)
   const activeDownloadTaskRef = useRef<string | null>(null)
+  const catalogGeneration = useRef(0)
   const tasks = useTaskStore((state) => state.tasks)
 
   const loadSources = useCallback(async () => {
@@ -109,78 +107,27 @@ export default function Marketplace() {
 
   const loadCatalog = useCallback(
     async (forceRefresh: boolean) => {
+      const generation = ++catalogGeneration.current
       setRefreshing(true)
       setCatalogError(null)
-      setRemoteCatalog(null)
       try {
         const payload: MarketplaceCatalogResponse = await tauriApi.plugin.marketplaceCatalog(
           forceRefresh,
           channel,
           selectedSourceId
         )
-        const byId = new Map(OFFICIAL_MARKETPLACE_CATALOG.map((plugin) => [plugin.id, plugin]))
-        const knownIds = new Set(byId.keys())
-        const merged = payload.plugins
-          .map((entry) => {
-            const base = byId.get(String(entry.id))
-            if (!entry.id || typeof entry.version !== 'string') return null
-            if (selectedSourceId === undefined && !isNextOfficialPlugin(entry.id)) return null
-            if (
-              (selectedSourceId === undefined &&
-                payload.schemaVersion === 1 &&
-                RETIRED_PLUGIN_IDS.has(entry.id)) ||
-              (!base && !entry.displayName)
-            )
-              return null
-            if (
-              selectedSourceId === undefined &&
-              payload.schemaVersion === 1 &&
-              base &&
-              compareVersions(entry.version, base.version) < 0
-            )
-              return null
-            const identity = pluginIdentity(entry.id, entry.publisher)
-            const highlights = Array.isArray(entry.highlights)
-              ? entry.highlights.filter((item): item is string => typeof item === 'string')
-              : (base?.highlights ?? [])
-            return {
-              ...(base ?? {
-                id: entry.id,
-                name: entry.displayName ?? entry.id,
-                version: entry.version,
-                publisher: entry.publisher ?? 'CrucibleBox',
-                category: entry.category ?? identity.category,
-                description: entry.description ?? '',
-                highlights,
-                tags: entry.tags ?? []
-              }),
-              id: entry.id,
-              name:
-                selectedSourceId === undefined
-                  ? (base?.name ?? entry.displayName ?? entry.id)
-                  : (entry.displayName ?? base?.name ?? entry.id),
-              version: entry.version,
-              publisher: entry.publisher ?? base?.publisher ?? 'CrucibleBox',
-              category: entry.category ?? base?.category ?? identity.category,
-              description: entry.description ?? base?.description ?? '',
-              highlights,
-              tags: entry.tags ?? base?.tags ?? [],
-              keywords: entry.keywords ?? base?.keywords ?? [],
-              ...(entry.artifact ? { artifact: entry.artifact } : {}),
-              ...(typeof entry.size === 'number' ? { size: entry.size } : {}),
-              ...(entry.url ? { url: entry.url } : {}),
-              ...(entry.icon ? { icon: entry.icon } : {}),
-              ...(entry.minHostVersion ? { minHostVersion: entry.minHostVersion } : {})
-            } as MarketplacePlugin
-          })
-          .filter((plugin): plugin is MarketplacePlugin => plugin !== null)
+        if (generation !== catalogGeneration.current) return
+        const knownIds = new Set(usePluginStore.getState().plugins.map((plugin) => plugin.name))
+        const merged = payload.plugins.map(marketplaceEntry)
         setRemoteCatalog(merged)
         setCatalogSource(payload.source)
         setCatalogStale(payload.stale)
 
         setLastCheckedAt(payload.fetchedAt ? payload.fetchedAt * 1000 : Date.now())
         await fetchPlugins()
-        setOrigins(await tauriApi.plugin.marketplaceOrigins())
+        const nextOrigins = await tauriApi.plugin.marketplaceOrigins()
+        if (generation !== catalogGeneration.current) return
+        setOrigins(nextOrigins)
         const installed = usePluginStore.getState().plugins
         setNewPluginCount(merged.filter((plugin) => !knownIds.has(plugin.id)).length)
         setUpdateCount(
@@ -192,9 +139,10 @@ export default function Marketplace() {
           }).length
         )
       } catch (error) {
-        setCatalogError(error instanceof Error ? error.message : String(error))
+        if (generation === catalogGeneration.current)
+          setCatalogError(error instanceof Error ? error.message : String(error))
       } finally {
-        setRefreshing(false)
+        if (generation === catalogGeneration.current) setRefreshing(false)
       }
     },
     [channel, fetchPlugins, selectedSourceId]
@@ -208,10 +156,7 @@ export default function Marketplace() {
     () => new Map(plugins.map((plugin) => [plugin.id, plugin])),
     [plugins]
   )
-  const marketplaceItems = useMemo(
-    () => remoteCatalog ?? (selectedSourceId === undefined ? OFFICIAL_MARKETPLACE_CATALOG : []),
-    [remoteCatalog, selectedSourceId]
-  )
+  const marketplaceItems = useMemo(() => remoteCatalog ?? [], [remoteCatalog])
   const availableTags = useMemo(
     () => [...new Set(marketplaceItems.flatMap((plugin) => plugin.tags))].sort(),
     [marketplaceItems]
@@ -427,6 +372,37 @@ export default function Marketplace() {
 
   return (
     <div className="ob-marketplace-page">
+      <Modal
+        title="导入离线插件目录"
+        open={offlineDialogOpen}
+        onCancel={() => setOfflineDialogOpen(false)}
+        onOk={async () => {
+          ++catalogGeneration.current
+          try {
+            const payload = await tauriApi.plugin.marketplaceCatalogImport(offlineText)
+            setRemoteCatalog(payload.plugins.map(marketplaceEntry))
+            setCatalogSource(payload.source)
+            setCatalogStale(false)
+            setCatalogError(null)
+            setSelectedSourceId(-1)
+            setRefreshing(false)
+            setOfflineDialogOpen(false)
+          } catch (error) {
+            setCatalogError(String(error))
+          }
+        }}
+      >
+        <p>
+          粘贴版本化目录
+          JSON。目录只提供展示和包地址；安装仍需验证插件包并确认来源。离线包可使用本地 ZIP 导入。
+        </p>
+        <Input.TextArea
+          aria-label="离线目录 JSON"
+          rows={12}
+          value={offlineText}
+          onChange={(event) => setOfflineText(event.target.value)}
+        />
+      </Modal>
       <div className="ob-page-heading">
         <div>
           <Title level={3} style={{ margin: 0 }}>
@@ -449,10 +425,14 @@ export default function Marketplace() {
             {catalogStale
               ? '缓存目录'
               : selectedSourceId !== undefined
-                ? (sources.find((source) => source.id === selectedSourceId)?.name ?? '第三方目录')
-                : catalogSource.includes('tauri-beta')
-                  ? 'CrucibleBox 测试版目录'
-                  : 'CrucibleBox 官方目录'}
+                ? selectedSourceId === -1
+                  ? '本地离线目录'
+                  : (sources.find((source) => source.id === selectedSourceId)?.name ?? '第三方目录')
+                : selectedSourceId === -1
+                  ? '本地离线目录'
+                  : catalogSource.includes('tauri-beta')
+                    ? 'CrucibleBox 测试版目录'
+                    : 'CrucibleBox 发布目录'}
           </Tag>
           {selectionMode ? (
             <>
@@ -490,6 +470,7 @@ export default function Marketplace() {
               多选
             </Button>
           )}
+          <Button onClick={() => setOfflineDialogOpen(true)}>导入离线目录</Button>
           <Button
             icon={<ReloadOutlined />}
             loading={refreshing}
@@ -512,7 +493,8 @@ export default function Marketplace() {
             setSelected(null)
           }}
           options={[
-            { value: 0, label: 'CrucibleBox 官方目录' },
+            { value: 0, label: 'CrucibleBox 发布目录' },
+            { value: -1, label: '本地离线目录' },
             ...sources
               .filter((source) => source.enabled)
               .map((source) => ({ value: source.id, label: source.name }))
@@ -809,10 +791,7 @@ export default function Marketplace() {
                       </span>
                     </div>
                     <div className="ob-market-card-status">
-                      {(updateAvailable ||
-                        (!installed &&
-                          newPluginCount > 0 &&
-                          !OFFICIAL_MARKETPLACE_CATALOG.some((item) => item.id === plugin.id))) && (
+                      {(updateAvailable || (!installed && newPluginCount > 0)) && (
                         <Tag color={updateAvailable ? 'orange' : 'green'}>
                           {updateAvailable ? '可更新' : '新增'}
                         </Tag>

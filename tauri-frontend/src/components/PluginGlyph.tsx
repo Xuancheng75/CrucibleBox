@@ -1,18 +1,3 @@
-import type { ComponentType, CSSProperties } from 'react'
-import {
-  BgColorsOutlined,
-  CodeOutlined,
-  CopyOutlined,
-  DashboardOutlined,
-  FileSearchOutlined,
-  FileZipOutlined,
-  GiftOutlined,
-  GlobalOutlined,
-  PictureOutlined,
-  ReadOutlined,
-  RocketOutlined,
-  TableOutlined
-} from '@ant-design/icons'
 import { pluginIdentity } from '../plugin-identity'
 
 function hashName(name: string): number {
@@ -48,23 +33,6 @@ interface PluginGlyphProps {
   fontSize?: number
 }
 
-const OFFICIAL_ICONS: Record<string, ComponentType<{ style?: CSSProperties }>> = {
-  'document-engine': FileSearchOutlined,
-  'archive-extractor': FileZipOutlined,
-  unienv: RocketOutlined,
-  'media-toolkit': PictureOutlined,
-  'developer-toolkit': CodeOutlined,
-  'productivity-toolkit': ReadOutlined,
-  diary: ReadOutlined,
-  'gif-editor': PictureOutlined,
-  'clipboard-manager': CopyOutlined,
-  'json-toolkit': CodeOutlined,
-  turntable: GiftOutlined,
-  'dice-roller': TableOutlined,
-  'exchange-rates': GlobalOutlined,
-  'system-info': DashboardOutlined,
-  'theme-manager': BgColorsOutlined
-}
 
 export default function PluginGlyph({ pluginId = '', name, icon, size = 56, radius = 14, fontSize }: PluginGlyphProps) {
   const identity = pluginIdentity(pluginId)
@@ -73,7 +41,7 @@ export default function PluginGlyph({ pluginId = '', name, icon, size = 56, radi
   const tone = 0.62 + ((hash % 20) / 100)
   const deep = darken(identity.accentAlt, tone)
   const gradient = `linear-gradient(${angle}deg, ${identity.accent}, ${deep})`
-  const OfficialIcon = OFFICIAL_ICONS[pluginId]
+
 
   if (icon) {
     return (
@@ -115,7 +83,7 @@ export default function PluginGlyph({ pluginId = '', name, icon, size = 56, radi
         border: '1px solid color-mix(in srgb, white 28%, transparent)'
       }}
     >
-      {OfficialIcon ? <OfficialIcon style={{ fontSize: fontSize ?? Math.round(size * 0.42) }} /> : initialOf(name)}
+      {initialOf(name)}
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { App, Modal, Form, Input, InputNumber, Switch, Select, theme } from 'ant
 import type { PluginMeta, PluginConfig, ConfigField } from '../../../shared/types/plugin.types'
 import { usePluginStore } from '../store/plugin.store'
 import { tauriApi } from '../api/tauriApi'
+import PluginResources from './PluginResources'
 
 interface PluginConfigProps {
   plugin: PluginMeta | null
@@ -173,6 +174,7 @@ export default function PluginConfig({ plugin, open, onClose }: PluginConfigProp
           此插件未提供专属配置项
         </div>
       )}
+      {open && <PluginResources key={`${current.id}:${current.version}`} pluginId={current.id} />}
     </Modal>
   )
 }

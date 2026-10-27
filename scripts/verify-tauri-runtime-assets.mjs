@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { resolve, join } from 'node:path'
@@ -8,7 +8,6 @@ const staged = args.includes('--staged')
 const profile = args.find((arg) => arg.startsWith('--profile='))?.slice(10) ?? 'full'
 if (!['base', 'full'].includes(profile))
   throw new Error('Unknown Tauri resource profile: ' + profile)
-const requiresOcr = profile === 'full'
 const targetArg = args.find((arg) => !arg.startsWith('--'))
 const target = resolve(targetArg ?? '.')
 let hostTriple
@@ -30,22 +29,6 @@ function firstFile(candidates) {
   })
 }
 
-const workerCandidates = staged
-  ? [
-      ...(hostTriple
-        ? [join(target, 'src-tauri', 'binaries', `ocr-worker-${hostTriple}.exe`)]
-        : []),
-      join(target, 'src-tauri', 'binaries', 'ocr-worker-x86_64-pc-windows-msvc.exe'),
-      join(target, 'src-tauri', 'binaries', 'ocr-worker-x86_64-pc-windows-gnu.exe'),
-      join(target, 'src-tauri', 'binaries', 'ocr-worker.exe')
-    ]
-  : [
-      join(target, 'ocr-worker.exe'),
-      join(target, 'resources', 'ocr-worker.exe'),
-      join(target, 'ocr-worker-x86_64-pc-windows-msvc.exe'),
-      join(target, 'resources', 'ocr-worker-x86_64-pc-windows-msvc.exe')
-    ]
-
 const pluginHostCandidates = staged
   ? [
       ...(hostTriple
@@ -59,51 +42,29 @@ const pluginHostCandidates = staged
       join(target, 'resources', 'cruciblebox-plugin-host.exe')
     ]
 const pluginHost = firstFile(pluginHostCandidates)
-const ortDirectories = staged
-  ? [join(target, 'src-tauri', 'binaries')]
-  : [target, join(target, 'resources'), join(target, 'binaries')]
-
-const worker = firstFile(workerCandidates)
-const ortDirectory = ortDirectories.find(
-  (directory) =>
-    firstFile([join(directory, 'onnxruntime.dll')]) &&
-    firstFile([join(directory, 'onnxruntime_providers_shared.dll')])
-)
-const ort = ortDirectory
-  ? [join(ortDirectory, 'onnxruntime.dll'), join(ortDirectory, 'onnxruntime_providers_shared.dll')]
-  : [undefined, undefined]
-const sevenZipDirectory = staged
-  ? join(target, 'src-tauri', 'resources', '7zip')
-  : ([join(target, '7zip'), join(target, 'resources', '7zip')].find((directory) =>
-      ['7za.exe', '7za.dll', 'License.txt'].every((name) => firstFile([join(directory, name)]))
-    ) ?? join(target, '7zip'))
-const sevenZip = [
-  firstFile([join(sevenZipDirectory, '7za.exe')]),
-  firstFile([join(sevenZipDirectory, '7za.dll')]),
-  firstFile([join(sevenZipDirectory, 'License.txt')])
-]
-if (!pluginHost || sevenZip.some((file) => !file) || (requiresOcr && (!worker || !ortDirectory))) {
-  const missing = [
-    requiresOcr && !worker && 'ocr-worker.exe',
-    !pluginHost && 'cruciblebox-plugin-host.exe',
-    requiresOcr && !ort[0] && 'onnxruntime.dll',
-    requiresOcr && !ort[1] && 'onnxruntime_providers_shared.dll',
-    !sevenZip[0] && '7zip/7za.exe',
-    !sevenZip[1] && '7zip/7za.dll',
-    !sevenZip[2] && '7zip/License.txt'
-  ]
-    .filter(Boolean)
-    .join(', ')
-  throw new Error(
-    `Tauri runtime assets missing: ${missing}\n` +
-      `checked root: ${target}\n` +
-      `worker candidates: ${workerCandidates.join(', ')}\n` +
-      `ONNX Runtime directories: ${ortDirectories.join(', ')}\n` +
-      `7-Zip directory: ${sevenZipDirectory}`
-  )
+if (!pluginHost)
+  throw new Error(`Tauri runtime asset missing: cruciblebox-plugin-host.exe (${target})`)
+// Installed host binaries are fixed; plugin executables belong in installed plugin directories.
+if (!staged) {
+  const binaries = new Set([
+    'cruciblebox.exe',
+    'cruciblebox-plugin-host.exe',
+    'webview2loader.dll',
+    'uninstall.exe',
+    'uninstall cruciblebox.exe'
+  ])
+  for (const root of [target, join(target, 'resources')]) {
+    if (!existsSync(root)) continue
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (
+        entry.isFile() &&
+        /\.(exe|dll)$/i.test(entry.name) &&
+        !binaries.has(entry.name.toLowerCase())
+      )
+        throw new Error(`Host package contains unexpected runtime: ${entry.name}`)
+    }
+  }
 }
-
-console.log(`[tauri-assets] OCR Worker: ${worker}`)
 console.log(`[tauri-assets] Plugin host: ${pluginHost}`)
 const releasePluginHost = join(
   target,
@@ -119,15 +80,4 @@ if (staged && existsSync(releasePluginHost)) {
     throw new Error(`Staged plugin host is stale; rebuild and stage the sidecar (${pluginHost})`)
   }
 }
-const releaseWorker = join(target, 'ocr-worker', 'target', 'release', 'ocr-worker.exe')
-if (requiresOcr && staged && existsSync(releaseWorker)) {
-  const hash = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
-  if (hash(worker) !== hash(releaseWorker)) {
-    throw new Error(`Staged OCR worker is stale; run npm run prepare:ocr-worker (${worker})`)
-  }
-}
-console.log(`[tauri-assets] ONNX Runtime: ${ort[0]}`)
-console.log(`[tauri-assets] ONNX Runtime providers: ${ort[1]}`)
-console.log(`[tauri-assets] 7-Zip: ${sevenZip[0]}`)
-
-console.log('[tauri-assets] Resource profile: ' + profile)
+console.log('[tauri-assets] Plugin business resources are independently managed')

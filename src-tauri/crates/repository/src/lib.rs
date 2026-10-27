@@ -88,6 +88,15 @@ impl Db {
         self.conn.lock().unwrap().execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value])?;
         Ok(())
     }
+    /// Keep the proxy mode and its address as one configuration snapshot.
+    pub fn download_proxy_set(&self, mode: &str, url: &str) -> rusqlite::Result<()> {
+        let mut connection = self.conn.lock().unwrap();
+        let transaction = connection.transaction()?;
+        for (key, value) in [("downloadProxyMode", mode), ("downloadProxyUrl", url)] {
+            transaction.execute("INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, value])?;
+        }
+        transaction.commit()
+    }
     pub fn settings_all(&self) -> rusqlite::Result<Vec<(String, String)>> {
         let connection = self.conn.lock().unwrap();
         let mut statement = connection.prepare("SELECT key,value FROM settings")?;
@@ -230,171 +239,6 @@ impl Db {
             Err(e) => {
                 let _ = guard.execute_batch("ROLLBACK");
                 Err(e)
-            }
-        }
-    }
-
-    /// 将已安装旧插件的数据复制到 2.1 综合插件。复制使用独立前缀并写完成标记，
-    /// 旧命名空间保持不变；重复安装或升级不会制造重复记录。
-    pub fn migrate_consolidated_plugin_data(
-        &self,
-        target_plugin_id: &str,
-        target_name: &str,
-    ) -> Result<Vec<(String, i64)>, String> {
-        let sources: &[&str] = match target_name {
-            "diary" => &["productivity-toolkit"],
-            "clipboard-manager" => &["productivity-toolkit"],
-            "document-engine" => &["archive-extractor"],
-            "media-toolkit" => &["gif-editor"],
-            "developer-toolkit" => &["json-toolkit"],
-            "productivity-toolkit" => &[
-                "diary",
-                "clipboard-manager",
-                "dice-roller",
-                "turntable",
-                "exchange-rates",
-            ],
-            _ => return Ok(Vec::new()),
-        };
-        let guard = self.conn.lock().unwrap();
-        guard
-            .execute_batch("BEGIN IMMEDIATE")
-            .map_err(|e| e.to_string())?;
-        let result = (|| -> rusqlite::Result<Vec<(String, i64)>> {
-            let mut summary = Vec::new();
-            for source_name in sources {
-                let Some(source_id) = plugin_id_by_name(&guard, source_name)? else {
-                    summary.push((source_name.to_string(), 0));
-                    continue;
-                };
-                let already: Option<i64> = guard
-                    .query_row(
-                        "SELECT copied_records FROM plugin_consolidation_migrations
-                         WHERE target_plugin_id = ?1 AND source_plugin_id = ?2",
-                        params![target_plugin_id, source_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(count) = already {
-                    summary.push((source_name.to_string(), count));
-                    continue;
-                }
-                let copied = guard.execute(
-                    "INSERT OR IGNORE INTO plugin_storage(plugin_id, key, value, updated_at)
-                     SELECT ?1, 'legacy:' || ?2 || ':' || key, value, updated_at
-                     FROM plugin_storage WHERE plugin_id = ?3",
-                    params![target_plugin_id, source_name, source_id],
-                )? as i64;
-
-                if target_name == "diary" && *source_name == "productivity-toolkit" {
-                    guard.execute(
-                        "INSERT OR IGNORE INTO plugin_storage(plugin_id, key, value, updated_at)
-                         SELECT ?1, 'notes', value, updated_at FROM plugin_storage
-                         WHERE plugin_id = ?2 AND key = 'notes'",
-                        params![target_plugin_id, source_id],
-                    )?;
-                }
-                if target_name == "clipboard-manager" && *source_name == "productivity-toolkit" {
-                    let clips: Option<String> = guard.query_row(
-                        "SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = 'clips'",
-                        [&source_id], |row| row.get(0)
-                    ).optional()?;
-                    if let Some(clips) = clips {
-                        let items = serde_json::from_str::<serde_json::Value>(&clips).ok()
-                            .and_then(|value| value.as_array().cloned()).unwrap_or_default()
-                            .into_iter().map(|item| serde_json::json!({
-                                "id": item["id"], "text": item["text"],
-                                "timestamp": item.get("createdAt").or_else(|| item.get("timestamp")).cloned().unwrap_or_else(|| serde_json::json!(0)),
-                                "pinned": item["pinned"].as_bool().unwrap_or(false)
-                            })).collect::<Vec<_>>();
-                        insert_migrated_value(
-                            &guard,
-                            target_plugin_id,
-                            "history",
-                            &serde_json::Value::Array(items),
-                        )?;
-                    }
-                }
-
-                if target_name == "productivity-toolkit" && *source_name == "diary" {
-                    let mut statement = guard.prepare(
-                        "SELECT value FROM plugin_storage
-                         WHERE plugin_id = ?1 AND key LIKE 'entry:%' ORDER BY key",
-                    )?;
-                    let notes = statement
-                        .query_map([&source_id], |row| row.get::<_, String>(0))?
-                        .filter_map(Result::ok)
-                        .filter_map(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-                        .enumerate()
-                        .map(|(index, entry)| {
-                            let date = entry["entry_date"].as_str().unwrap_or_default();
-                            serde_json::json!({
-                                "id": format!("legacy-diary-{date}-{index}"),
-                                "title": entry["title"].as_str().unwrap_or("日记"),
-                                "content": entry["content"].as_str().unwrap_or_default(),
-                                "tags": ["日记", "已迁移"],
-                                "date": date,
-                                "updatedAt": 0,
-                                "versions": []
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    if !notes.is_empty() {
-                        insert_migrated_value(
-                            &guard,
-                            target_plugin_id,
-                            "notes",
-                            &serde_json::Value::Array(notes),
-                        )?;
-                    }
-                }
-                if target_name == "productivity-toolkit" && *source_name == "clipboard-manager" {
-                    let history: Option<String> = guard
-                        .query_row(
-                            "SELECT value FROM plugin_storage WHERE plugin_id = ?1 AND key = 'history'",
-                            [&source_id],
-                            |row| row.get(0),
-                        )
-                        .optional()?;
-                    if let Some(history) = history {
-                        let clips = serde_json::from_str::<serde_json::Value>(&history)
-                            .ok()
-                            .and_then(|value| value.as_array().cloned())
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|item| serde_json::json!({
-                                "id": item["id"],
-                                "text": item["text"],
-                                "createdAt": item.get("createdAt").or_else(|| item.get("timestamp")).cloned().unwrap_or_else(|| serde_json::json!(0)),
-                                "pinned": item["pinned"].as_bool().unwrap_or(false),
-                                "tags": item["tags"].as_array().cloned().unwrap_or_default()
-                            }))
-                            .collect::<Vec<_>>();
-                        insert_migrated_value(
-                            &guard,
-                            target_plugin_id,
-                            "clips",
-                            &serde_json::Value::Array(clips),
-                        )?;
-                    }
-                }
-                guard.execute(
-                    "INSERT INTO plugin_consolidation_migrations
-                     (target_plugin_id, source_plugin_id, copied_records) VALUES (?1, ?2, ?3)",
-                    params![target_plugin_id, source_id, copied],
-                )?;
-                summary.push((source_name.to_string(), copied));
-            }
-            Ok(summary)
-        })();
-        match result {
-            Ok(summary) => {
-                guard.execute_batch("COMMIT").map_err(|e| e.to_string())?;
-                Ok(summary)
-            }
-            Err(error) => {
-                let _ = guard.execute_batch("ROLLBACK");
-                Err(error.to_string())
             }
         }
     }
@@ -1050,7 +894,7 @@ fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
         );
         "#,
     )?;
-    migrate_legacy_plugin_storage(conn)
+    Ok(())
 }
 
 /// v3：plugins.sort_order ALTER + 稳定回填
@@ -1130,46 +974,11 @@ fn migrate_v5(conn: &Connection) -> rusqlite::Result<()> {
         );
         "#,
     )?;
-    // 主题与系统信息已经并入宿主；保留旧设置快照供兼容期导出。
-    for source in ["theme-manager", "system-info"] {
-        let Some(source_id) = plugin_id_by_name(conn, source)? else {
-            continue;
-        };
-        conn.execute(
-            "INSERT OR IGNORE INTO settings(key, value)
-             SELECT 'legacyPluginData:' || ?1 || ':' || key, value
-             FROM plugin_storage WHERE plugin_id = ?2",
-            params![source, source_id],
-        )?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM plugin_storage WHERE plugin_id = ?1",
-            [&source_id],
-            |row| row.get(0),
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO plugin_consolidation_migrations
-             (target_plugin_id, source_plugin_id, copied_records) VALUES ('host', ?1, ?2)",
-            params![source_id, count],
-        )?;
-    }
     Ok(())
 }
 
 /// v6: user-owned tags are separate from manifest names and categories.
 fn migrate_v6(conn: &Connection) -> rusqlite::Result<()> {
-    // Move beta.1 notes back into the dedicated diary-and-notes plugin while
-    // retaining the original productivity namespace as a read-only source.
-    if let (Some(source_id), Some(target_id)) = (
-        plugin_id_by_name(conn, "productivity-toolkit")?,
-        plugin_id_by_name(conn, "diary")?,
-    ) {
-        conn.execute(
-            "INSERT OR IGNORE INTO plugin_storage(plugin_id, key, value, updated_at)
-             SELECT ?1, 'notes', value, updated_at
-             FROM plugin_storage WHERE plugin_id = ?2 AND key = 'notes'",
-            params![target_id, source_id],
-        )?;
-    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS user_plugin_tags (
            id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1284,101 +1093,7 @@ fn migrate_v8(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-// ---------------------------------------------------------------------------
-// legacy plugin storage 迁移（对等 database/pluginStorage.ts）
-// ---------------------------------------------------------------------------
-fn migrate_legacy_plugin_storage(conn: &Connection) -> rusqlite::Result<()> {
-    if let Some(diary_id) = plugin_id_by_name(conn, "diary")? {
-        migrate_legacy_for_plugin(conn, &diary_id, "diary")?;
-    }
-    if let Some(turntable_id) = plugin_id_by_name(conn, "turntable")? {
-        migrate_legacy_for_plugin(conn, &turntable_id, "turntable")?;
-    }
-    Ok(())
-}
-
-/// 已知缺口（oracle L9）：TS 侧在 diary/turntable 插件安装/加载时也会补迁 legacy 数据
-/// （ensureLegacyPluginStorageMigrated）；Rust 侧仅在 v2 迁移时做一次。对既有库（v2 时已迁移）
-/// 无影响；仅影响"迁移后再全新安装 diary/turntable 插件"的库。1.8.2 sidecar 落地时补齐。
-fn migrate_legacy_for_plugin(
-    conn: &Connection,
-    plugin_id: &str,
-    plugin_name: &str,
-) -> rusqlite::Result<()> {
-    let migration = format!("legacy:{}:v1", plugin_name);
-    let applied: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM plugin_storage_migrations WHERE plugin_id = ?1 AND migration = ?2",
-            params![plugin_id, migration],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if applied.is_some() {
-        return Ok(());
-    }
-
-    if plugin_name == "diary" && table_exists(conn, "diary_entries")? {
-        let mut stmt = conn
-            .prepare("SELECT entry_date, title, content FROM diary_entries ORDER BY entry_date")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
-        for row in rows {
-            let (entry_date, title, content) = row?;
-            let value =
-                serde_json::json!({ "entry_date": entry_date, "title": title, "content": content });
-            insert_migrated_value(conn, plugin_id, &format!("entry:{}", entry_date), &value)?;
-        }
-    }
-
-    if plugin_name == "turntable" && table_exists(conn, "turntable_items")? {
-        let mut stmt =
-            conn.prepare("SELECT * FROM turntable_items ORDER BY sort_order ASC, id ASC")?;
-        let cols: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
-        let rows = stmt.query_map([], |row| {
-            let mut map = serde_json::Map::new();
-            for (i, col) in cols.iter().enumerate() {
-                map.insert(col.clone(), value_ref_to_json(&row.get_ref(i)?)?);
-            }
-            Ok(map)
-        })?;
-        let items: Vec<serde_json::Value> = rows
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .map(serde_json::Value::Object)
-            .collect();
-        insert_migrated_value(conn, plugin_id, "items", &serde_json::Value::Array(items))?;
-    }
-
-    conn.execute(
-        "INSERT OR IGNORE INTO plugin_storage_migrations (plugin_id, migration) VALUES (?1, ?2)",
-        params![plugin_id, migration],
-    )?;
-    Ok(())
-}
-
-fn insert_migrated_value(
-    conn: &Connection,
-    plugin_id: &str,
-    key: &str,
-    value: &serde_json::Value,
-) -> rusqlite::Result<()> {
-    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
-    conn.execute(
-        "INSERT OR IGNORE INTO plugin_storage (plugin_id, key, value) VALUES (?1, ?2, ?3)",
-        params![plugin_id, key, serialized],
-    )
-    .map(|_| ())
-}
-
-/// 把 rusqlite ValueRef 转成 serde_json，语义对齐 TS `JSON.stringify`：
-/// - 数字保真、布尔/字符串直通、NULL→null
-/// - BLOB → `{"type":"Buffer","data":[...]}`（对等 better-sqlite3 读出 Buffer 后
-///   JSON.stringify 的产物；base64 字符串会与 TS 版本结构不同，不可用）
+#[cfg(test)]
 fn value_ref_to_json(v: &rusqlite::types::ValueRef) -> rusqlite::Result<serde_json::Value> {
     use rusqlite::types::ValueRef;
     Ok(match v {
@@ -1393,26 +1108,6 @@ fn value_ref_to_json(v: &rusqlite::types::ValueRef) -> rusqlite::Result<serde_js
             "data": b.iter().copied().map(u64::from).collect::<Vec<_>>(),
         }),
     })
-}
-
-fn plugin_id_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<String>> {
-    conn.query_row(
-        "SELECT id FROM plugins WHERE name = ?1",
-        params![name],
-        |row| row.get(0),
-    )
-    .optional()
-}
-
-fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-    let found: Option<String> = conn
-        .query_row(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
-            params![table],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(found.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -1439,11 +1134,29 @@ fn random_fixture_token() -> String {
 mod tests {
 
     #[test]
+    fn proxy_mode_and_address_commit_together() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Db::open(&root.path().join("proxy.sqlite")).unwrap();
+        db.download_proxy_set("auto", "http://127.0.0.1:7897")
+            .unwrap();
+        db.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_proxy_url BEFORE UPDATE ON settings WHEN NEW.key='downloadProxyUrl' BEGIN SELECT RAISE(ABORT,'injected proxy failure'); END;").unwrap();
+        assert!(db.download_proxy_set("direct", "").is_err());
+        assert_eq!(
+            db.setting_get("downloadProxyMode").unwrap().as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            db.setting_get("downloadProxyUrl").unwrap().as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+    }
+
+    #[test]
     fn uninstall_retains_raw_values_and_reinstall_restores_atomically() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("retention.sqlite");
         let db = Db::open(&path).unwrap();
-        db.conn.lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,config_data) VALUES ('old-id','diary','1.0.0','Diary','dist/main.js','dist/renderer.js','test',?1)", ["invalid legacy JSON 保留"]).unwrap();
+        db.conn.lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,config_data) VALUES ('old-id','sample-delta','1.0.0','Sample D','dist/main.js','dist/renderer.js','test',?1)", ["invalid legacy JSON 保留"]).unwrap();
         let raw = format!("  {{ \"text\": \"{}\" }}  ", "用户🌏".repeat(300_000));
         db.storage_set("old-id", "entry:2026-10-08", &raw).unwrap();
         db.conn.lock().unwrap().execute("INSERT INTO plugin_storage_migrations(plugin_id,migration) VALUES ('old-id','legacy-once')", []).unwrap();
@@ -1497,7 +1210,7 @@ mod tests {
     fn config_patch_is_owner_scoped_atomic_and_preserves_legacy_values() {
         let root = tempfile::tempdir().unwrap();
         let db = Db::open(&root.path().join("config.sqlite")).unwrap();
-        for owner in ["diary", "turntable"] {
+        for owner in ["sample-delta", "sample-epsilon"] {
             db.conn.lock().unwrap().execute(
                 "INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,enabled,config_schema,config_data) VALUES (?1,?1,'1.0.0',?1,'dist/main.js','dist/renderer.js','test',1,?2,?3)",
                 params![owner, r#"{"fontSize":{"default":14}}"#, r#"{"legacy":{"text":"用户原文🌏"},"untouched":true}"#],
@@ -1507,21 +1220,21 @@ mod tests {
         let second = db.clone();
         let a = std::thread::spawn(move || {
             first
-                .plugin_config_patch("diary", &serde_json::json!({"fontSize":16}))
+                .plugin_config_patch("sample-delta", &serde_json::json!({"fontSize":16}))
                 .unwrap()
         });
         let b = std::thread::spawn(move || {
             second
-                .plugin_config_patch("diary", &serde_json::json!({"other":23}))
+                .plugin_config_patch("sample-delta", &serde_json::json!({"other":23}))
                 .unwrap()
         });
         a.join().unwrap();
         b.join().unwrap();
-        let saved = db.plugin_config_get("diary").unwrap();
+        let saved = db.plugin_config_get("sample-delta").unwrap();
         assert_eq!(saved["fontSize"], 16);
         assert_eq!(saved["other"], 23);
         assert_eq!(saved["legacy"]["text"], "用户原文🌏");
-        let other = db.plugin_config_get("turntable").unwrap();
+        let other = db.plugin_config_get("sample-epsilon").unwrap();
         assert_eq!(other["fontSize"], 14);
         assert!(other.get("other").is_none());
         let before: String = db
@@ -1529,21 +1242,21 @@ mod tests {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT config_data FROM plugins WHERE id='diary'",
+                "SELECT config_data FROM plugins WHERE id='sample-delta'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         db.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_config BEFORE UPDATE OF config_data ON plugins BEGIN SELECT RAISE(ABORT,'injected config failure'); END;").unwrap();
         assert!(db
-            .plugin_config_patch("diary", &serde_json::json!({"fontSize":99}))
+            .plugin_config_patch("sample-delta", &serde_json::json!({"fontSize":99}))
             .is_err());
         let after: String = db
             .conn
             .lock()
             .unwrap()
             .query_row(
-                "SELECT config_data FROM plugins WHERE id='diary'",
+                "SELECT config_data FROM plugins WHERE id='sample-delta'",
                 [],
                 |r| r.get(0),
             )
@@ -1555,27 +1268,27 @@ mod tests {
             .execute_batch("DROP TRIGGER fail_config")
             .unwrap();
         assert!(db
-            .plugin_config_patch("diary", &serde_json::json!({"constructor":"denied"}))
+            .plugin_config_patch("sample-delta", &serde_json::json!({"constructor":"denied"}))
             .is_err());
         drop(db);
         let reopened = Db::open(&root.path().join("config.sqlite")).unwrap();
-        assert_eq!(reopened.plugin_config_get("diary").unwrap(), saved);
+        assert_eq!(reopened.plugin_config_get("sample-delta").unwrap(), saved);
     }
 
     #[test]
     fn malformed_legacy_config_is_retained_and_disabled_config_is_denied() {
         let root = tempfile::tempdir().unwrap();
         let db = Db::open(&root.path().join("config.sqlite")).unwrap();
-        db.conn.lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,enabled,config_data) VALUES ('diary','diary','1.0.0','diary','main.js','renderer.js','test',1,'{legacy-invalid')",[]).unwrap();
+        db.conn.lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,enabled,config_data) VALUES ('sample-delta','sample-delta','1.0.0','sample-delta','main.js','renderer.js','test',1,'{legacy-invalid')",[]).unwrap();
         assert!(db
-            .plugin_config_patch("diary", &serde_json::json!({"new":true}))
+            .plugin_config_patch("sample-delta", &serde_json::json!({"new":true}))
             .is_err());
         let raw: String = db
             .conn
             .lock()
             .unwrap()
             .query_row(
-                "SELECT config_data FROM plugins WHERE id='diary'",
+                "SELECT config_data FROM plugins WHERE id='sample-delta'",
                 [],
                 |r| r.get(0),
             )
@@ -1584,9 +1297,12 @@ mod tests {
         db.conn
             .lock()
             .unwrap()
-            .execute("UPDATE plugins SET enabled=0 WHERE id='diary'", [])
+            .execute("UPDATE plugins SET enabled=0 WHERE id='sample-delta'", [])
             .unwrap();
-        assert_eq!(db.plugin_config_get("diary").unwrap_err(), "SESSION_DENIED");
+        assert_eq!(
+            db.plugin_config_get("sample-delta").unwrap_err(),
+            "SESSION_DENIED"
+        );
     }
 
     use super::*;
@@ -1719,10 +1435,10 @@ mod tests {
                 r#"
                 DELETE FROM plugins;
                 INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
-                  VALUES ('a', 'diary', '1.0.0', 'Diary', 'dist/main.js',
-                          'C:\Users\u1\AppData\Roaming\openbox\plugins\diary'),
-                         ('b', 'unienv', '1.0.0', 'UniEnv', 'dist/main.js',
-                          'C:/Users/u1/AppData/Roaming/openbox/plugins/unienv'),
+                  VALUES ('a', 'sample-delta', '1.0.0', 'Sample D', 'dist/main.js',
+                          'C:\Users\u1\AppData\Roaming\openbox\plugins\sample-delta'),
+                         ('b', 'sample-gamma', '1.0.0', 'Sample G', 'dist/main.js',
+                          'C:/Users/u1/AppData/Roaming/openbox/plugins/sample-gamma'),
                          ('c', 'ok', '1.0.0', 'Ok', 'dist/main.js',
                           'C:\fresh\cruciblebox\plugins\ok');
                 "#,
@@ -1743,11 +1459,11 @@ mod tests {
         };
         assert_eq!(
             get("a"),
-            r"C:\Users\u1\AppData\Roaming\cruciblebox\plugins\diary"
+            r"C:\Users\u1\AppData\Roaming\cruciblebox\plugins\sample-delta"
         );
         assert_eq!(
             get("b"),
-            "C:/Users/u1/AppData/Roaming/cruciblebox/plugins/unienv"
+            "C:/Users/u1/AppData/Roaming/cruciblebox/plugins/sample-gamma"
         );
         // 未含 openbox 段的路径零改动；'openbox' 出现在文件名中（无分隔符边界）也不误伤
         assert_eq!(get("c"), r"C:\fresh\cruciblebox\plugins\ok");
@@ -1799,94 +1515,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, "stable");
-    }
-
-    #[test]
-    fn recovered_diary_copies_beta1_notes_on_install_without_changing_source() {
-        let db = Db::open(&temp_db("recovered-diary-notes")).unwrap();
-        {
-            let guard = db.conn.lock().unwrap();
-            guard.execute_batch(
-                "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
-                 VALUES ('productivity-toolkit', 'productivity-toolkit', '0.1.0', '旧综合插件', 'dist/main.js', 'C:/plugins/productivity-toolkit'),
-                        ('diary', 'diary', '0.6.0', '日记与笔记', 'dist/main.js', 'C:/plugins/diary');
-                 INSERT INTO plugin_storage (plugin_id, key, value)
-                 VALUES ('productivity-toolkit', 'notes', '[{\"id\":\"one\",\"title\":\"测试\"}]');"
-            ).unwrap();
-        }
-        db.migrate_consolidated_plugin_data("diary", "diary")
-            .unwrap();
-        db.migrate_consolidated_plugin_data("diary", "diary")
-            .unwrap();
-        let guard = db.conn.lock().unwrap();
-        let restored: String = guard
-            .query_row(
-                "SELECT value FROM plugin_storage WHERE plugin_id='diary' AND key='notes'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let source: String = guard.query_row("SELECT value FROM plugin_storage WHERE plugin_id='productivity-toolkit' AND key='notes'", [], |row| row.get(0)).unwrap();
-        assert_eq!(restored, source);
-    }
-
-    #[test]
-    fn recovered_clipboard_imports_beta1_history() {
-        let db = Db::open(&temp_db("recovered-clipboard-history")).unwrap();
-        {
-            let guard = db.conn.lock().unwrap();
-            guard.execute_batch(
-                "INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
-                 VALUES ('productivity-toolkit', 'productivity-toolkit', '0.1.0', '旧综合插件', 'dist/main.js', 'C:/plugins/productivity-toolkit'),
-                        ('clipboard-manager', 'clipboard-manager', '0.4.0', '剪贴板管理', 'dist/main.js', 'C:/plugins/clipboard-manager');
-                 INSERT INTO plugin_storage (plugin_id, key, value)
-                 VALUES ('productivity-toolkit', 'clips', '[{\"id\":\"one\",\"text\":\"test\",\"createdAt\":123,\"pinned\":true}]');"
-            ).unwrap();
-        }
-        db.migrate_consolidated_plugin_data("clipboard-manager", "clipboard-manager")
-            .unwrap();
-        let guard = db.conn.lock().unwrap();
-        let history: String = guard.query_row("SELECT value FROM plugin_storage WHERE plugin_id='clipboard-manager' AND key='history'", [], |row| row.get(0)).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&history).unwrap();
-        assert_eq!(parsed[0]["timestamp"], 123);
-        assert_eq!(parsed[0]["pinned"], true);
-    }
-
-    #[test]
-    fn legacy_turntable_migration() {
-        let path = temp_db("legacy-turntable");
-        let db = Db::open(&path).unwrap();
-        {
-            let guard = db.conn.lock().unwrap();
-            guard
-                .execute_batch(
-                    r#"
-                    CREATE TABLE turntable_items (
-                      id INTEGER PRIMARY KEY,
-                      name TEXT NOT NULL,
-                      sort_order INTEGER DEFAULT 0
-                    );
-                    INSERT INTO plugins (id, name, version, display_name, entry_main, installed_path)
-                      VALUES ('p1', 'turntable', '1.0.0', 'Turntable', 'index.js', 'C:/plugins/turntable');
-                    INSERT INTO turntable_items (name, sort_order) VALUES ('a', 1), ('b', 2);
-                    "#,
-                )
-                .unwrap();
-            // 模拟旧库已有 user_version=3 但未迁移 legacy（避免重复跑 v1-v3）
-            guard.pragma_update(None, "user_version", 3).unwrap();
-        }
-        // 直接调用 legacy 迁移（模拟 ensureLegacyPluginStorageMigrated 语义）
-        migrate_legacy_plugin_storage(&db.conn.lock().unwrap()).unwrap();
-        let guard = db.conn.lock().unwrap();
-        let stored: String = guard
-            .query_row(
-                "SELECT value FROM plugin_storage WHERE plugin_id = 'p1' AND key = 'items'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
-        assert_eq!(parsed.as_array().unwrap().len(), 2);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Modal, Tag, Typography, theme } from 'antd'
+import { Alert, Button, Checkbox, Modal, Tag, Typography, theme } from 'antd'
 import { CheckCircleOutlined, WarningOutlined } from '@ant-design/icons'
 import type { PluginInstallPreview } from '../api/tauriApi'
 import { usePluginStore } from '../store/plugin.store'
@@ -28,6 +28,7 @@ export default function PluginInstallPreviewModal() {
   const { token } = theme.useToken()
 
   const [importing, setImporting] = useState(false)
+  const [consent, setConsent] = useState({ token: '', native: false, local: false })
   // 批量会话结束后的汇总可见性：total>1 且队列耗尽且无待确认项时出现一次
   const [showSummary, setShowSummary] = useState(false)
   const seenTotalRef = useRef(0)
@@ -49,8 +50,18 @@ export default function PluginInstallPreviewModal() {
   }, [batchTotal, installPreview, queueRemaining, processing])
 
   const handleCommit = async () => {
+    if (!consentReady) return
     setImporting(true)
-    await commitInstall()
+    await commitInstall(
+      preview?.next2
+        ? {
+            manifestSha256: preview.next2.manifestSha256,
+            acceptNativeCode: nativeAccepted,
+            acceptUnsignedLocal: localAccepted,
+            acceptPermissions: true
+          }
+        : undefined
+    )
     setImporting(false)
   }
 
@@ -66,8 +77,15 @@ export default function PluginInstallPreviewModal() {
   }
 
   const preview = installPreview?.data
+  const consentToken = installPreview?.installToken ?? ''
+  const nativeAccepted = consent.token === consentToken && consent.native
+  const localAccepted = consent.token === consentToken && consent.local
+  const consentReady =
+    (!preview?.next2?.nativeCode || nativeAccepted) &&
+    (!preview?.next2?.unsignedLocal || localAccepted)
   const fileName = activeInstallPath?.split(/[\\/]/).pop() ?? ''
-  const batchActive = batchTotal > 1 && (queueRemaining > 0 || installPreview !== null || processing)
+  const batchActive =
+    batchTotal > 1 && (queueRemaining > 0 || installPreview !== null || processing)
   const processed = succeeded + skipped + failures.length
   const currentIndex = Math.min(processed + 1, batchTotal)
 
@@ -81,6 +99,7 @@ export default function PluginInstallPreviewModal() {
         okText={batchActive && queueRemaining > 0 ? '确认并继续' : '确认安装'}
         cancelText={batchActive ? '取消全部' : '取消'}
         confirmLoading={importing || loading}
+        okButtonProps={{ disabled: !consentReady }}
         width={520}
         centered
         maskClosable={false}
@@ -103,6 +122,7 @@ export default function PluginInstallPreviewModal() {
                   data-ob-kind="primary"
                   type="primary"
                   loading={importing || loading}
+                  disabled={!consentReady}
                   onClick={() => void handleCommit()}
                 >
                   {queueRemaining > 0 ? '确认并继续' : '确认安装'}
@@ -121,6 +141,56 @@ export default function PluginInstallPreviewModal() {
           />
         )}
         {preview && <InstallPreviewDetail preview={preview} />}
+        {preview?.next2 && (
+          <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
+            <Text>
+              发布者：{preview.next2.publisher.displayName}（{preview.next2.publisher.id}）
+            </Text>
+            <Text type="secondary">
+              {preview.next2.unsignedLocal
+                ? '本地未签名包，发布者身份尚未验证。'
+                : '签名已由已信任发布者密钥验证。'}
+            </Text>
+            {preview.next2.unsignedLocal && (
+              <Checkbox
+                checked={localAccepted}
+                disabled={importing || loading}
+                onChange={(event) =>
+                  setConsent({
+                    token: consentToken,
+                    native: nativeAccepted,
+                    local: event.target.checked
+                  })
+                }
+              >
+                我信任此本地未签名包的来源
+              </Checkbox>
+            )}
+            {preview.next2.nativeCode && (
+              <>
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="原生插件将以当前用户权限运行"
+                  description="仅安装可信代码。进程隔离与生命周期管理不构成操作系统安全沙箱。"
+                />
+                <Checkbox
+                  checked={nativeAccepted}
+                  disabled={importing || loading}
+                  onChange={(event) =>
+                    setConsent({
+                      token: consentToken,
+                      native: event.target.checked,
+                      local: localAccepted
+                    })
+                  }
+                >
+                  我信任并允许运行此插件的原生代码
+                </Checkbox>
+              </>
+            )}
+          </div>
+        )}
       </Modal>
 
       <Modal
@@ -139,7 +209,9 @@ export default function PluginInstallPreviewModal() {
           {skipped > 0 && <span>⏭️ 已跳过：{skipped} 个</span>}
           {failures.length > 0 && (
             <>
-              <span style={{ color: 'var(--ob-color-error, #ff4d4f)' }}>❌ 失败：{failures.length} 个</span>
+              <span style={{ color: 'var(--ob-color-error, #ff4d4f)' }}>
+                ❌ 失败：{failures.length} 个
+              </span>
               <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
                 {failures.map((name) => (
                   <li key={name}>
@@ -203,9 +275,7 @@ export function InstallPreviewDetail({ preview }: { preview: PluginInstallPrevie
         />
       )}
 
-      <div style={{ fontSize: 13, color: token.colorTextSecondary, marginBottom: 8 }}>
-        权限清单
-      </div>
+      <div style={{ fontSize: 13, color: token.colorTextSecondary, marginBottom: 8 }}>权限清单</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
         {preview.permissions?.length ? (
           preview.permissions.map((permission) => (
@@ -238,9 +308,7 @@ export function InstallPreviewDetail({ preview }: { preview: PluginInstallPrevie
           )}
           {preview.removedPermissions?.length > 0 && (
             <div>
-              <div style={{ fontSize: 12, color: token.colorError, marginBottom: 4 }}>
-                移除权限
-              </div>
+              <div style={{ fontSize: 12, color: token.colorError, marginBottom: 4 }}>移除权限</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {preview.removedPermissions.map((permission) => (
                   <Tag key={permission} color="error" style={{ fontSize: 11 }}>

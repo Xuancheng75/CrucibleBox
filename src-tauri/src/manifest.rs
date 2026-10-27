@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::permissions::ALL_PERMISSIONS;
+const MAX_RETAINED_PERMISSIONS: usize = 64;
 
 /// plugin.json 最大字节数（对等 MAX_PLUGIN_MANIFEST_BYTES）
 pub const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
@@ -91,6 +91,52 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         .as_object()
         .ok_or_else(|| "manifest: must be a plain object".to_string())?;
 
+    if object
+        .get("manifestVersion")
+        .and_then(serde_json::Value::as_u64)
+        == Some(6)
+    {
+        let next = cruciblebox_next2_protocol::validate_manifest(text)?;
+        let main = match &next.backend {
+            Some(cruciblebox_next2_protocol::Backend::JsBackend(backend)) => backend.entry.clone(),
+            Some(cruciblebox_next2_protocol::Backend::NativeBackend(backend)) => {
+                backend.entry.clone()
+            }
+            None => String::new(),
+        };
+        let has_backend = next.backend.is_some();
+        return Ok(Manifest {
+            manifest_version: Some(6),
+            name: next.id,
+            version: next.version,
+            display_name: next.display_name,
+            description: next.description,
+            author: next.publisher.display_name,
+            icon: next
+                .contributes
+                .navigation
+                .as_ref()
+                .and_then(|item| item.icon.clone()),
+            main,
+            renderer: next.renderer,
+            backend: Some(has_backend),
+            backend_api_version: has_backend.then_some(6),
+            renderer_api_version: Some(6),
+            min_host_version: Some(next.min_host_version),
+            trust_level: "standard".into(),
+            capabilities: serde_json::json!({}),
+            category: None,
+            tags: Vec::new(),
+            keywords: Vec::new(),
+            contributes: serde_json::to_value(next.contributes).map_err(|e| e.to_string())?,
+            permissions: next.permissions,
+            config: next
+                .config
+                .and_then(|value| value.as_object().cloned())
+                .unwrap_or_default(),
+        });
+    }
+
     // Next is parsed by the shared contract, then mapped only to installation metadata.
     // Runtime API 5 stays distinct from legacy renderer/backend wire 2.
     if object
@@ -98,33 +144,41 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         .and_then(serde_json::Value::as_f64)
         == Some(5.0)
     {
-        let next = cruciblebox_next_protocol::validate_manifest(text).map_err(str::to_owned)?;
-        let has_backend = next.backend.is_some();
+        let string = |key: &str| {
+            object
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let name = string("id");
+        if !is_valid_plugin_name(&name) {
+            return Err("INVALID_MANIFEST".into());
+        }
+        let version = string("version");
+        parse_semver(&version)?;
         return Ok(Manifest {
             manifest_version: Some(5),
-            name: next.id,
-            version: next.version,
-            display_name: next.display_name,
-            description: next.description.unwrap_or_default(),
-            author: next.author.unwrap_or_default(),
-            icon: next.icon,
-            main: next.backend.unwrap_or_default(),
-            renderer: next.renderer,
-            backend: Some(has_backend),
-            backend_api_version: has_backend.then_some(5),
+            name,
+            version,
+            display_name: string("displayName"),
+            description: string("description"),
+            author: string("author"),
+            icon: None,
+            main: string("backend"),
+            renderer: string("renderer"),
+            backend: Some(object.contains_key("backend")),
+            backend_api_version: object.contains_key("backend").then_some(5),
             renderer_api_version: Some(5),
             min_host_version: None,
             trust_level: "standard".into(),
             capabilities: serde_json::json!({}),
-            category: next.category,
-            tags: Vec::new(),
-            keywords: Vec::new(),
+            category: None,
+            tags: vec![],
+            keywords: vec![],
             contributes: serde_json::json!({}),
-            permissions: next.permissions,
-            config: next
-                .config
-                .and_then(|value| value.as_object().cloned())
-                .unwrap_or_default(),
+            permissions: vec![],
+            config: serde_json::Map::new(),
         });
     }
 
@@ -236,7 +290,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let renderer_raw = get_string(object, "renderer", "manifest.renderer")?;
     let renderer = normalize_plugin_entry(&renderer_raw, "manifest.renderer")?;
 
-    // 规则 8：permissions 必填数组，长度 ≤ ALL_PERMISSIONS.len()，已知集合内，不允许重复
+    // 规则 8：permissions 必填数组，长度 ≤ MAX_RETAINED_PERMISSIONS，已知集合内，不允许重复
     let mut permissions =
         if matches!(manifest_version, Some(3) | Some(4)) && object.get("permissions").is_none() {
             Vec::new()
@@ -301,29 +355,40 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("manifest: plugin.json must be a regular file".to_string());
     }
-    if metadata.len() > MAX_MANIFEST_BYTES {
-        return Err(format!(
-            "manifest: plugin.json exceeds {MAX_MANIFEST_BYTES} bytes"
-        ));
+    let maximum = cruciblebox_next2_protocol::BUDGET_MANIFEST_BYTES as u64;
+    if metadata.len() > maximum {
+        return Err(format!("manifest: plugin.json exceeds {maximum} bytes"));
     }
     let bytes = std::fs::read(&manifest_path)
         .map_err(|error| format!("manifest: failed to read plugin.json: {error}"))?;
-    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+    if bytes.len() as u64 > maximum {
+        return Err(format!("manifest: plugin.json exceeds {maximum} bytes"));
+    }
+    // Only v6 inventories use the larger manifest budget. Keep the frozen
+    // legacy size rejection before parsing the rest of the manifest.
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES
+        && !serde_json::from_slice::<serde_json::Value>(&bytes)
+            .is_ok_and(|value| value["manifestVersion"] == 6)
+    {
         return Err(format!(
             "manifest: plugin.json exceeds {MAX_MANIFEST_BYTES} bytes"
         ));
     }
     // 对等 Buffer.toString('utf8')：非法序列替换为 U+FFFD，随后 JSON 解析失败
     let text = String::from_utf8_lossy(&bytes);
-    parse_manifest(&text)
+    let manifest = parse_manifest(&text)?;
+    if manifest.manifest_version == Some(6) {
+        std::str::from_utf8(&bytes).map_err(|_| "manifest: invalid UTF-8")?;
+    }
+    Ok(manifest)
 }
 
-/// Next accepts only Manifest v5. Old manifests remain readable for data retention and paired rollback.
+/// Old manifests remain readable for data retention and paired rollback.
 pub fn assert_manifest_installable(
     manifest: &Manifest,
     allow_legacy_full_trust: bool,
 ) -> Result<(), String> {
-    if manifest.manifest_version == Some(5) {
+    if manifest.manifest_version == Some(6) {
         return Ok(());
     }
     // Explicit historical installation fixtures exercise old journal/data recovery; production cannot opt in.
@@ -332,7 +397,7 @@ pub fn assert_manifest_installable(
         return Ok(());
     }
     let _ = allow_legacy_full_trust;
-    Err("LEGACY_RUNTIME_RETIRED: only Next Manifest v5 packages can be installed; existing packages and data are retained".into())
+    Err("LEGACY_RUNTIME_RETIRED: only Next Manifest v6 packages can be installed; existing packages and data are retained".into())
 }
 
 /// Reject a plugin whose declared minimum host version is newer than this
@@ -364,6 +429,12 @@ pub fn validate_entrypoints(root: &Path, manifest: &Manifest) -> Result<(), Stri
     }
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|error| format!("manifest.entry: failed to canonicalize plugin root: {error}"))?;
+    if manifest.manifest_version == Some(6) {
+        // Package inventory, native architecture and signatures are checked by the
+        // installer. The renderer still uses the existing contained JS resolver.
+        resolve_entrypoint(&canonical_root, &manifest.renderer)?;
+        return Ok(());
+    }
     if manifest.manifest_version != Some(5) || !manifest.main.is_empty() {
         resolve_entrypoint(&canonical_root, &manifest.main)?;
     }
@@ -609,7 +680,6 @@ fn apply_capabilities(value: &serde_json::Value, permissions: &mut Vec<String>) 
         ("fs", &["file:read", "file:write", "dialog"]),
         ("network", &["network:fetch"]),
         ("process", &["shell:exec"]),
-        ("archive", &["trusted:archive-extractor"]),
         ("ui", &["dialog", "notification"]),
         ("system", &["clipboard", "shortcut"]),
     ];
@@ -633,7 +703,7 @@ fn parse_permissions(value: Option<&serde_json::Value>) -> Result<Vec<String>, S
     let array = value
         .and_then(|v| v.as_array())
         .ok_or_else(|| "manifest.permissions: must be a bounded array".to_string())?;
-    if array.len() > ALL_PERMISSIONS.len() {
+    if array.len() > MAX_RETAINED_PERMISSIONS {
         return Err("manifest.permissions: must be a bounded array".to_string());
     }
     let mut seen: HashSet<&str> = HashSet::new();
@@ -648,7 +718,32 @@ fn parse_permissions(value: Option<&serde_json::Value>) -> Result<Vec<String>, S
             64,
             false,
         )?;
-        if !ALL_PERMISSIONS.contains(&permission) {
+        if ![
+            "storage:read",
+            "storage:write",
+            "tasks:read",
+            "tasks:control",
+            "theme:read",
+            "theme:write",
+            "dialog",
+            "notification",
+            "clipboard",
+            "files:read",
+            "files:publish",
+            "tasks:execute",
+            "browser:downloads",
+            "network:fetch",
+            "database:read",
+            "database:write",
+            "file:read",
+            "file:write",
+            "shell:exec",
+            "shortcut",
+            "host:full-trust",
+        ]
+        .contains(&permission)
+            && !permission.starts_with("trusted:")
+        {
             return Err(format!("manifest.permissions[{index}]: is unknown"));
         }
         if !seen.insert(permission) {

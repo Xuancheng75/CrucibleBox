@@ -2,7 +2,7 @@
 // Tauri 自定义协议：http://cruciblebox-plugin.localhost/<token>/index.html（path 型）
 // 资源路由：
 //   /<token>/index.html   → 校验 session（一次性消费 issued→active）→ 生成 index
-//   /<token>/runtime.js   → 宿主打包的 frame runtime（out/plugin-frame/runtime.js）
+//   /<token>/runtime.js   → 宿主内嵌的 API 6 frame runtime
 //   /<token>/renderer.js  → 插件 dist/renderer.js（防穿越 + 白名单 MIME）
 
 use crate::plugin_session::{RendererSession, RendererSessionRegistry, SessionAccess};
@@ -43,11 +43,8 @@ fn escape_html_attr(value: &str) -> String {
 }
 
 fn generated_index(session: &RendererSession) -> String {
-    let renderer_script = if session.renderer_api_version == 2 {
-        "\n    <script src=\"renderer.js\"></script>"
-    } else {
-        ""
-    };
+    let interactive_timeout = cruciblebox_next2_protocol::BUDGET_INTERACTIVE_TIMEOUT_MS;
+    let renderer_script = "";
     // Bug E：首帧关键 CSS 直接内联进 index.html。runtime.js 的深色兜底要等脚本
     // 下载+执行后才生效，WebView2 在此之前按默认白底渲染 → 深色主题闪白屏。
     let critical_style = format!(
@@ -61,7 +58,7 @@ fn generated_index(session: &RendererSession) -> String {
         escape_html_attr(&session.handshake_token),
         session.renderer_api_version,
         renderer_script
-    ).replace("data-api-version=", &format!("data-max-inflight=\"{}\" data-handshake-timeout=\"{}\" data-request-timeout=\"{}\" data-backend-timeout=\"{}\" data-api-version=", cruciblebox_next_protocol::MAX_INFLIGHT, cruciblebox_next_protocol::HANDSHAKE_TIMEOUT_MS, cruciblebox_next_protocol::RPC_TIMEOUT_MS, cruciblebox_next_protocol::BACKEND_TIMEOUT_MS))
+    ).replace("data-api-version=", &format!("data-max-inflight=\"{}\" data-handshake-timeout=\"{}\" data-request-timeout=\"{}\" data-interactive-timeout=\"{}\" data-backend-timeout=\"{}\" data-api-version=", cruciblebox_next2_protocol::BUDGET_INFLIGHT, cruciblebox_next2_protocol::BUDGET_HANDSHAKE_TIMEOUT_MS, cruciblebox_next2_protocol::BUDGET_REQUEST_TIMEOUT_MS, interactive_timeout, cruciblebox_next2_protocol::BUDGET_REQUEST_TIMEOUT_MS))
 }
 
 /// 从 URL path 提取 session token（path 型 /<token>/<resource>）。
@@ -213,27 +210,24 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
             let reg = ctx.registry.lock().unwrap();
             let access = reg.get(&token, &ctx.owner_label);
             let session = access.session.ok_or((403, "session denied".into()))?;
-            let body = if session.renderer_api_version == 5 {
-                include_bytes!("next_frame_runtime.js").to_vec()
-            } else {
-                std::fs::read(&session.runtime_path)
-                    .map_err(|e| (404, format!("runtime missing: {e}")))?
-            };
-            Ok((200, "text/javascript; charset=utf-8", body))
+            if session.renderer_api_version != 6 {
+                return Err((403, "API 6 required".into()));
+            }
+            Ok((
+                200,
+                "text/javascript; charset=utf-8",
+                include_bytes!("next_frame_runtime.js").to_vec(),
+            ))
         }
-        "next-api.mjs" | "generated.mjs" => {
+        "frame-validation.mjs" => {
             let reg = ctx.registry.lock().unwrap();
             let access = reg.get(&token, &ctx.owner_label);
-            let session = access.session.ok_or((403, "session denied".into()))?;
-            if session.renderer_api_version != 5 {
-                return Err((403, "Next only".into()));
-            }
-            let body = if resource == "next-api.mjs" {
-                include_bytes!("../../packages/cruciblebox-next-api/src/index.mjs").to_vec()
-            } else {
-                include_bytes!("../../packages/cruciblebox-next-api/src/generated.mjs").to_vec()
-            };
-            Ok((200, "text/javascript; charset=utf-8", body))
+            access.session.ok_or((403, "session denied".into()))?;
+            Ok((
+                200,
+                "text/javascript; charset=utf-8",
+                include_bytes!("../../shared/frame-validation.mjs").to_vec(),
+            ))
         }
         "renderer.js" => {
             let reg = ctx.registry.lock().unwrap();
@@ -287,12 +281,12 @@ mod tests {
             .create(crate::plugin_session::CreateSessionInput {
                 initial_background: "#0a0c10".into(),
                 color_scheme: "dark".into(),
-                plugin_id: "diary".into(),
-                plugin_name: "diary".into(),
-                plugin_directory: "C:/plugins/diary".into(),
+                plugin_id: "sample-delta".into(),
+                plugin_name: "sample-delta".into(),
+                plugin_directory: "C:/plugins/sample-delta".into(),
                 renderer_entry: "dist/renderer.js".into(),
-                runtime_path: "C:/app/out/plugin-frame/runtime.js".into(),
-                renderer_api_version: 2,
+                runtime_path: "C:/unused/runtime.js".into(),
+                renderer_api_version: 6,
                 permissions: vec![],
                 owner_webview_label: "main".into(),
             })
@@ -319,7 +313,7 @@ mod tests {
         assert!(body.contains("<script src=\"runtime.js\">"));
         assert!(!body.contains("<script src=\"/runtime.js\">"));
         assert!(body.contains("data-renderer-url=\"renderer.js\""));
-        assert!(body.contains("<script src=\"renderer.js\">"));
+        assert!(!body.contains("<script src=\"renderer.js\">"));
         // Bug E：首帧关键 CSS 必须内联在 <head>（runtime.js 执行前的深色背景），
         // 且 color-scheme 与会话一致
         assert!(
@@ -368,7 +362,7 @@ mod tests {
                 plugin_directory: dir.to_string_lossy().into_owned(),
                 renderer_entry: "dist/renderer.js".into(),
                 runtime_path: runtime_path.to_string_lossy().into_owned(),
-                renderer_api_version: 2,
+                renderer_api_version: 6,
                 permissions: vec![],
                 owner_webview_label: "main".into(),
             })
@@ -387,7 +381,9 @@ mod tests {
         let runtime_uri = format!("http://cruciblebox-plugin.localhost/{token}/runtime.js");
         let resp = handle_inner(&ctx, &runtime_uri).unwrap();
         assert_eq!(resp.0, 200);
-        assert_eq!(String::from_utf8(resp.2).unwrap(), "// runtime");
+        assert!(String::from_utf8(resp.2)
+            .unwrap()
+            .contains("const wireVersion = 4"));
 
         // renderer.js 从 session.renderer_path（pluginDirectory/renderer_entry）读取，
         // 而非 pluginDirectory 根目录（修复前 resolve_safe_asset 会 404）
@@ -453,7 +449,7 @@ mod tests {
             renderer_entry: "dist/renderer.js".into(),
             renderer_path: "C:/plugins/x/dist/renderer.js".into(),
             runtime_path: "C:/app/runtime.js".into(),
-            renderer_api_version: 2,
+            renderer_api_version: 6,
             permissions: vec![],
             owner_webview_label: "main".into(),
             created_at_ms: 0,

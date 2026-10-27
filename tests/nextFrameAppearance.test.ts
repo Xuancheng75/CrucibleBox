@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { expect, test, vi } from 'vitest'
-import { validateAppearance } from '../packages/cruciblebox-next-api/src/index.mjs'
+import { validateAppearance } from '../shared/frame-validation.mjs'
 import { themeToCssVars } from '../shared/themes/css-vars'
 import { PRESET_THEMES } from '../shared/themes/presets'
 const appearance = (index: number) => ({
@@ -11,7 +11,7 @@ const appearance = (index: number) => ({
 function fixture() {
   const source = readFileSync('src-tauri/src/next_frame_runtime.js', 'utf8')
     .replace(
-      /import\(\s*new URL\('\.\/next-api\.mjs', location\.href\)\.href\s*\)/,
+      /import\(\s*new URL\('\.\/frame-validation\.mjs', location\.href\)\.href\s*\)/,
       "__import('api')"
     )
     .replace("import(new URL('./renderer.js', location.href).href)", "__import('renderer')")
@@ -78,7 +78,7 @@ function fixture() {
         data: {
           kind: 'next-connect',
           nonce: 'b'.repeat(64),
-          wireVersion: 3,
+          wireVersion: 4,
           session: 'a'.repeat(64),
           appearance: value
         },

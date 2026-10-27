@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub struct OutputTransaction {
+    #[cfg(test)]
     requested: PathBuf,
     target: PathBuf,
     stage: PathBuf,
@@ -35,6 +36,7 @@ impl OutputTransaction {
             return Err("stage must be a sibling of output".into());
         }
         Ok(Self {
+            #[cfg(test)]
             requested: target.into(),
             target: target.into(),
             stage: stage.into(),
@@ -52,6 +54,7 @@ impl OutputTransaction {
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|error| format!("创建输出目录失败: {error}"))?;
+        #[cfg(test)]
         let requested = target.to_path_buf();
         let target = if replace || !target.exists() {
             target.to_path_buf()
@@ -60,6 +63,7 @@ impl OutputTransaction {
         };
         let stage = reserve_sibling(&target, "tmp")?;
         Ok(Self {
+            #[cfg(test)]
             requested,
             target,
             stage,
@@ -103,24 +107,7 @@ impl OutputTransaction {
         })
     }
 
-    pub fn publish_durable_with_reference(
-        mut self,
-        ctx: &crate::task_runtime::Context,
-        reference: &Path,
-        validate: impl FnOnce(&Path) -> Result<(), String>,
-    ) -> Result<PathBuf, String> {
-        validate(&self.stage)?;
-        let result = ctx.publish_object(
-            &self.stage,
-            &self.target,
-            self.replace,
-            false,
-            Some(reference),
-        );
-        self.published = result.is_ok() || ctx.publication_pending();
-        result.map(|_| self.target.clone())
-    }
-
+    #[cfg(test)]
     pub fn publish(
         mut self,
         validate: impl FnOnce(&Path) -> Result<(), String>,

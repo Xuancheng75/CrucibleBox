@@ -1,99 +1,31 @@
-# AGENTS.md — CrucibleBox 当前状态与工作规范
+# AGENTS.md — CrucibleBox 底座
 
-> 本文件只描述**当前状态**与工作规范，不记录历史里程碑。
-> 历史阶段记录已归档至 `docs/history/AGENTS-history.md`；优化计划见 `docs/maintenance-plan.md`。
-> Electron 遗留层已在 2.1.0-beta.1 开发期从活动工作树移除；历史代码保留于 tag `electron-1.7.3-production` 和本地开发备份。
+## 当前范围与约束
 
-## 1. 项目简介
+- 用户于 2026-10-27 明确授权发布宿主 2.1.0 正式版、将当前配套插件改为正式版本，并附 Release 插件清单与分发包；本次允许必要的宿主公开仓库推送、PR、合并、标签和 Release 发布。插件私有仓库源码、私密构建输入及其他限制不随之公开。
 
-- **CrucibleBox**（npm 包名 `cruciblebox`，Rust crate `cruciblebox`）：**Tauri 2.11.x + Rust + React 18 + Ant Design 5 + zustand + rusqlite** 构建的 Windows 10/11 x64 可扩展工具箱（当前开发与验证基线 **2.1.0-beta.4**，本地宿主交付）。
-- 唯一可编辑/可构建源码：`E:\CrucibleBox_Sourses`（git 仓库，workspace 含 `plugins/*`、`packages/{cruciblebox-plugin-api,openbox-rpc}`）。
-- 当前 Next 契约为 Manifest/API 5、wire 3、data 1；renderer-only 七个官方插件使用 opaque iframe + MessagePort。Next backend 在独立 QuickJS sidecar 中运行，旧 v2-v4 执行入口与 SQL RPC 已退役。
-- beta.3 宿主与 Next 是两条并行交付线：宿主数据库 schema v10；Next Manifest/API 5、wire 3、data 1 已冻结为 beta.1。Next 的七个官方插件与独立 SDK/CLI 已集成；v2-v4 执行入口及 SQL RPC 退役，旧包、用户数据和配对回滚继续保留。worker、数据边界、原生业务流程、性能和发布验收分别按证据记录；不据此宣称 beta.3 全计划或 OCR 精度门禁完成。
-- Next 官方插件范围：文档与知识库、主题管理、开发环境管理、日记与笔记、随机决策、GIF 动画编辑、压缩与解压缩。SDK 5.0.0-beta.1 与独立 CLI 1.0.0-beta.1；旧数据及旧程序/数据库配对回滚保留。
-- 七个 Next 官方插件使用独立 SDK/CLI 构建，并由官方目录和固定文件清单校验；其余旧插件源码和包不在本轮迁移范围内，相关用户数据仍保留。
+- 用户要求当前工作树只保存底座、公共 SDK/契约及必要资料；业务代码、worker、资源、官方插件目录/名称映射和业务验收归档归独立插件仓库。
+- 用户明确选择当前宿主仅支持 Manifest/API 6、wire 4。API 5 及更旧执行链归档，原始插件记录、配置、KV、迁移标记和用户文件继续保留，不把数据保留误写成旧执行兼容。
+- 宿主源码位于 E:\CrucibleBox_Sourses；插件在 E:\CrucibleBox_Plugins 的独立源码目录开发。新插件应通过公开 SDK 和声明式贡献扩展，不能增加宿主名称白名单或业务专用接口。
+- E:\CrucibleBox_Portable 是唯一正式程序目录，仅放验证后的分发文件，不作为开发测试目录，不注册第二套系统安装。宿主目录可临时隔离测试，新交付时清理被替代副本，保留用户数据。
+- 禁止对 E:\OCR 任何写入。禁止子代理和 Computer Use。可使用自身程序的公开 IPC/无界面协议测试；原生界面验收由用户手动进行。
+- 所有测试/构建 TEMP、TMP、TMPDIR 和 npm cache 放在本仓库 .workbench 下，不向 C 盘 Temp 生成测试树。
+- 源码仅通过本地 Git 保存，不另建路径备份、补丁或 bundle，未经授权不推送/发布，不将私密构建输入写入源码或报告。进行中保存必须标明未验证。
+- 既有本地平台验收不代表本轮架构改动已通过；完成既有门禁再交付，不把部分结果报为完成。
 
-## 2. 关键文件地图
+## 当前代码与契约
 
-Tauri 主进程（Rust，`src-tauri/src/`）：
+宿主 2.1.0，Tauri/Rust + React + SQLite。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
 
-- `main.rs`：装配点（tauri-plugin-updater 注册、renderer 自定义协议、DB 初始化、L3 数据路径迁移、命令注册）。
-- `commands.rs`：核心 IPC 命令组（settings/app/plugin 读路径/session/db_status；`is_main_window` 校验 + settings key 白名单）。
-- `unienv_catalog.rs` / `unienv_versions.rs` / `unienv_install.rs` / `unienv_task.rs`：UniEnv 可信服务四件套——制品完整性目录（静态 SHA-256）、在线版本源（node/go/java 官方端点发现，8s 硬超时，ADR-0021）、安装原语（下载/解压/junction/进程）、任务管理（单飞/进度/取消）。
-- `db.rs`：独立 `crates/repository` 的宿主适配；repository 管理 WAL、v1-v10 事务迁移及旧 storage。v8 增加 Next 会话暂存，v9 增加任务投影执行器版本守卫；v10 在卸载时事务保留原始配置、存储和迁移标记，按稳定插件名重装恢复。
-- `host_services.rs` / `platform_service.rs`：显式注入服务、任务运行时、事件端口、可选 worker/资源及平台端口。
-- `crates/document`、`crates/document-native`、`workers/document`：Document IR 与 PDFium 处理在独立 document-worker 进程运行；可选固定摘要运行时单独安装。OCR worker、模型和准确率门禁独立管理。
-- `crates/{task-core,task-store,file-publication,task-runtime,repository,next-protocol,next-data}`：无 Tauri 依赖的状态机、持久日志、运行时、数据与契约边界。
-- `network_policy.rs` / `host_task.rs`：共享代理路由、Windows PAC/TLS、任务日志与执行器取消确认。
-- `output_transaction.rs` / `diagnostics.rs`：输出暂存及同名保护、失败历史与原生崩溃诊断。
-- `data_dir.rs`：L3 数据路径迁移（`%APPDATA%\openbox` → `%APPDATA%\cruciblebox`，checkpoint + 原子 rename）。
-- `plugin_session.rs` / `plugin_protocol.rs`：renderer session registry + `cruciblebox-plugin` 协议 handler（path 型 `http://cruciblebox-plugin.localhost/<token>/index.html`）。
-- `capabilities/default.json`：ACL（core:default + updater:default）。
-- cruciblebox-plugin-host/（独立 crate）：Next backend sidecar（QuickJS，Next wire）；退役的 v2-v4 执行入口不属于活动调用链。
+原生插件是可信本地代码；进程隔离不等于 OS 安全沙箱。安装文件清单、签名/确认、路径边界、owner/session 归属、取消确认及数据保留不能删减。
 
-Electron 遗留层：
+## 验证与交付
 
-- 活动工作树不再包含 `electron/`、`database/`、`plugin-system/`；需要追溯时查 `docs/electron-legacy-registry.md` 或冻结 tag。
+遵循 docs/development.md 和既有 CI：npm run check、npm run build；宿主及 runner 的 cargo fmt --check、cargo clippy --all-targets -- -D warnings、cargo test；独立 crates 按 CI 清单验证。使用锁定依赖，不运行系统安装器测试。新代码完成后仅更新唯一正式目录，保存真实验证证据。
 
-Tauri 前端（`tauri-frontend/`）：
+## 文档与 Git
 
-- src/App.tsx：Tauri 宿主界面装配、导航与页面入口。
-- src/pages/Marketplace.tsx / marketplace-catalog.ts：双栏插件市场与官方只读目录。
-- `src/pages/TaskCenter.tsx` / `store/task.store.ts`：宿主长任务的统一状态与失败入口。
-- `src/plugin-identity.ts`：第一方插件分类、颜色和发布者身份映射。
-- src/components/NextPluginFrame.tsx：Next opaque iframe 宿主与 renderer 会话桥接。
-- 复用仓库根 `src/plugin-runtime/`（frame-entry + PluginFrameBridge，纯浏览器逻辑）与 `shared/`。
-
-共享契约：
-
-- `shared/plugin-backend-rpc.ts`（校验语义已移植 sidecar envelope.rs）、`shared/plugin-renderer-rpc.ts`（插件 renderer 契约，两线复用）、`shared/types/`、`shared/themes/presets.ts`、`shared/trusted-service-policies.json`。
-
-构建与发布：
-
-- `scripts/`：插件打包/签名/校验/SBOM 脚本（与插件自包含构建器解耦）。
-- `.github/workflows/`：`ci.yml` 和 `tauri-release.yml` 是唯一活动验证与发布链。
-
-## 3. 安全模型（详见 docs/security-model.md）
-
-- 插件为**可信代码**（信任模型 A）：权限声明是 SDK 能力门控，非安全边界；控制点为 安装确认 + renderer 隔离 + 帧协议校验 + 供应链可追溯。
-- 渲染：Next opaque sandboxed iframe + 专用 MessagePort；宿主签发并绑定 session，执行冻结的 wire 契约与帧预算校验。
-- backend：独立 QuickJS sidecar 提供故障隔离，不是 OS 安全沙箱；宿主逐调用校验 owner、方法与权限。
-- 安装：Rust 宿主执行 staging、journal、原子替换和启动恢复；manifest/归档边界在宿主校验。
-- UniEnv：固定文件集 + 版本 + SHA-256 digest + fail-closed；构造失败即拒绝激活。
-- 发布：Ed25519 插件签名、CycloneDX SBOM（cargo-cyclonedx + 前端 SBOM 双源）、GitHub artifact attestation、tauri-plugin-updater minisign 强制签名。
-- 明确不承诺：Windows Authenticode（无证书）、OS 级强制沙箱（backend 必须可信）。
-
-## 4. 验证命令（提交前必须全绿）
-
-```bash
-npm run check
-cd src-tauri && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
-cd src-tauri/cruciblebox-plugin-host && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-cd tauri-frontend && npm run build
-```
-
-插件改动：到 `plugins/<id>/` 跑 `npm run clean && npm run build`（自包含构建器）；涉及 unienv 时需同步重钉 trusted digest（`npm run update:trusted-policy`）。
-
-## 5. 分支与提交规范（详见 docs/maintenance-plan.md §7）
-
-- Trunk-based：`main` 唯一长期分支，始终可发布。
-- 一个工作包 = 一个短分支（`feat/<版本>-<描述>` / `refactor/<版本>-<描述>` / `fix/...` / `chore/...` / `hotfix/...`）+ 一个 PR + merge。
-- Codex 本地工作分支使用 `codex/` 前缀；推送 PR 时按上述类型转换或保留可追溯名称。
-- Conventional Commits；全量门禁通过后才提交；不允许本地攒多个未推工作包。
-- 发布：正式版 tag `tauri-vX.Y.Z` 更新 `tauri-stable`；测试版 tag `tauri-vX.Y.Z-beta.N` / `-rc.N` 更新 `tauri-beta`。Electron 链 `v*` 已冻结。
-- main 已开启分支保护（要求 PR + `Verify Windows x64` / `Verify Tauri (Rust) x64` status check + 禁 force push）。
-
-## 6. 版本路线
-
-当前开发基线：**2.1.0-beta.4**。当前迭代优先工具箱宿主稳定性和本地交付；插件专项质量与深度 OCR 后续事项见现有文档。GitHub 发布仍由发布手册及受保护分支流程控制。
-
-## 7. 文档约定
-
-- 活文档：`docs/architecture.md`、`docs/security-model.md`、`docs/plugin-sdk.md`、`docs/install-recovery.md`、`docs/release-runbook.md`、`docs/development.md`、`docs/electron-legacy-registry.md`、`docs/tauri-migration-plan.md`。
-- 历史与里程碑记录一律归档到 `docs/history/`，不写回活文档；不再新增阶段性 milestone 文档。
-- Electron 历史实现仅供追溯，不得重新接入活动构建链。
-
----
+活文档是 docs/architecture.md、security-model.md、plugin-sdk.md、install-recovery.md、development.md、release-runbook.md。旧业务历史在独立归档中保留，宿主 Git 历史不重写。本次发布授权以当前范围第一条为准；使用 codex/ 分支与 Conventional Commits，未获明确授权时不推送或发布。
 
 ## 8. 防御性编程与工程复杂度控制规范
 

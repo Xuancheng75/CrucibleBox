@@ -1,0 +1,12 @@
+[
+  {
+    "file": "cruciblebox.exe",
+    "sha256": "35602fd6aa9392b121964f846f6212bc284b7e0fc7d8efff7026d2820e1557f6",
+    "bytes": 15060480
+  },
+  {
+    "file": "cruciblebox-plugin-host.exe",
+    "sha256": "72d784484ba3e4d1db1d1a4bad4c25a8a9c5957232ea85330da0a75bc51354dc",
+    "bytes": 3552768
+  }
+]

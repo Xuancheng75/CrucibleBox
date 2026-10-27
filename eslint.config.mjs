@@ -12,6 +12,7 @@ export default [
   {
     ignores: [
       'artifacts/**',
+      '.workbench/**',
       'dist/**',
       'node_modules/**',
       'out/**',

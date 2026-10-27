@@ -61,6 +61,7 @@ export default function Settings() {
   const [channel, setChannel] = useState<AppUpdateChannel>(loadChannel)
   const [proxyMode, setProxyMode] = useState<DownloadProxyMode>('auto')
   const [proxyUrl, setProxyUrl] = useState('')
+  const [proxyError, setProxyError] = useState<string | null>(null)
   const [networkDiagnostic, setNetworkDiagnostic] = useState<NetworkDiagnostic | null>(null)
   const [faultHistory, setFaultHistory] = useState<{ path: string; text: string } | null>(null)
   const [faultError, setFaultError] = useState<string | null>(null)
@@ -73,18 +74,35 @@ export default function Settings() {
   const upsertTask = useTaskStore((state) => state.upsertTask)
   const patchTask = useTaskStore((state) => state.patchTask)
 
+  const saveNetwork = async (mode: DownloadProxyMode, url: string) => {
+    try {
+      await tauriApi.network.setPolicy(mode, url.trim())
+      setProxyError(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setProxyError(message)
+      throw error
+    }
+  }
+
   const diagnoseNetwork = async () => {
     setDiagnosingNetwork(true)
     setNetworkDiagnostic(null)
     try {
-      await tauriApi.settings.set('downloadProxyMode', proxyMode)
-      await tauriApi.settings.set('downloadProxyUrl', proxyUrl.trim())
+      await saveNetwork(proxyMode, proxyUrl)
       setNetworkDiagnostic(await tauriApi.network.diagnose())
     } catch (error) {
       setNetworkDiagnostic({
         mode: proxyMode,
         route: '配置不可用',
-        stages: [{ name: '配置', success: false, elapsedMs: 0, message: error instanceof Error ? error.message : String(error) }]
+        stages: [
+          {
+            name: '配置',
+            success: false,
+            elapsedMs: 0,
+            message: error instanceof Error ? error.message : String(error)
+          }
+        ]
       })
     } finally {
       setDiagnosingNetwork(false)
@@ -168,6 +186,8 @@ export default function Settings() {
       message: null
     })
     try {
+      await tauriApi.network.setPolicy(proxyMode, proxyUrl.trim())
+      setProxyError(null)
       const update = await retryUpdateCheck(
         async () => {
           const metadata = await tauriApi.app.checkUpdate(channel, UPDATE_CHECK_TIMEOUT_MS)
@@ -206,7 +226,7 @@ export default function Settings() {
       checkInFlightRef.current = false
       setChecking(false)
     }
-  }, [channel, downloading])
+  }, [channel, downloading, proxyMode, proxyUrl])
 
   const handleDownload = useCallback(async () => {
     const update = updateRef.current
@@ -397,7 +417,7 @@ export default function Settings() {
               ]}
               onChange={(next) => {
                 setProxyMode(next)
-                void tauriApi.settings.set('downloadProxyMode', next)
+                void saveNetwork(next, proxyUrl).catch(() => {})
               }}
             />
             <Input
@@ -407,27 +427,35 @@ export default function Settings() {
               placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:7890"
               style={{ width: 320 }}
               onChange={(event) => setProxyUrl(event.target.value)}
-              onBlur={() => void tauriApi.settings.set('downloadProxyUrl', proxyUrl.trim())}
+              onBlur={() => void saveNetwork(proxyMode, proxyUrl).catch(() => {})}
             />
             <Button loading={diagnosingNetwork} onClick={() => void diagnoseNetwork()}>
               测试当前网络
             </Button>
           </Space>
+          {proxyError && (
+            <Alert type="error" showIcon message="代理配置未保存" description={proxyError} />
+          )}
           {networkDiagnostic && (
             <Alert
-              type={networkDiagnostic.stages.every((stage) => stage.success) ? 'success' : 'warning'}
+              type={
+                networkDiagnostic.stages.every((stage) => stage.success) ? 'success' : 'warning'
+              }
               showIcon
               message={`实际路由：${networkDiagnostic.route}`}
-              description={(
+              description={
                 <>
-                  {networkDiagnostic.fallbackReason && <div>{networkDiagnostic.fallbackReason}</div>}
+                  {networkDiagnostic.fallbackReason && (
+                    <div>{networkDiagnostic.fallbackReason}</div>
+                  )}
                   {networkDiagnostic.stages.map((stage) => (
                     <div key={stage.name}>
-                      {stage.success ? '✓' : '×'} {stage.name} · {stage.elapsedMs}ms · {stage.message}
+                      {stage.success ? '✓' : '×'} {stage.name} · {stage.elapsedMs}ms ·{' '}
+                      {stage.message}
                     </div>
                   ))}
                 </>
-              )}
+              }
             />
           )}
         </Space>
@@ -526,26 +554,63 @@ export default function Settings() {
           </Space>
         </Space>
       </Card>
-      <Card className="ob-surface-card ob-settings-card" title="本地故障记录" style={{ marginTop: 16 }}>
+      <Card
+        className="ob-surface-card ob-settings-card"
+        title="本地故障记录"
+        style={{ marginTop: 16 }}
+      >
         <Space direction="vertical" style={{ width: '100%' }}>
-          <Text type="secondary">仅记录版本、运行阶段和插件标识，不记录文档内容，也不会自动上传。</Text>
+          <Text type="secondary">
+            仅记录版本、运行阶段和插件标识，不记录文档内容，也不会自动上传。
+          </Text>
           <Space>
-            <Button onClick={() => void tauriApi.app.faultHistory().then((result) => { setFaultHistory(result); setFaultError(null) }).catch((error) => setFaultError(String(error)))}>查看记录</Button>
-            <Button disabled={!faultHistory} onClick={() => {
-              if (!faultHistory) return
-              const url = URL.createObjectURL(new Blob([faultHistory.text], { type: 'text/plain;charset=utf-8' }))
-              const anchor = document.createElement('a')
-              anchor.href = url
-              anchor.download = 'CrucibleBox-故障记录.txt'
-              anchor.click()
-              window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-            }}>导出记录</Button>
+            <Button
+              onClick={() =>
+                void tauriApi.app
+                  .faultHistory()
+                  .then((result) => {
+                    setFaultHistory(result)
+                    setFaultError(null)
+                  })
+                  .catch((error) => setFaultError(String(error)))
+              }
+            >
+              查看记录
+            </Button>
+            <Button
+              disabled={!faultHistory}
+              onClick={() => {
+                if (!faultHistory) return
+                const url = URL.createObjectURL(
+                  new Blob([faultHistory.text], { type: 'text/plain;charset=utf-8' })
+                )
+                const anchor = document.createElement('a')
+                anchor.href = url
+                anchor.download = 'CrucibleBox-故障记录.txt'
+                anchor.click()
+                window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+              }}
+            >
+              导出记录
+            </Button>
           </Space>
           {faultError && <Alert type="error" message={faultError} />}
-          {faultHistory && <>
-            <Text type="secondary">保存位置：{faultHistory.path}</Text>
-            <pre style={{ maxHeight: 240, overflow: 'auto', padding: 12, border: `1px solid ${token.colorBorder}`, whiteSpace: 'pre-wrap' }}>{faultHistory.text || '暂无记录'}</pre>
-          </>}
+          {faultHistory && (
+            <>
+              <Text type="secondary">保存位置：{faultHistory.path}</Text>
+              <pre
+                style={{
+                  maxHeight: 240,
+                  overflow: 'auto',
+                  padding: 12,
+                  border: `1px solid ${token.colorBorder}`,
+                  whiteSpace: 'pre-wrap'
+                }}
+              >
+                {faultHistory.text || '暂无记录'}
+              </pre>
+            </>
+          )}
         </Space>
       </Card>
     </div>

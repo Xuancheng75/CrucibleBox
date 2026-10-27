@@ -80,7 +80,7 @@ pub fn validate(mode: &str, proxy_url: Option<&str>) -> Result<(), String> {
     if !matches!(mode, "auto" | "system" | "manual" | "direct") {
         return Err("代理模式无效".into());
     }
-    if mode == "manual" {
+    if matches!(mode, "manual" | "auto") {
         if let Some(value) = proxy_url.filter(|value| !value.trim().is_empty()) {
             let parsed =
                 url::Url::parse(value).map_err(|error| format!("代理地址无效：{error}"))?;
@@ -88,6 +88,8 @@ pub fn validate(mode: &str, proxy_url: Option<&str>) -> Result<(), String> {
                 return Err("代理仅支持 http 或 socks5；本地 HTTP 代理请使用 http:// 地址".into());
             }
             ureq::Proxy::new(value).map_err(|error| format!("代理地址无效：{error}"))?;
+        } else if mode == "manual" {
+            return Err("手动代理模式需要填写代理地址".into());
         }
     }
     Ok(())
@@ -95,6 +97,7 @@ pub fn validate(mode: &str, proxy_url: Option<&str>) -> Result<(), String> {
 
 impl NetworkPolicy {
     pub fn resolve(&self, url: &str) -> Result<ResolvedRoute, String> {
+        validate(&self.mode, self.proxy_url.as_deref())?;
         let target = url::Url::parse(url).map_err(|error| format!("网络地址无效：{error}"))?;
         if !matches!(target.scheme(), "http" | "https") {
             return Err("网络服务仅支持 HTTP 和 HTTPS".into());
@@ -110,7 +113,6 @@ impl NetworkPolicy {
             });
         }
         if manual {
-            validate("manual", self.proxy_url.as_deref())?;
             let proxy = self
                 .proxy_url
                 .as_deref()
@@ -510,14 +512,7 @@ pub fn diagnose() -> NetworkDiagnostic {
     NetworkDiagnostic {
         mode: policy.mode.clone(),
         route: policy.route(),
-        fallback_reason: if policy.mode == "auto"
-            && policy.proxy_url.is_some()
-            && !policy.uses_manual_proxy()
-        {
-            Some("手动代理地址无效，已改用 Windows 系统代理".into())
-        } else {
-            None
-        },
+        fallback_reason: None,
         stages,
     }
 }
@@ -528,6 +523,25 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn invalid_saved_proxy_is_reported_before_automatic_route_selection() {
+        for mode in ["auto", "manual"] {
+            let policy = NetworkPolicy {
+                mode: mode.into(),
+                proxy_url: Some("https://127.0.0.1:7892".into()),
+            };
+            assert!(policy
+                .resolve("https://github.com")
+                .unwrap_err()
+                .contains("http 或 socks5"));
+        }
+        assert!(super::validate("manual", None).is_err());
+        assert!(super::validate("auto", None).is_ok());
+        for mode in ["system", "direct"] {
+            assert!(super::validate(mode, Some("https://127.0.0.1:7892")).is_ok());
+        }
+    }
 
     fn http_fixture(status: &str) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

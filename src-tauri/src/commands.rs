@@ -131,6 +131,25 @@ pub fn settings_set(
 }
 
 #[tauri::command(async)]
+pub fn network_settings_set(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    mode: String,
+    url: String,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    let url = url.trim();
+    crate::network_policy::validate(&mode, Some(url))?;
+    lock(&db)
+        .download_proxy_set(&mode, url)
+        .map_err(|error| error.to_string())?;
+    crate::network_policy::reload(&db);
+    Ok(())
+}
+
+#[tauri::command(async)]
 pub fn network_diagnose(
     window: WebviewWindow,
 ) -> Result<crate::network_policy::NetworkDiagnostic, String> {
@@ -219,7 +238,7 @@ pub async fn app_check_update(
         .updater_builder()
         .endpoints(vec![endpoint.clone()])
         .map_err(|error| error.to_string())?;
-    let network_policy = marketplace_network_policy(&db);
+    let network_policy = marketplace_network_policy(&db)?;
     let network_route = network_policy.route();
     let resolved_route = network_policy.resolve(endpoint.as_str())?;
     if let Some(proxy_url) = resolved_route.proxy_endpoint.as_deref() {
@@ -255,11 +274,39 @@ pub use cruciblebox_repository::management::PluginMetaDto;
 pub fn plugin_list(
     window: WebviewWindow,
     db: State<'_, Arc<Mutex<Db>>>,
-) -> Result<Vec<PluginMetaDto>, String> {
+) -> Result<Vec<serde_json::Value>, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    lock(&db).metadata_list()
+    let db = lock(&db);
+    db.metadata_list()?
+        .into_iter()
+        .map(|meta| verified_plugin_metadata(&db, meta))
+        .collect()
+}
+
+fn verified_plugin_metadata(db: &Db, meta: PluginMetaDto) -> Result<serde_json::Value, String> {
+    let mut value = serde_json::to_value(&meta).map_err(|error| error.to_string())?;
+    value["publisherVerified"] = serde_json::json!(false);
+    value["officialPublisher"] = serde_json::json!(false);
+    if let Ok(plugin) =
+        crate::next2_install::inspect(db, std::path::Path::new(&meta.installed_path))
+    {
+        if let cruciblebox_next2_runtime::package::Provenance::Verified {
+            publisher_id,
+            key_id,
+        } = plugin.provenance()
+        {
+            value["publisherId"] = serde_json::json!(publisher_id);
+            value["publisherVerified"] = serde_json::json!(true);
+            value["officialPublisher"] = serde_json::json!(crate::next2_install::keys(db)?
+                .iter()
+                .any(|key| key.publisher_id == *publisher_id
+                    && key.key_id == *key_id
+                    && key.official));
+        }
+    }
+    Ok(value)
 }
 
 #[derive(Serialize)]
@@ -289,11 +336,11 @@ pub fn plugin_file_handlers_list(
     let installations = lock(&db).enabled_plugin_installations()?;
     let mut handlers = Vec::new();
     for (plugin_id, installed_path) in installations {
-        let manifest_path = std::path::Path::new(&installed_path).join("plugin.json");
-        let Ok(manifest) = crate::manifest::read_manifest(&manifest_path) else {
+        let Ok(manifest) = crate::manifest::read_manifest(std::path::Path::new(&installed_path))
+        else {
             continue;
         };
-        if manifest.manifest_version != Some(4) {
+        if manifest.manifest_version != Some(6) {
             continue;
         }
         let Some(items) = manifest
@@ -335,14 +382,17 @@ pub fn plugin_command_contributions_list(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let installations = lock(&db).enabled_plugin_installations()?;
+    command_contributions(&lock(&db))
+}
+
+fn command_contributions(db: &Db) -> Result<Vec<PluginCommandContributionDto>, String> {
     let mut commands = Vec::new();
-    for (plugin_id, installed_path) in installations {
-        let manifest_path = std::path::Path::new(&installed_path).join("plugin.json");
-        let Ok(manifest) = crate::manifest::read_manifest(&manifest_path) else {
+    for (plugin_id, installed_path) in db.enabled_plugin_installations()? {
+        let Ok(manifest) = crate::manifest::read_manifest(std::path::Path::new(&installed_path))
+        else {
             continue;
         };
-        if manifest.manifest_version != Some(4) {
+        if manifest.manifest_version != Some(6) {
             continue;
         }
         let Some(items) = manifest
@@ -353,31 +403,11 @@ pub fn plugin_command_contributions_list(
             continue;
         };
         for item in items {
-            let (Some(id), Some(title)) = (
-                item.get("id").and_then(serde_json::Value::as_str),
-                item.get("title").and_then(serde_json::Value::as_str),
-            ) else {
-                continue;
-            };
-            if id.is_empty() || title.is_empty() {
-                continue;
-            }
-            let keywords = item
-                .get("keywords")
-                .and_then(serde_json::Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
             commands.push(PluginCommandContributionDto {
                 plugin_id: plugin_id.clone(),
-                id: id.to_owned(),
-                title: title.to_owned(),
-                keywords,
+                id: item["id"].as_str().unwrap().to_owned(),
+                title: item["title"].as_str().unwrap().to_owned(),
+                keywords: Vec::new(),
             });
         }
     }
@@ -389,11 +419,14 @@ pub fn plugin_get(
     window: WebviewWindow,
     db: State<'_, Arc<Mutex<Db>>>,
     id: String,
-) -> Result<Option<PluginMetaDto>, String> {
+) -> Result<Option<serde_json::Value>, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    lock(&db).metadata_get(id)
+    let db = lock(&db);
+    db.metadata_get(id)?
+        .map(|meta| verified_plugin_metadata(&db, meta))
+        .transpose()
 }
 
 pub use cruciblebox_repository::management::UserPluginTagDto;
@@ -484,6 +517,7 @@ pub fn plugin_enable(
     if install.is_blocked(&record.name) {
         install.recover_if_blocked(&record.name)?;
     }
+    let _graph_change = next_backend.next2.graph_change()?;
     let _lifecycle = backend.begin_lifecycle_operation(&id)?;
     lock(&db)
         .set_plugin_enabled(&id, true)
@@ -498,9 +532,13 @@ pub fn plugin_enable(
     let next = manifest
         .as_ref()
         .ok()
-        .filter(|manifest| manifest.manifest_version == Some(5));
+        .filter(|manifest| manifest.manifest_version == Some(6));
     let result = match next {
-        Some(manifest) if manifest.backend == Some(false) => Ok(()),
+        Some(manifest)
+            if manifest.backend == Some(false) && manifest.manifest_version == Some(5) =>
+        {
+            Ok(())
+        }
         Some(_) => next_backend.activate(&id),
         None => Err(match manifest {
             Err(error) => format!("插件包读取失败：{error}"),
@@ -532,6 +570,8 @@ pub fn plugin_disable(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
+    let _graph_change = next_backend.next2.graph_change()?;
+    next_backend.next2.assert_can_remove(&id)?;
     let record = lock(&db)
         .plugin_backend_record(&id)
         .map_err(|e| e.to_string())?
@@ -585,7 +625,7 @@ pub fn plugin_update_config(
         .plugin_find_by_id(&id)?
         .ok_or("plugin not found")?;
     let manifest = crate::manifest::read_manifest(std::path::Path::new(&record.installed_path))?;
-    if manifest.manifest_version != Some(5) {
+    if manifest.manifest_version != Some(6) {
         return Err("LEGACY_RUNTIME_RETIRED".into());
     }
     let _lifecycle = backend.begin_lifecycle_operation(&id)?;
@@ -678,9 +718,9 @@ struct MarketplaceCatalog {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MarketplaceCatalogResponse {
+pub struct MarketplaceCatalogResponse {
     #[serde(flatten)]
-    pub catalog: MarketplaceCatalog,
+    catalog: MarketplaceCatalog,
     pub source: String,
     pub stale: bool,
     pub fetched_at: u64,
@@ -695,6 +735,8 @@ struct MarketplaceCatalogPlugin {
     pub version: String,
     pub artifact: String,
     pub size: u64,
+    #[serde(default)]
+    pub sha256: Option<String>,
     pub url: String,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -809,7 +851,7 @@ fn read_catalog_cache(
         .ok()
         .flatten()?;
     let catalog: MarketplaceCatalog = serde_json::from_str(&json).ok()?;
-    matches!(catalog.schema_version, 1 | 2).then_some((catalog, url, fetched_at.max(0) as u64))
+    matches!(catalog.schema_version, 1..=3).then_some((catalog, url, fetched_at.max(0) as u64))
 }
 
 fn write_catalog_cache(
@@ -845,9 +887,11 @@ pub fn marketplace_cancel_task(window: WebviewWindow, task_id: String) -> Result
 
 type MarketplaceNetworkPolicy = crate::network_policy::NetworkPolicy;
 
-fn marketplace_network_policy(db: &Arc<Mutex<Db>>) -> MarketplaceNetworkPolicy {
+fn marketplace_network_policy(db: &Arc<Mutex<Db>>) -> Result<MarketplaceNetworkPolicy, String> {
     crate::network_policy::reload(db);
-    crate::network_policy::current()
+    let policy = crate::network_policy::current();
+    crate::network_policy::validate(&policy.mode, policy.proxy_url.as_deref())?;
+    Ok(policy)
 }
 
 fn marketplace_agent(
@@ -956,7 +1000,7 @@ fn fetch_marketplace_catalog(
             ) {
                 Ok(catalog_text) => match serde_json::from_str::<MarketplaceCatalog>(&catalog_text)
                 {
-                    Ok(value) if matches!(value.schema_version, 1 | 2) => {
+                    Ok(value) if validate_catalog(&value).is_ok() => {
                         let fetched_at = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map(|duration| duration.as_secs())
@@ -1050,7 +1094,7 @@ fn fetch_marketplace_catalog(
                     continue;
                 }
                 match serde_json::from_str::<MarketplaceCatalog>(&catalog_text) {
-                    Ok(value) if matches!(value.schema_version, 1 | 2) => {
+                    Ok(value) if validate_catalog(&value).is_ok() => {
                         let fetched_at = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map(|duration| duration.as_secs())
@@ -1166,9 +1210,10 @@ fn fetch_custom_marketplace_catalog(
     }
     let catalog: MarketplaceCatalog =
         serde_json::from_str(&body).map_err(|error| error.to_string())?;
-    if !matches!(catalog.schema_version, 1 | 2) {
+    if !matches!(catalog.schema_version, 1..=3) {
         return Err("不支持此插件目录版本".into());
     }
+    validate_catalog(&catalog)?;
     let fetched_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -1183,9 +1228,90 @@ fn fetch_custom_marketplace_catalog(
     ))
 }
 
-/// Return the remote first-party catalog for the marketplace page.  The
-/// frontend keeps its bundled catalog as a fast/offline fallback; this command
-/// only enriches it with the latest version and artifact metadata.
+fn validate_catalog(catalog: &MarketplaceCatalog) -> Result<(), String> {
+    if !matches!(catalog.schema_version, 1..=3) || catalog.plugins.len() > 5000 {
+        return Err("不支持的目录版本或条目过多".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for plugin in &catalog.plugins {
+        if plugin.id.is_empty()
+            || plugin.id.len() > 64
+            || !plugin
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            || !ids.insert(&plugin.id)
+        {
+            return Err("目录插件 ID 无效或重复".into());
+        }
+        if catalog.schema_version == 3 {
+            let url = url::Url::parse(&plugin.url).map_err(|e| e.to_string())?;
+            if url.scheme() != "https"
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || plugin.artifact != format!("{}-{}.zip", plugin.id, plugin.version)
+                || plugin.size == 0
+                || plugin.size > 600 * 1024 * 1024
+                || !plugin.sha256.as_ref().is_some_and(|digest| {
+                    digest.len() == 64
+                        && digest
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+            {
+                return Err("目录制品地址、大小或摘要无效".into());
+            }
+        }
+    }
+    Ok(())
+}
+fn local_catalog(db: &Arc<Mutex<Db>>) -> Result<MarketplaceCatalogResponse, String> {
+    let (catalog, source, fetched) =
+        read_catalog_cache(db, "local", "local").ok_or("尚未导入离线目录")?;
+    validate_catalog(&catalog)?;
+    Ok(marketplace_catalog_response(
+        catalog,
+        source,
+        false,
+        fetched,
+        "离线目录".into(),
+    ))
+}
+#[tauri::command(async)]
+pub fn marketplace_catalog_import(
+    window: WebviewWindow,
+    db: State<'_, Arc<Mutex<Db>>>,
+    text: String,
+) -> Result<MarketplaceCatalogResponse, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    if text.len() as u64 > MARKETPLACE_MAX_CATALOG_BYTES {
+        return Err("目录超过 4 MiB".into());
+    }
+    let catalog: MarketplaceCatalog = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    validate_catalog(&catalog)?;
+    let fetched = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    write_catalog_cache(
+        &db,
+        "local",
+        "local",
+        &catalog,
+        "用户导入的离线目录",
+        fetched,
+    )?;
+    Ok(marketplace_catalog_response(
+        catalog,
+        "用户导入的离线目录".into(),
+        false,
+        fetched,
+        "离线目录".into(),
+    ))
+}
+/// All plugin identity and presentation metadata comes from catalog data.
 #[tauri::command(async)]
 pub fn marketplace_catalog(
     window: WebviewWindow,
@@ -1197,7 +1323,10 @@ pub fn marketplace_catalog(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let policy = marketplace_network_policy(&db);
+    if source_id == Some(-1) {
+        return serde_json::to_value(local_catalog(&db)?).map_err(|e| e.to_string());
+    }
+    let policy = marketplace_network_policy(&db)?;
     let catalog = if let Some(id) = source_id {
         let source = marketplace_source(&db, id)?;
         if !source.enabled {
@@ -1283,9 +1412,11 @@ fn marketplace_download_execute(
     {
         return Err("invalid plugin id".into());
     }
-    const MAX_PLUGIN_BYTES: u64 = 256 * 1024 * 1024;
-    let policy = marketplace_network_policy(&db);
-    let catalog = if let Some(id) = source_id {
+    const MAX_PLUGIN_BYTES: u64 = 600 * 1024 * 1024;
+    let policy = marketplace_network_policy(&db)?;
+    let catalog = if source_id == Some(-1) {
+        local_catalog(&db)?.catalog
+    } else if let Some(id) = source_id {
         let source = marketplace_source(&db, id)?;
         if !source.enabled {
             return Err("此插件目录已停用".into());
@@ -1294,7 +1425,7 @@ fn marketplace_download_execute(
     } else {
         fetch_marketplace_catalog(&db, false, channel.as_deref(), &policy)?.catalog
     };
-    if !matches!(catalog.schema_version, 1 | 2) {
+    if !matches!(catalog.schema_version, 1..=3) {
         return Err("unsupported marketplace catalog schema".into());
     }
     let plugin = catalog
@@ -1308,6 +1439,14 @@ fn marketplace_download_execute(
     let expected_artifact = format!("{}-{}.zip", plugin.id, plugin.version);
     if plugin.artifact != expected_artifact || !plugin.url.starts_with("https://") {
         return Err("目录中的插件下载地址或文件名无效".into());
+    }
+    if plugin.sha256.as_ref().is_some_and(|digest| {
+        digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }) {
+        return Err("目录中的插件 SHA-256 无效".into());
     }
     let agent = marketplace_agent(&plugin.url, 15, 90, &policy)?;
     let root = std::env::temp_dir().join("cruciblebox-marketplace").join(
@@ -1323,34 +1462,36 @@ fn marketplace_download_execute(
         return Err("CANCELLED".into());
     }
 
-    if let Ok(metadata) = std::fs::metadata(&target) {
-        if metadata.len() == plugin.size {
-            emit_marketplace_progress(
-                &window,
-                &db,
-                &plugin.artifact,
-                plugin.size,
-                plugin.size,
-                "cached",
-                task_id.as_deref(),
-            );
-            return Ok(target.to_string_lossy().into_owned());
-        }
+    if marketplace_artifact_matches(&target, plugin.size, plugin.sha256.as_deref())? {
+        emit_marketplace_progress(
+            &window,
+            &db,
+            &plugin.artifact,
+            plugin.size,
+            plugin.size,
+            "cached",
+            task_id.as_deref(),
+        );
+        return Ok(target.to_string_lossy().into_owned());
     }
-    if let Ok(metadata) = std::fs::metadata(&partial) {
-        if metadata.len() == plugin.size {
-            publish_marketplace_stage(ctx, &partial, &target, plugin.size)?;
-            emit_marketplace_progress(
-                &window,
-                &db,
-                &plugin.artifact,
-                plugin.size,
-                plugin.size,
-                "cached",
-                task_id.as_deref(),
-            );
-            return Ok(target.to_string_lossy().into_owned());
-        }
+    if marketplace_artifact_matches(&partial, plugin.size, plugin.sha256.as_deref())? {
+        publish_marketplace_stage(
+            ctx,
+            &partial,
+            &target,
+            plugin.size,
+            plugin.sha256.as_deref(),
+        )?;
+        emit_marketplace_progress(
+            &window,
+            &db,
+            &plugin.artifact,
+            plugin.size,
+            plugin.size,
+            "cached",
+            task_id.as_deref(),
+        );
+        return Ok(target.to_string_lossy().into_owned());
     }
 
     let mut last_download_error = String::from("下载插件失败");
@@ -1364,7 +1505,7 @@ fn marketplace_download_execute(
             .ok()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        if partial_size > plugin.size {
+        if partial_size >= plugin.size {
             let _ = std::fs::remove_file(&partial);
         }
         let partial_size = std::fs::metadata(&partial)
@@ -1549,7 +1690,17 @@ fn marketplace_download_execute(
     if !download_completed {
         return Err(last_download_error);
     }
-    publish_marketplace_stage(ctx, &partial, &target, plugin.size)?;
+    if !marketplace_artifact_matches(&partial, plugin.size, plugin.sha256.as_deref())? {
+        std::fs::remove_file(&partial).map_err(|e| e.to_string())?;
+        return Err("DOWNLOAD_INTEGRITY_MISMATCH: 插件包与目录摘要不一致，请重新下载".into());
+    }
+    publish_marketplace_stage(
+        ctx,
+        &partial,
+        &target,
+        plugin.size,
+        plugin.sha256.as_deref(),
+    )?;
     emit_marketplace_progress(
         &window,
         &db,
@@ -1562,18 +1713,42 @@ fn marketplace_download_execute(
     Ok(target.to_string_lossy().into_owned())
 }
 
+fn marketplace_artifact_matches(
+    path: &std::path::Path,
+    size: u64,
+    digest: Option<&str>,
+) -> Result<bool, String> {
+    use sha2::{Digest, Sha256};
+    let input = match std::fs::File::open(path) {
+        Ok(input) => input,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    if input.metadata().map_err(|e| e.to_string())?.len() != size {
+        return Ok(false);
+    }
+    let Some(digest) = digest else {
+        return Ok(true);
+    };
+    let mut input = input.take(size + 1);
+    let mut hash = Sha256::new();
+    let bytes = std::io::copy(&mut input, &mut hash).map_err(|e| e.to_string())?;
+    Ok(bytes == size && format!("{:x}", hash.finalize()) == digest)
+}
+
 fn publish_marketplace_stage(
     ctx: &crate::task_runtime::Context,
     partial: &std::path::Path,
     target: &std::path::Path,
     size: u64,
+    digest: Option<&str>,
 ) -> Result<(), String> {
     ctx.check_cancelled()?;
     let transaction =
         crate::output_transaction::OutputTransaction::adopt_stage(target, partial, true)?;
     transaction.publish_durable(ctx, true, |stage| {
-        if std::fs::metadata(stage).map_err(|e| e.to_string())?.len() != size {
-            return Err("插件包大小与目录记录不一致".into());
+        if !marketplace_artifact_matches(stage, size, digest)? {
+            return Err("插件包大小或摘要与目录记录不一致".into());
         }
         Ok(())
     })?;
@@ -1644,14 +1819,19 @@ pub fn plugin_install_commit(
     token: String,
     marketplace_source_id: Option<i64>,
     task_id: Option<String>,
-    runtime: State<'_, Arc<crate::task_runtime::TaskRuntime>>,
+    approval: Option<cruciblebox_next2_runtime::package::Approval>,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let result = install.commit_with_runtime(&runtime, token, task_id.as_deref())?;
+    let result = install.commit_approved_with_runtime(
+        &install.task_runtime(),
+        token,
+        task_id.as_deref(),
+        approval,
+    )?;
     if let (Some(source_id), Some(plugin_id)) = (
-        marketplace_source_id,
+        marketplace_source_id.filter(|id| *id >= 0),
         result
             .get("data")
             .and_then(|data| data.get("id"))
@@ -1684,6 +1864,93 @@ pub fn plugin_install_discard(
 }
 
 /// 登记可信导入路径（对等 PluginInstaller 的 trustedPaths 登记；容量 50）。
+#[tauri::command(async)]
+pub fn plugin_resources_list(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    id: String,
+) -> Result<Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.resources.list(&id)
+}
+#[tauri::command(async)]
+pub fn plugin_resource_preview(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    id: String,
+    source: InstallSourceDto,
+) -> Result<Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.resources.preview(
+        &install,
+        &id,
+        crate::install::InstallSource {
+            source_type: source.source_type,
+            path: source.path,
+        },
+    )
+}
+#[tauri::command(async)]
+pub fn plugin_resource_commit(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    token: String,
+    approval: cruciblebox_next2_runtime::package::Approval,
+) -> Result<Value, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.resources.commit(&token, approval)
+}
+#[tauri::command(async)]
+pub fn plugin_resource_discard(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    token: String,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.resources.discard(&token)
+}
+#[tauri::command(async)]
+pub fn plugin_resource_remove(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    id: String,
+    resource_id: String,
+    version: String,
+) -> Result<(), String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    install.resources.remove(&id, &resource_id, &version)
+}
+#[tauri::command(async)]
+pub fn plugin_resource_download(
+    window: WebviewWindow,
+    install: State<'_, Arc<crate::install::InstallManager>>,
+    id: String,
+    resource_id: String,
+    release_id: String,
+    approval: cruciblebox_next2_runtime::package::Approval,
+) -> Result<String, String> {
+    if !is_main_window(&window) {
+        return Err("unauthorized".into());
+    }
+    crate::next2_resources::Manager::start_download(
+        install.inner().clone(),
+        id,
+        resource_id,
+        release_id,
+        approval,
+    )
+}
+
 #[tauri::command]
 pub fn plugin_register_import_path(
     window: WebviewWindow,
@@ -1701,71 +1968,32 @@ pub fn plugin_register_import_path(
 // plugin renderer session（1.8.3，对等 plugin.ipc.ts create/dispose-renderer-session）
 // ---------------------------------------------------------------------------
 
-/// 创建 renderer 会话。校验插件启用 + manifest 一致性后签发 session。
-/// color_scheme：宿主当前主题模式（"dark"/"light"），用于 index.html 首帧内联背景
-/// （Bug E：消除深色主题下 runtime.js 加载前的白屏闪烁）。
-#[tauri::command(async)]
-pub fn create_renderer_session(
-    window: WebviewWindow,
-    db: State<'_, Arc<Mutex<Db>>>,
-    protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
-    id: String,
-    color_scheme: Option<String>,
-) -> Result<serde_json::Value, String> {
-    if window.label() != "main" {
-        return Err("unauthorized".into());
-    }
-    let _ = (&db, &protocol, &id, &color_scheme);
-    Err(
-        "LEGACY_RUNTIME_RETIRED: plugin package and user data retained; install a Next plugin"
-            .into(),
-    )
-}
-
 /// 释放 renderer 会话（对等 disposeRendererSession）。
 #[tauri::command(async)]
 pub fn dispose_renderer_session(
     window: WebviewWindow,
     protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
-    gateway: State<'_, Mutex<crate::next_renderer::Gateway>>,
     token: String,
 ) -> Result<bool, String> {
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
     let removed = protocol.registry.lock().unwrap().dispose(&token);
-    gateway
-        .lock()
-        .map_err(|_| "INTERNAL_ERROR")?
-        .forget_session(&token);
     Ok(removed)
 }
 
-/// 插件宿主 → backend 消息转发（对等 plugin:send-message）。
-/// 1.9.2-a：惰性 spawn sidecar（首次调用时），消息路由到 backend 的 onMessage。
-/// 路由约定（1.9.11 起）：
-/// - 前端 bridge 直传 pluginId（宿主 webview 是可信调用方；renderer 无法直接
-///   invoke 命令，伪造面不存在）。旧版传 session token 的路径保留兼容：
-///   64-hex id 先经 registry 反查 plugin_id。
-/// - token 反查失败时返回明确的 SESSION_EXPIRED 错误（此前会落到 DB 查询报
-///   "plugin not found: <hex>"，前端只能看到笼统 INTERNAL_ERROR —— Bug C 排障主因）。
+/// Execute a manifest-declared API 6 command from the trusted main window.
 #[tauri::command(async)]
-pub fn plugin_send_message(
+pub fn plugin_execute_command(
     window: WebviewWindow,
-    backend: State<'_, Arc<crate::backend_process::BackendProcessManager>>,
-    protocol: State<'_, Arc<crate::plugin_protocol::ProtocolContext>>,
-    db: State<'_, Arc<Mutex<Db>>>,
+    backend: State<'_, Arc<crate::next_backend::Manager>>,
     id: String,
-    message: serde_json::Value,
+    command_id: String,
 ) -> Result<serde_json::Value, String> {
-    if window.label() != "main" {
+    if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let _ = (&backend, &protocol, &db, &id, &message);
-    Err(
-        "LEGACY_RUNTIME_RETIRED: plugin package and user data retained; install a Next plugin"
-            .into(),
-    )
+    backend.next2.execute_command(&id, &command_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,11 +2014,114 @@ pub fn db_status(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn api6_command_contributions_use_installation_root_and_keep_legacy_record_id() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("plugin");
+        std::fs::create_dir(&plugin).unwrap();
+        let manifest = serde_json::json!({"manifestVersion":6,"sdkApiVersion":6,"id":"third-party-command","version":"1.0.0","displayName":"Sample","description":"Fixture","publisher":{"id":"local","displayName":"Local"},"minHostVersion":"2.1.0-beta.4","sdk":{"min":6,"maxExclusive":7},"renderer":"dist/renderer.js","permissions":[],"background":false,"contributes":{"commands":[{"id":"sample-command","title":"Run sample","method":"sample.execute"}]},"exports":[],"dependencies":[],"resources":[],"files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)}]});
+        std::fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
+        let db = crate::db::Db::open(&root.path().join("data.db")).unwrap();
+        db.conn().lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,installed_path,enabled) VALUES ('retained-guid','third-party-command','1.0.0','Sample','',?1,1)",[plugin.to_string_lossy().as_ref()]).unwrap();
+        let commands = super::command_contributions(&db).unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].plugin_id, "retained-guid");
+        assert_eq!(commands[0].id, "sample-command");
+        db.set_plugin_enabled("retained-guid", false).unwrap();
+        assert!(super::command_contributions(&db).unwrap().is_empty());
+    }
+
     use super::{
         marketplace_catalog_urls, read_catalog_cache, write_catalog_cache, MarketplaceCatalog,
     };
     use crate::db::Db;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn same_size_marketplace_cache_corruption_is_never_reused_as_verified() {
+        use sha2::{Digest, Sha256};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("plugin.zip");
+        std::fs::write(&path, b"abc").unwrap();
+        let digest = format!("{:x}", Sha256::digest(b"abc"));
+        assert!(super::marketplace_artifact_matches(&path, 3, Some(&digest)).unwrap());
+        std::fs::write(&path, b"abd").unwrap();
+        assert!(!super::marketplace_artifact_matches(&path, 3, Some(&digest)).unwrap());
+        assert!(!super::marketplace_artifact_matches(
+            &root.path().join("missing"),
+            3,
+            Some(&digest)
+        )
+        .unwrap());
+    }
+
+    /// Opt-in check against the real release assets; never runs in the offline test suite.
+    #[test]
+    #[ignore = "requires an explicitly selected live network route"]
+    fn live_update_and_marketplace_assets() {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let proxy = std::env::var("CRUCIBLEBOX_LIVE_PROXY").expect("explicit proxy required");
+        let policy = crate::network_policy::NetworkPolicy {
+            mode: "auto".into(),
+            proxy_url: Some(proxy),
+        };
+        let latest_url =
+            "https://github.com/Xuancheng75/CrucibleBox/releases/download/tauri-beta/latest.json";
+        let (agent, route) = policy.agent_for_url(latest_url, 10, 30).unwrap();
+        let latest: serde_json::Value = serde_json::from_reader(
+            agent
+                .get(latest_url)
+                .call()
+                .unwrap()
+                .into_reader()
+                .take(2 * 1024 * 1024),
+        )
+        .unwrap();
+        assert!(latest["platforms"]["windows-x86_64"]["signature"]
+            .as_str()
+            .is_some_and(|signature| !signature.is_empty()));
+        let catalog_url = &marketplace_catalog_urls("beta")[0];
+        let catalog: serde_json::Value = serde_json::from_reader(
+            agent
+                .get(catalog_url)
+                .call()
+                .unwrap()
+                .into_reader()
+                .take(super::MARKETPLACE_MAX_CATALOG_BYTES),
+        )
+        .unwrap();
+        let plugin = catalog["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .min_by_key(|plugin| plugin["size"].as_u64().unwrap())
+            .unwrap();
+        let url = plugin["url"].as_str().unwrap();
+        let size = plugin["size"].as_u64().unwrap();
+        let mut data = Vec::new();
+        agent
+            .get(url)
+            .call()
+            .unwrap()
+            .into_reader()
+            .take(size + 1)
+            .read_to_end(&mut data)
+            .unwrap();
+        assert_eq!(data.len() as u64, size);
+        let sha256 = format!("{:x}", Sha256::digest(&data));
+        assert_eq!(plugin["sha256"].as_str(), Some(sha256.as_str()));
+        let evidence =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../artifacts/next2/p2");
+        std::fs::write(evidence.join("live-official-plugin.zip"), data).unwrap();
+        let report = serde_json::json!({"transport":"production shared ureq policy", "route":route, "latestVersion":latest["version"],"hostVersion":env!("CARGO_PKG_VERSION"),"catalogPlugins":catalog["plugins"].as_array().unwrap().len(),"artifact":plugin["artifact"],"bytes":size,"sha256":sha256,"updaterInstallationTested":false});
+        std::fs::write(
+            evidence.join("live-update-assets.json"),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+        println!("{report}");
+    }
 
     #[test]
     fn catalog_cache_survives_db_reopen_and_separates_channels() {

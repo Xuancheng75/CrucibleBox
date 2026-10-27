@@ -2,6 +2,7 @@
 ;(() => {
   const root = document.getElementById('root')
   const nonce = root.dataset.sessionToken
+  const wireVersion = 4
   let connected = false
   let disposed = false
   let port
@@ -59,7 +60,9 @@
         Number(
           request.method === 'backend.call'
             ? root.dataset.backendTimeout
-            : root.dataset.requestTimeout
+            : request.target?.kind === 'platform' && request.method === 'files.choose'
+              ? root.dataset.interactiveTimeout
+              : root.dataset.requestTimeout
         )
       )
       pending.set(request.requestId, { resolve, reject, timer })
@@ -80,7 +83,7 @@
       event.source !== parent ||
       data?.kind !== 'next-connect' ||
       data.nonce !== nonce ||
-      data.wireVersion !== 3 ||
+      data.wireVersion !== wireVersion ||
       !/^[a-f0-9]{64}$/.test(data.session) ||
       event.ports.length !== 1
     )
@@ -126,7 +129,7 @@
     }
     try {
       ;({ validateAppearance, validateFilesDropped } = await import(
-        new URL('./next-api.mjs', location.href).href
+        new URL('./frame-validation.mjs', location.href).href
       ))
       if (disposed) return
       applyAppearance(data.appearance)
@@ -167,5 +170,5 @@
   }, Number(root.dataset.handshakeTimeout))
   addEventListener('message', connect)
   addEventListener('pagehide', () => close('SESSION_DENIED'), { once: true })
-  parent.postMessage({ kind: 'next-ready', nonce, wireVersion: 3 }, '*')
+  parent.postMessage({ kind: 'next-ready', nonce, wireVersion }, '*')
 })()

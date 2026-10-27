@@ -59,7 +59,7 @@ export default function App() {
   const activePluginId = useAppStore((s) => s.activePluginId)
   const setActivityTab = useAppStore((s) => s.setActivityTab)
   const setPluginImportOpen = useAppStore((s) => s.setPluginImportOpen)
-  // 全窗口拖拽导入（插件 zip/目录或文档与知识库文件）+ 全局安装确认弹窗
+  // 全窗口拖拽导入（插件包/目录及插件声明的文件类型）+ 全局安装确认弹窗
   const { dragActive, dragTarget } = useGlobalPluginDrop()
 
   useEffect(() => {
@@ -118,34 +118,6 @@ export default function App() {
     let unlisten: (() => void) | undefined
     listen<{ pluginId: string; status: string }>('plugin:status-change', (event) => {
       setPluginStatus(event.payload.pluginId, event.payload.status as PluginLifecycleStatus)
-    }).then((fn) => {
-      unlisten = fn
-    })
-    return () => unlisten?.()
-  }, [])
-
-  // 1.9.17：剪贴板监控事件转发（宿主侧 clipboard_monitor 广播 → 插件 onMessage）
-  useEffect(() => {
-    let unlisten: (() => void) | undefined
-    listen<{ pluginId: string; text: string }>('plugin:clipboard', (event) => {
-      const deliver = async () => {
-        const delays = [0, 250, 1000, 2000]
-        let lastError: unknown
-        for (const delay of delays) {
-          if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay))
-          try {
-            await tauriApi.plugin.sendMessage(event.payload.pluginId, {
-              type: 'clipboard:changed',
-              text: event.payload.text
-            })
-            return
-          } catch (error) {
-            lastError = error
-          }
-        }
-        console.warn('[clipboard] failed to deliver clipboard event', lastError)
-      }
-      void deliver()
     }).then((fn) => {
       unlisten = fn
     })

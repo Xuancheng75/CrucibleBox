@@ -1,0 +1,204 @@
+{
+  "date": "2026-10-27",
+  "status": "passed-delivered",
+  "manifest": 6,
+  "wire": 4,
+  "data": 1,
+  "hostFrontendTests": 79,
+  "apiContractTests": 42,
+  "currentPackageManifests": 8,
+  "rustChecks": [
+    {
+      "name": "task-core-fmt",
+      "exitCode": 0,
+      "log": "task-core-fmt.log"
+    },
+    {
+      "name": "task-core-clippy",
+      "exitCode": 0,
+      "log": "task-core-clippy.log"
+    },
+    {
+      "name": "task-core-test",
+      "exitCode": 0,
+      "log": "task-core-test.log"
+    },
+    {
+      "name": "task-store-fmt",
+      "exitCode": 0,
+      "log": "task-store-fmt.log"
+    },
+    {
+      "name": "task-store-clippy",
+      "exitCode": 0,
+      "log": "task-store-clippy.log"
+    },
+    {
+      "name": "task-store-test",
+      "exitCode": 0,
+      "log": "task-store-test.log"
+    },
+    {
+      "name": "file-publication-fmt",
+      "exitCode": 0,
+      "log": "file-publication-fmt.log"
+    },
+    {
+      "name": "file-publication-clippy",
+      "exitCode": 0,
+      "log": "file-publication-clippy.log"
+    },
+    {
+      "name": "file-publication-test",
+      "exitCode": 0,
+      "log": "file-publication-test.log"
+    },
+    {
+      "name": "task-runtime-fmt",
+      "exitCode": 0,
+      "log": "task-runtime-fmt.log"
+    },
+    {
+      "name": "task-runtime-clippy",
+      "exitCode": 0,
+      "log": "task-runtime-clippy.log"
+    },
+    {
+      "name": "task-runtime-test",
+      "exitCode": 0,
+      "log": "task-runtime-test.log"
+    },
+    {
+      "name": "repository-fmt",
+      "exitCode": 0,
+      "log": "repository-fmt.log"
+    },
+    {
+      "name": "repository-clippy",
+      "exitCode": 0,
+      "log": "repository-clippy.log"
+    },
+    {
+      "name": "repository-test",
+      "exitCode": 0,
+      "log": "repository-test.log"
+    },
+    {
+      "name": "next-data-fmt",
+      "exitCode": 0,
+      "log": "next-data-fmt.log"
+    },
+    {
+      "name": "next-data-clippy",
+      "exitCode": 0,
+      "log": "next-data-clippy.log"
+    },
+    {
+      "name": "next-data-test",
+      "exitCode": 0,
+      "log": "next-data-test.log"
+    },
+    {
+      "name": "next2-protocol-fmt",
+      "exitCode": 0,
+      "log": "next2-protocol-fmt.log"
+    },
+    {
+      "name": "next2-protocol-clippy",
+      "exitCode": 0,
+      "log": "next2-protocol-clippy.log"
+    },
+    {
+      "name": "next2-protocol-test",
+      "exitCode": 0,
+      "log": "next2-protocol-test.log"
+    },
+    {
+      "name": "next2-runtime-fmt",
+      "exitCode": 0,
+      "log": "next2-runtime-fmt.log"
+    },
+    {
+      "name": "next2-runtime-clippy",
+      "exitCode": 0,
+      "log": "next2-runtime-clippy.log"
+    },
+    {
+      "name": "next2-runtime-test",
+      "exitCode": 0,
+      "log": "next2-runtime-test.log"
+    },
+    {
+      "name": "runner-fmt",
+      "exitCode": 0,
+      "log": "runner-fmt.log"
+    },
+    {
+      "name": "runner-clippy",
+      "exitCode": 0,
+      "log": "runner-clippy.log"
+    },
+    {
+      "name": "runner-test",
+      "exitCode": 0,
+      "log": "runner-test.log"
+    },
+    {
+      "name": "native-runtime-feature",
+      "exitCode": 0,
+      "log": "native-runtime-feature.log"
+    },
+    {
+      "name": "host-fmt",
+      "exitCode": 0,
+      "log": "host-fmt.log"
+    },
+    {
+      "name": "host-clippy",
+      "exitCode": 0,
+      "log": "host-clippy.log"
+    },
+    {
+      "name": "host-test",
+      "exitCode": 0,
+      "log": "host-test.log"
+    },
+    {
+      "name": "host-native-integration",
+      "exitCode": 0,
+      "log": "host-native-integration.log"
+    }
+  ],
+  "scope": "generic platform, real JS/native backend integration, not a repeat of every business flow",
+  "hostTests": 125,
+  "nativeInstalledBackendIntegration": 1,
+  "nativeProcessTests": 3,
+  "nativePackageTests": 4,
+  "npmCheck": "passed",
+  "frontendBuild": "passed",
+  "releaseBuild": "passed with custom-protocol",
+  "delivery": [
+    {
+      "file": "cruciblebox.exe",
+      "sha256": "35602fd6aa9392b121964f846f6212bc284b7e0fc7d8efff7026d2820e1557f6",
+      "bytes": 15060480
+    },
+    {
+      "file": "cruciblebox-plugin-host.exe",
+      "sha256": "72d784484ba3e4d1db1d1a4bad4c25a8a9c5957232ea85330da0a75bc51354dc",
+      "bytes": 3552768
+    }
+  ],
+  "defaultIgnoredTests": 6,
+  "ignoredNativeTestVerifiedSeparately": true,
+  "manualDesktopAcceptance": "not repeated in this architecture change",
+  "audit": {
+    "activeApi": 6,
+    "businessIdTextMatches": 0,
+    "legacyRuntime": "archived; metadata and raw data retained",
+    "hostBuildNeedsBusinessSourceDirectory": false,
+    "temporaryFixtures": "removed after validation",
+    "legacyPublicTypes": "archived; host keeps metadata types only"
+  },
+  "archiveCommit": "518e290"
+}

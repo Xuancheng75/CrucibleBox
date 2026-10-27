@@ -98,7 +98,7 @@ pub fn copy_json(
         .chain(std::iter::once((index_key.clone(), index)))
     {
         let raw = serde_json::to_string(&value).map_err(|_| Error::Invalid)?;
-        cruciblebox_next_protocol::validate_payload(&raw).map_err(|_| Error::Invalid)?;
+        cruciblebox_next2_protocol::validate_payload(&raw).map_err(|_| Error::Invalid)?;
         let existing: Option<String> = sql(tx
             .query_row(
                 "SELECT value FROM plugin_storage WHERE plugin_id=?1 AND key=?2",
@@ -183,7 +183,7 @@ mod tests {
     use super::*;
     fn fixture() -> Connection {
         let c = Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE TABLE plugins(id TEXT PRIMARY KEY); CREATE TABLE plugin_storage(plugin_id TEXT,key TEXT,value TEXT,PRIMARY KEY(plugin_id,key)); CREATE TABLE plugin_storage_migrations(plugin_id TEXT,migration TEXT,PRIMARY KEY(plugin_id,migration)); INSERT INTO plugins VALUES('diary'),('other');").unwrap();
+        c.execute_batch("CREATE TABLE plugins(id TEXT PRIMARY KEY); CREATE TABLE plugin_storage(plugin_id TEXT,key TEXT,value TEXT,PRIMARY KEY(plugin_id,key)); CREATE TABLE plugin_storage_migrations(plugin_id TEXT,migration TEXT,PRIMARY KEY(plugin_id,migration)); INSERT INTO plugins VALUES('sample-delta'),('other');").unwrap();
         c
     }
     #[test]
@@ -194,14 +194,20 @@ mod tests {
             serde_json::to_string(&"中文🦀\\\"".repeat(70_000)).unwrap()
         );
         c.execute(
-            "INSERT INTO plugin_storage VALUES('diary','entry:2026-10-02',?1)",
+            "INSERT INTO plugin_storage VALUES('sample-delta','entry:2026-10-02',?1)",
             [&raw],
         )
         .unwrap();
-        let (out, index) =
-            copy_json(&mut c, "diary", "diary-v1", "entry:2026-10-02", &raw).unwrap();
+        let (out, index) = copy_json(
+            &mut c,
+            "sample-delta",
+            "sample-delta-v1",
+            "entry:2026-10-02",
+            &raw,
+        )
+        .unwrap();
         assert!(matches!(out,Outcome::Applied{copied} if copied>2));
-        assert_eq!(read_json(&mut c, "diary", &index).unwrap(), raw);
+        assert_eq!(read_json(&mut c, "sample-delta", &index).unwrap(), raw);
         let old: String = c
             .query_row(
                 "SELECT value FROM plugin_storage WHERE key='entry:2026-10-02'",
@@ -216,9 +222,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            copy_json(&mut c, "diary", "diary-v1", "entry:2026-10-02", &raw)
-                .unwrap()
-                .0,
+            copy_json(
+                &mut c,
+                "sample-delta",
+                "sample-delta-v1",
+                "entry:2026-10-02",
+                &raw
+            )
+            .unwrap()
+            .0,
             Outcome::AlreadyApplied
         );
         assert!(read_json(&mut c, "other", &index).is_err());
@@ -228,13 +240,13 @@ mod tests {
         let mut c = fixture();
         let raw = serde_json::to_string(&"a".repeat(70_000)).unwrap();
         c.execute(
-            "INSERT INTO plugin_storage VALUES('diary','items',?1)",
+            "INSERT INTO plugin_storage VALUES('sample-delta','items',?1)",
             [&raw],
         )
         .unwrap();
         c.execute_batch("CREATE TRIGGER fail_index BEFORE INSERT ON plugin_storage WHEN NEW.key LIKE 'next.blob.%' BEGIN SELECT RAISE(ABORT,'fault'); END;").unwrap();
         assert_eq!(
-            copy_json(&mut c, "diary", "items-v1", "items", &raw),
+            copy_json(&mut c, "sample-delta", "items-v1", "items", &raw),
             Err(Error::Unavailable)
         );
         let rows: i64 = c
@@ -248,15 +260,15 @@ mod tests {
             .unwrap();
         assert_eq!(marks, 0);
         c.execute_batch("DROP TRIGGER fail_index").unwrap();
-        let (_, index) = copy_json(&mut c, "diary", "items-v1", "items", &raw).unwrap();
+        let (_, index) = copy_json(&mut c, "sample-delta", "items-v1", "items", &raw).unwrap();
         c.execute(
             "UPDATE plugin_storage SET value='\"00\"' WHERE key LIKE 'next.chunk.%'",
             [],
         )
         .unwrap();
-        assert!(read_json(&mut c, "diary", &index).is_err());
+        assert!(read_json(&mut c, "sample-delta", &index).is_err());
         assert_eq!(
-            copy_json(&mut c, "diary", "items-v1", "items", "{}"),
+            copy_json(&mut c, "sample-delta", "items-v1", "items", "{}"),
             Err(Error::PlanChanged)
         );
     }
@@ -265,18 +277,18 @@ mod tests {
         let mut c = fixture();
         let raw = "{\"content\":\"old\"}";
         c.execute(
-            "INSERT INTO plugin_storage VALUES('diary','notes',?1)",
+            "INSERT INTO plugin_storage VALUES('sample-delta','notes',?1)",
             [raw],
         )
         .unwrap();
         let index = format!("next.blob.{}.index", hash(b"notes"));
         c.execute(
-            "INSERT INTO plugin_storage VALUES('diary',?1,'user-existing')",
+            "INSERT INTO plugin_storage VALUES('sample-delta',?1,'user-existing')",
             [&index],
         )
         .unwrap();
         assert_eq!(
-            copy_json(&mut c, "diary", "notes-v1", "notes", raw),
+            copy_json(&mut c, "sample-delta", "notes-v1", "notes", raw),
             Err(Error::TargetConflict)
         );
         let count: i64 = c
@@ -284,7 +296,7 @@ mod tests {
             .unwrap();
         assert_eq!(count, 2);
         assert_eq!(
-            copy_json(&mut c, "diary", "notes-v2", "notes", "{}"),
+            copy_json(&mut c, "sample-delta", "notes-v2", "notes", "{}"),
             Err(Error::SourceChanged)
         );
         let old: String = c
@@ -301,11 +313,12 @@ mod tests {
         let mut c = fixture();
         let raw = serde_json::to_string(&"🦀中文".repeat(60000)).unwrap();
         c.execute(
-            "INSERT INTO plugin_storage VALUES('diary','draft:2026-10-02',?1)",
+            "INSERT INTO plugin_storage VALUES('sample-delta','draft:2026-10-02',?1)",
             [&raw],
         )
         .unwrap();
-        let (_, index) = copy_json(&mut c, "diary", "draft-v1", "draft:2026-10-02", &raw).unwrap();
+        let (_, index) =
+            copy_json(&mut c, "sample-delta", "draft-v1", "draft:2026-10-02", &raw).unwrap();
         let path = std::env::temp_dir().join(format!(
             "cb-next-blob-{}-{}.db",
             std::process::id(),
@@ -318,9 +331,9 @@ mod tests {
             .unwrap();
         drop(c);
         let mut c = Connection::open(path).unwrap();
-        assert_eq!(read_json(&mut c, "diary", &index).unwrap(), raw);
+        assert_eq!(read_json(&mut c, "sample-delta", &index).unwrap(), raw);
         assert_eq!(
-            copy_json(&mut c, "diary", "draft-v1", "draft:2026-10-02", &raw)
+            copy_json(&mut c, "sample-delta", "draft-v1", "draft:2026-10-02", &raw)
                 .unwrap()
                 .0,
             Outcome::AlreadyApplied
@@ -330,7 +343,7 @@ mod tests {
             [format!("next.chunk.{}.0", hash(raw.as_bytes()))],
         )
         .unwrap();
-        assert!(read_json(&mut c, "diary", &index).is_err());
+        assert!(read_json(&mut c, "sample-delta", &index).is_err());
         let original: String = c
             .query_row(
                 "SELECT value FROM plugin_storage WHERE key='draft:2026-10-02'",
@@ -348,11 +361,11 @@ mod tests {
     fn malformed_and_oversized_source_refused_without_write() {
         let mut c = fixture();
         assert_eq!(
-            copy_json(&mut c, "diary", "v1", "entry", "invalid"),
+            copy_json(&mut c, "sample-delta", "v1", "entry", "invalid"),
             Err(Error::Invalid)
         );
         assert_eq!(
-            copy_json(&mut c, "diary", "v1", "entry", &"x".repeat(MAX + 1)),
+            copy_json(&mut c, "sample-delta", "v1", "entry", &"x".repeat(MAX + 1)),
             Err(Error::Invalid)
         );
     }

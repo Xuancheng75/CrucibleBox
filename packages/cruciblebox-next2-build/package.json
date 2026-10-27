@@ -1,0 +1,22 @@
+{
+  "name": "@cruciblebox/next2-build",
+  "version": "2.0.0-alpha.2",
+  "type": "module",
+  "bin": {
+    "cruciblebox-next2": "./cli.mjs"
+  },
+  "files": [
+    "cli.mjs",
+    "templates",
+    "README.md"
+  ],
+  "dependencies": {
+    "esbuild": "0.25.12",
+    "adm-zip": "0.6.0",
+    "@cruciblebox/next2-api": "6.0.0-alpha.2"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "license": "MIT"
+}

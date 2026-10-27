@@ -18,6 +18,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "shared/**/*.ts", "packages/openbox-rpc/src/**/*.ts"],
+  "include": ["shared/themes/**/*.ts", "shared/types/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "out", "dist"]
 }

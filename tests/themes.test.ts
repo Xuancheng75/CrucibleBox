@@ -7,22 +7,17 @@ import {
   isPresetTheme,
   getPresetTheme,
   createLightTokens,
-  createDarkTokens,
-  createCyberTokens,
-  createNeonDistrictTokens
+  createDarkTokens
 } from '../shared/themes/presets'
 import { themeToCssVars, getThemeCssVarKeys } from '../shared/themes/css-vars'
 import { normalizeTheme } from '../shared/themes/normalize'
 import cyberThemeJson from '../themes/cyber.json'
-import neonDistrictThemeJson from '../themes/neon-district.json'
 
 const globalCss = ['base', 'cyber', 'neon']
-  .map((part) => readFileSync(resolve(__dirname, `../src/styles/${part}.css`), 'utf-8'))
+  .map((part) =>
+    readFileSync(resolve(__dirname, `../tauri-frontend/src/styles/${part}.css`), 'utf-8')
+  )
   .join('\n')
-const themeManagerPluginJson = JSON.parse(
-  readFileSync(resolve(__dirname, '../plugins/theme-manager/plugin.json'), 'utf-8')
-)
-
 function extractRule(css: string, selector: string): string | null {
   const idx = css.indexOf(selector)
   if (idx === -1) return null
@@ -37,21 +32,6 @@ function extractRule(css: string, selector: string): string | null {
     }
   }
   return null
-}
-
-function contrastRatio(foreground: string, background: string): number {
-  const luminance = (hex: string) => {
-    const channels = [1, 3, 5].map(
-      (offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255
-    )
-    const [red, green, blue] = channels.map((value) =>
-      value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
-    )
-    return red * 0.2126 + green * 0.7152 + blue * 0.0722
-  }
-  const first = luminance(foreground)
-  const second = luminance(background)
-  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05)
 }
 
 describe('Preset themes', () => {
@@ -77,39 +57,13 @@ describe('Preset themes', () => {
   it('isPresetTheme distinguishes preset ids', () => {
     expect(isPresetTheme('light')).toBe(true)
     expect(isPresetTheme('dark')).toBe(true)
-    expect(isPresetTheme('cyber')).toBe(true)
+    expect(isPresetTheme('cyber')).toBe(false)
     expect(isPresetTheme('custom-id-123')).toBe(false)
   })
 
   it('resolves canonical preset data by id', () => {
-    expect(getPresetTheme('cyber')).toBe(PRESET_THEMES.find((t) => t.id === 'cyber'))
+    expect(getPresetTheme('dark')).toBe(PRESET_THEMES.find((t) => t.id === 'dark'))
     expect(getPresetTheme('custom-id-123')).toBeUndefined()
-  })
-
-  it('cyber preset keeps the intended neon semantic palette', () => {
-    const cyber = createCyberTokens()
-    expect(cyber.colorPrimary).toBe('#00e5ff')
-    expect(cyber.colorSuccess).toBe('#00ff9d')
-    expect(cyber.colorWarning).toBe('#fce205')
-    expect(cyber.colorError).toBe('#ff003c')
-    expect(cyber.colorBgLayout).not.toBe('#000000')
-  })
-
-  it('neon district is a separate sharp-edged cyberpunk preset', () => {
-    const district = createNeonDistrictTokens()
-    expect(getPresetTheme('neon-district')?.tokens).toEqual(district)
-    expect(district.colorPrimary).toBe('#00e5ff')
-    expect(district.colorWarning).toBe('#fce205')
-    expect(district.colorError).toBe('#ff2b78')
-    expect(district.borderRadius).toBe(2)
-    expect(district).not.toEqual(createCyberTokens())
-  })
-
-  it('keeps distributable theme JSON files synchronized with built-in tokens', () => {
-    expect(cyberThemeJson.id).toBe('cyber')
-    expect(cyberThemeJson.tokens).toEqual(createCyberTokens())
-    expect(neonDistrictThemeJson.id).toBe('neon-district')
-    expect(neonDistrictThemeJson.tokens).toEqual(createNeonDistrictTokens())
   })
 
   it('token factories produce complete token sets', () => {
@@ -119,15 +73,6 @@ describe('Preset themes', () => {
     expect(dark.colorPrimary).toBe('#4096ff')
     expect(light.borderRadius).toBe(10)
     expect(typeof light.fontFamily).toBe('string')
-  })
-
-  it('keeps primary text readable in every preset', () => {
-    expect(PRESET_THEMES.length).toBeGreaterThanOrEqual(6)
-    for (const theme of PRESET_THEMES) {
-      expect(
-        contrastRatio(theme.tokens.colorText, theme.tokens.colorBgContainer)
-      ).toBeGreaterThanOrEqual(4.5)
-    }
   })
 
   it('migrates partial legacy custom themes onto a complete semantic token set', () => {
@@ -156,21 +101,9 @@ describe('Preset themes', () => {
 })
 
 describe('Theme CSS contract', () => {
-  it('cyber preset display name is 科幻面板 while keeping id', () => {
-    const cyber = getPresetTheme('cyber')
-    expect(cyber).toBeDefined()
-    expect(cyber!.id).toBe('cyber')
-    expect(cyber!.name).toBe('科幻面板')
-  })
-
   it('distributable cyber JSON name matches preset', () => {
     expect(cyberThemeJson.id).toBe('cyber')
     expect(cyberThemeJson.name).toBe('科幻面板')
-  })
-
-  it('theme manager plugin description uses the new display name', () => {
-    expect(themeManagerPluginJson.description).toContain('科幻面板')
-    expect(themeManagerPluginJson.description).not.toContain('赛博朋克')
   })
 
   it('cyber HUD strip uses symmetric corner cuts like the search bar', () => {
@@ -236,18 +169,18 @@ describe('Theme CSS contract', () => {
 
 describe('themeToCssVars', () => {
   it('emits mode and theme id variables', () => {
-    const vars = themeToCssVars(PRESET_THEMES[0])
+    const vars = themeToCssVars(normalizeTheme(PRESET_THEMES[0])!)
     expect(vars['--ob-mode']).toBe(PRESET_THEMES[0].mode)
     expect(vars['--ob-theme-id']).toBe(PRESET_THEMES[0].id)
   })
 
   it('renders numeric tokens as pixels', () => {
-    const vars = themeToCssVars(PRESET_THEMES[0])
+    const vars = themeToCssVars(normalizeTheme(PRESET_THEMES[0])!)
     expect(vars['--ob-radius']).toBe('10px')
   })
 
   it('renders color tokens verbatim', () => {
-    const vars = themeToCssVars(PRESET_THEMES[0])
+    const vars = themeToCssVars(normalizeTheme(PRESET_THEMES[0])!)
     expect(vars['--ob-color-primary']).toBe(PRESET_THEMES[0].tokens.colorPrimary)
     expect(vars['--ob-colorPrimary']).toBe(PRESET_THEMES[0].tokens.colorPrimary)
   })
@@ -262,11 +195,13 @@ describe('themeToCssVars', () => {
 })
 
 it('primary button text follows beta3 theme contrast rather than fixed white', () => {
-  const cyber = themeToCssVars(PRESET_THEMES.find((theme) => theme.id === 'cyber')!)
-  const light = themeToCssVars({
-    ...DEFAULT_THEME,
-    tokens: { ...DEFAULT_THEME.tokens, colorPrimary: '#123456' }
-  })
+  const cyber = themeToCssVars(normalizeTheme(cyberThemeJson)!)
+  const light = themeToCssVars(
+    normalizeTheme({
+      ...DEFAULT_THEME,
+      tokens: { ...DEFAULT_THEME.tokens, colorPrimary: '#123456' }
+    })!
+  )
   expect(cyber['--ob-color-primary-contrast']).toBe('#000000')
   expect(light['--ob-color-primary-contrast']).toBe('#ffffff')
   expect(getThemeCssVarKeys()).toContain('--ob-color-primary-contrast')

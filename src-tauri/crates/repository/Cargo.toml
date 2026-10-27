@@ -8,7 +8,7 @@ default = []
 test-fixtures = []
 
 [dependencies]
-cruciblebox-next-protocol = { path = "../next-protocol" }
+cruciblebox-next2-protocol = { path = "../next2-protocol" }
 base64 = "0.22"
 sha2 = "0.10"
 getrandom = "0.2"

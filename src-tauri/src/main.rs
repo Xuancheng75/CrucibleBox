@@ -8,63 +8,39 @@
 
 mod app;
 mod archive;
-mod archive_service;
 #[path = "retired_backend.rs"]
 mod backend_process;
-#[cfg(all(test, feature = "legacy-fixtures"))]
-mod clipboard_monitor;
 mod commands;
 mod data_dir;
 mod db;
 mod diagnostics;
-mod document_analyzer;
-mod document_chunker;
-mod document_converter;
-mod document_engine_cache;
-mod document_engine_service;
-mod document_engine_task;
-mod document_layout;
-mod document_parser;
-mod document_quality;
-mod document_structure;
-mod document_text;
-mod document_worker;
-mod envelope_host;
-mod formula_ocr;
 mod host_services;
 mod host_task;
 mod install;
 mod journal;
-#[cfg(all(test, feature = "legacy-fixtures"))]
-#[path = "backend_process.rs"]
-mod legacy_backend_fixture;
 mod manifest;
 mod marketplace_download;
 mod marketplace_transport;
 mod network_policy;
+mod next2_files;
+mod next2_host;
+mod next2_install;
+mod next2_resources;
 mod next_backend;
 mod next_renderer;
-mod next_results;
-mod next_storage;
-mod next_trusted;
-mod ocr_worker;
+mod platform_storage;
+
 mod output_transaction;
-mod pdf_parser;
-mod permissions;
 mod platform_service;
 mod plugin_protocol;
 mod plugin_session;
 mod rand_token;
 mod task_runtime;
 mod transaction;
-mod unienv_catalog;
-mod unienv_install;
-mod unienv_service;
-mod unienv_task;
-mod unienv_versions;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+static SHUTDOWN_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use tauri::{Emitter, Manager};
 
 type AppEmitter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
@@ -131,12 +107,41 @@ fn main() {
         )
         // 插件 renderer 自定义协议（1.8.3）：http://cruciblebox-plugin.localhost/<token>/<res>
         // handler 经 app_handle.state 取 registry（setup 中 manage）
-        .manage(Mutex::new(next_renderer::Gateway::default()))
         .register_uri_scheme_protocol(plugin_session::PLUGIN_RENDERER_SCHEME, |ctx, request| {
             let protocol = ctx
                 .app_handle()
                 .state::<Arc<plugin_protocol::ProtocolContext>>();
             plugin_protocol::handle_protocol(&protocol, request.uri().to_string())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                api.prevent_close();
+                if SHUTDOWN_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                diagnostics::record("shutdown-requested", None);
+                let app = window.app_handle().clone();
+                std::thread::spawn(move || {
+                    let result = app.state::<Arc<next_backend::Manager>>().shutdown();
+                    match result {
+                        Ok(()) => app.exit(0),
+                        Err(error) => {
+                            diagnostics::record("shutdown-failed", None);
+                            eprintln!("[next2] shutdown failed: {error}");
+                            SHUTDOWN_STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+                            use tauri_plugin_dialog::DialogExt;
+                            app.dialog()
+                                .message(format!("插件进程尚未确认停止，窗口保持打开。\n{error}"))
+                                .title("无法完成退出")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                .show(|_| {});
+                        }
+                    }
+                });
+            }
         })
         .setup(|app| {
             // 1) L3 数据路径迁移。
@@ -193,15 +198,9 @@ fn main() {
             network_policy::reload(&db);
             let task_runtime = task_runtime::TaskRuntime::open(&data_dir.join("next-tasks.sqlite"))
                 .unwrap_or_else(|error| show_fatal_error(&format!("任务日志无法初始化：{error}")));
-            let ocr_worker = Arc::new(ocr_worker::OcrWorkerManager::discover(
-                std::time::Duration::from_secs(15 * 60),
-            ));
-            let services = Arc::new(host_services::Services::with_document_worker(
+            let services = Arc::new(host_services::Services::with_platform(
                 task_runtime.clone(),
-                Some(ocr_worker.clone()),
-                app.path().resource_dir().ok(),
                 Some(app.handle().clone()),
-                Some(data_dir.join("runtimes/document")),
             ));
             let backend =
                 backend_process::BackendProcessManager::with_services(db.clone(), services.clone());
@@ -213,7 +212,6 @@ fn main() {
             app.manage(next_backend.clone());
             app.manage(data_dir.clone());
             app.manage(backend.clone());
-            app.manage(ocr_worker);
 
             // 4.1) 插件安装链：plugins_dir 统一为迁移根（%APPDATA%\cruciblebox\plugins，
             //      与 L3 迁移及存量 installed_path 一致；1.9.12 及之前误用 identifier 根
@@ -245,29 +243,18 @@ fn main() {
             });
             app.manage(task_runtime.clone());
             backend.set_emitter(emitter.clone());
-            services.document.set_emitter(emitter.clone());
-            services.document.set_observer(host_task::executor_observer(
-                db.clone(),
-                emitter.clone(),
-                "document-engine",
-            ));
-            services.unienv.set_observer(host_task::executor_observer(
-                db.clone(),
-                emitter.clone(),
-                "unienv",
-            ));
             task_runtime.set_observer(
                 "marketplace",
                 host_task::executor_observer(db.clone(), emitter.clone(), "marketplace"),
             );
-            for owner in ["archive-extractor", "plugin-process", "plugin-install"] {
+            for owner in ["plugin-process", "plugin-install"] {
                 task_runtime.set_observer(
                     owner,
                     host_task::executor_observer(db.clone(), emitter.clone(), owner),
                 );
             }
             // 1.9.18：剪贴板插件的监控必须在应用启动时就运行，不能依赖用户先打开插件页面。
-            backend.activate_enabled_with_permission(crate::permissions::CLIPBOARD);
+            backend.retain_unsupported_disabled();
             diagnostics::record("plugins-ready", None);
 
             // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）
@@ -290,6 +277,7 @@ fn main() {
             commands::settings_set,
             commands::settings_get_all,
             commands::network_diagnose,
+            commands::network_settings_set,
             commands::app_get_version,
             commands::app_get_platform,
             commands::app_fault_history,
@@ -315,6 +303,7 @@ fn main() {
             commands::marketplace_download_plugin,
             commands::marketplace_cancel_task,
             commands::marketplace_catalog,
+            commands::marketplace_catalog_import,
             commands::marketplace_sources_list,
             commands::marketplace_sources_add,
             commands::marketplace_sources_set_enabled,
@@ -323,6 +312,12 @@ fn main() {
             commands::plugin_install_commit,
             commands::plugin_install_discard,
             commands::plugin_register_import_path,
+            commands::plugin_resources_list,
+            commands::plugin_resource_preview,
+            commands::plugin_resource_commit,
+            commands::plugin_resource_discard,
+            commands::plugin_resource_remove,
+            commands::plugin_resource_download,
             commands::db_status,
             host_task::host_tasks_list,
             host_task::host_task_upsert,
@@ -331,9 +326,8 @@ fn main() {
             host_task::host_tasks_remove_terminal,
             next_renderer::create_next_renderer_session,
             next_renderer::next_renderer_request,
-            commands::create_renderer_session,
             commands::dispose_renderer_session,
-            commands::plugin_send_message,
+            commands::plugin_execute_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building CrucibleBox")
@@ -341,19 +335,14 @@ fn main() {
             // RunEvent::Exit：清理全部存活 backend 进程 + 剪贴板监控线程
             if let tauri::RunEvent::Exit = event {
                 diagnostics::record("exit", None);
-                #[cfg(all(test, feature = "legacy-fixtures"))]
-                clipboard_monitor::stop_all();
                 if let Some(backend) =
                     app_handle.try_state::<Arc<backend_process::BackendProcessManager>>()
                 {
                     backend.kill_all();
                 }
-                if let Some(ocr_worker) =
-                    app_handle.try_state::<Arc<ocr_worker::OcrWorkerManager>>()
-                {
-                    ocr_worker.shutdown();
-                    if let Some(next) = app_handle.try_state::<Arc<next_backend::Manager>>() {
-                        next.shutdown();
+                if let Some(next) = app_handle.try_state::<Arc<next_backend::Manager>>() {
+                    if let Err(error) = next.shutdown() {
+                        eprintln!("[next2] shutdown failed: {error}");
                     }
                 }
             }

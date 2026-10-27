@@ -385,7 +385,9 @@ fn target_matches_metadata(
         .get("installed_path")
         .and_then(|value| value.as_str())
     {
-        let canonical_target = std::fs::canonicalize(target).map_err(|e| e.to_string())?;
+        let canonical_target =
+            std::fs::canonicalize(crate::next2_install::code_directory(target, &manifest))
+                .map_err(|e| e.to_string())?;
         let canonical_metadata =
             std::fs::canonicalize(installed_path).map_err(|e| e.to_string())?;
         if canonical_target != canonical_metadata {

@@ -1,0 +1,361 @@
+{
+  "manifest": {
+    "manifestVersion": 6,
+    "sdkApiVersion": 6,
+    "id": "acme-independent",
+    "version": "1.0.0",
+    "displayName": "Independent sample",
+    "description": "Contract fixture, not a runnable package.",
+    "publisher": {
+      "id": "acme",
+      "displayName": "Acme"
+    },
+    "minHostVersion": "2.2.0-alpha.1",
+    "sdk": {
+      "min": 6,
+      "maxExclusive": 7
+    },
+    "renderer": "dist/renderer.js",
+    "permissions": ["storage:read", "storage:write", "tasks:control", "tasks:read"],
+    "background": false,
+    "contributes": {
+      "navigation": {
+        "title": "Sample"
+      },
+      "commands": []
+    },
+    "exports": [],
+    "dependencies": [],
+    "resources": [],
+    "files": [
+      {
+        "path": "dist/renderer.js",
+        "bytes": 1,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ]
+  },
+  "native": {
+    "manifestVersion": 6,
+    "sdkApiVersion": 6,
+    "id": "acme-independent",
+    "version": "1.0.0",
+    "displayName": "Independent sample",
+    "description": "Contract fixture, not a runnable package.",
+    "publisher": {
+      "id": "acme",
+      "displayName": "Acme"
+    },
+    "minHostVersion": "2.2.0-alpha.1",
+    "sdk": {
+      "min": 6,
+      "maxExclusive": 7
+    },
+    "renderer": "dist/renderer.js",
+    "permissions": ["storage:read", "storage:write", "tasks:control", "tasks:read"],
+    "background": false,
+    "contributes": {
+      "navigation": {
+        "title": "Sample"
+      },
+      "commands": []
+    },
+    "exports": [],
+    "dependencies": [],
+    "resources": [],
+    "files": [
+      {
+        "path": "dist/renderer.js",
+        "bytes": 1,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      {
+        "path": "bin/backend.exe",
+        "bytes": 1,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "backend": {
+      "kind": "native",
+      "entry": "bin/backend.exe",
+      "os": "windows",
+      "arch": "x86_64",
+      "trust": "trusted-local-code"
+    }
+  },
+  "resource": {
+    "resourceManifestVersion": 1,
+    "id": "translation-model",
+    "pluginId": "acme-independent",
+    "version": "1.0.0",
+    "kind": "model",
+    "containsNativeCode": false,
+    "source": "local-offline-import",
+    "license": "Personal non-commercial fixture",
+    "pluginVersion": {
+      "min": "1.0.0",
+      "maxExclusive": "2.0.0"
+    },
+    "os": "windows",
+    "arch": "x86_64",
+    "files": [
+      {
+        "path": "model/model.bin",
+        "bytes": 1,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "publisher": {
+      "id": "acme",
+      "displayName": "Acme"
+    }
+  },
+  "request": {
+    "wireVersion": 4,
+    "requestId": "r-1",
+    "session": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": {
+      "kind": "backend"
+    },
+    "method": "a.new.business.method",
+    "params": {
+      "owner": "forged-ignored-domain-value"
+    }
+  },
+  "cases": [
+    {
+      "name": "frontend-third-party-id",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": true
+    },
+    {
+      "name": "native-local-trust",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"bin/backend.exe\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"backend\":{\"kind\":\"native\",\"entry\":\"bin/backend.exe\",\"os\":\"windows\",\"arch\":\"x86_64\",\"trust\":\"trusted-local-code\"}}",
+      "valid": true
+    },
+    {
+      "name": "js-backend",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"dist/backend.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"backend\":{\"kind\":\"js\",\"entry\":\"dist/backend.js\"}}",
+      "valid": true
+    },
+    {
+      "name": "unknown-capability",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\",\"host:any-command\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "old-manifest-is-separate",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":5,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "undeclared-native-entry",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"bin/backend.exe\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"backend\":{\"kind\":\"native\",\"entry\":\"bin/other.exe\",\"os\":\"windows\",\"arch\":\"x86_64\",\"trust\":\"trusted-local-code\"}}",
+      "valid": false
+    },
+    {
+      "name": "native-must-be-windows-x64",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"bin/backend.exe\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"backend\":{\"kind\":\"native\",\"entry\":\"bin/backend.exe\",\"os\":\"windows\",\"arch\":\"arm64\",\"trust\":\"trusted-local-code\"}}",
+      "valid": false
+    },
+    {
+      "name": "native-trust-required",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"bin/backend.exe\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"backend\":{\"kind\":\"native\",\"entry\":\"bin/backend.exe\",\"os\":\"windows\",\"arch\":\"x86_64\"}}",
+      "valid": false
+    },
+    {
+      "name": "package-traversal",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"../renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "windows-device-path",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"assets/CON.txt\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "windows-case-collision",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"DIST/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "file-directory-collision",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"dist\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "bad-integrity-digest",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"wrong\"}]}",
+      "valid": false
+    },
+    {
+      "name": "self-dependency",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[{\"id\":\"ocr\",\"providerId\":\"acme-independent\",\"version\":{\"min\":\"1.0.0\",\"maxExclusive\":\"2.0.0\"}}],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"},{\"path\":\"bin/backend.exe\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"backend\":{\"kind\":\"native\",\"entry\":\"bin/backend.exe\",\"os\":\"windows\",\"arch\":\"x86_64\",\"trust\":\"trusted-local-code\"}}",
+      "valid": false
+    },
+    {
+      "name": "empty-range",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[{\"id\":\"model\",\"version\":{\"min\":\"1.0.0\",\"maxExclusive\":\"1.0.0\"}}],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "background-needs-backend",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":true,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "no-leading-zero-semver",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"01.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "no-build-metadata",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0+other\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "business-method-is-opaque",
+      "schema": "request",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"backend\"},\"method\":\"a.new.business.method\",\"params\":{\"owner\":\"forged-ignored-domain-value\"}}",
+      "valid": true
+    },
+    {
+      "name": "top-owner-forbidden",
+      "schema": "request",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"backend\"},\"method\":\"a.new.business.method\",\"params\":{\"owner\":\"forged-ignored-domain-value\"},\"owner\":\"sample-alpha\"}",
+      "valid": false
+    },
+    {
+      "name": "wrong-wire",
+      "schema": "request",
+      "raw": "{\"wireVersion\":3,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"backend\"},\"method\":\"a.new.business.method\",\"params\":{\"owner\":\"forged-ignored-domain-value\"}}",
+      "valid": false
+    },
+    {
+      "name": "unknown-platform-method",
+      "schema": "request",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"platform\"},\"method\":\"a.new.business.method\",\"params\":{\"owner\":\"forged-ignored-domain-value\"}}",
+      "valid": false
+    },
+    {
+      "name": "service-provider-not-client-selected",
+      "schema": "request",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"service\",\"id\":\"ocr\",\"providerId\":\"sample-alpha\"},\"method\":\"a.new.business.method\",\"params\":{\"owner\":\"forged-ignored-domain-value\"}}",
+      "valid": false
+    },
+    {
+      "name": "platform-storage",
+      "schema": "request",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"platform\"},\"method\":\"storage.set\",\"params\":{\"key\":\"note.v1\",\"value\":\"hello\"}}",
+      "valid": true
+    },
+    {
+      "name": "resource-local-model",
+      "schema": "resource",
+      "raw": "{\"resourceManifestVersion\":1,\"id\":\"translation-model\",\"pluginId\":\"acme-independent\",\"version\":\"1.0.0\",\"kind\":\"model\",\"containsNativeCode\":false,\"source\":\"local-offline-import\",\"license\":\"Personal non-commercial fixture\",\"pluginVersion\":{\"min\":\"1.0.0\",\"maxExclusive\":\"2.0.0\"},\"os\":\"windows\",\"arch\":\"x86_64\",\"files\":[{\"path\":\"model/model.bin\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"}}",
+      "valid": true
+    },
+    {
+      "name": "resource-traversal",
+      "schema": "resource",
+      "raw": "{\"resourceManifestVersion\":1,\"id\":\"translation-model\",\"pluginId\":\"acme-independent\",\"version\":\"1.0.0\",\"kind\":\"model\",\"containsNativeCode\":false,\"source\":\"local-offline-import\",\"license\":\"Personal non-commercial fixture\",\"pluginVersion\":{\"min\":\"1.0.0\",\"maxExclusive\":\"2.0.0\"},\"os\":\"windows\",\"arch\":\"x86_64\",\"files\":[{\"path\":\"C:/model.bin\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"}}",
+      "valid": false
+    },
+    {
+      "name": "resource-budget-independent",
+      "schema": "resource",
+      "raw": "{\"resourceManifestVersion\":1,\"id\":\"translation-model\",\"pluginId\":\"acme-independent\",\"version\":\"1.0.0\",\"kind\":\"model\",\"containsNativeCode\":false,\"source\":\"local-offline-import\",\"license\":\"Personal non-commercial fixture\",\"pluginVersion\":{\"min\":\"1.0.0\",\"maxExclusive\":\"2.0.0\"},\"os\":\"windows\",\"arch\":\"x86_64\",\"files\":[{\"path\":\"model/model.bin\",\"bytes\":17179869185,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"}}",
+      "valid": false
+    },
+    {
+      "name": "response-success",
+      "schema": "response",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"ok\":true,\"result\":{\"hello\":\"world\"}}",
+      "valid": true
+    },
+    {
+      "name": "response-failure",
+      "schema": "response",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"ok\":false,\"error\":{\"code\":\"MODEL_MISSING\",\"message\":\"Import a model package\"}}",
+      "valid": true
+    },
+    {
+      "name": "backend-hello",
+      "schema": "frame",
+      "raw": "{\"kind\":\"hello\",\"wireVersion\":4,\"sdkApiVersion\":6}",
+      "valid": true
+    },
+    {
+      "name": "backend-execute",
+      "schema": "frame",
+      "raw": "{\"kind\":\"execute\",\"request\":{\"wireVersion\":4,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"backend\"},\"method\":\"a.new.business.method\",\"params\":{\"owner\":\"forged-ignored-domain-value\"}},\"callerId\":\"acme-independent\"}",
+      "valid": true
+    },
+    {
+      "name": "backend-identity-not-self-selected",
+      "schema": "frame",
+      "raw": "{\"kind\":\"hello\",\"wireVersion\":4,\"sdkApiVersion\":6,\"pluginId\":\"sample-alpha\"}",
+      "valid": false
+    },
+    {
+      "name": "bad-unicode",
+      "schema": "request",
+      "raw": "{\"wireVersion\":4,\"requestId\":\"r-1\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target\":{\"kind\":\"backend\"},\"method\":\"a.new.business.method\",\"params\":\"\\ud800\"}",
+      "valid": false
+    },
+    {
+      "name": "resource catalog declares exact HTTPS files",
+      "schema": "catalog",
+      "valid": true,
+      "raw": "{\"resourceCatalogVersion\":1,\"releases\":[{\"id\":\"fixture\",\"title\":\"Contract fixture\",\"description\":\"Schema fixture only; no download or inference result\",\"manifest\":{\"resourceManifestVersion\":1,\"id\":\"translation-model\",\"pluginId\":\"acme-independent\",\"version\":\"1.0.0\",\"kind\":\"model\",\"containsNativeCode\":false,\"source\":\"local-offline-import\",\"license\":\"Personal non-commercial fixture\",\"pluginVersion\":{\"min\":\"1.0.0\",\"maxExclusive\":\"2.0.0\"},\"os\":\"windows\",\"arch\":\"x86_64\",\"files\":[{\"path\":\"model/model.bin\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"}},\"downloads\":[{\"path\":\"model/model.bin\",\"url\":\"https://example.invalid/model.bin\"}]}]}"
+    },
+    {
+      "name": "resource catalog rejects HTTP",
+      "schema": "catalog",
+      "valid": false,
+      "raw": "{\"resourceCatalogVersion\":1,\"releases\":[{\"id\":\"fixture\",\"title\":\"Contract fixture\",\"description\":\"Schema fixture only; no download or inference result\",\"manifest\":{\"resourceManifestVersion\":1,\"id\":\"translation-model\",\"pluginId\":\"acme-independent\",\"version\":\"1.0.0\",\"kind\":\"model\",\"containsNativeCode\":false,\"source\":\"local-offline-import\",\"license\":\"Personal non-commercial fixture\",\"pluginVersion\":{\"min\":\"1.0.0\",\"maxExclusive\":\"2.0.0\"},\"os\":\"windows\",\"arch\":\"x86_64\",\"files\":[{\"path\":\"model/model.bin\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"}},\"downloads\":[{\"path\":\"model/model.bin\",\"url\":\"http://example.invalid/model.bin\"}]}]}"
+    },
+    {
+      "name": "resource catalog rejects undeclared download",
+      "schema": "catalog",
+      "valid": false,
+      "raw": "{\"resourceCatalogVersion\":1,\"releases\":[{\"id\":\"fixture\",\"title\":\"Contract fixture\",\"description\":\"Schema fixture only; no download or inference result\",\"manifest\":{\"resourceManifestVersion\":1,\"id\":\"translation-model\",\"pluginId\":\"acme-independent\",\"version\":\"1.0.0\",\"kind\":\"model\",\"containsNativeCode\":false,\"source\":\"local-offline-import\",\"license\":\"Personal non-commercial fixture\",\"pluginVersion\":{\"min\":\"1.0.0\",\"maxExclusive\":\"2.0.0\"},\"os\":\"windows\",\"arch\":\"x86_64\",\"files\":[{\"path\":\"model/model.bin\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}],\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"}},\"downloads\":[{\"path\":\"other.bin\",\"url\":\"https://example.invalid/model.bin\"}]}]}"
+    },
+    {
+      "name": "generic-file-handler",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[],\"fileHandlers\":[{\"extensions\":[\"zip\",\"mrpack\"]}]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": true
+    },
+    {
+      "name": "file-handler-path-rejected",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[],\"fileHandlers\":[{\"extensions\":[\"../zip\"]}]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    },
+    {
+      "name": "file-handler-duplicate-extension-rejected",
+      "schema": "manifest",
+      "raw": "{\"manifestVersion\":6,\"sdkApiVersion\":6,\"id\":\"acme-independent\",\"version\":\"1.0.0\",\"displayName\":\"Independent sample\",\"description\":\"Contract fixture, not a runnable package.\",\"publisher\":{\"id\":\"acme\",\"displayName\":\"Acme\"},\"minHostVersion\":\"2.2.0-alpha.1\",\"sdk\":{\"min\":6,\"maxExclusive\":7},\"renderer\":\"dist/renderer.js\",\"permissions\":[\"storage:read\",\"storage:write\",\"tasks:control\",\"tasks:read\"],\"background\":false,\"contributes\":{\"navigation\":{\"title\":\"Sample\"},\"commands\":[],\"fileHandlers\":[{\"extensions\":[\"zip\",\"zip\"]}]},\"exports\":[],\"dependencies\":[],\"resources\":[],\"files\":[{\"path\":\"dist/renderer.js\",\"bytes\":1,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "valid": false
+    }
+  ]
+}
