@@ -128,8 +128,7 @@ export default function TaskCenter() {
                 )}
                 {['queued', 'running', 'paused'].includes(task.status) &&
                   task.stage !== 'recoverable' &&
-                  (task.source === 'marketplace' ||
-                    ['document-engine', 'unienv'].includes(task.owner ?? '')) && (
+                  (task.source === 'marketplace' || (task.source === 'plugin' && !!task.owner)) && (
                     <Button
                       size="small"
                       danger

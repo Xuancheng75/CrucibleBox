@@ -46,8 +46,9 @@ fn emit_task(window: &WebviewWindow, task: &HostTaskSnapshot) {
 pub fn executor_observer(
     db: Arc<Mutex<Db>>,
     emitter: HostEmitter,
-    owner: &'static str,
+    owner: &str,
 ) -> Arc<dyn Fn(Value) + Send + Sync> {
+    let owner = owner.to_owned();
     Arc::new(move |snapshot| {
         let Some(id) = snapshot.get("taskId").and_then(Value::as_str) else {
             return;
@@ -89,7 +90,7 @@ pub fn executor_observer(
         };
         let change = HostTaskMutation {
             id: id.to_string(),
-            owner: Some(owner.into()),
+            owner: Some(owner.clone()),
             kind: Some(kind.into()),
             source: Some(if owner == "marketplace" {
                 "marketplace".into()
@@ -98,16 +99,16 @@ pub fn executor_observer(
             }),
             title: Some(if owner == "marketplace" {
                 "下载插件".into()
-            } else if owner == "unienv" {
-                "运行时安装".into()
-            } else if owner == "archive-extractor" {
-                "归档任务".into()
             } else if owner == "plugin-install" {
-                "插件安装".into()
+                if kind.starts_with("resource-download:") {
+                    "插件资源下载".into()
+                } else {
+                    "插件安装".into()
+                }
             } else if owner == "plugin-process" {
                 "插件进程任务".into()
             } else {
-                format!("文档任务 · {kind}")
+                format!("插件任务 · {kind}")
             }),
             detail: progress
                 .and_then(|value| value.get("message"))
@@ -247,14 +248,7 @@ pub fn host_task_cancel(
     if task.source == "marketplace" {
         return crate::commands::marketplace_cancel_task(window, id);
     }
-    Ok(match task.owner.as_str() {
-        "document-engine" => runtime.cancel("document-engine", &id),
-        "unienv" => runtime.cancel("unienv", &id),
-        "archive-extractor" => runtime.cancel("archive-extractor", &id),
-        "plugin-process" => runtime.cancel("plugin-process", &id),
-        "plugin-install" => runtime.cancel("plugin-install", &id),
-        _ => false,
-    })
+    Ok(runtime.cancel(&task.owner, &id))
 }
 
 #[tauri::command(async)]
@@ -287,7 +281,7 @@ mod tests {
     fn change(id: &str, status: &str, progress: i64) -> HostTaskMutation {
         HostTaskMutation {
             id: id.into(),
-            owner: Some("document-engine".into()),
+            owner: Some("sample-alpha".into()),
             kind: Some("pdf-convert".into()),
             source: Some("plugin".into()),
             title: Some("转换 PDF".into()),
@@ -374,7 +368,7 @@ mod tests {
             "completed"
         );
         let mut wrong_owner = change("owned", "cancelled", 100);
-        wrong_owner.owner = Some("unienv".into());
+        wrong_owner.owner = Some("sample-gamma".into());
         assert!(upsert_projection(&db, wrong_owner, Some(5)).is_err());
         upsert_projection(&db, change("active", "running", 10), Some(1)).unwrap();
         assert_eq!(recover(&db).unwrap(), 0);
@@ -398,7 +392,7 @@ mod tests {
     fn executor_adapter_persists_terminal_result_reference() {
         let (db, dir) = temp_db();
         let db = Arc::new(Mutex::new(db));
-        let observer = executor_observer(db.clone(), Arc::new(|_, _| {}), "document-engine");
+        let observer = executor_observer(db.clone(), Arc::new(|_, _| {}), "sample-alpha");
         observer(serde_json::json!({
             "taskId": "pdf-1", "resourceKey": "convert", "status": "queued", "sequence": 1
         }));

@@ -48,7 +48,7 @@ impl BackendProcessManager {
     pub fn broadcast_host_event(&self, event: &str, data: Value) {
         self.emit(event, data);
     }
-    pub fn activate_enabled_with_permission(&self, _permission: &str) {
+    pub fn retain_unsupported_disabled(&self) {
         let records = match lock(&self.db).enabled_plugin_backend_records() {
             Ok(records) => records,
             Err(error) => {
@@ -58,7 +58,7 @@ impl BackendProcessManager {
         };
         for (id, record) in records {
             let next = crate::manifest::read_manifest(std::path::Path::new(&record.installed_path))
-                .is_ok_and(|manifest| manifest.manifest_version == Some(5));
+                .is_ok_and(|manifest| manifest.manifest_version == Some(6));
             if !next {
                 if let Err(error) = lock(&self.db).set_plugin_enabled(&id, false) {
                     eprintln!("[next-preflight] disable {id}: {error}");
@@ -172,38 +172,72 @@ impl Drop for PluginMaintenanceGuard<'_> {
 mod tests {
     use super::*;
     #[test]
-    fn startup_disables_legacy_execution_preserving_raw_data_and_package() {
+    fn startup_keeps_next2_enabled() {
         let root = tempfile::tempdir().unwrap();
-        let plugin = root.path().join("old");
+        let plugin = root.path().join("candidate");
         std::fs::create_dir(&plugin).unwrap();
-        let manifest = serde_json::json!({"name":"old","version":"1.0.0","displayName":"Old","main":"dist/main.js","renderer":"dist/renderer.js","manifestVersion":2,"rendererApiVersion":2,"backend":false,"permissions":[]});
+        let manifest = serde_json::json!({
+            "manifestVersion":6,"sdkApiVersion":6,
+            "id":"candidate","version":"1.0.0","displayName":"Candidate","description":"Test",
+            "publisher":{"id":"local","displayName":"Local"},"minHostVersion":"2.1.0-beta.4",
+            "sdk":{"min":6,"maxExclusive":7},"renderer":"dist/renderer.js","permissions":[],
+            "background":false,"contributes":{"commands":[]},"exports":[],"dependencies":[],"resources":[],
+            "files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)}]
+        });
+        crate::manifest::parse_manifest(&manifest.to_string()).unwrap();
         std::fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
         let db = Arc::new(Mutex::new(
             Db::open(&root.path().join("data.sqlite")).unwrap(),
         ));
-        lock(&db).conn().lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,enabled,config_data) VALUES ('old-id','old','1.0.0','Old','dist/main.js','dist/renderer.js',?1,1,'{\"raw\": 7}')",[plugin.to_string_lossy().as_ref()]).unwrap();
-        lock(&db)
-            .storage_set("old-id", "notes", "unmodified notes")
-            .unwrap();
-        let manager = BackendProcessManager::new(db.clone());
-        manager.activate_enabled_with_permission("clipboard");
-        let row = lock(&db).plugin_find_by_id("old-id").unwrap().unwrap();
-        assert!(!row.enabled);
-        assert_eq!(row.config_data, "{\"raw\": 7}");
-        assert_eq!(
-            lock(&db).storage_get("old-id", "notes").unwrap().as_deref(),
-            Some("unmodified notes")
+        lock(&db).conn().lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,enabled) VALUES ('candidate','candidate','1.0.0','Candidate','','dist/renderer.js',?1,1)",[plugin.to_string_lossy().as_ref()]).unwrap();
+        BackendProcessManager::new(db.clone()).retain_unsupported_disabled();
+        assert!(
+            lock(&db)
+                .plugin_find_by_id("candidate")
+                .unwrap()
+                .unwrap()
+                .enabled
         );
-        assert!(plugin.join("plugin.json").is_file());
-        assert!(manager
-            .ensure_activated(
-                "old-id",
-                lock(&db).plugin_backend_record("old-id").unwrap().unwrap()
-            )
-            .is_err());
-        let guard = manager.begin_lifecycle_operation("old-id").unwrap();
-        assert!(manager.begin_lifecycle_operation("old").is_err());
-        drop(guard);
-        assert!(manager.begin_lifecycle_operation("old").is_ok());
+    }
+    #[test]
+    fn startup_disables_legacy_execution_preserving_raw_data_and_package() {
+        for version in [2, 5] {
+            let root = tempfile::tempdir().unwrap();
+            let plugin = root.path().join("old");
+            std::fs::create_dir(&plugin).unwrap();
+            let manifest = if version == 5 {
+                serde_json::json!({"id":"old","version":"1.0.0","displayName":"Old","manifestVersion":5,"sdkApiVersion":5,"wireVersion":3,"dataSchemaVersion":1,"renderer":"dist/renderer.js","permissions":["storage:read"]})
+            } else {
+                serde_json::json!({"name":"old","version":"1.0.0","displayName":"Old","main":"dist/main.js","renderer":"dist/renderer.js","manifestVersion":2,"rendererApiVersion":2,"backend":false,"permissions":[]})
+            };
+            std::fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
+            let db = Arc::new(Mutex::new(
+                Db::open(&root.path().join("data.sqlite")).unwrap(),
+            ));
+            lock(&db).conn().lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,enabled,config_data) VALUES ('old-id','old','1.0.0','Old','dist/main.js','dist/renderer.js',?1,1,'{\"raw\": 7}')",[plugin.to_string_lossy().as_ref()]).unwrap();
+            lock(&db)
+                .storage_set("old-id", "notes", "unmodified notes")
+                .unwrap();
+            let manager = BackendProcessManager::new(db.clone());
+            manager.retain_unsupported_disabled();
+            let row = lock(&db).plugin_find_by_id("old-id").unwrap().unwrap();
+            assert!(!row.enabled);
+            assert_eq!(row.config_data, "{\"raw\": 7}");
+            assert_eq!(
+                lock(&db).storage_get("old-id", "notes").unwrap().as_deref(),
+                Some("unmodified notes")
+            );
+            assert!(plugin.join("plugin.json").is_file());
+            assert!(manager
+                .ensure_activated(
+                    "old-id",
+                    lock(&db).plugin_backend_record("old-id").unwrap().unwrap()
+                )
+                .is_err());
+            let guard = manager.begin_lifecycle_operation("old-id").unwrap();
+            assert!(manager.begin_lifecycle_operation("old").is_err());
+            drop(guard);
+            assert!(manager.begin_lifecycle_operation("old").is_ok());
+        }
     }
 }

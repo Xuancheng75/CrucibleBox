@@ -74,7 +74,7 @@ impl Plan {
                 return Err(Error::Invalid);
             }
             let value = serde_json::to_string(&e.target_value).map_err(|_| Error::Invalid)?;
-            cruciblebox_next_protocol::validate_storage_value(&value)
+            cruciblebox_next2_protocol::validate_storage_value(&value)
                 .map_err(|_| Error::Invalid)?;
             bytes_used = bytes_used
                 .saturating_add(e.expected_source.len())
@@ -169,13 +169,13 @@ mod tests {
     use super::*;
     fn fixture() -> Connection {
         let c = Connection::open_in_memory().unwrap();
-        c.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE plugins(id TEXT PRIMARY KEY); CREATE TABLE plugin_storage(plugin_id TEXT NOT NULL REFERENCES plugins(id),key TEXT,value TEXT,PRIMARY KEY(plugin_id,key)); CREATE TABLE plugin_storage_migrations(plugin_id TEXT REFERENCES plugins(id),migration TEXT,PRIMARY KEY(plugin_id,migration)); INSERT INTO plugins VALUES('diary'),('other'); INSERT INTO plugin_storage VALUES('diary','old','non-json-original'),('other','old','other-original');").unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE plugins(id TEXT PRIMARY KEY); CREATE TABLE plugin_storage(plugin_id TEXT NOT NULL REFERENCES plugins(id),key TEXT,value TEXT,PRIMARY KEY(plugin_id,key)); CREATE TABLE plugin_storage_migrations(plugin_id TEXT REFERENCES plugins(id),migration TEXT,PRIMARY KEY(plugin_id,migration)); INSERT INTO plugins VALUES('sample-delta'),('other'); INSERT INTO plugin_storage VALUES('sample-delta','old','non-json-original'),('other','old','other-original');").unwrap();
         c
     }
     fn plan() -> Plan {
         Plan {
-            owner: "diary".into(),
-            id: "diary-v1".into(),
+            owner: "sample-delta".into(),
+            id: "sample-delta-v1".into(),
             entries: vec![Entry {
                 source_key: "old".into(),
                 expected_source: "non-json-original".into(),
@@ -199,7 +199,7 @@ mod tests {
         let p = plan();
         assert_eq!(apply(&mut c, &p), Ok(Outcome::Applied { copied: 1 }));
         assert_eq!(
-            value(&c, "diary", "old").as_deref(),
+            value(&c, "sample-delta", "old").as_deref(),
             Some("non-json-original")
         );
         assert_eq!(value(&c, "other", "old").as_deref(), Some("other-original"));
@@ -211,7 +211,7 @@ mod tests {
         .unwrap();
         assert_eq!(apply(&mut c, &p), Ok(Outcome::AlreadyApplied));
         assert_eq!(
-            value(&c, "diary", "next.notes.v1").as_deref(),
+            value(&c, "sample-delta", "next.notes.v1").as_deref(),
             Some("user-edit")
         );
         let mut changed = p;
@@ -236,7 +236,7 @@ mod tests {
             });
             if conflict == "target" {
                 c.execute(
-                    "INSERT INTO plugin_storage VALUES('diary','next.second','keep')",
+                    "INSERT INTO plugin_storage VALUES('sample-delta','next.second','keep')",
                     [],
                 )
                 .unwrap();
@@ -252,7 +252,7 @@ mod tests {
                     _ => Error::Unavailable,
                 })
             );
-            assert_eq!(value(&c, "diary", "next.notes.v1"), None);
+            assert_eq!(value(&c, "sample-delta", "next.notes.v1"), None);
             assert_eq!(
                 c.query_row("SELECT count(*) FROM plugin_storage_migrations", [], |r| {
                     r.get::<_, i64>(0)
@@ -274,7 +274,7 @@ mod tests {
             assert_eq!(apply(&mut c, &p), Err(Error::Invalid));
             p.entries[0].target_key = "new".into();
             p.entries[0].target_value =
-                Value::String("x".repeat(cruciblebox_next_protocol::MAX_STORAGE_VALUE_BYTES));
+                Value::String("x".repeat(cruciblebox_next2_protocol::BUDGET_STORAGE_VALUE_BYTES));
             assert_eq!(apply(&mut c, &p), Err(Error::Invalid));
         }
     }
@@ -297,7 +297,7 @@ mod tests {
         let mut reopened = Connection::open(&path).unwrap();
         assert_eq!(apply(&mut reopened, &p), Ok(Outcome::AlreadyApplied));
         assert_eq!(
-            value(&reopened, "diary", "old").as_deref(),
+            value(&reopened, "sample-delta", "old").as_deref(),
             Some("non-json-original")
         );
         assert_eq!(

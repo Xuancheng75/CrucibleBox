@@ -93,7 +93,7 @@ async function main() {
   }
 
   // SBOM 文件清单必须精确等于 cruciblebox + 当前插件目录中的制品，不允许残留/改名错位。
-  const catalog = JSON.parse(readFileSync(resolve(scriptDirectory, 'plugin-catalog.json'), 'utf8'))
+  const catalog = pluginsManifest.plugins
   const expectedSbomFiles = [
     'cruciblebox.cdx.json',
     ...catalog.map((plugin) => `${plugin.id}.cdx.json`)

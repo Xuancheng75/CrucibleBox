@@ -1,0 +1,28 @@
+[package]
+name = "cruciblebox-next2-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cruciblebox-next2-protocol = { path = "../next2-protocol" }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+ring = "0.17"
+base64 = "0.22"
+getrandom = "0.2"
+semver = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[features]
+test-backend = []
+
+[[bin]]
+name = "next2-test-backend"
+path = "tests/fixtures/backend.rs"
+required-features = ["test-backend"]

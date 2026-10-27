@@ -14,13 +14,13 @@ test('canonical JSON is stable across object insertion order', () => {
 test('Ed25519 plugin manifest signatures reject tampering and the wrong key', () => {
   const signer = generateKeyPairSync('ed25519')
   const stranger = generateKeyPairSync('ed25519')
-  const manifest = { schemaVersion: 1, plugins: [{ id: 'diary', sha256: 'abc' }] }
+  const manifest = { schemaVersion: 1, plugins: [{ id: 'sample-delta', sha256: 'abc' }] }
   const signature = signPluginArtifactManifest(manifest, signer.privateKey)
 
   assert.equal(verifyPluginArtifactManifest(manifest, signature, signer.publicKey), true)
   assert.equal(
     verifyPluginArtifactManifest(
-      { ...manifest, plugins: [{ id: 'diary', sha256: 'changed' }] },
+      { ...manifest, plugins: [{ id: 'sample-delta', sha256: 'changed' }] },
       signature,
       signer.publicKey
     ),

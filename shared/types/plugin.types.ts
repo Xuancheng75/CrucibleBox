@@ -1,6 +1,4 @@
-import type { ComponentType } from 'react'
 import type { Permission } from './permissions'
-import type { ToolboxTheme } from './theme.types'
 
 export interface ConfigField {
   type: 'string' | 'number' | 'boolean' | 'select' | 'multiselect'
@@ -9,46 +7,6 @@ export interface ConfigField {
   default?: unknown
   required?: boolean
   options?: { label: string; value: string }[]
-}
-
-export interface PluginManifest {
-  manifestVersion?: 1 | 2 | 3 | 4
-  name: string
-  version: string
-  displayName: string
-  description: string
-  author: string
-  icon?: string
-  main: string
-  renderer: string
-  backend?: boolean
-  backendApiVersion?: 1 | 2 | 3 | 4
-  rendererApiVersion?: 1 | 2 | 3 | 4
-  category?: string
-  tags?: string[]
-  keywords?: string[]
-  contributes?: Record<string, unknown>
-  minimumHostVersion?: string
-  trustLevel?: 'standard' | 'full'
-  capabilities?: Partial<
-    Record<
-      | 'storage'
-      | 'fs'
-      | 'network'
-      | 'process'
-      | 'archive'
-      | 'tasks'
-      | 'events'
-      | 'ui'
-      | 'system'
-      | 'crypto'
-      | 'credentials'
-      | 'pluginData',
-      boolean | Record<string, unknown>
-    >
-  >
-  permissions: Permission[]
-  config?: Record<string, ConfigField>
 }
 
 export interface PluginMeta {
@@ -68,31 +26,14 @@ export interface PluginMeta {
   installedAt: string
   updatedAt: string
   /** Stable user-facing sort position. Lower values come first in the plugin list. */
+  publisherVerified?: boolean
+  officialPublisher?: boolean
+  publisherId?: string
   sortOrder?: number
 }
 
 export interface PluginConfig {
   [key: string]: unknown
-}
-
-export interface PluginRecord {
-  id: string
-  name: string
-  version: string
-  display_name: string
-  description: string
-  author: string
-  icon?: string
-  entry_main: string
-  entry_renderer: string
-  permissions: string
-  config_schema: string
-  config_data: string
-  enabled: number
-  installed_path: string
-  installed_at: string
-  updated_at: string
-  sort_order: number
 }
 
 export enum PluginLifecycleStatus {
@@ -101,133 +42,6 @@ export enum PluginLifecycleStatus {
   Active = 'active',
   Deactivating = 'deactivating',
   Error = 'error'
-}
-
-export interface PluginLogger {
-  info(message: string, ...args: unknown[]): void
-  warn(message: string, ...args: unknown[]): void
-  error(message: string, ...args: unknown[]): void
-  debug(message: string, ...args: unknown[]): void
-}
-
-export interface PluginDatabaseAPI {
-  query(sql: string, params?: unknown[]): Promise<unknown[]>
-  execute(sql: string, params?: unknown[]): Promise<void>
-}
-
-export interface PluginStorageEntry<T = unknown> {
-  key: string
-  value: T
-}
-
-export type PluginStorageMutation =
-  { type: 'set'; key: string; value: unknown } | { type: 'delete'; key: string }
-
-export interface PluginStorageAPI {
-  get<T = unknown>(key: string): Promise<T | null>
-  set(key: string, value: unknown): Promise<void>
-  delete(key: string): Promise<void>
-  list<T = unknown>(prefix?: string): Promise<PluginStorageEntry<T>[]>
-  batch(mutations: PluginStorageMutation[]): Promise<void>
-}
-
-export interface SystemInfo {
-  os: { name: string; version: string; hostname: string }
-  cpu: { brand: string; cores: number; physicalCores: number; usage: number }
-  memory: { total: number; available: number; usage: number }
-  disks: Array<{ name: string; total: number; available: number }>
-  network: Array<{ name: string; ip: string; mac: string }>
-}
-
-/**
- * JSON-safe response returned by a backend plugin host.
- *
- * Tauri's QuickJS backend cannot expose the browser `Response` object across
- * the RPC boundary. Electron's legacy backend still returns a native
- * `Response`, so the public plugin contract accepts both representations.
- */
-export interface PluginFetchResponse {
-  ok: boolean
-  status: number
-  statusText: string
-  headers: Record<string, string>
-  body: string
-}
-
-export interface PluginHostAPI {
-  notify(title: string, body?: string): void
-  openDialog(type: 'file' | 'folder'): Promise<string | null>
-  fetch(url: string, opts?: RequestInit): Promise<Response | PluginFetchResponse>
-  readFile(path: string): Promise<Uint8Array>
-  writeFile(path: string, data: string | Uint8Array): Promise<void>
-  registerShortcut(keys: string, handler: () => void): () => void
-  emitEvent(event: string, data?: unknown): void
-  onEvent(event: string, handler: (data: unknown) => void): () => void
-  clipboard: {
-    read(): Promise<{ text: string }>
-    write(text: string): Promise<{ ok: boolean }>
-  }
-  getSystemInfo(): Promise<SystemInfo>
-}
-
-export interface PluginContext {
-  id: string
-  config: PluginConfig
-  logger: PluginLogger
-  database: PluginDatabaseAPI
-  storage: PluginStorageAPI
-  pluginData: PluginStorageAPI
-  capabilities: {
-    events: Pick<PluginHostAPI, 'emitEvent' | 'onEvent'>
-    system: Pick<PluginHostAPI, 'clipboard' | 'getSystemInfo' | 'registerShortcut'>
-  }
-  api: PluginHostAPI
-}
-
-export interface PluginMain {
-  activate(ctx: PluginContext): void | Promise<void>
-  deactivate(): void | Promise<void>
-  onMessage?(message: unknown): unknown | Promise<unknown>
-}
-
-export interface PluginRenderProps {
-  config: PluginConfig
-  onConfigChange: (config: PluginConfig) => void
-  theme?: ToolboxTheme
-  api: {
-    sendToBackend(message: unknown): Promise<unknown>
-    notify(title: string, body?: string): void
-    confirm(options: {
-      title: string
-      message: string
-      confirmLabel?: string
-      cancelLabel?: string
-    }): Promise<boolean>
-    dialog: {
-      open(options: {
-        type: 'file' | 'folder'
-        multiple?: boolean
-        extensions?: string[]
-      }): Promise<string[]>
-    }
-    onBackendMessage(handler: (msg: unknown) => void): () => void
-    /** Available in frame runtimes that support host-level OS drop forwarding. */
-    onFilesDropped?(handler: (paths: string[]) => void): () => void
-    theme: {
-      get(): Promise<ToolboxTheme>
-      list(): Promise<ToolboxTheme[]>
-      preview(theme: ToolboxTheme): Promise<boolean>
-      commit(): Promise<boolean>
-      rollback(): Promise<boolean>
-      set(theme: ToolboxTheme): Promise<boolean>
-    }
-  }
-}
-
-export interface PluginMessage {
-  type: string
-  payload?: unknown
-  id?: string
 }
 
 export interface PluginLogEntry {
@@ -243,5 +57,3 @@ export interface PluginLogFilter {
   level?: string
   limit?: number
 }
-
-export type PluginRendererComponent = ComponentType<PluginRenderProps>

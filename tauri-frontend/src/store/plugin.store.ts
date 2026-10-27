@@ -1,7 +1,11 @@
 import { create } from 'zustand'
 import type { PluginMeta, PluginConfig } from '../../../shared/types/plugin.types'
 import { PluginLifecycleStatus } from '../../../shared/types/plugin.types'
-import { tauriApi, type PluginInstallPreviewResponse } from '../api/tauriApi'
+import {
+  tauriApi,
+  type PluginInstallApproval,
+  type PluginInstallPreviewResponse
+} from '../api/tauriApi'
 import { useTaskStore } from './task.store'
 
 export interface PendingInstall {
@@ -53,7 +57,7 @@ export interface PluginState {
     path: string,
     task?: { id: string; title?: string; marketplaceSourceId?: number }
   ) => Promise<boolean>
-  commitInstall: () => Promise<boolean>
+  commitInstall: (approval?: PluginInstallApproval) => Promise<boolean>
   discardInstall: () => Promise<void>
   uninstallPlugin: (id: string) => Promise<boolean>
   enablePlugin: (id: string) => Promise<boolean>
@@ -236,7 +240,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     }
   },
 
-  commitInstall: async () => {
+  commitInstall: async (approval) => {
     const preview = get().installPreview
     if (!preview?.installToken) return false
     const taskId = activeInstallTaskId
@@ -251,7 +255,8 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       const result = await tauriApi.plugin.installCommit(
         preview.installToken,
         activeMarketplaceSourceId,
-        taskId ?? undefined
+        taskId ?? undefined,
+        approval
       )
       activeMarketplaceSourceId = undefined
       if (result.success) {

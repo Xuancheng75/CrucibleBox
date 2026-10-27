@@ -687,7 +687,7 @@ mod tests {
         let store = Store::open(&db).unwrap();
         let receipt = store
             .prepare(Publication {
-                owner: "unienv",
+                owner: "sample-gamma",
                 task_id: "install",
                 journal: "publication:directory",
                 stage: &stage,
@@ -708,7 +708,7 @@ mod tests {
         assert!(stage.join("empty").is_dir());
         store
             .publish(Publication {
-                owner: "unienv",
+                owner: "sample-gamma",
                 task_id: "install",
                 journal: "publication:directory2",
                 stage: &stage,

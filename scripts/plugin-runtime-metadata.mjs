@@ -1,22 +1,17 @@
-import { validateManifest } from '../packages/cruciblebox-next-api/src/index.mjs'
+import { validateManifest as validateNext2Manifest } from '../packages/cruciblebox-next2-api/src/index.mjs'
 export function artifactRuntimeMetadata(manifest) {
-  if (manifest.manifestVersion === 5) {
-    const checked = validateManifest(JSON.stringify(manifest))
-    const backend = typeof checked.backend === 'string'
+  if (manifest.manifestVersion === 6) {
+    const checked = validateNext2Manifest(JSON.stringify(manifest))
+    const backend = checked.backend !== undefined
     return {
-      manifestVersion: 5,
+      manifestVersion: 6,
       backend,
-      backendApiVersion: backend ? checked.sdkApiVersion : null,
-      rendererApiVersion: checked.sdkApiVersion,
-      sdkApiVersion: checked.sdkApiVersion,
-      wireVersion: checked.wireVersion,
-      dataSchemaVersion: checked.dataSchemaVersion
+      backendApiVersion: backend ? 6 : null,
+      rendererApiVersion: 6,
+      sdkApiVersion: 6,
+      wireVersion: 4,
+      dataSchemaVersion: 1
     }
   }
-  return {
-    manifestVersion: manifest.manifestVersion ?? 1,
-    backend: manifest.backend !== false,
-    backendApiVersion: manifest.backend === false ? null : (manifest.backendApiVersion ?? 1),
-    rendererApiVersion: manifest.rendererApiVersion ?? 1
-  }
+  throw new Error('API_VERSION_UNSUPPORTED: only Manifest/API 6 packages can be distributed')
 }

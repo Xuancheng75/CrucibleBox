@@ -17,7 +17,11 @@ pub fn resolve_specifier(plugin_root: &Path, from_dir: &Path, specifier: &str) -
         from_dir.join(specifier)
     } else if specifier.contains('/') || specifier.contains('\\') {
         // 绝对路径（盘符/根）或含目录分隔符的引用：直接按路径处理，交给根校验
-        PathBuf::from(specifier)
+        #[cfg(windows)]
+        let path = PathBuf::from(specifier.replace('/', "\\"));
+        #[cfg(not(windows))]
+        let path = PathBuf::from(specifier);
+        path
     } else {
         return None; // 裸模块名拒绝
     };
@@ -127,6 +131,18 @@ mod tests {
         // 无扩展名时补 .js
         let got2 = resolve_specifier(&root, &from, "./domain").unwrap();
         assert!(got2.ends_with("domain.js"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_canonical_windows_entry_after_js_slash_conversion() {
+        let root = temp_plugin("canonical-entry").canonicalize().unwrap();
+        let entry = root.join("dist/main.js");
+        let specifier = entry.to_string_lossy().replace('\\', "/");
+        assert_eq!(
+            resolve_specifier(&root, &root.join("dist"), &specifier),
+            Some(entry)
+        );
     }
 
     #[test]

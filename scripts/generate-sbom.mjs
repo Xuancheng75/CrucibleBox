@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url'
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
 const outputDirectory = resolve(repositoryRoot, 'artifacts', 'sbom')
-const catalog = JSON.parse(readFileSync(resolve(scriptDirectory, 'plugin-catalog.json'), 'utf8'))
 const npmCli = process.env.npm_execpath
 if (!npmCli) throw new Error('generate:sbom must be run through npm')
 
@@ -14,10 +13,7 @@ mkdirSync(outputDirectory, { recursive: true })
 
 for (const target of [
   { id: 'cruciblebox', directory: repositoryRoot },
-  ...catalog.map((plugin) => ({
-    id: plugin.id,
-    directory: resolve(repositoryRoot, 'plugins', plugin.id)
-  }))
+  { id: 'cruciblebox-frontend', directory: resolve(repositoryRoot, 'tauri-frontend') }
 ]) {
   const result = spawnSync(process.execPath, [npmCli, 'sbom', '--sbom-format', 'cyclonedx'], {
     cwd: target.directory,

@@ -44,13 +44,37 @@ pub fn normalize_archive_entry_path(raw: &str) -> Result<String, String> {
 
 /// 解压插件 zip 到 dest（对等 extractPluginArchive）
 pub fn extract_plugin_archive(zip_path: &Path, dest: &Path) -> Result<(), String> {
+    extract_archive(
+        zip_path,
+        dest,
+        MAX_ZIP_BYTES,
+        MAX_ARCHIVE_ENTRIES,
+        MAX_ARCHIVE_BYTES,
+    )
+}
+
+pub fn extract_resource_archive(zip_path: &Path, dest: &Path) -> Result<(), String> {
+    let maximum = cruciblebox_next2_protocol::BUDGET_RESOURCE_BYTES as u64
+        + cruciblebox_next2_protocol::BUDGET_RESOURCE_MANIFEST_BYTES as u64
+        + 4096;
+    extract_archive(zip_path, dest, maximum, 40_003, maximum)
+}
+
+fn extract_archive(
+    zip_path: &Path,
+    dest: &Path,
+    max_zip_bytes: u64,
+    max_entries: usize,
+    max_bytes: u64,
+) -> Result<(), String> {
+    use std::io::Read;
     // zip 文件必须常规文件非 symlink、≤200MB
     let metadata = std::fs::symlink_metadata(zip_path)
         .map_err(|error| format!("Plugin package must be a regular ZIP file: {error}"))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("Plugin package must be a regular ZIP file".to_string());
     }
-    if metadata.len() > MAX_ZIP_BYTES {
+    if metadata.len() > max_zip_bytes {
         return Err("Plugin package is too large".to_string());
     }
     let file = std::fs::File::open(zip_path)
@@ -60,7 +84,7 @@ pub fn extract_plugin_archive(zip_path: &Path, dest: &Path) -> Result<(), String
 
     // 条目数 1..5000
     let entry_count = archive.len();
-    if entry_count == 0 || entry_count > MAX_ARCHIVE_ENTRIES {
+    if entry_count == 0 || entry_count > max_entries {
         return Err("Plugin archive has an invalid entry count".to_string());
     }
     std::fs::create_dir_all(dest)
@@ -102,7 +126,7 @@ pub fn extract_plugin_archive(zip_path: &Path, dest: &Path) -> Result<(), String
         total_bytes = total_bytes
             .checked_add(size)
             .ok_or_else(|| "Plugin archive exceeds its uncompressed byte budget".to_string())?;
-        if total_bytes > MAX_ARCHIVE_BYTES {
+        if total_bytes > max_bytes {
             return Err("Plugin archive exceeds its uncompressed byte budget".to_string());
         }
 
@@ -117,8 +141,11 @@ pub fn extract_plugin_archive(zip_path: &Path, dest: &Path) -> Result<(), String
             }
             let mut output = std::fs::File::create(&destination)
                 .map_err(|error| format!("failed to create file {destination:?}: {error}"))?;
-            std::io::copy(&mut entry, &mut output)
+            let copied = std::io::copy(&mut (&mut entry).take(size + 1), &mut output)
                 .map_err(|error| format!("failed to extract {normalized}: {error}"))?;
+            if copied != size {
+                return Err(format!("Archive entry size mismatch: {normalized}"));
+            }
         }
     }
     Ok(())

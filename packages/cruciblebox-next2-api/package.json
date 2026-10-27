@@ -1,0 +1,22 @@
+{
+  "name": "@cruciblebox/next2-api",
+  "version": "6.0.0-alpha.2",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.mts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "semver": "7.8.5"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT"
+}

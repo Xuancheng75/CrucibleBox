@@ -55,14 +55,7 @@ async function waitForStartup() {
 try {
   run(installer, ['/S', `/D=${installDirectory}`], 'NSIS install')
   const executable = join(installDirectory, 'cruciblebox.exe')
-  for (const path of [
-    executable,
-    join(installDirectory, 'cruciblebox-plugin-host.exe'),
-    join(installDirectory, 'ocr-worker.exe'),
-    join(installDirectory, 'onnxruntime.dll'),
-    join(installDirectory, '7zip', '7za.exe'),
-    join(installDirectory, 'formula-ocr', 'python', 'python.exe')
-  ]) {
+  for (const path of [executable, join(installDirectory, 'cruciblebox-plugin-host.exe')]) {
     if (!existsSync(path)) throw new Error(`Installed runtime missing: ${path}`)
   }
   app = spawn(executable, [], {

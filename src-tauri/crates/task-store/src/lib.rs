@@ -188,8 +188,13 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let queued =
-            Snapshot::queued("a".into(), "diary".into(), "document".into(), "cpu".into()).unwrap();
+        let queued = Snapshot::queued(
+            "a".into(),
+            "sample-delta".into(),
+            "document".into(),
+            "cpu".into(),
+        )
+        .unwrap();
         {
             let repo = SqliteRepository::open(&path).unwrap();
             repo.save(None, &queued).unwrap();
@@ -278,14 +283,21 @@ mod tests {
             .unwrap();
             runtime
                 .submit(
-                    Snapshot::queued("a".into(), "diary".into(), "document".into(), "cpu".into())
-                        .unwrap(),
+                    Snapshot::queued(
+                        "a".into(),
+                        "sample-delta".into(),
+                        "document".into(),
+                        "cpu".into(),
+                    )
+                    .unwrap(),
                 )
                 .unwrap();
-            runtime.apply("diary", "a", 1, Action::Start).unwrap();
+            runtime
+                .apply("sample-delta", "a", 1, Action::Start)
+                .unwrap();
             runtime
                 .apply(
-                    "diary",
+                    "sample-delta",
                     "a",
                     2,
                     Action::PreparePublication("journal:1".into()),
@@ -301,7 +313,7 @@ mod tests {
             drop(file);
             assert!(matches!(
                 runtime.apply(
-                    "diary",
+                    "sample-delta",
                     "a",
                     3,
                     Action::Published {
@@ -312,7 +324,7 @@ mod tests {
                 Err(Error::Storage(_))
             ));
             assert_eq!(
-                runtime.apply("diary", "a", 3, Action::RequestCancel),
+                runtime.apply("sample-delta", "a", 3, Action::RequestCancel),
                 Err(Error::PublicationPending)
             );
         }
@@ -325,12 +337,14 @@ mod tests {
                 Runtime::open(SqliteRepository::open(&database).unwrap(), Silent, limits())
                     .unwrap();
             assert_eq!(
-                runtime.list("diary").unwrap()[0].publication.as_deref(),
+                runtime.list("sample-delta").unwrap()[0]
+                    .publication
+                    .as_deref(),
                 Some("journal:1")
             );
             let completed = runtime
                 .apply(
-                    "diary",
+                    "sample-delta",
                     "a",
                     3,
                     Action::Recover {
@@ -340,7 +354,7 @@ mod tests {
                 .unwrap();
             assert_eq!(completed.status, Status::Succeeded);
             assert_eq!(
-                runtime.apply("diary", "a", 4, Action::Progress(9)),
+                runtime.apply("sample-delta", "a", 4, Action::Progress(9)),
                 Err(Error::Terminal)
             );
         }
@@ -434,12 +448,17 @@ mod tests {
         )
         .unwrap();
         for id in ["a", "b"] {
-            let q = Snapshot::queued(id.into(), "diary".into(), "document".into(), "cpu".into())
-                .unwrap();
+            let q = Snapshot::queued(
+                id.into(),
+                "sample-delta".into(),
+                "document".into(),
+                "cpu".into(),
+            )
+            .unwrap();
             rt.submit(q).unwrap();
-            rt.apply("diary", id, 1, Action::Start).unwrap();
+            rt.apply("sample-delta", id, 1, Action::Start).unwrap();
             rt.apply(
-                "diary",
+                "sample-delta",
                 id,
                 2,
                 Action::Succeed(vec![format!("output/{id}")]),
@@ -447,21 +466,32 @@ mod tests {
             .unwrap();
         }
         rt.submit(
-            Snapshot::queued("c".into(), "diary".into(), "document".into(), "cpu".into()).unwrap(),
+            Snapshot::queued(
+                "c".into(),
+                "sample-delta".into(),
+                "document".into(),
+                "cpu".into(),
+            )
+            .unwrap(),
         )
         .unwrap();
-        assert_eq!(rt.list("diary").unwrap().len(), 2);
+        assert_eq!(rt.list("sample-delta").unwrap().len(), 2);
         drop(rt);
         let repo = SqliteRepository::open(&path).unwrap();
-        let page = repo.history("diary", 0, 100).unwrap();
+        let page = repo.history("sample-delta", 0, 100).unwrap();
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].id, "a");
         assert_eq!(page.entries[0].result_refs, vec!["output/a"]);
         assert_eq!(
             repo.save(
                 None,
-                &Snapshot::queued("a".into(), "diary".into(), "document".into(), "cpu".into())
-                    .unwrap()
+                &Snapshot::queued(
+                    "a".into(),
+                    "sample-delta".into(),
+                    "document".into(),
+                    "cpu".into()
+                )
+                .unwrap()
             ),
             Err(Error::Stale)
         );
@@ -470,11 +500,15 @@ mod tests {
     #[test]
     fn archive_delete_fault_rolls_back_history_and_preserves_exact_hot_record() {
         let repo = SqliteRepository::open(&archive_path("fault")).unwrap();
-        let t = terminal(&repo, "a", "diary");
+        let t = terminal(&repo, "a", "sample-delta");
         repo.connection.lock().unwrap().execute_batch("CREATE TRIGGER inject_archive_failure BEFORE DELETE ON next_tasks BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         assert!(matches!(repo.archive(&t), Err(Error::Storage(_))));
         assert_eq!(repo.list().unwrap(), vec![t.clone()]);
-        assert!(repo.history("diary", 0, 100).unwrap().entries.is_empty());
+        assert!(repo
+            .history("sample-delta", 0, 100)
+            .unwrap()
+            .entries
+            .is_empty());
         repo.connection
             .lock()
             .unwrap()
@@ -482,33 +516,44 @@ mod tests {
             .unwrap();
         repo.archive(&t).unwrap();
         assert!(repo.list().unwrap().is_empty());
-        assert_eq!(repo.history("diary", 0, 100).unwrap().entries, vec![t]);
+        assert_eq!(
+            repo.history("sample-delta", 0, 100).unwrap().entries,
+            vec![t]
+        );
     }
     #[test]
     fn bounded_history_pagination_does_not_expose_other_owner_and_can_continue_empty_page() {
         let repo = SqliteRepository::open(&archive_path("pagination")).unwrap();
-        for (id, owner) in [("a", "other"), ("b", "diary")] {
+        for (id, owner) in [("a", "other"), ("b", "sample-delta")] {
             let t = terminal(&repo, id, owner);
             repo.archive(&t).unwrap();
         }
-        let first = repo.history("diary", 0, 1).unwrap();
+        let first = repo.history("sample-delta", 0, 1).unwrap();
         assert!(first.entries.is_empty());
         let next = first.next_cursor.unwrap();
-        let second = repo.history("diary", next, 1).unwrap();
+        let second = repo.history("sample-delta", next, 1).unwrap();
         assert_eq!(second.entries[0].id, "b");
-        assert_eq!(second.entries[0].owner, "diary");
+        assert_eq!(second.entries[0].owner, "sample-delta");
         assert!(repo
-            .history("diary", second.next_cursor.unwrap(), 1)
+            .history("sample-delta", second.next_cursor.unwrap(), 1)
             .unwrap()
             .entries
             .is_empty());
-        assert!(matches!(repo.history("diary", 0, 101), Err(Error::Invalid)));
+        assert!(matches!(
+            repo.history("sample-delta", 0, 101),
+            Err(Error::Invalid)
+        ));
     }
     #[test]
     fn running_and_stale_snapshots_cannot_be_archived() {
         let repo = SqliteRepository::open(&archive_path("active")).unwrap();
-        let q =
-            Snapshot::queued("a".into(), "diary".into(), "document".into(), "cpu".into()).unwrap();
+        let q = Snapshot::queued(
+            "a".into(),
+            "sample-delta".into(),
+            "document".into(),
+            "cpu".into(),
+        )
+        .unwrap();
         repo.save(None, &q).unwrap();
         assert_eq!(repo.archive(&q), Err(Error::Invalid));
         let r = q.transition(Action::Start).unwrap();

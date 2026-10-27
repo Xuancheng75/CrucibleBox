@@ -589,7 +589,13 @@ mod tests {
         }
     }
     fn queued(id: &str) -> Snapshot {
-        Snapshot::queued(id.into(), "diary".into(), "document".into(), "cpu".into()).unwrap()
+        Snapshot::queued(
+            id.into(),
+            "sample-delta".into(),
+            "document".into(),
+            "cpu".into(),
+        )
+        .unwrap()
     }
     fn runtime() -> (Runtime<Memory, Events>, Memory, Events) {
         let repo = Memory::default();
@@ -609,14 +615,16 @@ mod tests {
         rt.submit(queued("a")).unwrap();
         repo.fail.store(true, Ordering::SeqCst);
         assert_eq!(
-            rt.apply("diary", "a", 1, Action::Start),
+            rt.apply("sample-delta", "a", 1, Action::Start),
             Err(Error::Storage("injected".into()))
         );
-        assert_eq!(rt.list("diary").unwrap()[0].sequence, 1);
+        assert_eq!(rt.list("sample-delta").unwrap()[0].sequence, 1);
         assert_eq!(events.seen.lock().unwrap().len(), 1);
         repo.fail.store(false, Ordering::SeqCst);
         assert_eq!(
-            rt.apply("diary", "a", 1, Action::Start).unwrap().sequence,
+            rt.apply("sample-delta", "a", 1, Action::Start)
+                .unwrap()
+                .sequence,
             2
         );
     }
@@ -627,19 +635,20 @@ mod tests {
         rt.submit(queued("b")).unwrap();
         assert_eq!(rt.submit(queued("c")), Err(Error::Capacity));
         assert_eq!(rt.apply("other", "a", 1, Action::Start), Err(Error::Denied));
-        rt.apply("diary", "a", 1, Action::Start).unwrap();
+        rt.apply("sample-delta", "a", 1, Action::Start).unwrap();
         assert_eq!(
-            rt.apply("diary", "b", 1, Action::Start),
+            rt.apply("sample-delta", "b", 1, Action::Start),
             Err(Error::Capacity)
         );
         assert_eq!(
-            rt.apply("diary", "a", 1, Action::Fail("late".into())),
+            rt.apply("sample-delta", "a", 1, Action::Fail("late".into())),
             Err(Error::Stale)
         );
-        rt.apply("diary", "a", 2, Action::Succeed(vec![])).unwrap();
-        rt.apply("diary", "b", 1, Action::Start).unwrap();
+        rt.apply("sample-delta", "a", 2, Action::Succeed(vec![]))
+            .unwrap();
+        rt.apply("sample-delta", "b", 1, Action::Start).unwrap();
         assert_eq!(
-            rt.apply("diary", "a", 3, Action::Progress(1)),
+            rt.apply("sample-delta", "a", 3, Action::Progress(1)),
             Err(Error::Terminal)
         );
     }
@@ -647,16 +656,18 @@ mod tests {
     fn cancel_waits_for_executor_stop_and_cannot_publish() {
         let (rt, _, _) = runtime();
         rt.submit(queued("a")).unwrap();
-        rt.apply("diary", "a", 1, Action::Start).unwrap();
-        let pending = rt.apply("diary", "a", 2, Action::RequestCancel).unwrap();
+        rt.apply("sample-delta", "a", 1, Action::Start).unwrap();
+        let pending = rt
+            .apply("sample-delta", "a", 2, Action::RequestCancel)
+            .unwrap();
         assert_eq!(pending.status, Status::Running);
         assert_eq!(
-            rt.apply("diary", "a", 3, Action::Succeed(vec![])),
+            rt.apply("sample-delta", "a", 3, Action::Succeed(vec![])),
             Err(Error::CancelPending)
         );
         assert_eq!(
             rt.apply(
-                "diary",
+                "sample-delta",
                 "a",
                 3,
                 Action::PreparePublication("output:1".into())
@@ -664,7 +675,7 @@ mod tests {
             Err(Error::CancelPending)
         );
         assert_eq!(
-            rt.apply("diary", "a", 3, Action::ConfirmStopped)
+            rt.apply("sample-delta", "a", 3, Action::ConfirmStopped)
                 .unwrap()
                 .status,
             Status::Cancelled
@@ -674,23 +685,23 @@ mod tests {
     fn durable_publication_reservation_wins_late_cancel_and_restart_reconciles() {
         let (rt, repo, events) = runtime();
         rt.submit(queued("a")).unwrap();
-        rt.apply("diary", "a", 1, Action::Start).unwrap();
+        rt.apply("sample-delta", "a", 1, Action::Start).unwrap();
         rt.apply(
-            "diary",
+            "sample-delta",
             "a",
             2,
             Action::PreparePublication("output:1".into()),
         )
         .unwrap();
         assert_eq!(
-            rt.apply("diary", "a", 3, Action::RequestCancel),
+            rt.apply("sample-delta", "a", 3, Action::RequestCancel),
             Err(Error::PublicationPending)
         );
         // Simulates a successful file publish followed by failed terminal DB write.
         repo.fail.store(true, Ordering::SeqCst);
         assert!(matches!(
             rt.apply(
-                "diary",
+                "sample-delta",
                 "a",
                 3,
                 Action::Published {
@@ -709,7 +720,7 @@ mod tests {
         );
         let recovered = restarted
             .apply(
-                "diary",
+                "sample-delta",
                 "a",
                 3,
                 Action::Recover {
@@ -720,7 +731,7 @@ mod tests {
         assert_eq!(recovered.status, Status::Succeeded);
         assert_eq!(recovered.result_refs, vec!["file:1"]);
         assert_eq!(
-            restarted.apply("diary", "a", 4, Action::RequestCancel),
+            restarted.apply("sample-delta", "a", 4, Action::RequestCancel),
             Err(Error::Terminal)
         );
     }
@@ -728,9 +739,14 @@ mod tests {
     fn restart_does_not_claim_checkpoint_is_running_or_resumable() {
         let (rt, repo, events) = runtime();
         rt.submit(queued("a")).unwrap();
-        rt.apply("diary", "a", 1, Action::Start).unwrap();
-        rt.apply("diary", "a", 2, Action::Checkpoint("checkpoint:1".into()))
-            .unwrap();
+        rt.apply("sample-delta", "a", 1, Action::Start).unwrap();
+        rt.apply(
+            "sample-delta",
+            "a",
+            2,
+            Action::Checkpoint("checkpoint:1".into()),
+        )
+        .unwrap();
         drop(rt);
         let restarted = Runtime::open(repo, events, limits()).unwrap();
         assert_eq!(
@@ -738,12 +754,12 @@ mod tests {
             Err(Error::RecoveryRequired)
         );
         let recovered = restarted
-            .apply("diary", "a", 3, Action::Recover { published: None })
+            .apply("sample-delta", "a", 3, Action::Recover { published: None })
             .unwrap();
         assert_eq!(recovered.status, Status::Interrupted);
         assert_eq!(recovered.checkpoint.as_deref(), Some("checkpoint:1"));
         assert_eq!(
-            restarted.apply("diary", "a", 4, Action::Start),
+            restarted.apply("sample-delta", "a", 4, Action::Start),
             Err(Error::Terminal)
         );
     }
@@ -752,20 +768,20 @@ mod tests {
         let (rt, _, _) = runtime();
         let rt = Arc::new(rt);
         rt.submit(queued("a")).unwrap();
-        rt.apply("diary", "a", 1, Action::Start).unwrap();
+        rt.apply("sample-delta", "a", 1, Action::Start).unwrap();
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let cancel_rt = rt.clone();
         let cancel_barrier = barrier.clone();
         let cancel = std::thread::spawn(move || {
             cancel_barrier.wait();
-            cancel_rt.apply("diary", "a", 2, Action::RequestCancel)
+            cancel_rt.apply("sample-delta", "a", 2, Action::RequestCancel)
         });
         let publish_rt = rt.clone();
         let publish_barrier = barrier.clone();
         let publish = std::thread::spawn(move || {
             publish_barrier.wait();
             publish_rt.apply(
-                "diary",
+                "sample-delta",
                 "a",
                 2,
                 Action::PreparePublication("output:1".into()),
@@ -803,10 +819,10 @@ mod tests {
     fn confirmed_pause_releases_lease_and_resume_reacquires_it_through_queue() {
         let (rt, _, _) = runtime();
         rt.submit(queued("a")).unwrap();
-        rt.apply("diary", "a", 1, Action::Start).unwrap();
+        rt.apply("sample-delta", "a", 1, Action::Start).unwrap();
         let paused = rt
             .apply(
-                "diary",
+                "sample-delta",
                 "a",
                 2,
                 Action::ConfirmPaused("checkpoint/a".into()),
@@ -814,21 +830,24 @@ mod tests {
             .unwrap();
         assert_eq!(paused.status, Status::Paused);
         rt.submit(queued("b")).unwrap();
-        rt.apply("diary", "b", 1, Action::Start).unwrap();
-        let resumed = rt.apply("diary", "a", 3, Action::Resume).unwrap();
+        rt.apply("sample-delta", "b", 1, Action::Start).unwrap();
+        let resumed = rt.apply("sample-delta", "a", 3, Action::Resume).unwrap();
         assert_eq!(resumed.status, Status::Queued);
         assert_eq!(
-            rt.apply("diary", "a", 4, Action::Start),
+            rt.apply("sample-delta", "a", 4, Action::Start),
             Err(Error::Capacity)
         );
-        rt.apply("diary", "b", 2, Action::Succeed(vec![])).unwrap();
-        let active = rt.apply("diary", "a", 4, Action::Start).unwrap();
+        rt.apply("sample-delta", "b", 2, Action::Succeed(vec![]))
+            .unwrap();
+        let active = rt.apply("sample-delta", "a", 4, Action::Start).unwrap();
         assert_eq!(active.status, Status::Running);
         assert_eq!(active.checkpoint.as_deref(), Some("checkpoint/a"));
-        let cancel = rt.apply("diary", "a", 5, Action::RequestCancel).unwrap();
+        let cancel = rt
+            .apply("sample-delta", "a", 5, Action::RequestCancel)
+            .unwrap();
         assert_eq!(
             rt.apply(
-                "diary",
+                "sample-delta",
                 "a",
                 cancel.sequence,
                 Action::ConfirmPaused("checkpoint/a".into())
@@ -841,14 +860,19 @@ mod tests {
     {
         let (rt, repo, events) = runtime();
         rt.submit(queued("a")).unwrap();
-        rt.apply("diary", "a", 1, Action::Start).unwrap();
-        rt.apply("diary", "a", 2, Action::Checkpoint("checkpoint/a".into()))
-            .unwrap();
+        rt.apply("sample-delta", "a", 1, Action::Start).unwrap();
+        rt.apply(
+            "sample-delta",
+            "a",
+            2,
+            Action::Checkpoint("checkpoint/a".into()),
+        )
+        .unwrap();
         drop(rt);
         let recovered = Runtime::open(repo, events, limits()).unwrap();
         assert_eq!(
             recovered.apply(
-                "diary",
+                "sample-delta",
                 "a",
                 3,
                 Action::RecoverCheckpoint("checkpoint/other".into())
@@ -857,19 +881,24 @@ mod tests {
         );
         let paused = recovered
             .apply(
-                "diary",
+                "sample-delta",
                 "a",
                 3,
                 Action::RecoverCheckpoint("checkpoint/a".into()),
             )
             .unwrap();
         assert_eq!(paused.status, Status::Paused);
-        assert_eq!(recovered.list("diary").unwrap()[0].status, Status::Paused);
         assert_eq!(
-            recovered.apply("diary", "a", 4, Action::Start),
+            recovered.list("sample-delta").unwrap()[0].status,
+            Status::Paused
+        );
+        assert_eq!(
+            recovered.apply("sample-delta", "a", 4, Action::Start),
             Err(Error::Invalid)
         );
-        let queued = recovered.apply("diary", "a", 4, Action::Resume).unwrap();
+        let queued = recovered
+            .apply("sample-delta", "a", 4, Action::Resume)
+            .unwrap();
         assert_eq!(queued.status, Status::Queued);
     }
 }

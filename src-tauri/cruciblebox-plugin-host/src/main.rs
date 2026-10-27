@@ -1,17 +1,10 @@
 //! Next-only backend process. Legacy ctx/lifecycle dispatch is historical test code.
-#[cfg(test)]
-include!("legacy_entry.rs");
-#[cfg(not(test))]
 mod loader;
-#[cfg(not(test))]
-mod next_worker;
-#[cfg(not(test))]
+mod next2_worker;
 use rquickjs::{Function, Object};
-#[cfg(all(not(test), unix))]
+#[cfg(unix)]
 use std::io::Read;
-#[cfg(not(test))]
 use std::path::PathBuf;
-#[cfg(not(test))]
 fn secure_random_u32() -> Result<u32, String> {
     let mut bytes = [0u8; 4];
     #[cfg(windows)]
@@ -52,7 +45,6 @@ fn secure_random_u32() -> Result<u32, String> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-#[cfg(not(test))]
 fn install_polyfills(ctx: &rquickjs::Ctx) -> rquickjs::Result<()> {
     let globals = ctx.globals();
     let console = Object::new(ctx.clone())?;
@@ -90,7 +82,6 @@ fn install_polyfills(ctx: &rquickjs::Ctx) -> rquickjs::Result<()> {
 
 /// Rust 全局 `__cjsResolve` / `__cjsLoad`，供 JS require 使用。
 /// __cjsLoad 重新做根校验（C1：插件 JS 不能经它读任意文件）。
-#[cfg(not(test))]
 fn install_cjs_host_functions(
     ctx: &rquickjs::Ctx,
     plugin_root: &std::path::Path,
@@ -121,21 +112,15 @@ fn install_cjs_host_functions(
     Ok(())
 }
 
-#[cfg(not(test))]
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.len() != 4
-        || args[2] != "3"
-        || !(32..=128).contains(&args[3].len())
-        || !args[3].bytes().all(|b| b.is_ascii_alphanumeric())
-    {
-        eprintln!("LEGACY_RUNTIME_RETIRED: expected Next wire 3 worker arguments");
-        std::process::exit(1);
+    if args.len() == 3 && args[0] == "--next2" {
+        if let Err(error) = next2_worker::run(PathBuf::from(&args[1]), &args[2]) {
+            eprintln!("[next2-worker] {error}");
+            std::process::exit(1);
+        }
+        return;
     }
-    let directory = PathBuf::from(&args[0]);
-    let entry = directory.join(&args[1]);
-    if let Err(error) = next_worker::run(directory, entry, args[3].clone()) {
-        eprintln!("[next-worker] {error}");
-        std::process::exit(1);
-    }
+    eprintln!("API_VERSION_UNSUPPORTED: expected --next2 <directory> <session> (wire 4)");
+    std::process::exit(1);
 }

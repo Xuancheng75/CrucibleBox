@@ -328,7 +328,7 @@ export default function LauncherCard({
               >
                 {identity.category}
               </span>
-              {isOfficialPlugin(plugin.name) && (
+              {isOfficialPlugin(plugin) && (
                 <span style={{ color: token.colorTextTertiary, fontSize: 10 }}>官方</span>
               )}
             </div>

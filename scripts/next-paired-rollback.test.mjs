@@ -11,10 +11,10 @@ async function fixture() {
   const program = join(root, 'old-program'),
     data = join(root, 'old-data')
   await mkdir(program)
-  await mkdir(join(data, 'plugin-data/diary/empty'), { recursive: true })
+  await mkdir(join(data, 'plugin-data/sample-delta/empty'), { recursive: true })
   await mkdir(join(data, 'data'))
   await writeFile(join(program, 'cruciblebox.exe'), 'paired old program')
-  await writeFile(join(data, 'plugin-data/diary/note.txt'), '中文附件\n')
+  await writeFile(join(data, 'plugin-data/sample-delta/note.txt'), '中文附件\n')
   return { root, program, data }
 }
 test('paired capture backs up a coherent WAL database and restores old program with all raw data to new directories', async () => {
@@ -25,7 +25,7 @@ test('paired capture backs up a coherent WAL database and restores old program w
     'PRAGMA journal_mode=WAL;PRAGMA user_version=5;CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT);'
   )
   const raw = ' {"notes": ["旧笔记"], "unknown":true} '
-  db.prepare('INSERT INTO settings VALUES(?,?)').run('diary', raw)
+  db.prepare('INSERT INTO settings VALUES(?,?)').run('sample-delta', raw)
   const pair = join(f.root, 'pair')
   const manifest = await capturePair(f.program, f.data, pair)
   assert.equal(
@@ -49,10 +49,10 @@ test('paired capture backs up a coherent WAL database and restores old program w
     old.close()
   }
   assert.equal(
-    await readFile(join(restored.data, 'plugin-data/diary/note.txt'), 'utf8'),
+    await readFile(join(restored.data, 'plugin-data/sample-delta/note.txt'), 'utf8'),
     '中文附件\n'
   )
-  assert(existsSync(join(restored.data, 'plugin-data/diary/empty')))
+  assert(existsSync(join(restored.data, 'plugin-data/sample-delta/empty')))
   assert.equal(await readFile(join(f.program, 'cruciblebox.exe'), 'utf8'), 'new program')
   await verifyPair(pair)
   await verifyPair(join(f.root, 'restored'))

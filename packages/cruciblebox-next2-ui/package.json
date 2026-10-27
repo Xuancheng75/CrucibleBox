@@ -1,0 +1,19 @@
+{
+  "name": "@cruciblebox/next2-ui",
+  "version": "6.0.0-alpha.2",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.mts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "@cruciblebox/next2-api": "6.0.0-alpha.2"
+  },
+  "license": "MIT"
+}

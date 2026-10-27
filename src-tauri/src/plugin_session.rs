@@ -7,6 +7,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub const LEASE_MS: u64 = 1_800_000;
+pub const MIN_LEASE_MS: u64 = 100;
+pub const MAX_LEASE_MS: u64 = 86_400_000;
 pub const PLUGIN_RENDERER_SCHEME: &str = "cruciblebox-plugin";
 pub const DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
 pub const MAX_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -132,8 +135,8 @@ impl RendererSessionRegistry {
 
     #[cfg(test)]
     pub fn create(&mut self, input: CreateSessionInput) -> Result<RendererSession, String> {
-        if input.renderer_api_version != 1 && input.renderer_api_version != 2 {
-            return Err("rendererApiVersion must be 1 or 2".into());
+        if input.renderer_api_version != 6 {
+            return Err("rendererApiVersion must be 6".into());
         }
         self.create_internal(input)
     }
@@ -144,45 +147,32 @@ impl RendererSessionRegistry {
         manifest_json: &str,
         lease_ms: u64,
     ) -> Result<RendererSession, String> {
-        if !(cruciblebox_next_protocol::MIN_LEASE_MS..=cruciblebox_next_protocol::MAX_LEASE_MS)
-            .contains(&lease_ms)
-        {
+        if !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(&lease_ms) {
             return Err("SESSION_DENIED".into());
         }
-        let issued = self.create_next(input, manifest_json)?;
+        let issued = if input.renderer_api_version == 6 {
+            let manifest = cruciblebox_next2_protocol::validate_manifest(manifest_json)?;
+            if input.owner_webview_label != "main"
+                || input.plugin_name != manifest.id
+                || input.renderer_entry != manifest.renderer
+                || input.permissions != manifest.permissions
+            {
+                return Err("Next session metadata does not match verified installation".into());
+            }
+            let issued = self.create_internal(input)?;
+            if let Some(record) = self.sessions.get_mut(&issued.token) {
+                record.origin = "null".into();
+            }
+            issued
+        } else {
+            return Err("API_VERSION_UNSUPPORTED: expected API 6".into());
+        };
         if let Some(record) = self.sessions.get_mut(&issued.token) {
             record.expires_at_ms = record.created_at_ms + lease_ms;
         }
         self.snapshot(&issued.token)
             .session
             .ok_or("session creation failed".into())
-    }
-
-    /// Only a host-verified installed Next record may use this issuer.
-    pub fn create_next(
-        &mut self,
-        input: CreateSessionInput,
-        manifest_json: &str,
-    ) -> Result<RendererSession, String> {
-        let manifest =
-            cruciblebox_next_protocol::validate_manifest(manifest_json).map_err(str::to_owned)?;
-        if input.renderer_api_version != 5
-            || input.owner_webview_label != "main"
-            || input.plugin_name != manifest.id
-            || input.renderer_entry != manifest.renderer
-            || input.permissions != manifest.permissions
-        {
-            return Err("Next session metadata does not match verified installation".into());
-        }
-        let issued = self.create_internal(input)?;
-        // sandbox=allow-scripts has opaque message origin even though its resource URL is HTTP.
-        if let Some(record) = self.sessions.get_mut(&issued.token) {
-            record.origin = "null".into();
-        }
-        Ok(self
-            .snapshot(&issued.token)
-            .session
-            .ok_or("session creation failed")?)
     }
 
     fn create_internal(&mut self, input: CreateSessionInput) -> Result<RendererSession, String> {
@@ -405,8 +395,8 @@ mod tests {
             plugin_name: plugin_id.to_string(),
             plugin_directory: "C:/plugins/x".into(),
             renderer_entry: "dist/renderer.js".into(),
-            runtime_path: "C:/app/out/plugin-frame/runtime.js".into(),
-            renderer_api_version: 2,
+            runtime_path: "C:/unused/runtime.js".into(),
+            renderer_api_version: 6,
             permissions: vec!["theme:read".into()],
             owner_webview_label: "main".into(),
         }
@@ -415,23 +405,28 @@ mod tests {
     #[test]
     fn next_issuer_binds_verified_manifest_and_rotates_client_tokens() {
         let mut registry = RendererSessionRegistry::new(DEFAULT_TTL);
-        let manifest = r#"{"id":"next-demo-note","version":"1.0.0","displayName":"Note","manifestVersion":5,"sdkApiVersion":5,"wireVersion":3,"dataSchemaVersion":1,"renderer":"dist/renderer.js","permissions":[]}"#;
-        let mut input = make_input("next-demo-note");
-        input.renderer_api_version = 5;
+        let manifest = serde_json::json!({"manifestVersion":6,"sdkApiVersion":6,"id":"sample-view","version":"1.0.0","displayName":"Sample","description":"Test","publisher":{"id":"local","displayName":"Local"},"minHostVersion":"2.1.0-beta.4","sdk":{"min":6,"maxExclusive":7},"renderer":"dist/renderer.js","permissions":[],"background":false,"contributes":{"commands":[]},"exports":[],"dependencies":[],"resources":[],"files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)}]}).to_string();
+        let mut input = make_input("sample-view");
+        input.renderer_api_version = 6;
         input.permissions.clear();
+        input.renderer_api_version = 5;
         assert!(registry.create(input).is_err());
         let make = || {
-            let mut input = make_input("next-demo-note");
-            input.renderer_api_version = 5;
+            let mut input = make_input("sample-view");
+            input.renderer_api_version = 6;
             input.permissions.clear();
             input
         };
-        let a = registry.create_next(make(), manifest).unwrap();
-        let b = registry.create_next(make(), manifest).unwrap();
+        let a = registry
+            .create_next_with_lease(make(), &manifest, LEASE_MS)
+            .unwrap();
+        let b = registry
+            .create_next_with_lease(make(), &manifest, LEASE_MS)
+            .unwrap();
         assert_ne!(a.token, b.token);
         assert_ne!(a.handshake_token, b.handshake_token);
         assert_eq!(a.origin, "null");
-        assert_eq!(a.renderer_api_version, 5);
+        assert_eq!(a.renderer_api_version, 6);
         assert!(a
             .index_url
             .starts_with("http://cruciblebox-plugin.localhost/"));
@@ -441,14 +436,18 @@ mod tests {
         assert!(!registry.get_active(&a.token, "other").ok);
         let mut forged = make();
         forged.permissions.push("storage:write".into());
-        assert!(registry.create_next(forged, manifest).is_err());
-        assert!(registry.create_next(make(), "{}").is_err());
+        assert!(registry
+            .create_next_with_lease(forged, &manifest, LEASE_MS)
+            .is_err());
+        assert!(registry
+            .create_next_with_lease(make(), "{}", LEASE_MS)
+            .is_err());
     }
 
     #[test]
     fn create_and_consume_index() {
         let mut reg = RendererSessionRegistry::new(DEFAULT_TTL);
-        let session = reg.create(make_input("diary")).unwrap();
+        let session = reg.create(make_input("sample-delta")).unwrap();
         assert_eq!(session.token.len(), 64);
         assert_eq!(session.handshake_token.len(), 64);
         assert!(session
@@ -470,7 +469,7 @@ mod tests {
     #[test]
     fn owner_mismatch_rejected() {
         let mut reg = RendererSessionRegistry::new(DEFAULT_TTL);
-        let session = reg.create(make_input("diary")).unwrap();
+        let session = reg.create(make_input("sample-delta")).unwrap();
         let access = reg.get(&session.token, "other-window");
         assert!(!access.ok);
         assert_eq!(access.reason, Some(DenialReason::OwnerMismatch));
@@ -492,7 +491,7 @@ mod tests {
     #[test]
     fn dispose_and_cleanup() {
         let mut reg = RendererSessionRegistry::new(DEFAULT_TTL);
-        let session = reg.create(make_input("diary")).unwrap();
+        let session = reg.create(make_input("sample-delta")).unwrap();
         assert!(reg.dispose(&session.token));
         assert!(!reg.dispose(&session.token));
         assert_eq!(reg.sessions.len(), 0);
@@ -501,7 +500,7 @@ mod tests {
     #[test]
     fn expiry_enforced() {
         let mut reg = RendererSessionRegistry::new(Duration::from_millis(1));
-        let session = reg.create(make_input("diary")).unwrap();
+        let session = reg.create(make_input("sample-delta")).unwrap();
         std::thread::sleep(Duration::from_millis(5));
         let access = reg.get(&session.token, "main");
         assert!(!access.ok);

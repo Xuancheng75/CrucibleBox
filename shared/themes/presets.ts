@@ -63,96 +63,6 @@ export function createDarkTokens(
   }
 }
 
-const CYBER_FONT =
-  "'Rajdhani', 'Teko', 'Bahnschrift', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', -apple-system, BlinkMacSystemFont, monospace"
-
-export function createCyberTokens(): ThemeTokens {
-  return {
-    colorBg: '#0a0e14',
-    colorBgLayout: '#060a10',
-    colorBgContainer: '#0d121a',
-    colorBgElevated: '#131a24',
-    colorPrimary: '#00e5ff',
-    colorPrimaryHover: '#66f2ff',
-    colorPrimaryBg: '#06212e',
-    colorText: '#d9e4e8',
-    colorTextSecondary: '#8aa2ad',
-    colorTextTertiary: '#4d6a75',
-    colorBorder: '#1e3a4d',
-    colorBorderSecondary: '#14232e',
-    colorSuccess: '#00ff9d',
-    colorSuccessBg: '#0a2b1f',
-    colorWarning: '#fce205',
-    colorWarningBg: '#2e2a08',
-    colorError: '#ff003c',
-    colorErrorBg: '#330414',
-    colorLink: '#00e5ff',
-    borderRadius: 8,
-    fontFamily: CYBER_FONT
-  }
-}
-
-const NEON_DISTRICT_FONT =
-  "'Bahnschrift', 'Rajdhani', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', 'Segoe UI', sans-serif"
-
-export function createNeonDistrictTokens(): ThemeTokens {
-  return {
-    colorBg: '#080d19',
-    colorBgLayout: '#040711',
-    colorBgContainer: '#0a1220',
-    colorBgElevated: '#101c2d',
-    colorPrimary: '#00e5ff',
-    colorPrimaryHover: '#7df6ff',
-    colorPrimaryBg: '#052b38',
-    colorText: '#e6f7fa',
-    colorTextSecondary: '#91adb6',
-    colorTextTertiary: '#52727c',
-    colorBorder: '#175064',
-    colorBorderSecondary: '#102f3d',
-    colorSuccess: '#39ff88',
-    colorSuccessBg: '#09281c',
-    colorWarning: '#fce205',
-    colorWarningBg: '#302b06',
-    colorError: '#ff2b78',
-    colorErrorBg: '#33091d',
-    colorLink: '#00e5ff',
-    borderRadius: 2,
-    fontFamily: NEON_DISTRICT_FONT
-  }
-}
-
-function createEditorialTokens(): ThemeTokens {
-  return {
-    ...createLightTokens('#0f766e', '#14b8a6', '#ccfbf1'),
-    colorBg: '#f4f7f6',
-    colorBgLayout: '#e9f0ee',
-    colorBgContainer: '#fffdf8',
-    colorBgElevated: '#ffffff',
-    colorText: '#173b3a',
-    colorTextSecondary: '#52706d',
-    colorBorder: '#c8dad5',
-    colorBorderSecondary: '#dce9e5',
-    borderRadius: 4,
-    fontFamily: "Georgia, 'Noto Serif SC', serif"
-  }
-}
-
-function createClayTokens(): ThemeTokens {
-  return {
-    ...createLightTokens('#b45309', '#c2410c', '#ffedd5'),
-    colorBg: '#fbf3ea',
-    colorBgLayout: '#f2e4d5',
-    colorBgContainer: '#fffaf4',
-    colorBgElevated: '#ffffff',
-    colorText: '#4b2e1f',
-    colorTextSecondary: '#89634d',
-    colorBorder: '#e2c1a5',
-    colorBorderSecondary: '#efd9c4',
-    borderRadius: 18,
-    fontFamily: "'Avenir Next', 'Noto Sans SC', sans-serif"
-  }
-}
-
 function createBlueWorkbenchTokens(): ThemeTokens {
   return {
     ...createLightTokens('#2f78c2', '#2068ad', '#dfedff'),
@@ -182,32 +92,6 @@ export const PRESET_THEMES: ToolboxTheme[] = [
     name: '深色',
     mode: 'dark',
     tokens: createDarkTokens('#818cf8', '#a5b4fc', '#2a2b52')
-  },
-  {
-    id: 'cyber',
-    name: '科幻面板',
-    mode: 'dark',
-    tokens: createCyberTokens()
-  },
-  {
-    id: 'neon-district',
-    name: '像素街机',
-    mode: 'dark',
-    // Keep the structural token contract stable for existing configurations;
-    // the preset-specific arcade surface treatment lives in theme-presets.css.
-    tokens: createNeonDistrictTokens()
-  },
-  {
-    id: 'warm-sun',
-    name: '陶土工坊',
-    mode: 'light',
-    tokens: createClayTokens()
-  },
-  {
-    id: 'editorial-paper',
-    name: '纸张编辑',
-    mode: 'light',
-    tokens: createEditorialTokens()
   }
 ]
 

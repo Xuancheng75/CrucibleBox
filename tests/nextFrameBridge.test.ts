@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
+import { contract as next2Contract } from '../packages/cruciblebox-next2-api/src/index.mjs'
 import {
   createNextDispatcher,
   isNextReady,
@@ -11,25 +12,146 @@ const session: NextSession = {
   token: 'a'.repeat(64),
   handshakeToken: 'b'.repeat(64),
   origin: 'null',
-  rendererApiVersion: 5,
+  rendererApiVersion: 6,
   indexUrl: 'http://cruciblebox-plugin.localhost/test/index.html',
   expiresAt: Date.now() + 60000
 }
 const request = (id = 'r1') => ({
-  wireVersion: 3,
+  wireVersion: 4,
   requestId: id,
   session: session.token,
+  target: { kind: 'platform' },
   method: 'runtime.ping',
   params: {}
 })
-const reply = (id = 'r1') => ({ wireVersion: 3, requestId: id, ok: true, result: 'pong' })
+const reply = (id = 'r1') => ({ wireVersion: 4, requestId: id, ok: true, result: 'pong' })
 afterEach(() => vi.useRealTimers())
+
+const next2Budget = next2Contract.budget as {
+  requestTimeoutMs: number
+  interactiveTimeoutMs: number
+}
+
+test('API 6 folder selection survives the ordinary deadline and delivers a late result once', async () => {
+  vi.useFakeTimers()
+  const next2 = { ...session, rendererApiVersion: 6 as const, expiresAt: Date.now() + 600000 }
+  let resolve!: (value: unknown) => void
+  const send = vi.fn()
+  const bridge = createNextDispatcher(
+    next2,
+    () =>
+      new Promise((r) => {
+        resolve = r
+      }),
+    send
+  )
+  bridge.dispatch({
+    wireVersion: 4,
+    requestId: 'picker',
+    session: next2.token,
+    target: { kind: 'platform' },
+    method: 'files.choose',
+    params: { type: 'folder', multiple: false }
+  })
+  await vi.advanceTimersByTimeAsync(next2Budget.requestTimeoutMs + 5000)
+  expect(send).not.toHaveBeenCalled()
+  const response = { wireVersion: 4, requestId: 'picker', ok: true, result: null }
+  resolve(response)
+  await vi.advanceTimersByTimeAsync(0)
+  expect(send).toHaveBeenCalledExactlyOnceWith(response)
+  await vi.advanceTimersByTimeAsync(next2Budget.interactiveTimeoutMs)
+  expect(send).toHaveBeenCalledTimes(1)
+  bridge.dispose()
+})
+
+test('API 6 folder selection has a bounded interactive deadline and ignores late completion', async () => {
+  vi.useFakeTimers()
+  const next2 = { ...session, rendererApiVersion: 6 as const, expiresAt: Date.now() + 600000 }
+  let resolve!: (value: unknown) => void
+  const send = vi.fn()
+  const bridge = createNextDispatcher(
+    next2,
+    () =>
+      new Promise((r) => {
+        resolve = r
+      }),
+    send
+  )
+  bridge.dispatch({
+    wireVersion: 4,
+    requestId: 'picker',
+    session: next2.token,
+    target: { kind: 'platform' },
+    method: 'files.choose',
+    params: { type: 'folder', multiple: false }
+  })
+  await vi.advanceTimersByTimeAsync(next2Budget.interactiveTimeoutMs - 1)
+  expect(send).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(send).toHaveBeenCalledTimes(1)
+  expect(send.mock.calls[0][0].error.code).toBe('TIMEOUT')
+  resolve({ wireVersion: 4, requestId: 'picker', ok: true, result: null })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(send).toHaveBeenCalledTimes(1)
+  bridge.dispose()
+})
+
+test.each([
+  { target: { kind: 'platform' }, method: 'runtime.ping', params: {} },
+  { target: { kind: 'backend' }, method: 'files.choose', params: {} }
+])('API 6 $target.kind $method keeps the ordinary deadline', async (call) => {
+  vi.useFakeTimers()
+  const next2 = { ...session, rendererApiVersion: 6 as const, expiresAt: Date.now() + 600000 }
+  const send = vi.fn()
+  const bridge = createNextDispatcher(next2, () => new Promise(() => {}), send)
+  bridge.dispatch({ wireVersion: 4, requestId: 'ordinary', session: next2.token, ...call })
+  await vi.advanceTimersByTimeAsync(next2Budget.requestTimeoutMs - 1)
+  expect(send).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(send).toHaveBeenCalledTimes(1)
+  expect(send.mock.calls[0][0].error.code).toBe('TIMEOUT')
+  bridge.dispose()
+})
+test('API 6 binds wire 4 and admits generic domain methods without a host enum', async () => {
+  const next2 = { ...session, rendererApiVersion: 6 as const }
+  const source = {}
+  const ready = {
+    source,
+    origin: 'null',
+    data: { kind: 'next-ready', nonce: session.handshakeToken, wireVersion: 4 }
+  }
+  expect(isNextReady(ready, source, next2)).toBe(true)
+  expect(isNextReady({ ...ready, data: { ...ready.data, wireVersion: 3 } }, source, session)).toBe(
+    false
+  )
+  const send = vi.fn()
+  const response = {
+    wireVersion: 4,
+    requestId: 'domain',
+    ok: false,
+    error: { code: 'ACME_DOMAIN_FAILURE', message: 'Domain detail' }
+  }
+  const invoke = vi.fn(async () => response)
+  const bridge = createNextDispatcher(next2, invoke, send)
+  bridge.dispatch({
+    wireVersion: 4,
+    requestId: 'domain',
+    session: next2.token,
+    target: { kind: 'backend' },
+    method: 'acme.transform',
+    params: { input: 12 }
+  })
+  await vi.waitFor(() => expect(send).toHaveBeenCalledWith(response))
+  bridge.dispatch(request('old-wire'))
+  expect(invoke).toHaveBeenCalledTimes(1)
+  bridge.dispose()
+})
 test('ready binds opaque origin, exact iframe, nonce and expiry', () => {
   const source = {}
   const event = {
     source,
     origin: 'null',
-    data: { kind: 'next-ready', nonce: session.handshakeToken, wireVersion: 3 }
+    data: { kind: 'next-ready', nonce: session.handshakeToken, wireVersion: 4 }
   }
   expect(isNextReady(event, source, session)).toBe(true)
   expect(isNextReady(event, {}, session)).toBe(false)

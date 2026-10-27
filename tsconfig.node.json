@@ -13,8 +13,10 @@
     "declarationMap": true,
     "sourceMap": true,
     "composite": true,
-    "paths": { "@shared/*": ["./shared/*"] }
+    "paths": {
+      "@shared/*": ["./shared/*"]
+    }
   },
-  "include": ["shared/**/*.ts", "packages/openbox-rpc/src/**/*.ts", "vitest.config.ts"],
+  "include": ["shared/themes/**/*.ts", "shared/types/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "out", "dist"]
 }

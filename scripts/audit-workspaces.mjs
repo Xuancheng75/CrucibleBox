@@ -7,15 +7,11 @@ const repositoryRoot = resolve(scriptDirectory, '..')
 const npmCli = process.env.npm_execpath
 if (!npmCli) throw new Error('audit:dependencies must be run through npm')
 
-const result = spawnSync(
-  process.execPath,
-  [npmCli, 'audit', '--workspaces', '--include-workspace-root', '--audit-level', 'high'],
-  {
-    cwd: repositoryRoot,
-    encoding: 'utf8',
-    windowsHide: true
-  }
-)
+const result = spawnSync(process.execPath, [npmCli, 'audit', '--audit-level', 'high'], {
+  cwd: repositoryRoot,
+  encoding: 'utf8',
+  windowsHide: true
+})
 
 if (result.error) {
   throw result.error

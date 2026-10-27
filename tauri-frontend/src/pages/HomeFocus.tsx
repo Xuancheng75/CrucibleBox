@@ -26,7 +26,6 @@ import { usePlugins } from '../hooks/usePlugins'
 import { useAppStore } from '../store/app.store'
 import { useTaskStore } from '../store/task.store'
 import { isOfficialPlugin } from '../plugin-identity'
-import { OFFICIAL_MARKETPLACE_CATALOG } from '../marketplace-catalog'
 import { searchPlugins } from '../plugin-search'
 import PluginConfig from '../components/PluginConfig'
 import PluginImport from '../components/PluginImport'
@@ -36,9 +35,7 @@ import './home-focus.css'
 
 const RECENT_PLUGIN_KEY = 'cruciblebox.recent-plugin-id'
 const ACTIVE_TASK_STATUSES = new Set(['queued', 'running', 'paused', 'waiting-user'])
-const OFFICIAL_SEARCH_FIELDS = new Map(
-  OFFICIAL_MARKETPLACE_CATALOG.map((plugin) => [plugin.id, plugin])
-)
+
 
 export default function HomeFocus() {
   const { message } = App.useApp()
@@ -89,16 +86,10 @@ export default function HomeFocus() {
       (plugin) => tagFilterIds === null || tagFilterIds.includes(plugin.id)
     )
     return searchPlugins(tagged, query, (plugin) => {
-      const official = OFFICIAL_SEARCH_FIELDS.get(plugin.id)
       return {
         name: plugin.displayName || plugin.name,
         id: plugin.id,
-        keywords: [
-          plugin.name,
-          ...(official?.tags ?? []),
-          ...(official?.keywords ?? []),
-          ...(official?.highlights ?? [])
-        ],
+        keywords: [plugin.name],
         description: plugin.description
       }
     })
@@ -327,7 +318,7 @@ export default function HomeFocus() {
                   <div>
                     <span>插件来源</span>
                     <strong>
-                      {isOfficialPlugin(preview.name)
+                      {isOfficialPlugin(preview)
                         ? 'CrucibleBox 官方'
                         : preview.author || '第三方'}
                     </strong>

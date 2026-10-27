@@ -1,10 +1,5 @@
 {
   "bundle": {
-    "externalBin": ["binaries/cruciblebox-plugin-host"],
-    "resources": {
-      "binaries/onnxruntime.dll": null,
-      "binaries/onnxruntime_providers_shared.dll": null,
-      "resources/formula-ocr": null
-    }
+    "externalBin": ["binaries/cruciblebox-plugin-host"]
   }
 }

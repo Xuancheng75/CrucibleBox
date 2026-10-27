@@ -13,16 +13,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: [
-      'tests/antdMigration.test.ts',
-      'tests/backendConfigRpc.test.ts',
-      'tests/dataConversion.test.ts',
-      'tests/appPages.test.ts',
       'tests/drop-target.test.ts',
-      'tests/homeErrorHandling.test.ts',
       'tests/hostTaskStore.test.ts',
       'tests/marketplaceVersionCompare.test.ts',
-      'tests/openboxUi.test.ts',
-      'tests/pluginFrameBridge.test.ts',
       'tests/nextFrameBridge.test.ts',
       'tests/nextThemeController.test.ts',
       'tests/nextUiController.test.ts',
@@ -32,11 +25,8 @@ export default defineConfig({
       'tests/nextOfficialCatalog.test.ts',
       'tests/tauriRuntimeAssets.test.ts',
       'tests/pluginGroupReorder.test.ts',
-      'tests/pluginRendererRpc.test.ts',
       'tests/pluginSearch.test.ts',
-      'tests/pluginSortOrder.test.ts',
       'tests/pluginSources.test.ts',
-      'tests/pluginStorageConsumers.test.ts',
       'tests/themes.test.ts',
       'tests/updateCheck.test.ts'
     ],

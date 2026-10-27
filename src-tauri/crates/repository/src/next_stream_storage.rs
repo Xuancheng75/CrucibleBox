@@ -1,10 +1,10 @@
 //! Bounded staging. Logical keys stay in plugin_storage for paired rollback.
 use crate::Db;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use cruciblebox_next_protocol::{
-    validate_storage_value, MAX_STORAGE_CHUNK_BYTES as CHUNK,
-    MAX_STORAGE_TRANSACTION_BYTES as TOTAL, MAX_STORAGE_TRANSACTION_OPS as OPS,
-    MAX_STORAGE_VALUE_BYTES as VALUE,
+use cruciblebox_next2_protocol::{
+    validate_storage_value, BUDGET_STORAGE_CHUNK_BYTES as CHUNK,
+    BUDGET_STORAGE_TRANSACTION_BYTES as TOTAL, BUDGET_STORAGE_TRANSACTION_OPS as OPS,
+    BUDGET_STORAGE_VALUE_BYTES as VALUE,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -303,7 +303,7 @@ pub fn write_commit(db: &Db, owner: &str, session: &str, id: &str) -> Result<()>
             return Err("INVALID_REQUEST".into());
         }
         let raw = std::str::from_utf8(&bytes).map_err(|_| "INVALID_REQUEST")?;
-        validate_storage_value(raw).map_err(str::to_owned)?;
+        validate_storage_value(raw)?;
         sql(tx.execute("INSERT INTO plugin_storage(plugin_id,key,value) VALUES(?1,?2,?3) ON CONFLICT(plugin_id,key) DO UPDATE SET value=excluded.value,updated_at=datetime('now','localtime')",params![owner,key,raw]))?;
     }
     for key in deletes {
@@ -346,7 +346,6 @@ pub(crate) fn token() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cruciblebox_next_protocol::runtime::Storage;
     fn db() -> (Db, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("cb-stream-{}", token().unwrap()));
         std::fs::create_dir(&dir).unwrap();
@@ -383,8 +382,8 @@ mod tests {
     fn large_unicode_snapshot_namespace_and_restart() {
         let (db, dir) = db();
         let raw = serde_json::to_string(&"日记🌏".repeat(131072)).unwrap();
-        let id = begin(&db, "diary.original", &raw);
-        chunks(&db, &id, "diary.original", &raw);
+        let id = begin(&db, "sample-delta.original", &raw);
+        chunks(&db, &id, "sample-delta.original", &raw);
         assert_eq!(
             db.write_commit("b", "session-a", &id).unwrap_err(),
             "SESSION_DENIED"
@@ -394,10 +393,18 @@ mod tests {
             "SESSION_DENIED"
         );
         db.write_commit("a", "session-a", &id).unwrap();
-        assert_eq!(db.storage_get("a", "diary.original").unwrap().unwrap(), raw);
-        let read = db.read_begin("a", "session-a", "diary.original").unwrap();
+        assert_eq!(
+            db.storage_get("a", "sample-delta.original")
+                .unwrap()
+                .unwrap(),
+            raw
+        );
+        let read = db
+            .read_begin("a", "session-a", "sample-delta.original")
+            .unwrap();
         let rid = read["readId"].as_str().unwrap();
-        db.storage_set("a", "diary.original", "\"new\"").unwrap();
+        db.storage_set("a", "sample-delta.original", "\"new\"")
+            .unwrap();
         assert_eq!(
             db.read_chunk("b", "session-a", rid, 0).unwrap_err(),
             "SESSION_DENIED"
@@ -409,12 +416,14 @@ mod tests {
         }
         assert_eq!(bytes, raw.as_bytes());
         db.read_close("a", "session-a", rid).unwrap();
-        let abandoned = begin(&db, "diary.original", &raw);
-        chunks(&db, &abandoned, "diary.original", &raw);
+        let abandoned = begin(&db, "sample-delta.original", &raw);
+        chunks(&db, &abandoned, "sample-delta.original", &raw);
         drop(db);
         let db = Db::open(&dir.join("test.db")).unwrap();
         assert_eq!(
-            db.storage_get("a", "diary.original").unwrap().unwrap(),
+            db.storage_get("a", "sample-delta.original")
+                .unwrap()
+                .unwrap(),
             "\"new\""
         );
         db.write_abort("a", "session-a", &abandoned).unwrap();

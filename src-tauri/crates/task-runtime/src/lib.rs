@@ -48,35 +48,12 @@ fn time() -> u64 {
 impl TaskRuntime {
     pub fn open(path: &Path) -> Result<Arc<Self>, String> {
         let resources = [
-            "document-engine.ocr",
-            "document-engine.parse",
-            "document-engine.chunk",
-            "document-engine.split",
-            "document-engine.convert",
-            "document-engine.batch",
-            "document-engine.models",
-            "document-engine.panic-resource",
-            "unienv.installation",
-            "unienv.panic-resource",
-            "unienv.archive-extraction",
-            "unienv.process",
-            "unienv.process-output-test",
-            "archive-extractor.archive-extraction",
-            "plugin-process.process",
-            "marketplace.download",
-            "plugin-install.installation",
+            ("plugins.backend".into(), 8),
+            ("plugins.resources".into(), 2),
+            ("marketplace.download".into(), 1),
+            ("plugin-install.installation".into(), 1),
         ]
         .into_iter()
-        .map(|s| {
-            (
-                s.into(),
-                if s == "unienv.process" || s == "plugin-process.process" {
-                    2
-                } else {
-                    1
-                },
-            )
-        })
         .collect();
         let authority = Runtime::open(
             SqliteRepository::open(path).map_err(error)?,
@@ -286,11 +263,22 @@ impl TaskRuntime {
         let record = Snapshot::queued(
             id.clone(),
             owner.into(),
-            format!("{owner}.{resource}"),
-            if resource.starts_with("plugin-process:") {
-                format!("{owner}.process")
+            if resource.starts_with("next2:") {
+                resource.to_owned()
             } else {
                 format!("{owner}.{resource}")
+            },
+            if resource.starts_with("resource-download:") {
+                "plugins.resources".into()
+            } else if resource.starts_with("next2:") {
+                "plugins.backend".into()
+            } else if matches!(
+                (owner, resource),
+                ("marketplace", "download") | ("plugin-install", "installation")
+            ) {
+                format!("{owner}.{resource}")
+            } else {
+                "plugins.backend".into()
             },
         )
         .map_err(error)?;
@@ -531,6 +519,9 @@ impl Context {
     pub fn is_cancelled(&self) -> bool {
         self.control.cancelled.load(Ordering::SeqCst)
     }
+    pub fn is_paused(&self) -> bool {
+        self.control.pause.load(Ordering::SeqCst)
+    }
     pub fn cancel_flag(&self) -> &AtomicBool {
         &self.control.cancelled
     }
@@ -544,25 +535,28 @@ impl Context {
     pub fn wait_if_paused(&self) -> Result<(), String> {
         while self.control.pause.load(Ordering::SeqCst) {
             self.check_cancelled()?;
-            {
-                let _gate = self
-                    .runtime
-                    .gate
-                    .lock()
-                    .map_err(|_| "task authority unavailable")?;
-                let record = self.runtime.snapshot(&self.owner, &self.id)?;
-                if record.status == Status::Running && self.control.pause.load(Ordering::SeqCst) {
-                    self.runtime.apply(
-                        &self.owner,
-                        &self.id,
-                        Action::ConfirmPaused(format!("in-memory:{}", self.id)),
-                    )?;
-                }
-            }
-            self.runtime.emit(&self.owner, &self.id);
+            self.confirm_paused()?;
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         self.check_cancelled()
+    }
+    pub fn confirm_paused(&self) -> Result<(), String> {
+        let gate = self
+            .runtime
+            .gate
+            .lock()
+            .map_err(|_| "task authority unavailable")?;
+        let record = self.runtime.snapshot(&self.owner, &self.id)?;
+        if record.status == Status::Running && self.is_paused() && !record.cancel_requested {
+            self.runtime.apply(
+                &self.owner,
+                &self.id,
+                Action::ConfirmPaused(format!("in-memory:{}", self.id)),
+            )?;
+            drop(gate);
+            self.runtime.emit(&self.owner, &self.id);
+        }
+        Ok(())
     }
     pub fn progress_snapshot(&self) -> Value {
         self.runtime
@@ -677,6 +671,60 @@ impl Context {
             .snapshot(&self.owner, &self.id)
             .is_ok_and(|snapshot| snapshot.publication.is_some())
     }
+    /// Reserve an irreversible operation performed by a trusted native provider.
+    /// If the process dies, the reservation stays visible for startup recovery.
+    pub fn begin_external_commit(&self) -> Result<(), String> {
+        let _gate = self
+            .runtime
+            .gate
+            .lock()
+            .map_err(|_| "task authority unavailable")?;
+        self.runtime.apply(
+            &self.owner,
+            &self.id,
+            Action::PreparePublication(format!("external:{}", self.id)),
+        )?;
+        Ok(())
+    }
+    pub fn finish_external_commit(&self, result: &Result<Value, String>) -> Result<(), String> {
+        let _gate = self
+            .runtime
+            .gate
+            .lock()
+            .map_err(|_| "task authority unavailable")?;
+        let journal = format!("external:{}", self.id);
+        if self
+            .runtime
+            .snapshot(&self.owner, &self.id)?
+            .publication
+            .as_deref()
+            != Some(&journal)
+        {
+            return Ok(());
+        }
+        let action = match result {
+            Ok(value) => {
+                let mut views = self
+                    .runtime
+                    .views
+                    .lock()
+                    .map_err(|_| "task views unavailable")?;
+                let view = views.get_mut(&self.id).ok_or("task view missing")?;
+                view.payload["result"] = value.clone();
+                view.payload["completedAt"] = json!(time());
+                Action::Published {
+                    journal,
+                    refs: result_refs(value),
+                }
+            }
+            Err(error) if error.starts_with("EXECUTION_OUTCOME_UNKNOWN") => {
+                return Err(error.clone())
+            }
+            Err(_) => Action::PublicationAborted(journal),
+        };
+        self.runtime.apply(&self.owner, &self.id, action)?;
+        Ok(())
+    }
     pub fn publish_file(
         &self,
         stage: &Path,
@@ -700,30 +748,41 @@ impl Context {
             .map_err(|e| e.to_string())?;
         let reference = reference.as_deref();
         let mut used_journal = None;
-        let result = self.publish(
-            || {
-                let journal = self
-                    .runtime
+        let external = self
+            .runtime
+            .snapshot(&self.owner, &self.id)?
+            .publication
+            .as_deref()
+            == Some(&format!("external:{}", self.id));
+        let mut operation = || {
+            let journal = if external {
+                format!("external-file:{}:{}", self.id, random_task_id()?)
+            } else {
+                self.runtime
                     .snapshot(&self.owner, &self.id)?
                     .publication
-                    .ok_or("publication reservation missing")?;
-                used_journal = Some(journal.clone());
-                let path = self.runtime.publications.publish_with_reference(
-                    cruciblebox_file_publication::Publication {
-                        owner: &self.owner,
-                        task_id: &self.id,
-                        journal: &journal,
-                        stage,
-                        target,
-                        replace,
-                        terminal,
-                    },
-                    reference,
-                )?;
-                Ok(json!({"path":reference.unwrap_or(&path).to_string_lossy()}))
-            },
-            terminal,
-        )?;
+                    .ok_or("publication reservation missing")?
+            };
+            used_journal = Some(journal.clone());
+            let path = self.runtime.publications.publish_with_reference(
+                cruciblebox_file_publication::Publication {
+                    owner: &self.owner,
+                    task_id: &self.id,
+                    journal: &journal,
+                    stage,
+                    target,
+                    replace,
+                    terminal,
+                },
+                reference,
+            )?;
+            Ok(json!({"path":reference.unwrap_or(&path).to_string_lossy()}))
+        };
+        let result = if external {
+            operation()
+        } else {
+            self.publish(operation, terminal)
+        }?;
         if let Some(journal) = used_journal {
             if let Err(diagnostic) = self.runtime.publications.acknowledge(&journal) {
                 eprintln!("[publication] acknowledgement retained: {diagnostic}");
@@ -870,20 +929,83 @@ fn random_task_id() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn executor_pause_confirmation_requires_current_pause_intent() {
+        let runtime = TaskRuntime::memory();
+        let context = runtime
+            .prepare("sample-gamma", "installation", Some("pause-confirmation"))
+            .unwrap();
+        context.start_running().unwrap();
+        context.confirm_paused().unwrap();
+        assert_eq!(
+            runtime.get("sample-gamma", "pause-confirmation").unwrap()["status"],
+            "running"
+        );
+        assert!(runtime.pause("sample-gamma", "pause-confirmation"));
+        assert_eq!(
+            runtime.get("sample-gamma", "pause-confirmation").unwrap()["status"],
+            "running"
+        );
+        context.confirm_paused().unwrap();
+        assert_eq!(
+            runtime.get("sample-gamma", "pause-confirmation").unwrap()["status"],
+            "paused"
+        );
+        assert!(runtime.resume("sample-gamma", "pause-confirmation"));
+        context.confirm_paused().unwrap();
+        assert_eq!(
+            runtime.get("sample-gamma", "pause-confirmation").unwrap()["status"],
+            "running"
+        );
+    }
+    #[test]
+    fn native_commit_rejects_late_cancel_and_can_publish_a_result_file() {
+        let runtime = TaskRuntime::memory();
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join(".complete.json");
+        let destination = root.path().join("published.json");
+        std::fs::write(&source, br#"{"complete":true}"#).unwrap();
+        let cancel_runtime = runtime.clone();
+        let result = runtime
+            .run_sync("native-provider", "next2:native-provider", None, |ctx| {
+                ctx.begin_external_commit()?;
+                assert!(!cancel_runtime.cancel("native-provider", &ctx.task_id()));
+                ctx.publish_file(&source, &destination, false, false)
+                    .expect("real external result publication");
+                assert!(ctx.publication_pending());
+                let result = Ok(json!({"complete":true,"path":destination}));
+                ctx.finish_external_commit(&result)?;
+                let snapshot = cancel_runtime
+                    .get("native-provider", &ctx.task_id())
+                    .unwrap();
+                assert_eq!(snapshot["status"], "succeeded");
+                assert_eq!(snapshot["result"]["complete"], true);
+                result
+            })
+            .unwrap();
+        assert_eq!(result["complete"], true);
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            br#"{"complete":true}"#
+        );
+        runtime
+            .run_sync("native-provider", "next2:native-provider", None, |ctx| {
+                assert!(cancel_runtime.cancel("native-provider", &ctx.task_id()));
+                assert!(ctx.begin_external_commit().is_err());
+                Err("cancelled before publication".into())
+            })
+            .unwrap_err();
+    }
+    #[test]
     fn terminal_snapshot_waits_for_result_publication() {
         let runtime = TaskRuntime::memory();
         let ctx = runtime
-            .prepare(
-                "archive-extractor",
-                "archive-extraction",
-                Some("snapshot-race"),
-            )
+            .prepare("sample-beta", "archive-extraction", Some("snapshot-race"))
             .unwrap();
         ctx.start_running().unwrap();
         let gate = runtime.gate.lock().unwrap();
         runtime
             .apply(
-                "archive-extractor",
+                "sample-beta",
                 "snapshot-race",
                 Action::Succeed(vec!["archive.zip".into()]),
             )
@@ -891,7 +1013,7 @@ mod tests {
         let reader = runtime.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
-            tx.send(reader.get("archive-extractor", "snapshot-race").unwrap())
+            tx.send(reader.get("sample-beta", "snapshot-race").unwrap())
                 .unwrap();
         });
         let premature = rx.recv_timeout(std::time::Duration::from_millis(100));
@@ -924,7 +1046,7 @@ mod tests {
             std::fs::write(&target, b"original").unwrap();
             let runtime = TaskRuntime::open(&journal).unwrap();
             let ctx = runtime
-                .prepare("document-engine", "convert", Some("receipt-fault"))
+                .prepare("sample-alpha", "convert", Some("receipt-fault"))
                 .unwrap();
             ctx.start_running().unwrap();
             let fault = rusqlite::Connection::open(&journal).unwrap();
@@ -940,7 +1062,7 @@ mod tests {
                 .unwrap();
             drop(fault);
             let reopened = TaskRuntime::open(&journal).unwrap();
-            let snapshot = reopened.get("document-engine", "receipt-fault").unwrap();
+            let snapshot = reopened.get("sample-alpha", "receipt-fault").unwrap();
             assert_eq!(
                 snapshot["status"],
                 if terminal { "succeeded" } else { "interrupted" }
@@ -960,7 +1082,7 @@ mod tests {
         let journal = dir.path().join("replay.sqlite");
         let runtime = TaskRuntime::open(&journal).unwrap();
         runtime
-            .run_sync("document-engine", "convert", Some("multi-output"), |ctx| {
+            .run_sync("sample-alpha", "convert", Some("multi-output"), |ctx| {
                 ctx.publish_step(|| Ok(json!({"path":"first.pdf"})))?;
                 ctx.commit_result(|| Ok(json!({"path":"second.pdf"})))
             })
@@ -970,7 +1092,7 @@ mod tests {
         let received = Arc::new(Mutex::new(Vec::new()));
         let events = received.clone();
         runtime.set_observer(
-            "document-engine",
+            "sample-alpha",
             Arc::new(move |snapshot| {
                 events.lock().unwrap().push(snapshot);
             }),
@@ -1002,28 +1124,33 @@ mod tests {
         let path = output.to_str().unwrap().to_owned();
         let runtime = TaskRuntime::open(&journal).unwrap();
         assert!(runtime
-            .run_sync("unienv", "installation", Some("partial-install"), |ctx| {
-                ctx.publish_step(|| {
-                    assert!(!ctx.runtime.cancel("unienv", "partial-install"));
-                    std::fs::write(&output, b"verified runtime").map_err(|e| e.to_string())?;
-                    Ok(json!({"path": path}))
-                })?;
-                assert_eq!(
-                    ctx.runtime.get("unienv", "partial-install").unwrap()["status"],
-                    "running"
-                );
-                assert!(ctx.runtime.cancel("unienv", "partial-install"));
-                ctx.check_cancelled()?;
-                Ok(Value::Null)
-            })
+            .run_sync(
+                "sample-gamma",
+                "installation",
+                Some("partial-install"),
+                |ctx| {
+                    ctx.publish_step(|| {
+                        assert!(!ctx.runtime.cancel("sample-gamma", "partial-install"));
+                        std::fs::write(&output, b"verified runtime").map_err(|e| e.to_string())?;
+                        Ok(json!({"path": path}))
+                    })?;
+                    assert_eq!(
+                        ctx.runtime.get("sample-gamma", "partial-install").unwrap()["status"],
+                        "running"
+                    );
+                    assert!(ctx.runtime.cancel("sample-gamma", "partial-install"));
+                    ctx.check_cancelled()?;
+                    Ok(Value::Null)
+                }
+            )
             .is_err());
-        let result = runtime.get("unienv", "partial-install").unwrap();
+        let result = runtime.get("sample-gamma", "partial-install").unwrap();
         assert_eq!(result["status"], "cancelled");
         assert_eq!(result["resultRefs"], json!([path]));
         drop(runtime);
         let reopened = TaskRuntime::open(&journal).unwrap();
         assert_eq!(
-            reopened.get("unienv", "partial-install").unwrap()["resultRefs"],
+            reopened.get("sample-gamma", "partial-install").unwrap()["resultRefs"],
             json!([path])
         );
         assert_eq!(std::fs::read(output).unwrap(), b"verified runtime");
@@ -1033,17 +1160,17 @@ mod tests {
         let runtime = TaskRuntime::memory();
         for (id, diagnostic) in [("empty-error", ""), ("nul-error", "bad\0error")] {
             assert!(runtime
-                .run_sync("unienv", "installation", Some(id), |_| Err(
+                .run_sync("sample-gamma", "installation", Some(id), |_| Err(
                     diagnostic.into()
                 ))
                 .is_err());
-            let record = runtime.get("unienv", id).unwrap();
+            let record = runtime.get("sample-gamma", id).unwrap();
             assert_eq!(record["status"], "failed");
             assert!(!record["error"]["message"].as_str().unwrap().is_empty());
             assert!(!record["error"]["message"].as_str().unwrap().contains('\0'));
         }
         assert!(runtime
-            .run_sync("unienv", "installation", Some("after-error"), |_| Ok(
+            .run_sync("sample-gamma", "installation", Some("after-error"), |_| Ok(
                 Value::Null
             ))
             .is_ok());
@@ -1065,14 +1192,14 @@ mod tests {
         let path = scratch.path().join("tasks.sqlite");
         let runtime = TaskRuntime::open(&path).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
-        for owner in ["document-engine", "unienv", "marketplace"] {
+        for owner in ["sample-alpha", "sample-gamma", "marketplace"] {
             let events = seen.clone();
             runtime.set_observer(owner, Arc::new(move |v| events.lock().unwrap().push(v)));
         }
         let output = scratch.path().join("document.md");
         let document = runtime
             .start(
-                "document-engine",
+                "sample-alpha",
                 "convert",
                 Box::new(move |ctx| {
                     ctx.update_progress("convert", 30, "write", None);
@@ -1085,7 +1212,7 @@ mod tests {
             .unwrap();
         let installation = runtime
             .start(
-                "unienv",
+                "sample-gamma",
                 "installation",
                 Box::new(|ctx| {
                     ctx.update_progress("install", 80, "done", None);
@@ -1101,15 +1228,15 @@ mod tests {
             .unwrap();
         assert_eq!(download["path"], "C:/verified/plugin.zip");
         assert_eq!(
-            wait(&runtime, "document-engine", &document, "succeeded")["resultRefs"]
+            wait(&runtime, "sample-alpha", &document, "succeeded")["resultRefs"]
                 .as_array()
                 .unwrap()
                 .len(),
             1
         );
-        wait(&runtime, "unienv", &installation, "succeeded");
-        assert!(runtime.get("unienv", &document).is_none());
-        assert!(!runtime.cancel("unienv", &document));
+        wait(&runtime, "sample-gamma", &installation, "succeeded");
+        assert!(runtime.get("sample-gamma", &document).is_none());
+        assert!(!runtime.cancel("sample-gamma", &document));
         assert!(!runtime.cancel("marketplace", "download-test"));
         assert_eq!(
             std::fs::read_to_string(scratch.path().join("document.md")).unwrap(),
@@ -1127,7 +1254,7 @@ mod tests {
             "C:/verified/plugin.zip"
         );
         assert_eq!(
-            reopened.get("document-engine", &document).unwrap()["status"],
+            reopened.get("sample-alpha", &document).unwrap()["status"],
             "succeeded"
         );
     }
@@ -1184,7 +1311,7 @@ mod tests {
             let release = release.clone();
             let id = runtime
                 .start(
-                    "unienv",
+                    "sample-gamma",
                     &format!("plugin-process:{i}"),
                     Box::new(move |ctx| {
                         while !release.load(Ordering::SeqCst) {
@@ -1195,14 +1322,14 @@ mod tests {
                     }),
                 )
                 .unwrap();
-            wait(&runtime, "unienv", &id, "running");
+            wait(&runtime, "sample-gamma", &id, "running");
             running.push(id);
         }
         let ran = Arc::new(AtomicBool::new(false));
         let record = ran.clone();
         let queued = runtime
             .start(
-                "unienv",
+                "sample-gamma",
                 "plugin-process:third",
                 Box::new(move |_| {
                     record.store(true, Ordering::SeqCst);
@@ -1210,16 +1337,22 @@ mod tests {
                 }),
             )
             .unwrap();
-        assert_eq!(runtime.get("unienv", &queued).unwrap()["status"], "queued");
-        assert!(runtime.cancel("unienv", &queued));
-        wait(&runtime, "unienv", &queued, "cancelled");
+        assert_eq!(
+            runtime.get("sample-gamma", &queued).unwrap()["status"],
+            "queued"
+        );
+        assert!(runtime.cancel("sample-gamma", &queued));
+        wait(&runtime, "sample-gamma", &queued, "cancelled");
         assert!(!ran.load(Ordering::SeqCst));
         for id in &running {
-            assert_eq!(runtime.get("unienv", id).unwrap()["status"], "running");
+            assert_eq!(
+                runtime.get("sample-gamma", id).unwrap()["status"],
+                "running"
+            );
         }
         release.store(true, Ordering::SeqCst);
         for id in running {
-            wait(&runtime, "unienv", &id, "succeeded");
+            wait(&runtime, "sample-gamma", &id, "succeeded");
         }
     }
 }

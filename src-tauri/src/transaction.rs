@@ -36,7 +36,7 @@ pub struct TransactionOptions {
     pub source_dir: PathBuf,
     /// 升级=true，全新安装=false
     pub expected_target_exists: bool,
-    /// trusted:unienv 白名单（Some 时仅复制白名单文件）
+    /// 安装文件清单（Some 时仅复制白名单文件）
     pub allowed_files: Option<Vec<String>>,
 }
 
@@ -153,7 +153,7 @@ impl DirectoryTransaction {
         }
         assert_plain_directory(&self.stage_dir, "Staged plugin")?;
         if self.original_target_existed {
-            fs::rename(&self.target_dir, &self.backup_dir)
+            rename_stopped_plugin(&self.target_dir, &self.backup_dir)
                 .map_err(|e| format!("failed to move target to backup: {e}"))?;
         }
         match fs::rename(&self.stage_dir, &self.target_dir) {
@@ -354,7 +354,7 @@ impl RemovalTransaction {
             return Err("Installed plugin directory is missing".into());
         }
         assert_plain_directory(&self.target_dir, "Installed plugin")?;
-        fs::rename(&self.target_dir, &self.quarantine_dir).map_err(|e| {
+        rename_stopped_plugin(&self.target_dir, &self.quarantine_dir).map_err(|e| {
             format!(
                 "failed to quarantine plugin {}: {e}",
                 self.target_dir.display()
@@ -425,6 +425,25 @@ impl RemovalTransaction {
     }
 }
 
+/// Windows can briefly retain an executable image after its process/job has
+/// stopped. Renaming is idempotent on these errors; retain the existing install
+/// and report the final error if the bounded release window expires.
+fn rename_stopped_plugin(source: &Path, target: &Path) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match fs::rename(source, target) {
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(5 | 32))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// 校验 child 是 pluginsDir 的直接子目录且 basename 精确匹配 expected；
 /// 若 child 已存在则 lstat 拒绝 symlink。删除/rename 前必须过此断言。
 pub fn assert_direct_child(plugins_dir: &Path, child: &Path, expected: &str) -> Result<(), String> {
@@ -475,39 +494,8 @@ pub fn canonicalize_plugins_dir(p: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("failed to canonicalize pluginsDir {}: {e}", p.display()))
 }
 
-/// permissions 含宿主固定可信服务权限 → 返回 pinned runtime 白名单，否则 None。
-pub fn trusted_allowlist(permissions: &[String]) -> Option<Vec<String>> {
-    if permissions.iter().any(|p| p == "trusted:document-engine") {
-        return Some(vec![
-            "dist/main.js".to_string(),
-            "dist/renderer.js".to_string(),
-            "plugin.json".to_string(),
-            "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json".to_string(),
-            "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx".to_string(),
-            "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx".to_string(),
-            "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt".to_string(),
-            "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx".to_string(),
-            "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt".to_string(),
-            "assets/models/ppocrv4-mobile-zh-en/manifest.json".to_string(),
-            "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".to_string(),
-            "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".to_string(),
-            "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt".to_string(),
-        ]);
-    }
-    if permissions.iter().any(|p| p == "trusted:unienv") {
-        return Some(vec![
-            "dist/main.js".to_string(),
-            "dist/renderer.js".to_string(),
-            "plugin.json".to_string(),
-        ]);
-    }
-    if permissions.iter().any(|p| p == "trusted:archive-extractor") {
-        return Some(vec![
-            "dist/main.js".to_string(),
-            "dist/renderer.js".to_string(),
-            "plugin.json".to_string(),
-        ]);
-    }
+/// 固定领域 allowlist 已退役；新插件使用已验证清单中的精确文件集。
+pub fn trusted_allowlist(_permissions: &[String]) -> Option<Vec<String>> {
     None
 }
 
@@ -823,16 +811,6 @@ fn copy_allowed_files(
 ) -> Result<(), String> {
     for file in allowed {
         let source_path = source.join(Path::new(file));
-        if is_optional_document_engine_asset(file)
-            && matches!(
-                fs::symlink_metadata(&source_path),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound
-            )
-        {
-            // Older Document Engine packages do not contain the embedded
-            // model. Keep them installable; the model manager can use mirrors.
-            continue;
-        }
         assert_trusted_runtime_file(source, file)?;
         let rel = Path::new(file);
         let dest_path = dest.join(rel);
@@ -844,11 +822,6 @@ fn copy_allowed_files(
         copy_regular_file(&source_path, &dest_path, &before, budget)?;
     }
     Ok(())
-}
-
-fn is_optional_document_engine_asset(path: &str) -> bool {
-    path.starts_with("assets/models/ppocrv4-mobile-zh-en/")
-        || path.starts_with("assets/models/ppocrv6-small-det-v5-mobile-rec/")
 }
 
 /// Retained packages are never enumerated as active plugins or disposable transaction artifacts.
@@ -1174,46 +1147,6 @@ mod tests {
         let err = txn.stage().unwrap_err();
         assert!(err.contains("exceeds"));
         assert!(!txn.stage_dir().exists());
-    }
-
-    #[test]
-    fn trusted_allowlist_matches_permissions() {
-        assert_eq!(
-            trusted_allowlist(&["storage:read".into(), "trusted:unienv".into()]),
-            Some(vec![
-                "dist/main.js".into(),
-                "dist/renderer.js".into(),
-                "plugin.json".into()
-            ])
-        );
-        assert_eq!(
-            trusted_allowlist(&["trusted:document-engine".into()]),
-            Some(vec![
-                "dist/main.js".into(),
-                "dist/renderer.js".into(),
-                "plugin.json".into(),
-                "assets/models/ppocrv6-small-det-v5-mobile-rec/manifest.json".into(),
-                "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv6_small_det.onnx".into(),
-                "assets/models/ppocrv6-small-det-v5-mobile-rec/PP-OCRv5_mobile_rec.onnx".into(),
-                "assets/models/ppocrv6-small-det-v5-mobile-rec/ppocrv5_dict.txt".into(),
-                "assets/models/ppocrv6-small-det-v5-mobile-rec/en_PP-OCRv5_mobile_rec.onnx".into(),
-                "assets/models/ppocrv6-small-det-v5-mobile-rec/en_ppocrv5_dict.txt".into(),
-                "assets/models/ppocrv4-mobile-zh-en/manifest.json".into(),
-                "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_det.onnx".into(),
-                "assets/models/ppocrv4-mobile-zh-en/ch_PP-OCRv4_rec.onnx".into(),
-                "assets/models/ppocrv4-mobile-zh-en/ppocr_keys_v1.txt".into()
-            ])
-        );
-        assert_eq!(
-            trusted_allowlist(&["trusted:archive-extractor".into()]),
-            Some(vec![
-                "dist/main.js".into(),
-                "dist/renderer.js".into(),
-                "plugin.json".into()
-            ])
-        );
-        assert_eq!(trusted_allowlist(&["storage:read".into()]), None);
-        assert_eq!(trusted_allowlist(&[]), None);
     }
 
     #[test]

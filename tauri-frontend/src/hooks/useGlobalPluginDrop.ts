@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { resolveDocumentDropPaths, resolveDropPaths } from '../utils/drop-target'
+import { resolveDropPaths, resolveHandlerPaths } from '../utils/drop-target'
 import { shouldHandleGlobalFileDrop } from '../utils/plugin-drop'
 import { usePluginStore } from '../store/plugin.store'
 import { useAppStore } from '../store/app.store'
@@ -8,7 +8,7 @@ import { tauriApi, type PluginFileHandler } from '../api/tauriApi'
 
 export interface GlobalDropState {
   dragActive: boolean
-  dragTarget: 'plugin' | 'document' | 'archive' | 'mixed'
+  dragTarget: 'plugin' | 'handler'
 }
 
 /**
@@ -20,12 +20,20 @@ export interface GlobalDropState {
  *   时忽略新 drop（防叠加）
  */
 export function useGlobalPluginDrop(): GlobalDropState {
+  const plugins = usePluginStore((state) => state.plugins)
   const [dragActive, setDragActive] = useState(false)
   const [dragTarget, setDragTarget] = useState<GlobalDropState['dragTarget']>('plugin')
 
   useEffect(() => {
     let fileHandlers: PluginFileHandler[] = []
-    void tauriApi.plugin.fileHandlers().then(value => { fileHandlers = value }).catch(() => { fileHandlers = [] })
+    void tauriApi.plugin
+      .fileHandlers()
+      .then((value) => {
+        fileHandlers = value
+      })
+      .catch(() => {
+        fileHandlers = []
+      })
     let unlisten: (() => void) | undefined
     let disposed = false
     // 拖拽离开窗口/在外释放时 Tauri 不发事件：用 over 心跳超时兜底隐藏遮罩
@@ -49,7 +57,7 @@ export function useGlobalPluginDrop(): GlobalDropState {
       .onDragDropEvent((event) => {
         const store = usePluginStore.getState()
         const payload = event.payload
-        const paths = 'paths' in payload ? payload.paths ?? [] : []
+        const paths = 'paths' in payload ? (payload.paths ?? []) : []
         // Tauri's `over` heartbeat only carries the cursor position. Keep the
         // existing overlay alive without pretending that it supplied paths.
         if (payload.type === 'over' && paths.length === 0) {
@@ -69,28 +77,11 @@ export function useGlobalPluginDrop(): GlobalDropState {
         }
         if (payload.type === 'enter' || payload.type === 'over') {
           const app = useAppStore.getState()
-          const documentActive =
-            app.currentPage === 'pluginView' && app.activePluginId === 'document-engine'
-          const archiveActive =
-            app.currentPage === 'pluginView' && app.activePluginId === 'archive-extractor'
-          const resolved =
-            documentActive && payload.type === 'enter'
-              ? resolveDocumentDropPaths(paths)
-              : null
           const target =
-            payload.type === 'over'
-              ? undefined
-              : archiveActive
-                ? 'archive'
-              : resolved
-                ? resolved.pluginZips.length > 0 && resolved.documents.length > 0
-                  ? 'mixed'
-                  : resolved.pluginZips.length > 0
-                    ? 'plugin'
-                    : 'document'
-                : documentActive
-                  ? 'document'
-                  : 'plugin'
+            app.currentPage === 'pluginView' &&
+            fileHandlers.some((handler) => handler.pluginId === app.activePluginId)
+              ? 'handler'
+              : 'plugin'
           bumpActive(target)
           return
         }
@@ -110,47 +101,17 @@ export function useGlobalPluginDrop(): GlobalDropState {
         if (store.installQueue.length > 0) return
 
         const app = useAppStore.getState()
-        const contributed = fileHandlers.find(handler => handler.pluginId === app.activePluginId)
-        if (app.currentPage === 'pluginView' && contributed) {
-          const accepted = paths.filter(path => contributed.extensions.includes(path.split('.').at(-1)?.toLowerCase() ?? ''))
+        if (app.currentPage === 'pluginView') {
+          const accepted = resolveHandlerPaths(paths, fileHandlers, app.activePluginId)
           if (accepted.length > 0) {
-            window.dispatchEvent(new CustomEvent('cruciblebox:plugin-files-dropped', { detail: { pluginId: app.activePluginId, paths: accepted } }))
+            window.dispatchEvent(
+              new CustomEvent('cruciblebox:plugin-files-dropped', {
+                detail: { pluginId: app.activePluginId, paths: accepted }
+              })
+            )
             return
           }
         }
-        const documentActive =
-          app.currentPage === 'pluginView' && app.activePluginId === 'document-engine'
-        const archiveActive =
-          app.currentPage === 'pluginView' && app.activePluginId === 'archive-extractor'
-        if (archiveActive) {
-          const archivePaths = paths.map((path) => path.trim()).filter(Boolean)
-          if (archivePaths.length > 0) {
-            window.dispatchEvent(
-              new CustomEvent('cruciblebox:archive-files-dropped', {
-                detail: { pluginId: 'archive-extractor', paths: archivePaths }
-              })
-            )
-          }
-          return
-        }
-        if (documentActive) {
-          const resolved = resolveDocumentDropPaths(paths)
-          if (!resolved) return
-          if (resolved.documents.length > 0) {
-            window.dispatchEvent(
-              new CustomEvent('cruciblebox:document-files-dropped', {
-                detail: { pluginId: 'document-engine', paths: resolved.documents }
-              })
-            )
-          }
-          if (resolved.pluginZips.length > 0) {
-            store.enqueueInstalls(
-              resolved.pluginZips.map((path) => ({ source: 'zip' as const, path }))
-            )
-          }
-          return
-        }
-
         const resolved = resolveDropPaths(paths)
         if (resolved) {
           store.enqueueInstalls(resolved.targets.map((path) => ({ source: resolved.kind, path })))
@@ -167,7 +128,7 @@ export function useGlobalPluginDrop(): GlobalDropState {
       unsubscribeInternalDrag()
       if (hideTimer) clearTimeout(hideTimer)
     }
-  }, [])
+  }, [plugins])
 
   return { dragActive, dragTarget }
 }

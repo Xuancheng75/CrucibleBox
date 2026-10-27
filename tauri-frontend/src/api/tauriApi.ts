@@ -7,7 +7,7 @@
 //   plugin_list() / plugin_get(id) / plugin_enable(id) / plugin_disable(id)
 //   plugin_reorder(orderedIds) / plugin_update_config(id,config)
 //   plugin_get_logs(pluginId?,level?,limit?) / plugin_clear_logs(pluginId?) / plugin_uninstall(id)
-//   create_renderer_session(id) / dispose_renderer_session(token) / plugin_send_message(id,message)
+//   create_next_renderer_session(id) / dispose_renderer_session(token) / plugin_execute_command(id,commandId)
 //   plugin_install_preview(source) / plugin_install_commit(installToken) / plugin_install_discard(installToken)
 // 事件：plugin:log / plugin:message / plugin:status-change（payload { pluginId, ... }）
 import { invoke } from '@tauri-apps/api/core'
@@ -21,7 +21,6 @@ import type {
   ConfigField
 } from '../../../shared/types/plugin.types'
 import type { Permission } from '../../../shared/types/permissions'
-import type { PluginRendererSessionDescriptor } from '../../../shared/types/ipc.types'
 
 // ---------------------------------------------------------------------------
 // DTO（后端 serde 序列化形状）
@@ -45,6 +44,9 @@ export interface PluginMetaDto {
   installedPath: string
   installedAt: string
   updatedAt: string
+  publisherVerified?: boolean
+  officialPublisher?: boolean
+  publisherId?: string
   sortOrder: number
 }
 
@@ -92,6 +94,9 @@ function toPluginMeta(dto: PluginMetaDto): PluginMeta {
     enabled: dto.enabled,
     installedAt: dto.installedAt,
     updatedAt: dto.updatedAt,
+    publisherVerified: dto.publisherVerified,
+    officialPublisher: dto.officialPublisher,
+    publisherId: dto.publisherId,
     sortOrder: dto.sortOrder
   }
 }
@@ -127,6 +132,7 @@ export interface AppUpdateMetadata {
 }
 
 export interface MarketplaceCatalogPluginDto {
+  sha256?: string
   id: string
   version: string
   artifact: string
@@ -189,6 +195,38 @@ export interface PluginInstallPreview {
   trustLevel?: 'standard' | 'full'
   fullTrust?: boolean
   capabilities?: Record<string, boolean | Record<string, unknown>>
+  next2?: {
+    manifestSha256: number[]
+    publisher: { id: string; displayName: string }
+    nativeCode: boolean
+    unsignedLocal: boolean
+  } | null
+}
+
+export interface PluginInstallApproval {
+  manifestSha256: number[]
+  acceptNativeCode: boolean
+  acceptUnsignedLocal: boolean
+  acceptPermissions: boolean
+}
+
+export interface ResourcePreview {
+  token: string
+  manifest: import('../../../packages/cruciblebox-next2-api/src/index.mjs').ResourceManifest
+  manifestSha256: number[]
+  unsignedLocal: boolean
+}
+export interface ResourceReleasePreview {
+  release: import('../../../packages/cruciblebox-next2-api/src/index.mjs').ResourceRelease
+  manifestSha256: number[]
+  unsignedLocal: boolean
+}
+export interface PluginResourceGroup {
+  id: string
+  version: { min: string; maxExclusive: string }
+  optional: boolean
+  installed: ResourcePreview['manifest'][]
+  available: ResourceReleasePreview[]
 }
 
 export interface PluginInstallPreviewResponse {
@@ -274,6 +312,8 @@ export const tauriApi = {
   },
 
   network: {
+    setPolicy: (mode: 'auto' | 'system' | 'manual' | 'direct', url: string): Promise<void> =>
+      invoke('network_settings_set', { mode, url }),
     diagnose: (): Promise<NetworkDiagnostic> => invoke<NetworkDiagnostic>('network_diagnose')
   },
 
@@ -311,6 +351,8 @@ export const tauriApi = {
         channel,
         sourceId
       }),
+    marketplaceCatalogImport: (text: string): Promise<MarketplaceCatalogResponse> =>
+      invoke('marketplace_catalog_import', { text }),
     marketplaceSources: {
       list: (): Promise<MarketplaceSource[]> =>
         invoke<MarketplaceSource[]>('marketplace_sources_list'),
@@ -373,17 +415,11 @@ export const tauriApi = {
 
     uninstall: (id: string): Promise<IpcResult> => invoke<IpcResult>('plugin_uninstall', { id }),
 
-    createRendererSession: (
-      id: string,
-      colorScheme?: 'dark' | 'light'
-    ): Promise<PluginRendererSessionDescriptor> =>
-      invoke<PluginRendererSessionDescriptor>('create_renderer_session', { id, colorScheme }),
-
     disposeRendererSession: (token: string): Promise<boolean> =>
       invoke<boolean>('dispose_renderer_session', { token }),
 
-    sendMessage: (id: string, message: unknown): Promise<unknown> =>
-      invoke<unknown>('plugin_send_message', { id, message }),
+    executeCommand: (id: string, commandId: string): Promise<unknown> =>
+      invoke<unknown>('plugin_execute_command', { id, commandId }),
 
     // 安装事务（1.9.3 契约；后端 lane 并行实现中）
     registerImportPath: (path: string): Promise<void> =>
@@ -395,18 +431,37 @@ export const tauriApi = {
     installCommit: (
       installToken: string,
       marketplaceSourceId?: number,
-      taskId?: string
+      taskId?: string,
+      approval?: PluginInstallApproval
     ): Promise<IpcResult> =>
       // Rust 形参名为 token（1.9.3 起即如此；此前误传 installToken 导致确认安装必报
       // "missing required key token"，1.9.13 修复）
       invoke<IpcResult>('plugin_install_commit', {
         token: installToken,
         marketplaceSourceId,
-        taskId
+        taskId,
+        approval
       }),
 
     installDiscard: (installToken: string): Promise<IpcResult> =>
       invoke<IpcResult>('plugin_install_discard', { token: installToken })
+  },
+
+  resources: {
+    list: (id: string) => invoke<PluginResourceGroup[]>('plugin_resources_list', { id }),
+    preview: (id: string, source: InstallSource) =>
+      invoke<ResourcePreview>('plugin_resource_preview', { id, source }),
+    commit: (token: string, approval: PluginInstallApproval) =>
+      invoke('plugin_resource_commit', { token, approval }),
+    discard: (token: string) => invoke<void>('plugin_resource_discard', { token }),
+    remove: (id: string, resourceId: string, version: string) =>
+      invoke<void>('plugin_resource_remove', { id, resourceId, version }),
+    download: (
+      id: string,
+      resourceId: string,
+      releaseId: string,
+      approval: PluginInstallApproval
+    ) => invoke<string>('plugin_resource_download', { id, resourceId, releaseId, approval })
   },
 
   dialog: {
