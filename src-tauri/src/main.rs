@@ -17,6 +17,7 @@ mod diagnostics;
 mod host_services;
 mod host_task;
 mod install;
+mod install_cleanup;
 mod journal;
 mod manifest;
 mod marketplace_download;
@@ -36,6 +37,7 @@ mod plugin_protocol;
 mod plugin_session;
 mod rand_token;
 mod task_runtime;
+mod theme_assets;
 mod transaction;
 
 use std::path::PathBuf;
@@ -113,6 +115,46 @@ fn main() {
                 .state::<Arc<plugin_protocol::ProtocolContext>>();
             plugin_protocol::handle_protocol(&protocol, request.uri().to_string())
         })
+        .register_uri_scheme_protocol(theme_assets::SCHEME, |ctx, request| {
+            theme_assets::from_app(ctx.app_handle()).handle(&request.uri().to_string())
+        })
+        .menu(|app| {
+            use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
+            let reset = MenuItem::with_id(
+                app,
+                "theme-reset",
+                "恢复默认主题",
+                true,
+                Some("Ctrl+Alt+Shift+R"),
+            )?;
+            let appearance = SubmenuBuilder::new(app, "外观").item(&reset).build()?;
+            MenuBuilder::new(app).item(&appearance).build()
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() != "theme-reset" {
+                return;
+            }
+            let result = app
+                .state::<Arc<Mutex<db::Db>>>()
+                .lock()
+                .map_err(|_| "主题设置暂时无法访问".to_string())
+                .and_then(|db| {
+                    db.setting_set("theme", "null")
+                        .map_err(|error| error.to_string())
+                });
+            match result {
+                Ok(()) => {
+                    let _ = app.emit("theme:reset", ());
+                }
+                Err(error) => {
+                    use tauri_plugin_dialog::DialogExt;
+                    app.dialog()
+                        .message(format!("恢复默认主题失败：{error}"))
+                        .title("外观")
+                        .show(|_| {});
+                }
+            }
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
@@ -144,6 +186,9 @@ fn main() {
             }
         })
         .setup(|app| {
+            // Keep the native recovery accelerator without a second Windows menu bar.
+            #[cfg(target_os = "windows")]
+            app.hide_menu()?;
             // 1) L3 数据路径迁移。
             //    策略：迁移失败是数据完整性风险（checkpoint 失败/IO 错误），中止启动并给
             //    用户可见错误框（源数据未动，可关闭旧实例重试）；无旧数据/已迁移则跳过。
@@ -155,6 +200,9 @@ fn main() {
                 )),
             };
             let data_dir = migration.target.clone();
+            app.manage(theme_assets::ThemeAssets::new(
+                data_dir.join("theme-assets"),
+            ));
             diagnostics::initialize(&data_dir);
             if migration.migrated {
                 eprintln!(
@@ -273,6 +321,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            theme_assets::theme_assets_describe,
             commands::settings_get,
             commands::settings_set,
             commands::settings_get_all,
@@ -325,6 +374,7 @@ fn main() {
             host_task::host_task_reveal_result,
             host_task::host_tasks_remove_terminal,
             next_renderer::create_next_renderer_session,
+            next_renderer::renew_next_renderer_session,
             next_renderer::next_renderer_request,
             commands::dispose_renderer_session,
             commands::plugin_execute_command,

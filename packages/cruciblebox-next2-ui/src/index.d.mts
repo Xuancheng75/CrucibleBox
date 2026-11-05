@@ -5,12 +5,18 @@ import type {
   TaskSnapshot,
   Target,
   StorageKeysResult,
-  StorageListResult
+  StorageListResult,
+  ThemeAsset,
+  ThemeAssetImportParams,
+  ThemeBundledAssetImportParams,
+  ThemeAssetListResult
 } from '@cruciblebox/next2-api'
 type Operations = ({ type: 'set'; key: string; value: Json } | { type: 'delete'; key: string })[]
 export type StorageOperation = Operations[number]
 type Page = { limit?: number; after?: string }
-export declare function createClient(context: Pick<RendererContext, 'session' | 'exchange'>): {
+export declare function createClient(
+  context: Pick<RendererContext, 'session' | 'exchange' | 'enableThemeStyle'>
+): {
   platform(method: string, params?: Json): Promise<Json>
   backend(method: string, params?: Json): Promise<Json>
   service(id: string, method: string, params?: Json): Promise<Json>
@@ -26,6 +32,12 @@ export declare function createClient(context: Pick<RendererContext, 'session' | 
     list(prefix?: string, page?: Page): Promise<StorageListResult>
   }
   theme: {
+    assets: {
+      import(options: ThemeAssetImportParams): Promise<ThemeAsset>
+      importBundled(options: ThemeBundledAssetImportParams): Promise<ThemeAsset>
+      get(id: string): Promise<ThemeAsset>
+      list(options?: Page): Promise<ThemeAssetListResult>
+    }
     get(): Promise<Json>
     list(): Promise<Json>
     preview(theme: Json): Promise<boolean>

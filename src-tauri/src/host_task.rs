@@ -130,6 +130,7 @@ pub fn executor_observer(
                 .get("error")
                 .and_then(|value| value.get("message"))
                 .and_then(Value::as_str)
+                .or_else(|| snapshot.get("executionError").and_then(Value::as_str))
                 .map(str::to_string),
             result_refs: Some(refs),
             executor_key: Some(format!("{owner}.{kind}")),

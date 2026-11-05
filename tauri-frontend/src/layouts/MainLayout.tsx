@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Badge, Button, Layout, theme } from 'antd'
 import { ClockCircleOutlined } from '@ant-design/icons'
 import IconRail from '../components/IconRail'
@@ -6,7 +6,7 @@ import CommandPalette from '../components/CommandPalette'
 import { useAppStore } from '../store/app.store'
 import { useThemeStore } from '../store/theme.store'
 import { useTaskStore } from '../store/task.store'
-import type { AppPage } from '../app-pages'
+import { pageTransitionDirection, type AppPage } from '../app-pages'
 
 const { Header, Sider, Content } = Layout
 
@@ -27,8 +27,12 @@ interface MainLayoutProps {
 export default function MainLayout({ children, appVersion }: MainLayoutProps) {
   const { token } = theme.useToken()
   const currentPage = useAppStore((state) => state.currentPage)
+  const previousPage = useAppStore((state) => state.previousPage)
+  const activePluginId = useAppStore((state) => state.activePluginId)
   const setCurrentPage = useAppStore((state) => state.setCurrentPage)
   const themeName = useThemeStore((state) => state.theme.name)
+  const themeLayout = useThemeStore((state) => state.theme.design?.layout)
+  const pageTransition = useThemeStore((state) => state.theme.design?.motion?.transition ?? 'none')
   const activeTaskCount = useTaskStore(
     (state) =>
       state.tasks.filter((task) =>
@@ -36,13 +40,39 @@ export default function MainLayout({ children, appVersion }: MainLayoutProps) {
       ).length
   )
   const [compact, setCompact] = useState(false)
-  const railWidth = compact ? 56 : 176
+  const navigation = themeLayout?.navigation ?? 'rail'
+  const horizontal = navigation === 'top'
+  const menu = navigation === 'menu'
+  const collapsed = !horizontal && compact
+  const railWidth = horizontal
+    ? 0
+    : collapsed
+      ? 56
+      : (themeLayout?.sidebarWidth ?? (menu ? 260 : 176))
   const selectedNavigationPage = currentPage === 'pluginView' ? 'home' : currentPage
   const pageMeta = PAGE_META[currentPage] ?? PAGE_META.home
+  const pageKey = currentPage === 'pluginView' ? `plugin:${activePluginId}` : currentPage
+  const direction = pageTransitionDirection(previousPage, currentPage, navigation)
+  const contentRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    document.documentElement.dataset.obPageDirection = direction
+    document.documentElement.dataset.obPageTransition = pageTransition
+    // Restart only this scroll container's theme animation. Its children and
+    // iframe instances stay mounted, and their transforms cannot extend its scroll range.
+    for (const animation of contentRef.current!.getAnimations()) {
+      animation.currentTime = 0
+      animation.play()
+    }
+  }, [pageKey, direction, pageTransition])
+  useEffect(() => {
+    document.documentElement.dataset.obThemePage = currentPage
+  }, [currentPage])
 
   return (
     <Layout
       className="ob-app-layout"
+      data-ob-theme-page={currentPage}
+      data-density={themeLayout?.density ?? 'comfortable'}
       style={{
         height: '100dvh',
         minHeight: 0,
@@ -50,31 +80,34 @@ export default function MainLayout({ children, appVersion }: MainLayoutProps) {
         background: token.colorBgLayout
       }}
     >
-      <Sider
-        className="ob-rail-shell"
-        width={railWidth}
-        collapsedWidth={56}
-        style={{
-          position: 'fixed',
-          left: 0,
-          top: 0,
-          zIndex: 20,
-          height: '100dvh',
-          minHeight: 0,
-          flexShrink: 0,
-          background: token.colorPrimaryBg,
-          borderRight: `1px solid ${token.colorBorder}`,
-          overflow: 'hidden'
-        }}
-      >
-        <IconRail
-          appVersion={appVersion}
-          selectedKey={selectedNavigationPage}
-          onChange={setCurrentPage}
-          compact={compact}
-          onCompactChange={() => setCompact((value) => !value)}
-        />
-      </Sider>
+      {!horizontal && (
+        <Sider
+          className="ob-rail-shell"
+          width={railWidth}
+          collapsedWidth={56}
+          style={{
+            position: 'fixed',
+            left: 0,
+            top: 0,
+            zIndex: 20,
+            height: '100dvh',
+            minHeight: 0,
+            flexShrink: 0,
+            background: token.colorPrimaryBg,
+            borderRight: `1px solid ${token.colorBorder}`,
+            overflow: 'hidden'
+          }}
+        >
+          <IconRail
+            appVersion={appVersion}
+            selectedKey={selectedNavigationPage}
+            onChange={setCurrentPage}
+            compact={collapsed}
+            orientation={navigation}
+            onCompactChange={() => setCompact(!collapsed)}
+          />
+        </Sider>
+      )}
       <Layout
         className="ob-app-main-layout"
         style={{
@@ -85,6 +118,18 @@ export default function MainLayout({ children, appVersion }: MainLayoutProps) {
           marginLeft: railWidth
         }}
       >
+        {horizontal && (
+          <div className="ob-top-navigation">
+            <IconRail
+              appVersion={appVersion}
+              selectedKey={selectedNavigationPage}
+              onChange={setCurrentPage}
+              compact={false}
+              onCompactChange={() => {}}
+              orientation="top"
+            />
+          </div>
+        )}
         <Header
           className="ob-app-header"
           style={{
@@ -100,7 +145,6 @@ export default function MainLayout({ children, appVersion }: MainLayoutProps) {
             zIndex: 10
           }}
         >
-          <span className="cbx-header-location">{pageMeta.title}</span>
           <div style={{ flex: 1 }} />
           <Badge count={activeTaskCount} size="small">
             <Button
@@ -117,24 +161,38 @@ export default function MainLayout({ children, appVersion }: MainLayoutProps) {
             {themeName}
           </span>
         </Header>
-        <Content
-          className="ob-main-content"
-          data-hud={pageMeta.hud}
-          style={{
-            minHeight: 0,
-            flex: 1,
-            padding: '20px 22px 22px',
-            overflow: currentPage === 'home' ? 'hidden' : 'auto',
-            overscrollBehavior: 'contain'
-          }}
+        <div
+          className="cbx-page-stage"
+          data-page-transition={pageTransition}
+          data-page-direction={direction}
         >
-          <div
-            className="ob-main-surface"
-            style={{ height: currentPage === 'home' ? '100%' : undefined }}
+          <Content
+            ref={contentRef}
+            className="ob-main-content"
+            aria-label={pageMeta.title}
+            data-hud={pageMeta.hud}
+            style={{
+              minHeight: 0,
+              flex: 1,
+              padding: '20px 22px 22px',
+              overflow: currentPage === 'home' || currentPage === 'pluginView' ? 'hidden' : 'auto',
+              overscrollBehavior: 'contain'
+            }}
           >
-            {children}
+            <div
+              className="ob-main-surface"
+              style={{
+                height: currentPage === 'home' || currentPage === 'pluginView' ? '100%' : undefined
+              }}
+            >
+              {children}
+            </div>
+          </Content>
+          <div key={pageKey} className="cbx-page-transition" aria-hidden="true">
+            <span />
+            <span />
           </div>
-        </Content>
+        </div>
       </Layout>
       <CommandPalette />
     </Layout>

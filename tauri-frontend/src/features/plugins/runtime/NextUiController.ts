@@ -34,6 +34,9 @@ export function createNextUiController() {
       }
       throw new Error('INVALID_REQUEST')
     },
+    setVisible(visible: boolean) {
+      theme.setVisible(visible)
+    },
     dispose() {
       active = false
       theme.dispose()

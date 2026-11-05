@@ -17,6 +17,7 @@ import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { tauriApi, type NetworkDiagnostic } from '../api/tauriApi'
 import { formatUpdateError, retryUpdateCheck, retryUpdateDownload } from '../utils/update-check'
 import { useTaskStore } from '../store/task.store'
+import { restoreDefaultTheme } from '../features/plugins/runtime/NextThemeController'
 
 const { Title, Text } = Typography
 
@@ -383,15 +384,36 @@ export default function Settings() {
           <Title level={4} style={{ margin: 0, fontWeight: 600 }}>
             设置
           </Title>
-          <Text type="secondary" style={{ fontSize: 13 }}>
-            应用信息与运行环境
-          </Text>
+          <Button type="link" onClick={() => void restoreDefaultTheme()}>
+            恢复默认主题
+          </Button>
         </div>
       </div>
 
       <Card
         className="ob-surface-card ob-settings-card"
-        title="下载网络"
+        data-card-variant="1"
+        title={<span className="ob-card-heading">应用信息</span>}
+        style={{
+          border: `1px solid ${token.colorBorder}`,
+          borderRadius: token.borderRadius,
+          boxShadow: 'none'
+        }}
+        styles={{ body: { padding: 24 } }}
+      >
+        <Descriptions
+          column={1}
+          bordered
+          size="small"
+          styles={descriptionStyles}
+          items={descriptionItems}
+        />
+      </Card>
+
+      <Card
+        className="ob-surface-card ob-settings-card"
+        data-card-variant="2"
+        title={<span className="ob-card-heading">下载网络</span>}
         style={{
           marginTop: 16,
           border: `1px solid ${token.colorBorder}`,
@@ -463,25 +485,8 @@ export default function Settings() {
 
       <Card
         className="ob-surface-card ob-settings-card"
-        style={{
-          border: `1px solid ${token.colorBorder}`,
-          borderRadius: token.borderRadius,
-          boxShadow: 'none'
-        }}
-        styles={{ body: { padding: 24 } }}
-      >
-        <Descriptions
-          column={1}
-          bordered
-          size="small"
-          styles={descriptionStyles}
-          items={descriptionItems}
-        />
-      </Card>
-
-      <Card
-        className="ob-surface-card ob-settings-card"
-        title="应用更新"
+        data-card-variant="3"
+        title={<span className="ob-card-heading">应用更新</span>}
         style={{
           marginTop: 16,
           border: `1px solid ${token.colorBorder}`,
@@ -491,12 +496,6 @@ export default function Settings() {
         styles={{ body: { padding: 24 } }}
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <Alert
-            type="warning"
-            showIcon
-            message="当前 Windows 安装包未使用 Authenticode 证书签名"
-            description="首次安装或升级时，Windows 可能显示“未知发布者”或 SmartScreen 提示；更新仍会通过 HTTPS、版本元数据和 SHA-512 校验。"
-          />
           <Space wrap>
             <Text>更新通道</Text>
             <Select<AppUpdateChannel>
@@ -556,7 +555,8 @@ export default function Settings() {
       </Card>
       <Card
         className="ob-surface-card ob-settings-card"
-        title="本地故障记录"
+        data-card-variant="4"
+        title={<span className="ob-card-heading">本地故障记录</span>}
         style={{ marginTop: 16 }}
       >
         <Space direction="vertical" style={{ width: '100%' }}>

@@ -17,9 +17,12 @@ export interface RendererContext {
   exchange(request: Request): Promise<Response>
   onAppearanceChanged(listener: (appearance: RendererAppearance) => void): () => void
   onFilesDropped(listener: (refs: string[]) => void): () => void
+  onVisibilityChanged?(listener: (visible: boolean) => void): () => void
+  enableThemeStyle?(version: 2): boolean
 }
 export declare const contract: Readonly<Record<string, unknown>>
 export declare function validateManifest(raw: string): Manifest
+export declare function validateThemeDesign(raw: string): import('./generated.mjs').ThemeDesign
 export declare function validateResourceManifest(raw: string): ResourceManifest
 export declare function validateResourceCatalog(raw: string): ResourceCatalog
 export declare function validateRequest(raw: string): Request

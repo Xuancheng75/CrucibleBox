@@ -7,6 +7,7 @@ import {
   type PluginInstallPreviewResponse
 } from '../api/tauriApi'
 import { useTaskStore } from './task.store'
+import { useAppStore } from './app.store'
 
 export interface PendingInstall {
   source: 'zip' | 'directory'
@@ -26,6 +27,7 @@ export interface InstallQueueState {
   batchSucceeded: number
   batchSkipped: number
   batchFailures: string[]
+  failedInstalls: PendingInstall[]
 
   enqueueInstalls: (items: PendingInstall[]) => void
   processNextInQueue: () => Promise<void>
@@ -36,6 +38,11 @@ export interface PluginState {
   plugins: PluginMeta[]
   loading: boolean
   error: null | string
+  failedOperation:
+    | { kind: 'enable' | 'disable' | 'uninstall'; id: string }
+    | { kind: 'batch-enable' | 'batch-disable'; ids: string[] }
+    | null
+  retryFailedOperation: () => Promise<boolean>
 
   activePlugins: Record<string, PluginLifecycleStatus>
   /** 插件级生命周期操作状态，防止快速重复点击造成竞态。 */
@@ -50,6 +57,7 @@ export interface PluginState {
   installPreview: PluginInstallPreviewResponse | null
   /** 当前待确认预览对应的源路径（批量场景展示文件名/失败归因） */
   activeInstallPath: null | string
+  activeInstallRequest: PendingInstall | null
 
   fetchPlugins: () => Promise<void>
   installPlugin: (
@@ -90,6 +98,8 @@ let pluginsFetchSequence = 0
 let pluginsFetchPromise: Promise<void> | null = null
 let activeInstallTaskId: string | null = null
 let activeMarketplaceSourceId: number | undefined
+let installRequestSequence = 0
+let installQueueGeneration = 0
 
 async function runBatchLifecycle(
   get: () => PluginStore,
@@ -97,11 +107,16 @@ async function runBatchLifecycle(
   ids: string[],
   enabled: boolean
 ): Promise<BatchLifecycleResult> {
-  if (get().batchOperationBusy || get().reorderBusy) return { succeeded: [], failures: [] }
+  if (
+    get().batchOperationBusy ||
+    get().reorderBusy ||
+    Object.keys(get().pluginOperationBusy).length > 0
+  )
+    return { succeeded: [], failures: [] }
   const uniqueIds = [...new Set(ids)].filter((id) => get().plugins.some((p) => p.id === id))
   const succeeded: string[] = []
   const failures: BatchLifecycleFailure[] = []
-  set({ batchOperationBusy: true, error: null })
+  set({ batchOperationBusy: true, error: null, failedOperation: null })
   try {
     for (const id of uniqueIds) {
       set((state) => ({
@@ -116,6 +131,7 @@ async function runBatchLifecycle(
           continue
         }
         succeeded.push(id)
+        if (!enabled) useAppStore.getState().closePluginView(id)
         set((state) => ({
           plugins: state.plugins.map((plugin) =>
             plugin.id === id ? { ...plugin, enabled } : plugin
@@ -137,11 +153,18 @@ async function runBatchLifecycle(
     }
     await get().fetchPlugins()
     if (failures.length > 0) {
-      set({ error: `${enabled ? '批量启用' : '批量停用'}失败 ${failures.length} 项` })
+      set({
+        error: `${enabled ? '批量启用' : '批量停用'}失败 ${failures.length} 项`,
+        failedOperation: {
+          kind: enabled ? 'batch-enable' : 'batch-disable',
+          ids: failures.map(({ id }) => id)
+        }
+      })
     }
     return { succeeded, failures }
   } finally {
     set({ batchOperationBusy: false })
+    void get().processNextInQueue()
   }
 }
 
@@ -149,6 +172,21 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   plugins: [],
   loading: false,
   error: null,
+  failedOperation: null,
+  retryFailedOperation: async () => {
+    const operation = get().failedOperation
+    if (!operation) return false
+    if ('id' in operation) {
+      if (operation.kind === 'enable') return get().enablePlugin(operation.id)
+      if (operation.kind === 'disable') return get().disablePlugin(operation.id)
+      return get().uninstallPlugin(operation.id)
+    }
+    const result =
+      operation.kind === 'batch-enable'
+        ? await get().batchEnablePlugins(operation.ids)
+        : await get().batchDisablePlugins(operation.ids)
+    return result.failures.length === 0 && result.succeeded.length === operation.ids.length
+  },
   activePlugins: {},
   pluginOperationBusy: {},
   batchOperationBusy: false,
@@ -156,31 +194,39 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   internalPluginDragActive: false,
   installPreview: null,
   activeInstallPath: null,
+  activeInstallRequest: null,
   installQueue: [],
   queueProcessing: false,
   batchTotal: 0,
   batchSucceeded: 0,
   batchSkipped: 0,
   batchFailures: [],
+  failedInstalls: [],
 
   fetchPlugins: async () => {
     if (pluginsFetchPromise) return pluginsFetchPromise
     const requestSequence = ++pluginsFetchSequence
     pluginsFetchPromise = (async () => {
-      set({ loading: true, error: null })
+      set({ loading: true, error: null, failedOperation: null })
       try {
         const plugins = await tauriApi.plugin.list()
         if (requestSequence !== pluginsFetchSequence) return
-        set({
+        set((state) => ({
           plugins,
           activePlugins: Object.fromEntries(
-            plugins.filter((p) => p.enabled).map((p) => [p.id, PluginLifecycleStatus.Active])
+            plugins
+              .filter((plugin) => plugin.enabled && state.activePlugins[plugin.id])
+              .map((plugin) => [plugin.id, state.activePlugins[plugin.id]])
           ),
           loading: false
-        })
+        }))
       } catch (err) {
         if (requestSequence !== pluginsFetchSequence) return
-        set({ error: toErrorMessage(err, '插件列表加载失败'), loading: false })
+        set({
+          error: toErrorMessage(err, '插件列表加载失败'),
+          loading: false,
+          failedOperation: null
+        })
       }
     })()
     try {
@@ -192,65 +238,91 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
 
   installPlugin: async (source, path, task) => {
     if (
+      get().installPreview ||
+      activeInstallTaskId ||
       get().batchOperationBusy ||
       get().reorderBusy ||
       Object.keys(get().pluginOperationBusy).length > 0
     )
       return false
-    const taskId = task?.id ?? `plugin-install-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const requestSequence = ++installRequestSequence
+    const taskId = task?.id ?? `plugin-install-${crypto.randomUUID()}`
+    const request: PendingInstall = {
+      source,
+      path,
+      taskId,
+      title: task?.title,
+      marketplaceSourceId: task?.marketplaceSourceId
+    }
     activeInstallTaskId = taskId
     activeMarketplaceSourceId = task?.marketplaceSourceId
+    if (!get().queueProcessing)
+      set({
+        batchTotal: 1,
+        batchSucceeded: 0,
+        batchSkipped: 0,
+        batchFailures: [],
+        failedInstalls: []
+      })
     useTaskStore.getState().upsertTask({
       id: taskId,
       title: task?.title ?? '准备安装插件',
       detail: path,
-      source: 'host',
+      source: task?.marketplaceSourceId !== undefined ? 'marketplace' : 'host',
       status: 'running',
       progress: 10
     })
-    set({ loading: true, error: null })
+    set({ loading: true, error: null, failedOperation: null })
     try {
-      // 后端 preview 要求路径必须来自用户对话框/拖拽登记（trusted_paths 防线）
       await tauriApi.plugin.registerImportPath(path)
       const result = await tauriApi.plugin.installPreview({ type: source, path })
-      if (result.success && result.installToken) {
-        set({ installPreview: result, activeInstallPath: path, loading: false })
-        useTaskStore.getState().patchTask(taskId, {
-          title: result.data?.isUpgrade ? '等待确认插件升级' : '等待确认插件安装',
-          status: 'waiting-user',
-          progress: 35
-        })
-        return true
+      if (requestSequence !== installRequestSequence) {
+        if (result.installToken) await tauriApi.plugin.installDiscard(result.installToken)
+        return false
       }
-      useTaskStore.getState().patchTask(taskId, {
-        status: 'failed',
-        error: result.error ?? '安装预览失败'
+      if (!result.success || !result.installToken) throw new Error(result.error ?? '安装预览失败')
+      set({
+        installPreview: result,
+        activeInstallPath: path,
+        activeInstallRequest: request,
+        loading: false
       })
-      activeInstallTaskId = null
-      set({ error: result.error ?? '安装预览失败', loading: false })
-      return false
-    } catch (err) {
       useTaskStore.getState().patchTask(taskId, {
-        status: 'failed',
-        error: toErrorMessage(err, '安装预览失败')
+        title: result.data?.isUpgrade ? '等待确认插件升级' : '等待确认插件安装',
+        status: 'waiting-user',
+        progress: 35
       })
+      return true
+    } catch (error) {
+      if (requestSequence !== installRequestSequence) return false
+      const detail = toErrorMessage(error, '安装预览失败')
+      useTaskStore.getState().patchTask(taskId, { status: 'failed', error: detail })
       activeInstallTaskId = null
-      set({ error: toErrorMessage(err, '安装预览失败'), loading: false })
+      activeMarketplaceSourceId = undefined
+      set((state) => ({
+        loading: false,
+        error: detail,
+        batchFailures: [...state.batchFailures, `${previewFailureName(path)}：${detail}`],
+        failedInstalls: [...state.failedInstalls, request]
+      }))
       return false
     }
   },
 
   commitInstall: async (approval) => {
     const preview = get().installPreview
-    if (!preview?.installToken) return false
-    const taskId = activeInstallTaskId
     if (
+      !preview?.installToken ||
+      get().loading ||
       get().batchOperationBusy ||
       get().reorderBusy ||
       Object.keys(get().pluginOperationBusy).length > 0
     )
       return false
-    set({ loading: true, error: null })
+    const taskId = activeInstallTaskId
+    const request = get().activeInstallRequest
+    set({ loading: true, error: null, failedOperation: null })
+    let installed = false
     try {
       const result = await tauriApi.plugin.installCommit(
         preview.installToken,
@@ -258,46 +330,50 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         taskId ?? undefined,
         approval
       )
-      activeMarketplaceSourceId = undefined
-      if (result.success) {
-        await get().fetchPlugins()
-        set((state) => ({
-          installPreview: null,
-          activeInstallPath: null,
-          loading: false,
-          batchSucceeded: state.batchSucceeded + 1
-        }))
-        activeInstallTaskId = null
-        void get().processNextInQueue()
-        return true
-      }
-      activeInstallTaskId = null
+      if (!result.success) throw new Error(result.error ?? '安装失败')
+      installed = true
+      await get().fetchPlugins()
+      set((state) => ({ batchSucceeded: state.batchSucceeded + 1 }))
+      return true
+    } catch (error) {
+      const detail = toErrorMessage(error, '安装失败')
+      if (taskId) useTaskStore.getState().patchTask(taskId, { status: 'failed', error: detail })
       set((state) => ({
-        error: result.error ?? '安装失败',
-        loading: false,
-        batchFailures: [...state.batchFailures, failureNameFrom(get().activeInstallPath)]
+        error: detail,
+        batchFailures: [
+          ...state.batchFailures,
+          `${previewFailureName(request?.path ?? null)}：${detail}`
+        ],
+        failedInstalls: request ? [...state.failedInstalls, request] : state.failedInstalls
       }))
-      void get().processNextInQueue()
       return false
-    } catch (err) {
+    } finally {
       activeMarketplaceSourceId = undefined
       activeInstallTaskId = null
-      set((state) => ({
-        error: toErrorMessage(err, '安装失败'),
-        loading: false,
-        batchFailures: [...state.batchFailures, failureNameFrom(get().activeInstallPath)]
-      }))
+      set({
+        installPreview: null,
+        activeInstallPath: null,
+        activeInstallRequest: null,
+        loading: false
+      })
+      if (!installed)
+        await tauriApi.plugin.installDiscard(preview.installToken).catch((error: unknown) => {
+          set({
+            error: `${get().error ?? '安装失败'}；清理预览失败：${toErrorMessage(error, '未知错误')}`
+          })
+        })
       void get().processNextInQueue()
-      return false
     }
   },
 
   discardInstall: async () => {
+    ++installRequestSequence
     activeMarketplaceSourceId = undefined
     const preview = get().installPreview
     set((state) => ({
       installPreview: null,
       activeInstallPath: null,
+      activeInstallRequest: null,
       batchSkipped: state.batchSkipped + 1
     }))
     if (preview?.installToken) {
@@ -322,18 +398,24 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     set((state) => ({
       loading: true,
       error: null,
+      failedOperation: null,
       pluginOperationBusy: { ...state.pluginOperationBusy, [id]: true }
     }))
     try {
       const result = await tauriApi.plugin.uninstall(id)
       if (result.success) {
+        useAppStore.getState().closePluginView(id)
         await get().fetchPlugins()
         return true
       }
-      set({ error: result.error, loading: false })
+      set({ error: result.error, loading: false, failedOperation: { kind: 'uninstall', id } })
       return false
     } catch (err) {
-      set({ error: toErrorMessage(err, '卸载失败'), loading: false })
+      set({
+        error: toErrorMessage(err, '卸载失败'),
+        loading: false,
+        failedOperation: { kind: 'uninstall', id }
+      })
       return false
     } finally {
       set((state) => {
@@ -341,6 +423,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         delete pluginOperationBusy[id]
         return { pluginOperationBusy }
       })
+      void get().processNextInQueue()
     }
   },
 
@@ -348,6 +431,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     if (get().pluginOperationBusy[id] || get().batchOperationBusy || get().reorderBusy) return false
     set((state) => ({
       error: null,
+      failedOperation: null,
       pluginOperationBusy: { ...state.pluginOperationBusy, [id]: true }
     }))
     try {
@@ -359,10 +443,10 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         }))
         return true
       }
-      set({ error: result.error })
+      set({ error: result.error, failedOperation: { kind: 'enable', id } })
       return false
     } catch (err) {
-      set({ error: toErrorMessage(err, '启用失败') })
+      set({ error: toErrorMessage(err, '启用失败'), failedOperation: { kind: 'enable', id } })
       return false
     } finally {
       set((state) => {
@@ -370,6 +454,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         delete pluginOperationBusy[id]
         return { pluginOperationBusy }
       })
+      void get().processNextInQueue()
     }
   },
 
@@ -377,21 +462,23 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     if (get().pluginOperationBusy[id] || get().batchOperationBusy || get().reorderBusy) return false
     set((state) => ({
       error: null,
+      failedOperation: null,
       pluginOperationBusy: { ...state.pluginOperationBusy, [id]: true }
     }))
     try {
       const result = await tauriApi.plugin.disable(id)
       if (result.success) {
+        useAppStore.getState().closePluginView(id)
         set((state) => ({
           plugins: state.plugins.map((p) => (p.id === id ? { ...p, enabled: false } : p)),
           activePlugins: { ...state.activePlugins, [id]: PluginLifecycleStatus.Inactive }
         }))
         return true
       }
-      set({ error: result.error })
+      set({ error: result.error, failedOperation: { kind: 'disable', id } })
       return false
     } catch (err) {
-      set({ error: toErrorMessage(err, '停用失败') })
+      set({ error: toErrorMessage(err, '停用失败'), failedOperation: { kind: 'disable', id } })
       return false
     } finally {
       set((state) => {
@@ -399,6 +486,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         delete pluginOperationBusy[id]
         return { pluginOperationBusy }
       })
+      void get().processNextInQueue()
     }
   },
 
@@ -416,10 +504,10 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       if (result.success) {
         return true
       }
-      set({ error: result.error })
+      set({ error: result.error, failedOperation: null })
       return false
     } catch (err) {
-      set({ error: toErrorMessage(err, '保存配置失败') })
+      set({ error: toErrorMessage(err, '保存配置失败'), failedOperation: null })
       return false
     }
   },
@@ -435,7 +523,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       state.installQueue.length > 0 ||
       Object.keys(state.pluginOperationBusy).length > 0
     ) {
-      set({ error: '插件当前正在执行其他操作，请稍后再试' })
+      set({ error: '插件当前正在执行其他操作，请稍后再试', failedOperation: null })
       return false
     }
     const currentPlugins = get().plugins
@@ -444,11 +532,11 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       .filter((p): p is PluginMeta => p !== undefined)
 
     if (nextPlugins.length !== orderedIds.length) {
-      set({ error: '排序失败：插件 ID 无效' })
+      set({ error: '排序失败：插件 ID 无效', failedOperation: null })
       return false
     }
 
-    set({ plugins: nextPlugins, error: null, reorderBusy: true })
+    set({ plugins: nextPlugins, error: null, failedOperation: null, reorderBusy: true })
     try {
       const result = await tauriApi.plugin.reorder(orderedIds)
       if (!result.success) {
@@ -460,6 +548,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       return false
     } finally {
       set({ reorderBusy: false })
+      void get().processNextInQueue()
     }
   },
 
@@ -478,48 +567,74 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   // ---------------------------------------------------------------------------
 
   enqueueInstalls: (items) => {
-    if (items.length === 0 || get().reorderBusy) return
+    if (items.length === 0) return
+    const continuing =
+      get().queueProcessing || get().installPreview !== null || get().installQueue.length > 0
     set((state) => ({
       installQueue: [...state.installQueue, ...items],
-      batchTotal: state.batchTotal + items.length,
-      batchSucceeded: 0,
-      batchSkipped: 0,
-      batchFailures: []
+      batchTotal: (continuing ? state.batchTotal : 0) + items.length,
+      ...(continuing
+        ? {}
+        : {
+            batchSucceeded: 0,
+            batchSkipped: 0,
+            batchFailures: [],
+            failedInstalls: [],
+            error: null,
+            failedOperation: null
+          })
     }))
     void get().processNextInQueue()
   },
 
   processNextInQueue: async () => {
-    const { installQueue, queueProcessing } = get()
-    if (queueProcessing || installQueue.length === 0) return
-    if (get().installPreview) return // 待确认的预览阻塞队列
-    const [head, ...rest] = installQueue
-    set({ queueProcessing: true })
-    const ok = await get().installPlugin(
-      head.source,
-      head.path,
-      head.taskId
-        ? { id: head.taskId, title: head.title, marketplaceSourceId: head.marketplaceSourceId }
-        : undefined
-    )
-    set({ installQueue: rest, queueProcessing: false })
-    if (ok) {
-      // 预览已就绪，等用户在确认弹窗中 commit/discard 后再驱动下一项
+    const { installQueue, queueProcessing, installPreview } = get()
+    if (queueProcessing || installQueue.length === 0 || installPreview || activeInstallTaskId)
       return
-    }
-    const failureName = previewFailureName(head.path)
-    set((state) => ({ batchFailures: [...state.batchFailures, failureName] }))
-    await get().processNextInQueue()
+    if (
+      get().batchOperationBusy ||
+      get().reorderBusy ||
+      Object.keys(get().pluginOperationBusy).length > 0
+    )
+      return
+    const generation = installQueueGeneration
+    const [head, ...rest] = installQueue
+    set({ installQueue: rest, queueProcessing: true })
+    await get().installPlugin(head.source, head.path, {
+      id: head.taskId ?? `plugin-install-${crypto.randomUUID()}`,
+      title: head.title,
+      marketplaceSourceId: head.marketplaceSourceId
+    })
+    if (generation !== installQueueGeneration) return
+    set({ queueProcessing: false })
+    if (!get().installPreview) void get().processNextInQueue()
   },
 
   clearInstallQueue: () => {
+    ++installQueueGeneration
+    ++installRequestSequence
+    for (const request of get().installQueue) {
+      if (request.taskId)
+        useTaskStore
+          .getState()
+          .patchTask(request.taskId, { status: 'cancelled', detail: '用户取消了批量安装' })
+    }
+    if (!get().installPreview && activeInstallTaskId) {
+      useTaskStore
+        .getState()
+        .patchTask(activeInstallTaskId, { status: 'cancelled', detail: '用户取消了安装预检' })
+      activeInstallTaskId = null
+      activeMarketplaceSourceId = undefined
+    }
     set({
       installQueue: [],
       queueProcessing: false,
       batchTotal: 0,
       batchSucceeded: 0,
       batchSkipped: 0,
-      batchFailures: []
+      batchFailures: [],
+      failedInstalls: [],
+      loading: false
     })
   }
 }))
@@ -533,5 +648,3 @@ function toErrorMessage(err: unknown, fallback: string): string {
 function previewFailureName(path: string | null): string {
   return path?.split(/[\\/]/).pop() || path || '未知包'
 }
-
-const failureNameFrom = previewFailureName

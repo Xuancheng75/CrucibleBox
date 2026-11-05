@@ -8,6 +8,7 @@ function frame() {
   let now = 0
   let sequence = 0
   const timers = new Map()
+  const wireMessages = []
   const root = {
     dataset: {
       apiVersion: '6',
@@ -18,7 +19,8 @@ function frame() {
     }
   }
   const context = vm.createContext({
-    document: { getElementById: () => root },
+    wireMessages,
+    document: { getElementById: () => root, documentElement: { dataset: {} } },
     parent: { postMessage() {} },
     addEventListener() {},
     removeEventListener() {},
@@ -38,12 +40,13 @@ function frame() {
   const hook = `
     clearTimeout(handshakeTimer)
     connected = true
-    port = { postMessage() {}, close() {} }
-    globalThis.frameTest = { exchange, close }
+    port = { postMessage(message) { wireMessages.push(message) }, close() {} }
+    globalThis.frameTest = { exchange, close, receiveResponse }
   `
   vm.runInContext(source.slice(0, end) + hook + source.slice(end), context)
   return {
     ...context.frameTest,
+    wireMessages,
     advance(milliseconds) {
       now += milliseconds
       for (const [id, timer] of timers) {
@@ -86,5 +89,46 @@ test('session disposal cancels an outstanding choice and releases its timer', as
   const response = page.exchange(request('files.choose'))
   page.close('SESSION_REPLACED')
   await assert.rejects(response, /SESSION_REPLACED/)
+  assert.equal(page.pendingTimers(), 0)
+})
+
+test('the actual frame runtime maps client IDs onto ordered wire IDs beyond 4096 calls', async () => {
+  const page = frame()
+  for (let index = 1; index <= 4100; index++) {
+    const response = page.exchange(request('storage.get'))
+    const message = page.wireMessages.at(-1)
+    assert.equal(message.request.requestId, `renderer-${index}`)
+    page.receiveResponse({
+      wireVersion: 4,
+      requestId: message.request.requestId,
+      ok: true,
+      result: index
+    })
+    const reply = await response
+    assert.equal(reply.requestId, 'test-1')
+    assert.equal(reply.result, index)
+  }
+  assert.equal(page.pendingTimers(), 0)
+  page.close('SESSION_DENIED')
+})
+
+test('late replies cannot resolve a later call reusing a client correlation ID', async () => {
+  const page = frame()
+  const first = page.exchange(request('storage.get'))
+  const oldId = page.wireMessages.at(-1).request.requestId
+  page.advance(contract.budget.requestTimeoutMs + 1)
+  await assert.rejects(first, /TIMEOUT/)
+  const next = page.exchange(request('storage.get'))
+  const id = page.wireMessages.at(-1).request.requestId
+  let settled = false
+  next.then(() => {
+    settled = true
+  })
+  page.receiveResponse({ wireVersion: 4, requestId: oldId, ok: true, result: 'stale' })
+  await Promise.resolve()
+  assert.equal(settled, false)
+  await assert.rejects(page.exchange(request('storage.get')), /REPLAY_DENIED/)
+  page.receiveResponse({ wireVersion: 4, requestId: id, ok: true, result: 'current' })
+  assert.equal((await next).result, 'current')
   assert.equal(page.pendingTimers(), 0)
 })

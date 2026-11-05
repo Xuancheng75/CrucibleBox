@@ -12,6 +12,7 @@ pub const MIN_LEASE_MS: u64 = 100;
 pub const MAX_LEASE_MS: u64 = 86_400_000;
 pub const PLUGIN_RENDERER_SCHEME: &str = "cruciblebox-plugin";
 pub const DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
+pub const MAX_RENDERER_SESSIONS: usize = 32;
 pub const MAX_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,7 @@ pub struct RendererSession {
     pub color_scheme: String,
     pub plugin_id: String,
     pub plugin_name: String,
+    pub plugin_version: String,
     pub plugin_directory: String,
     pub renderer_entry: String,
     pub renderer_path: String,
@@ -90,6 +92,7 @@ struct SessionInternal {
     color_scheme: String,
     plugin_id: String,
     plugin_name: String,
+    plugin_version: String,
     plugin_directory: String,
     renderer_entry: String,
     renderer_path: String,
@@ -162,6 +165,7 @@ impl RendererSessionRegistry {
             let issued = self.create_internal(input)?;
             if let Some(record) = self.sessions.get_mut(&issued.token) {
                 record.origin = "null".into();
+                record.plugin_version = manifest.version.clone();
             }
             issued
         } else {
@@ -176,10 +180,12 @@ impl RendererSessionRegistry {
     }
 
     fn create_internal(&mut self, input: CreateSessionInput) -> Result<RendererSession, String> {
-        // Sessions are short-lived capability records. Prune abandoned
-        // issued/active entries before allocating another one so repeated
-        // plugin navigation cannot grow the registry without a bound.
+        // Unused tickets expire. Mounted pages keep their identity until their owner
+        // disposes them, allowing trusted reauthorization after system suspension.
         self.cleanup_expired();
+        if self.sessions.len() >= MAX_RENDERER_SESSIONS {
+            return Err("BUSY".into());
+        }
         if input.plugin_id.is_empty() || input.plugin_id != input.plugin_id.trim() {
             return Err("pluginId must be a non-empty trimmed string".into());
         }
@@ -218,6 +224,7 @@ impl RendererSessionRegistry {
             color_scheme: input.color_scheme,
             plugin_id: input.plugin_id.clone(),
             plugin_name: input.plugin_name,
+            plugin_version: String::new(),
             plugin_directory: input.plugin_directory,
             renderer_entry: input.renderer_entry,
             renderer_path,
@@ -271,6 +278,35 @@ impl RendererSessionRegistry {
         self.access(token, owner_webview_label)
     }
 
+    /// Only the trusted owner may use this for reauthorization. RPC/resource access
+    /// still goes through access(), which continues to reject an expired lease.
+    pub fn renewal_candidate(&self, token: &str, owner: &str) -> SessionAccess {
+        if !valid_token(token) {
+            return Self::deny(DenialReason::InvalidToken);
+        }
+        let Some(session) = self.sessions.get(token) else {
+            return Self::deny(DenialReason::NotFound);
+        };
+        if session.owner_webview_label != owner {
+            return Self::deny(DenialReason::OwnerMismatch);
+        }
+        if session.state != SessionState::Active {
+            return Self::deny(DenialReason::NotActive);
+        }
+        self.snapshot(token)
+    }
+
+    pub fn renew_active(&mut self, token: &str, owner: &str) -> Result<RendererSession, String> {
+        if !self.renewal_candidate(token, owner).ok {
+            return Err("SESSION_DENIED".into());
+        }
+        let record = self.sessions.get_mut(token).unwrap();
+        record.expires_at_ms = record.expires_at_ms.max(now_ms() + LEASE_MS);
+        self.snapshot(token)
+            .session
+            .ok_or_else(|| "SESSION_DENIED".into())
+    }
+
     pub fn dispose(&mut self, token: &str) -> bool {
         if !valid_token(token) {
             return false;
@@ -313,7 +349,7 @@ impl RendererSessionRegistry {
         let keys: Vec<String> = self
             .sessions
             .iter()
-            .filter(|(_, s)| now >= s.expires_at_ms)
+            .filter(|(_, s)| s.state == SessionState::Issued && now >= s.expires_at_ms)
             .map(|(k, _)| k.clone())
             .collect();
         let n = keys.len();
@@ -353,6 +389,7 @@ impl RendererSessionRegistry {
                     color_scheme: s.color_scheme.clone(),
                     plugin_id: s.plugin_id.clone(),
                     plugin_name: s.plugin_name.clone(),
+                    plugin_version: s.plugin_version.clone(),
                     plugin_directory: s.plugin_directory.clone(),
                     renderer_entry: s.renderer_entry.clone(),
                     renderer_path: s.renderer_path.clone(),
@@ -427,6 +464,7 @@ mod tests {
         assert_ne!(a.handshake_token, b.handshake_token);
         assert_eq!(a.origin, "null");
         assert_eq!(a.renderer_api_version, 6);
+        assert_eq!(a.plugin_version, "1.0.0");
         assert!(a
             .index_url
             .starts_with("http://cruciblebox-plugin.localhost/"));
@@ -464,6 +502,53 @@ mod tests {
         let again = reg.consume_index(&session.token, "main");
         assert!(!again.ok);
         assert_eq!(again.reason, Some(DenialReason::AlreadyConsumed));
+    }
+
+    #[test]
+    fn mounted_identity_survives_expiry_but_only_owner_can_reauthorize_until_disposal() {
+        let mut registry = RendererSessionRegistry::new(DEFAULT_TTL);
+        let issued = registry.create(make_input("sample-delta")).unwrap();
+        assert!(!registry.renewal_candidate(&issued.token, "main").ok);
+        registry.consume_index(&issued.token, "main");
+        registry
+            .sessions
+            .get_mut(&issued.token)
+            .unwrap()
+            .expires_at_ms = 0;
+        assert_eq!(
+            registry.get_active(&issued.token, "main").reason,
+            Some(DenialReason::Expired)
+        );
+        let unused = registry.create(make_input("sample-unused")).unwrap();
+        registry
+            .sessions
+            .get_mut(&unused.token)
+            .unwrap()
+            .expires_at_ms = 0;
+        assert_eq!(registry.cleanup_expired(), 1);
+        assert!(!registry.renewal_candidate(&issued.token, "other").ok);
+        let renewed = registry.renew_active(&issued.token, "main").unwrap();
+        assert_eq!(renewed.token, issued.token);
+        assert_eq!(renewed.handshake_token, issued.handshake_token);
+        assert!(renewed.expires_at_ms > now_ms());
+        assert!(registry.get_active(&issued.token, "main").ok);
+        assert_eq!(registry.dispose_plugin("sample-delta"), 1);
+        assert!(registry.renew_active(&issued.token, "main").is_err());
+    }
+
+    #[test]
+    fn retained_renderer_records_remain_bounded_and_explicit_disposal_releases_capacity() {
+        let mut registry = RendererSessionRegistry::new(DEFAULT_TTL);
+        let first = registry.create(make_input("sample-delta")).unwrap();
+        for _ in 1..MAX_RENDERER_SESSIONS {
+            registry.create(make_input("sample-delta")).unwrap();
+        }
+        assert_eq!(
+            registry.create(make_input("sample-delta")).err().unwrap(),
+            "BUSY"
+        );
+        registry.dispose(&first.token);
+        assert!(registry.create(make_input("sample-delta")).is_ok());
     }
 
     #[test]

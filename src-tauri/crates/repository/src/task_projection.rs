@@ -4,6 +4,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_TASKS: i64 = 200;
+
+/// Bounded terminal payloads contain executor outcomes, not task inputs.
+pub fn save_outcome(db: &Db, id: &str, value: &serde_json::Value) -> Result<(), String> {
+    let mut conn = db.conn().lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("next2.task-result.{id}"),value.to_string()]).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM settings WHERE key LIKE 'next2.task-result.%' AND key NOT IN (SELECT key FROM settings WHERE key LIKE 'next2.task-result.%' ORDER BY json_extract(value,'$.completedAt') DESC LIMIT ?1)", [MAX_TASKS]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostTaskSnapshot {
@@ -340,4 +349,30 @@ fn is_terminal(status: &str) -> bool {
 pub fn get(db: &Db, id: &str) -> Result<Option<HostTaskSnapshot>, String> {
     let connection = db.conn.lock().map_err(|e| e.to_string())?;
     get_from_connection(&connection, id).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    #[test]
+    fn outcome_retention_is_bounded_and_leaves_other_settings_untouched() {
+        let db = Db::open(std::path::Path::new(":memory:")).unwrap();
+        db.setting_set("user-setting", "preserved").unwrap();
+        for index in 0..201 {
+            save_outcome(&db,&index.to_string(),&serde_json::json!({"owner":"sample-alpha","completedAt":index,"result":{"index":index}})).unwrap();
+        }
+        assert_eq!(
+            db.settings_all()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.starts_with("next2.task-result."))
+                .count(),
+            200
+        );
+        assert!(db.setting_get("next2.task-result.0").unwrap().is_none());
+        assert_eq!(
+            db.setting_get("user-setting").unwrap().as_deref(),
+            Some("preserved")
+        );
+    }
 }

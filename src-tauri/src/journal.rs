@@ -117,6 +117,35 @@ pub struct RecoveryReport {
     pub actions: Vec<String>,
 }
 
+/// A committed uninstall may have deleted its DB row before payload cleanup failed.
+pub fn pending_uninstall(plugins_dir: &Path, record_id: &str) -> Result<Option<String>, String> {
+    for entry in fs::read_dir(plugins_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if parse_artifact(&name).is_none()
+            || !entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+        {
+            continue;
+        }
+        crate::transaction::assert_direct_child(plugins_dir, &entry.path(), &name)?;
+        if let Some(journal) = read_journal(&entry.path())? {
+            if journal.operation == "uninstall"
+                && journal
+                    .previous_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata["id"].as_str())
+                    == Some(record_id)
+            {
+                return Ok(Some(journal.plugin_name));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// 启动恢复器（fail-closed）。扫描 pluginsDir 直接子目录（target + stage/backup/remove
 /// artifact），按 plugin_name 分组；有 journal 走 install/upgrade 场景，无 journal 走
 /// 孤儿场景；任何歧义/错误 → blocked_plugins + actions，绝不猜测删除。
@@ -323,7 +352,7 @@ fn reconcile_superseded_journals(
         let basename = match kind {
             ArtifactKind::Stage => stage_basename(plugin_name, &journal.transaction_id),
             ArtifactKind::Backup => backup_basename(plugin_name, &journal.transaction_id),
-            ArtifactKind::Remove => return Ok(false),
+            ArtifactKind::Remove | ArtifactKind::Retained => return Ok(false),
         };
         if *kind == ArtifactKind::Backup {
             cleanup_backup(&ctx.plugins_dir, root, &basename, journal)?;
@@ -346,7 +375,7 @@ fn reconcile_superseded_journals(
             let basename = match artifact.kind {
                 ArtifactKind::Stage => stage_basename(plugin_name, &artifact.transaction_id),
                 ArtifactKind::Backup => backup_basename(plugin_name, &artifact.transaction_id),
-                ArtifactKind::Remove => return Ok(false),
+                ArtifactKind::Remove | ArtifactKind::Retained => return Ok(false),
             };
             if artifact.kind == ArtifactKind::Backup {
                 cleanup_backup(&ctx.plugins_dir, &artifact.path, &basename, active)?;
@@ -406,6 +435,7 @@ enum ArtifactKind {
     Stage,
     Backup,
     Remove,
+    Retained,
 }
 
 #[derive(Debug, Clone)]
@@ -451,6 +481,7 @@ fn parse_artifact(name: &str) -> Option<(String, ArtifactKind, String)> {
         (".stage-", ArtifactKind::Stage),
         (".backup-", ArtifactKind::Backup),
         (".remove-", ArtifactKind::Remove),
+        (".retained-", ArtifactKind::Retained),
     ] {
         if let Some(index) = rest.find(suffix) {
             let plugin = &rest[..index];
@@ -490,6 +521,12 @@ fn scan_roots(
             continue;
         }
         if let Some((plugin, kind, txid)) = parse_artifact(&name) {
+            if kind == ArtifactKind::Retained
+                && !path_entry_exists(&path.join(JOURNAL_FILENAME))?
+                && !path_entry_exists(&path.join(JOURNAL_PENDING_FILENAME))?
+            {
+                continue;
+            }
             artifacts.push(Artifact {
                 kind,
                 plugin_name: plugin,
@@ -927,12 +964,38 @@ fn recover_uninstall(
             return;
         }
     }
-    match clear_journal(retained_root.as_deref().unwrap_or(journal_root), journal) {
+    let cleanup_root = retained_root.as_deref().unwrap_or(journal_root);
+    let purge_managed = journal
+        .previous_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("purgeManagedCode"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    if purge_managed {
+        if let Err(error) = crate::install_cleanup::cleanup(
+            &ctx.plugins_dir,
+            Some(cleanup_root),
+            &crate::marketplace_download::cache_root(),
+            plugin_name,
+        ) {
+            block_plugin(ctx, plugin_name, &error);
+            return;
+        }
+    }
+    match clear_journal(cleanup_root, journal) {
         Ok(()) => ctx
             .report
             .actions
             .push(format!("commit-uninstall {plugin_name}")),
-        Err(e) => block_plugin(ctx, plugin_name, &e),
+        Err(e) => {
+            block_plugin(ctx, plugin_name, &e);
+            return;
+        }
+    }
+    if purge_managed {
+        if let Err(error) = crate::install_cleanup::remove_empty_retained_directory(cleanup_root) {
+            block_plugin(ctx, plugin_name, &error);
+        }
     }
 }
 

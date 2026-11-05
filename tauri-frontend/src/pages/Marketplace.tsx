@@ -15,24 +15,15 @@ import {
   Typography,
   theme
 } from 'antd'
-import {
-  CheckOutlined,
-  DownloadOutlined,
-  MoreOutlined,
-  ReloadOutlined,
-  SearchOutlined,
-  SafetyCertificateOutlined
-} from '@ant-design/icons'
+import { CheckOutlined, DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
 import { marketplaceEntry, type MarketplacePlugin } from '../marketplace-catalog'
-import { pluginIdentity } from '../plugin-identity'
 import { searchPlugins } from '../plugin-search'
-import SearchDialog, { type SearchResult } from '../components/SearchDialog'
 import { usePluginStore } from '../store/plugin.store'
 import { useAppStore } from '../store/app.store'
+import { cardVariants } from '../theme/card-variant'
 import {
   tauriApi,
   type MarketplaceCatalogResponse,
-  type MarketplaceSource,
   type PluginMarketplaceOrigin
 } from '../api/tauriApi'
 import { useTaskStore } from '../store/task.store'
@@ -45,35 +36,20 @@ export default function Marketplace() {
   const plugins = usePluginStore((state) => state.plugins)
   const setActivePluginId = useAppStore((state) => state.setActivePluginId)
   const setCurrentPage = useAppStore((state) => state.setCurrentPage)
-  const installPlugin = usePluginStore((state) => state.installPlugin)
+  const enqueueInstalls = usePluginStore((state) => state.enqueueInstalls)
   const fetchPlugins = usePluginStore((state) => state.fetchPlugins)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [catalogError, setCatalogError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const [selectedTags, setSelectedTags] = useState<string[]>([])
-  const [tagDialogOpen, setTagDialogOpen] = useState(false)
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
-  const [searchOpen, setSearchOpen] = useState(false)
   const [selected, setSelected] = useState<MarketplacePlugin | null>(null)
   const [remoteCatalog, setRemoteCatalog] = useState<MarketplacePlugin[] | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
   const [channelReady, setChannelReady] = useState(false)
-  const [sources, setSources] = useState<MarketplaceSource[]>([])
   const [origins, setOrigins] = useState<PluginMarketplaceOrigin[]>([])
-  const [selectedSourceId, setSelectedSourceId] = useState<number | undefined>()
-  const [sourceDialogOpen, setSourceDialogOpen] = useState(false)
-  const [offlineDialogOpen, setOfflineDialogOpen] = useState(false)
-  const [offlineText, setOfflineText] = useState('')
-  const [sourceName, setSourceName] = useState('')
-  const [sourceUrl, setSourceUrl] = useState('')
-  const [catalogSource, setCatalogSource] = useState('尚未加载目录')
   const [catalogStale, setCatalogStale] = useState(false)
 
-  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
-  const [newPluginCount, setNewPluginCount] = useState(0)
-  const [updateCount, setUpdateCount] = useState(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectionMode, setSelectionMode] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
@@ -82,19 +58,14 @@ export default function Marketplace() {
   const catalogGeneration = useRef(0)
   const tasks = useTaskStore((state) => state.tasks)
 
-  const loadSources = useCallback(async () => {
-    setSources(await tauriApi.plugin.marketplaceSources.list())
-  }, [])
-  useEffect(() => {
-    void loadSources().catch(() => setSources([]))
-  }, [loadSources])
-
   useEffect(() => {
     let active = true
-    void Promise.all([tauriApi.settings.get('updateChannel'), tauriApi.app.getVersion()])
+    void Promise.all([tauriApi.settings.get('marketplaceChannel'), tauriApi.app.getVersion()])
       .then(([value, version]) => {
         if (!active) return
-        setChannel(/-(beta|rc)\./i.test(version) ? 'beta' : value === 'beta' ? 'beta' : 'stable')
+        setChannel(
+          value === 'beta' || (!value && /-(beta|rc)\./i.test(version)) ? 'beta' : 'stable'
+        )
         setChannelReady(true)
       })
       .catch(() => {
@@ -113,31 +84,17 @@ export default function Marketplace() {
       try {
         const payload: MarketplaceCatalogResponse = await tauriApi.plugin.marketplaceCatalog(
           forceRefresh,
-          channel,
-          selectedSourceId
+          channel
         )
         if (generation !== catalogGeneration.current) return
-        const knownIds = new Set(usePluginStore.getState().plugins.map((plugin) => plugin.name))
         const merged = payload.plugins.map(marketplaceEntry)
         setRemoteCatalog(merged)
-        setCatalogSource(payload.source)
         setCatalogStale(payload.stale)
 
-        setLastCheckedAt(payload.fetchedAt ? payload.fetchedAt * 1000 : Date.now())
         await fetchPlugins()
         const nextOrigins = await tauriApi.plugin.marketplaceOrigins()
         if (generation !== catalogGeneration.current) return
         setOrigins(nextOrigins)
-        const installed = usePluginStore.getState().plugins
-        setNewPluginCount(merged.filter((plugin) => !knownIds.has(plugin.id)).length)
-        setUpdateCount(
-          merged.filter((plugin) => {
-            const installedVersion = installed.find((item) => item.id === plugin.id)?.version
-            return Boolean(
-              installedVersion && compareVersions(plugin.version, installedVersion) > 0
-            )
-          }).length
-        )
       } catch (error) {
         if (generation === catalogGeneration.current)
           setCatalogError(error instanceof Error ? error.message : String(error))
@@ -145,48 +102,40 @@ export default function Marketplace() {
         if (generation === catalogGeneration.current) setRefreshing(false)
       }
     },
-    [channel, fetchPlugins, selectedSourceId]
+    [channel, fetchPlugins]
   )
 
   useEffect(() => {
     if (channelReady) void loadCatalog(false)
   }, [channelReady, loadCatalog])
 
-  const installedById = useMemo(
-    () => new Map(plugins.map((plugin) => [plugin.id, plugin])),
+  const installedByName = useMemo(
+    () => new Map(plugins.map((plugin) => [plugin.name, plugin])),
     [plugins]
   )
   const marketplaceItems = useMemo(() => remoteCatalog ?? [], [remoteCatalog])
-  const availableTags = useMemo(
-    () => [...new Set(marketplaceItems.flatMap((plugin) => plugin.tags))].sort(),
+  const variants = useMemo(
+    () => cardVariants(marketplaceItems.map((plugin) => plugin.id)),
     [marketplaceItems]
   )
-  const availableCategories = useMemo(
-    () => [...new Set(marketplaceItems.map((plugin) => plugin.category))].sort(),
-    [marketplaceItems]
+  const catalog = useMemo(
+    () =>
+      searchPlugins(marketplaceItems, query, (plugin) => ({
+        name: plugin.name,
+        id: plugin.id,
+        keywords: [...plugin.highlights, ...(plugin.keywords ?? [])],
+        description: plugin.description
+      })),
+    [marketplaceItems, query]
   )
-  const catalog = useMemo(() => {
-    const filtered = marketplaceItems.filter((plugin) => {
-      if (selectedCategory && plugin.category !== selectedCategory) return false
-      if (selectedTags.length > 0 && !selectedTags.some((tag) => plugin.tags.includes(tag)))
-        return false
-      return true
-    })
-    return searchPlugins(filtered, query, (plugin) => ({
-      name: plugin.name,
-      id: plugin.id,
-      keywords: [plugin.category, ...plugin.highlights, ...plugin.tags, ...(plugin.keywords ?? [])],
-      description: plugin.description
-    }))
-  }, [marketplaceItems, query, selectedCategory, selectedTags])
 
   const updatePlugins = useMemo(
     () =>
       marketplaceItems.filter((plugin) => {
-        const installedVersion = installedById.get(plugin.id)?.version
+        const installedVersion = installedByName.get(plugin.id)?.version
         return Boolean(installedVersion && compareVersions(plugin.version, installedVersion) > 0)
       }),
-    [installedById, marketplaceItems]
+    [installedByName, marketplaceItems]
   )
 
   const selectedPlugins = useMemo(
@@ -194,21 +143,23 @@ export default function Marketplace() {
     [catalog, selectedIds]
   )
   const installableSelected = selectedPlugins.filter((plugin) => {
-    const installedVersion = installedById.get(plugin.id)?.version
+    const installedVersion = installedByName.get(plugin.id)?.version
     return !installedVersion || compareVersions(plugin.version, installedVersion) > 0
   })
 
   const openInstalled = (plugin: MarketplacePlugin) => {
-    const installed = installedById.get(plugin.id)
+    const installed = installedByName.get(plugin.id)
     if (!installed) return
+    setSelected(null)
     setActivePluginId(installed.id)
     setCurrentPage('pluginView')
   }
 
   const requestInstall = async (plugin: MarketplacePlugin) => {
-    const installed = installedById.get(plugin.id)
-    const origin = origins.find((item) => item.pluginId === plugin.id)
-    if (installed && (origin?.sourceId ?? 0) !== (selectedSourceId ?? 0)) {
+    if (batchBusy || downloadingId !== null) return
+    const installed = installedByName.get(plugin.id)
+    const origin = origins.find((item) => item.pluginId === installed?.id)
+    if (installed && (origin?.sourceId ?? 0) !== 0) {
       const confirmed = await new Promise<boolean>((resolve) =>
         Modal.confirm({
           title: '确认更换插件来源',
@@ -229,22 +180,27 @@ export default function Marketplace() {
         plugin.id,
         channel,
         'foreground',
-        taskId,
-        selectedSourceId
+        taskId
       )
       activeDownloadTaskRef.current = null
       const phaseTaskId = `${taskId}:install`
-      const prepared = await installPlugin('zip', path, {
+      useTaskStore.getState().upsertTask({
         id: phaseTaskId,
+        source: 'marketplace',
         title: `安装 ${plugin.name}`,
-        marketplaceSourceId: selectedSourceId ?? 0
+        status: 'queued',
+        progress: 70,
+        detail: '已下载，等待进入安装确认'
       })
-      const installError = usePluginStore.getState().error
-      if (!prepared)
-        useTaskStore
-          .getState()
-          .patchTask(phaseTaskId, { status: 'failed', error: installError ?? '插件安装预检失败' })
-      if (!prepared) setDownloadError(installError ?? '插件安装预检失败，请查看任务中心后重试。')
+      enqueueInstalls([
+        {
+          source: 'zip',
+          path,
+          taskId: phaseTaskId,
+          title: `安装 ${plugin.name}`,
+          marketplaceSourceId: 0
+        }
+      ])
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const cancelled = message.includes('CANCELLED')
@@ -253,17 +209,6 @@ export default function Marketplace() {
       setDownloadingId(null)
       activeDownloadTaskRef.current = null
     }
-  }
-
-  const installLocal = async (source: 'zip' | 'directory') => {
-    const path =
-      source === 'zip' ? await tauriApi.dialog.openFile() : await tauriApi.dialog.openDirectory()
-    if (!path) return
-    const prepared = await installPlugin(source, path, {
-      id: `local-plugin-install-${crypto.randomUUID()}`,
-      title: source === 'zip' ? '安装本地插件包' : '安装开发目录'
-    })
-    if (!prepared) setDownloadError(usePluginStore.getState().error ?? '本地插件安装预检失败')
   }
 
   const toggleSelected = (pluginId: string, checked: boolean) => {
@@ -289,22 +234,17 @@ export default function Marketplace() {
     })
   }
 
-  const exitSelectionMode = () => {
-    setSelectionMode(false)
-    setSelectedIds(new Set())
-  }
-
   const downloadBatch = async (items: MarketplacePlugin[], action: 'download' | 'update') => {
     const installable = items.filter((plugin) => {
-      const installedVersion = installedById.get(plugin.id)?.version
+      const installedVersion = installedByName.get(plugin.id)?.version
       return !installedVersion || compareVersions(plugin.version, installedVersion) > 0
     })
-    if (installable.length === 0 || batchBusy) return
+    if (installable.length === 0 || batchBusy || downloadingId !== null) return
     const differentSource = installable.filter(
       (plugin) =>
-        installedById.has(plugin.id) &&
-        (origins.find((origin) => origin.pluginId === plugin.id)?.sourceId ?? 0) !==
-          (selectedSourceId ?? 0)
+        installedByName.has(plugin.id) &&
+        (origins.find((origin) => origin.pluginId === installedByName.get(plugin.id)?.id)
+          ?.sourceId ?? 0) !== 0
     )
     if (differentSource.length > 0) {
       setDownloadError(
@@ -322,13 +262,7 @@ export default function Marketplace() {
       activeDownloadTaskRef.current = taskId
       setDownloadingId(plugin.id)
       try {
-        const path = await tauriApi.plugin.marketplaceDownload(
-          plugin.id,
-          channel,
-          'normal',
-          taskId,
-          selectedSourceId
-        )
+        const path = await tauriApi.plugin.marketplaceDownload(plugin.id, channel, 'normal', taskId)
         const installTaskId = `${taskId}:install`
         downloads.push({ path, taskId: installTaskId, plugin })
         useTaskStore.getState().upsertTask({
@@ -354,7 +288,7 @@ export default function Marketplace() {
           path,
           taskId,
           title: `安装 ${plugin.name}`,
-          marketplaceSourceId: selectedSourceId ?? 0
+          marketplaceSourceId: 0
         }))
       )
     }
@@ -372,333 +306,114 @@ export default function Marketplace() {
 
   return (
     <div className="ob-marketplace-page">
-      <Modal
-        title="导入离线插件目录"
-        open={offlineDialogOpen}
-        onCancel={() => setOfflineDialogOpen(false)}
-        onOk={async () => {
-          ++catalogGeneration.current
-          try {
-            const payload = await tauriApi.plugin.marketplaceCatalogImport(offlineText)
-            setRemoteCatalog(payload.plugins.map(marketplaceEntry))
-            setCatalogSource(payload.source)
-            setCatalogStale(false)
-            setCatalogError(null)
-            setSelectedSourceId(-1)
-            setRefreshing(false)
-            setOfflineDialogOpen(false)
-          } catch (error) {
-            setCatalogError(String(error))
-          }
-        }}
-      >
-        <p>
-          粘贴版本化目录
-          JSON。目录只提供展示和包地址；安装仍需验证插件包并确认来源。离线包可使用本地 ZIP 导入。
-        </p>
-        <Input.TextArea
-          aria-label="离线目录 JSON"
-          rows={12}
-          value={offlineText}
-          onChange={(event) => setOfflineText(event.target.value)}
-        />
-      </Modal>
       <div className="ob-page-heading">
         <div>
           <Title level={3} style={{ margin: 0 }}>
             插件市场
           </Title>
-          <Text type="secondary">
-            {catalogStale
-              ? '当前使用最近一次可用目录'
-              : `通道：${channel === 'beta' ? '测试版' : '稳定版'}`}
-            {lastCheckedAt ? ` · ${new Date(lastCheckedAt).toLocaleTimeString()}` : ''}
-          </Text>
         </div>
-        <Space>
-          {(newPluginCount > 0 || updateCount > 0) && (
-            <Tag color="orange">
-              新增 {newPluginCount} · 可更新 {updateCount}
-            </Tag>
-          )}
-          <Tag icon={<SafetyCertificateOutlined />} color={catalogStale ? 'gold' : 'blue'}>
-            {catalogStale
-              ? '缓存目录'
-              : selectedSourceId !== undefined
-                ? selectedSourceId === -1
-                  ? '本地离线目录'
-                  : (sources.find((source) => source.id === selectedSourceId)?.name ?? '第三方目录')
-                : selectedSourceId === -1
-                  ? '本地离线目录'
-                  : catalogSource.includes('tauri-beta')
-                    ? 'CrucibleBox 测试版目录'
-                    : 'CrucibleBox 发布目录'}
-          </Tag>
-          {selectionMode ? (
-            <>
-              <Checkbox
-                checked={allVisibleSelected}
-                indeterminate={!allVisibleSelected && someVisibleSelected}
-                disabled={batchBusy || catalog.length === 0}
-                onChange={(event) => toggleAllVisible(event.target.checked)}
-              >
-                全选当前结果
-              </Checkbox>
-              <Button
-                disabled={batchBusy || installableSelected.length === 0}
-                loading={batchBusy}
-                icon={<DownloadOutlined />}
-                onClick={() => void downloadBatch(installableSelected, 'download')}
-              >
-                批量下载 ({installableSelected.length})
-              </Button>
-              <Button
-                disabled={batchBusy || updatePlugins.length === 0}
-                loading={batchBusy}
-                type={updatePlugins.length > 0 ? 'primary' : 'default'}
-                icon={<DownloadOutlined />}
-                onClick={() => void downloadBatch(updatePlugins, 'update')}
-              >
-                全部更新 ({updatePlugins.length})
-              </Button>
-              <Button disabled={batchBusy} onClick={exitSelectionMode}>
-                完成
-              </Button>
-            </>
-          ) : (
-            <Button icon={<MoreOutlined />} onClick={() => setSelectionMode(true)}>
-              多选
-            </Button>
-          )}
-          <Button onClick={() => setOfflineDialogOpen(true)}>导入离线目录</Button>
+        <div className="cbx-market-actions">
+          <Select<'stable' | 'beta'>
+            aria-label="插件市场通道"
+            value={channel}
+            disabled={!channelReady || batchBusy || downloadingId !== null}
+            options={[
+              { value: 'stable', label: '稳定版' },
+              { value: 'beta', label: '测试版' }
+            ]}
+            onChange={(next) => {
+              ++catalogGeneration.current
+              setChannel(next)
+              setRemoteCatalog(null)
+              setSelected(null)
+              setSelectionMode(false)
+              setSelectedIds(new Set())
+              setDownloadError(null)
+              setBatchResult(null)
+              void tauriApi.settings
+                .set('marketplaceChannel', next)
+                .catch((error) => setCatalogError(String(error)))
+            }}
+          />
+          <Button
+            disabled={batchBusy || downloadingId !== null}
+            onClick={() => {
+              setSelectionMode(!selectionMode)
+              setSelectedIds(new Set())
+            }}
+          >
+            {selectionMode ? '完成管理' : '批量管理'}
+          </Button>
           <Button
             icon={<ReloadOutlined />}
             loading={refreshing}
+            disabled={!channelReady || batchBusy || downloadingId !== null}
             onClick={() => void loadCatalog(true)}
           >
             刷新
           </Button>
-        </Space>
-      </div>
-
-      <Space wrap style={{ marginBottom: 16 }}>
-        <Text type="secondary">插件来源</Text>
-        <Select
-          aria-label="选择插件目录"
-          style={{ minWidth: 230 }}
-          value={selectedSourceId ?? 0}
-          onChange={(value) => {
-            setSelectedSourceId(value === 0 ? undefined : value)
-            setSelectedIds(new Set())
-            setSelected(null)
-          }}
-          options={[
-            { value: 0, label: 'CrucibleBox 发布目录' },
-            { value: -1, label: '本地离线目录' },
-            ...sources
-              .filter((source) => source.enabled)
-              .map((source) => ({ value: source.id, label: source.name }))
-          ]}
-        />
-        <Button onClick={() => setSourceDialogOpen(true)}>管理第三方目录</Button>
-        <Button onClick={() => void installLocal('zip')}>安装本地 ZIP</Button>
-        <Button onClick={() => void installLocal('directory')}>安装开发目录</Button>
-        {selectedSourceId !== undefined && (
-          <Text type="secondary">第三方插件由所选来源提供，安装前请查看权限。</Text>
-        )}
-      </Space>
-
-      <Modal
-        title="管理第三方插件目录"
-        open={sourceDialogOpen}
-        onCancel={() => setSourceDialogOpen(false)}
-        footer={null}
-      >
-        <p>可添加自己信任的 HTTPS 插件目录；插件的本地进程等权限会在安装时单独确认。</p>
-        <Input
-          value={sourceName}
-          onChange={(event) => setSourceName(event.target.value)}
-          placeholder="目录名称"
-          style={{ marginBottom: 8 }}
-        />
-        <Input
-          value={sourceUrl}
-          onChange={(event) => setSourceUrl(event.target.value)}
-          placeholder="https://example.com/plugins.json"
-          style={{ marginBottom: 8 }}
-        />
-        <Button
-          type="primary"
-          disabled={!sourceName.trim() || !sourceUrl.trim()}
-          onClick={() =>
-            void (async () => {
-              try {
-                await tauriApi.plugin.marketplaceSources.add(sourceName, sourceUrl)
-                setSourceName('')
-                setSourceUrl('')
-                await loadSources()
-              } catch (error) {
-                setCatalogError(error instanceof Error ? error.message : String(error))
-              }
-            })()
-          }
-        >
-          添加目录
-        </Button>
-        <div style={{ marginTop: 18 }}>
-          {sources.map((source) => (
-            <div
-              key={source.id}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}
-            >
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <strong>{source.name}</strong>
-                <div style={{ overflowWrap: 'anywhere' }}>{source.url}</div>
-              </div>
-              <Button
-                size="small"
-                onClick={() =>
-                  void (async () => {
-                    await tauriApi.plugin.marketplaceSources.setEnabled(source.id, !source.enabled)
-                    if (selectedSourceId === source.id) setSelectedSourceId(undefined)
-                    await loadSources()
-                  })()
-                }
-              >
-                {source.enabled ? '停用' : '启用'}
-              </Button>
-              <Button
-                size="small"
-                danger
-                onClick={() =>
-                  void (async () => {
-                    await tauriApi.plugin.marketplaceSources.delete(source.id)
-                    if (selectedSourceId === source.id) setSelectedSourceId(undefined)
-                    await loadSources()
-                  })()
-                }
-              >
-                删除
-              </Button>
-            </div>
-          ))}
         </div>
-      </Modal>
-
+      </div>
+      {catalogStale && (
+        <Alert
+          type="warning"
+          showIcon
+          message="当前显示最近一次获取的官方目录"
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      <Input
+        prefix={<SearchOutlined />}
+        allowClear
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="搜索插件名称或功能…"
+        aria-label="搜索插件市场"
+        style={{ marginBottom: 16 }}
+      />
+      {selectionMode && (
+        <div className="cbx-market-selection">
+          <Checkbox
+            checked={allVisibleSelected}
+            indeterminate={!allVisibleSelected && someVisibleSelected}
+            disabled={batchBusy || catalog.length === 0}
+            onChange={(event) => toggleAllVisible(event.target.checked)}
+          >
+            {allVisibleSelected ? '取消全选' : '全选'}
+          </Checkbox>
+          <Text type="secondary">已选 {selectedIds.size} 项</Text>
+          <Button
+            type="primary"
+            disabled={
+              batchBusy || downloadingId !== null || refreshing || installableSelected.length === 0
+            }
+            loading={batchBusy}
+            icon={<DownloadOutlined />}
+            onClick={() => void downloadBatch(installableSelected, 'download')}
+          >
+            安装或更新 ({installableSelected.length})
+          </Button>
+          {updatePlugins.length > 0 && (
+            <Button
+              disabled={batchBusy || downloadingId !== null || refreshing}
+              onClick={() => void downloadBatch(updatePlugins, 'update')}
+            >
+              全部更新 ({updatePlugins.length})
+            </Button>
+          )}
+        </div>
+      )}
       {catalogError && (
         <Alert
           type="warning"
           showIcon
           message="插件目录刷新失败"
-          description={`${catalogError}。当前仍显示可用的本地目录。`}
+          description={`${catalogError}。请刷新重试。`}
           closable
           onClose={() => setCatalogError(null)}
           style={{ marginBottom: 16 }}
         />
       )}
-
-      <button
-        type="button"
-        className="ob-search-btn"
-        onClick={() => setSearchOpen(true)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          width: '100%',
-          padding: '10px 16px',
-          marginBottom: 20,
-          border: `1px solid ${token.colorBorder}`,
-          borderRadius: 10,
-          background: token.colorBgContainer,
-          color: token.colorTextTertiary,
-          fontSize: 14,
-          cursor: 'pointer',
-          transition: 'all 0.2s ease'
-        }}
-      >
-        <SearchOutlined aria-hidden="true" />
-        <span>{query || '按名称、分类或功能搜索插件…'}</span>
-      </button>
-
-      <div className="ob-market-filters" aria-label="插件市场筛选">
-        <div className="ob-market-filter-row">
-          <Select
-            aria-label="插件分类"
-            value={selectedCategory ?? ''}
-            options={[
-              { label: '全部分类', value: '' },
-              ...availableCategories.map((category) => ({ label: category, value: category }))
-            ]}
-            onChange={(category) => setSelectedCategory(category || null)}
-            style={{ width: 160 }}
-          />
-          {availableTags.length > 0 && (
-            <Button
-              type={selectedTags.length > 0 ? 'primary' : 'default'}
-              onClick={() => setTagDialogOpen(true)}
-            >
-              功能筛选{selectedTags.length > 0 ? `（${selectedTags.length}）` : ''}
-            </Button>
-          )}
-          {(selectedTags.length > 0 || selectedCategory !== null || query) && (
-            <Button
-              size="small"
-              onClick={() => {
-                setSelectedTags([])
-                setSelectedCategory(null)
-                setQuery('')
-              }}
-            >
-              清除筛选
-            </Button>
-          )}
-        </div>
-      </div>
-
-      <Modal
-        title="选择功能标签"
-        open={tagDialogOpen}
-        onCancel={() => setTagDialogOpen(false)}
-        footer={
-          <Button type="primary" onClick={() => setTagDialogOpen(false)}>
-            完成
-          </Button>
-        }
-      >
-        <Select
-          mode="multiple"
-          allowClear
-          showSearch
-          value={selectedTags}
-          options={availableTags.map((tag) => ({ label: tag, value: tag }))}
-          placeholder="搜索并选择标签"
-          style={{ width: '100%' }}
-          onChange={setSelectedTags}
-          optionFilterProp="label"
-        />
-        <Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
-          标签之间采用“或”关系，并与文字查询同时生效。
-        </Text>
-      </Modal>
-
-      <SearchDialog
-        open={searchOpen}
-        onClose={() => setSearchOpen(false)}
-        query={query}
-        onQueryChange={setQuery}
-        title="搜索插件市场"
-        results={catalog.map((plugin): SearchResult => ({
-          key: plugin.id,
-          label: plugin.name,
-          icon: <SearchOutlined />,
-          kind: '插件',
-          run: () => {
-            if (selectionMode) toggleSelected(plugin.id, !selectedIds.has(plugin.id))
-            else setSelected(plugin)
-          }
-        }))}
-      />
 
       {downloadError && (
         <Alert
@@ -729,8 +444,7 @@ export default function Marketplace() {
       ) : (
         <div className="ob-market-grid" role="list" aria-label="插件市场目录">
           {catalog.map((plugin) => {
-            const installed = installedById.get(plugin.id)
-            const identity = pluginIdentity(plugin.id)
+            const installed = installedByName.get(plugin.id)
             const installedVersion = installed?.version
             const updateAvailable = Boolean(
               installedVersion && compareVersions(plugin.version, installedVersion) > 0
@@ -762,6 +476,7 @@ export default function Marketplace() {
                 <article
                   role="listitem"
                   className="ob-market-card ob-surface-card"
+                  data-card-variant={variants.get(plugin.id)}
                   data-module={plugin.id.toUpperCase().slice(0, 12)}
                   aria-selected={selectionMode ? selectedIds.has(plugin.id) : undefined}
                   onClick={() => {
@@ -777,26 +492,25 @@ export default function Marketplace() {
                   {selectionMode && (
                     <Checkbox
                       checked={selectedIds.has(plugin.id)}
-                      disabled={batchBusy}
+                      disabled={batchBusy || downloadingId !== null}
                       aria-label={`选择 ${plugin.name}`}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => toggleSelected(plugin.id, event.target.checked)}
                     />
                   )}
                   <div className="ob-market-card-content">
-                    <div className="ob-market-card-title">
+                    <div className="ob-market-card-title ob-card-heading">
                       <span>{plugin.name}</span>
                       <span style={{ color: token.colorTextTertiary, fontSize: 11 }}>
                         v{plugin.version}
                       </span>
                     </div>
                     <div className="ob-market-card-status">
-                      {(updateAvailable || (!installed && newPluginCount > 0)) && (
+                      {updateAvailable && (
                         <Tag color={updateAvailable ? 'orange' : 'green'}>
                           {updateAvailable ? '可更新' : '新增'}
                         </Tag>
                       )}
-                      <Text type="secondary">{plugin.category || identity.category}</Text>
                     </div>
                     <Paragraph
                       className="ob-market-card-description"
@@ -814,7 +528,7 @@ export default function Marketplace() {
                       size="small"
                       type={installed && !updateAvailable ? 'default' : 'primary'}
                       loading={downloadingId === plugin.id}
-                      disabled={batchBusy}
+                      disabled={batchBusy || downloadingId !== null}
                       icon={
                         installed && !updateAvailable ? <CheckOutlined /> : <DownloadOutlined />
                       }
@@ -850,14 +564,13 @@ export default function Marketplace() {
                 </Title>
                 <Text type="secondary">
                   {selected.publisher} · v{selected.version}
-                  {installedById.has(selected.id)
-                    ? ` · 已安装 v${installedById.get(selected.id)?.version}`
+                  {installedByName.has(selected.id)
+                    ? ` · 已安装 v${installedByName.get(selected.id)?.version}`
                     : ''}
                 </Text>
               </div>
             </div>
             <Paragraph>{selected.description}</Paragraph>
-            <Text type="secondary">{selected.category}</Text>
             <div>
               <Text strong>主要能力</Text>
               <ul style={{ marginTop: 8, paddingLeft: 20 }}>
@@ -870,12 +583,12 @@ export default function Marketplace() {
               type="primary"
               block
               loading={downloadingId === selected.id}
-              disabled={batchBusy}
+              disabled={batchBusy || downloadingId !== null}
               icon={
-                installedById.has(selected.id) &&
+                installedByName.has(selected.id) &&
                 compareVersions(
                   selected.version,
-                  installedById.get(selected.id)?.version ?? '0.0.0'
+                  installedByName.get(selected.id)?.version ?? '0.0.0'
                 ) <= 0 ? (
                   <CheckOutlined />
                 ) : (
@@ -883,22 +596,22 @@ export default function Marketplace() {
                 )
               }
               onClick={() =>
-                installedById.has(selected.id) &&
+                installedByName.has(selected.id) &&
                 compareVersions(
                   selected.version,
-                  installedById.get(selected.id)?.version ?? '0.0.0'
+                  installedByName.get(selected.id)?.version ?? '0.0.0'
                 ) <= 0
                   ? openInstalled(selected)
                   : void requestInstall(selected)
               }
             >
-              {installedById.has(selected.id) &&
+              {installedByName.has(selected.id) &&
               compareVersions(
                 selected.version,
-                installedById.get(selected.id)?.version ?? '0.0.0'
+                installedByName.get(selected.id)?.version ?? '0.0.0'
               ) <= 0
                 ? '打开'
-                : installedById.has(selected.id)
+                : installedByName.has(selected.id)
                   ? '更新'
                   : '获取'}
             </Button>

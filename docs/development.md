@@ -17,4 +17,6 @@ Rust 门禁：宿主及 runner 分别执行 cargo fmt --check、cargo clippy --a
 
 测试只使用临时数据；正式程序目录不作为开发测试目录。验证中的修改不能当成已交付版本，正式程序仅在门禁通过、进程退出后替换。禁止注册额外系统安装。构建产物和缓存可重建，结束时清理被替代的临时测试程序。
 
+2.1.1 主题平台的协议和帧校验数据由 `npm run generate:next2` 同步生成。中性样例源码位于 `packages/cruciblebox-next2-api/examples/theme-style/renderer.mjs`，不包含业务主题或第三方素材；额外 CSS 使用锁定的 MIT 依赖 css-tree 解析。旧主题、旧界面协议、新样式协商、预览回滚和素材导入分别验证，界面显示与系统缩放最后统一人工验收。新增权限或主题设计字段时同步公开 SDK、契约及说明，不按插件名称分支。
+
 2026-10-27 当前验证：npm run check、前端生产构建、32 项 Rust 既有门禁项通过；前端 79 项、公共契约 42 项、宿主 125 项测试通过，另单独通过真实 native 安装/取消/崩溃/升级集成。现有 8 个分发包通过 API 6 清单校验。正式构建使用 `cargo build --release --features custom-protocol`；程序摘要和完整日志在 artifacts/base-platform-validation。默认跳过的外部联网/人工项目未算作通过，原生集成已单独执行。本轮不代替每个插件的业务验收。

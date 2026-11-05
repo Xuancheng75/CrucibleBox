@@ -725,6 +725,7 @@ fn parse_permissions(value: Option<&serde_json::Value>) -> Result<Vec<String>, S
             "tasks:control",
             "theme:read",
             "theme:write",
+            "theme:assets",
             "dialog",
             "notification",
             "clipboard",

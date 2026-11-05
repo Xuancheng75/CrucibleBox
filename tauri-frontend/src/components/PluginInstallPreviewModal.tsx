@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Alert, Button, Checkbox, Modal, Tag, Typography, theme } from 'antd'
+import { useState } from 'react'
+import { Alert, Button, Modal, Tag, Typography, theme } from 'antd'
 import { CheckCircleOutlined, WarningOutlined } from '@ant-design/icons'
 import type { PluginInstallPreview } from '../api/tauriApi'
 import { usePluginStore } from '../store/plugin.store'
@@ -28,36 +28,34 @@ export default function PluginInstallPreviewModal() {
   const { token } = theme.useToken()
 
   const [importing, setImporting] = useState(false)
-  const [consent, setConsent] = useState({ token: '', native: false, local: false })
-  // 批量会话结束后的汇总可见性：total>1 且队列耗尽且无待确认项时出现一次
-  const [showSummary, setShowSummary] = useState(false)
-  const seenTotalRef = useRef(0)
-
-  useEffect(() => {
-    if (batchTotal > seenTotalRef.current) {
-      seenTotalRef.current = batchTotal
-      setShowSummary(false)
-    }
-    if (
-      batchTotal > 1 &&
-      batchTotal === seenTotalRef.current &&
-      !installPreview &&
-      queueRemaining === 0 &&
-      !processing
-    ) {
-      setShowSummary(true)
-    }
-  }, [batchTotal, installPreview, queueRemaining, processing])
+  const failedInstalls = usePluginStore((s) => s.failedInstalls)
+  const enqueueInstalls = usePluginStore((s) => s.enqueueInstalls)
+  const showSummary =
+    batchTotal > 0 &&
+    !installPreview &&
+    queueRemaining === 0 &&
+    !processing &&
+    (batchTotal > 1 || failures.length > 0)
+  const retryFailedInstalls = () => {
+    const requests = failedInstalls.map(({ source, path, title, marketplaceSourceId }) => ({
+      source,
+      path,
+      title,
+      marketplaceSourceId
+    }))
+    clearInstallQueue()
+    enqueueInstalls(requests)
+  }
 
   const handleCommit = async () => {
-    if (!consentReady) return
+    if (importing || loading) return
     setImporting(true)
     await commitInstall(
       preview?.next2
         ? {
             manifestSha256: preview.next2.manifestSha256,
-            acceptNativeCode: nativeAccepted,
-            acceptUnsignedLocal: localAccepted,
+            acceptNativeCode: preview.next2.nativeCode,
+            acceptUnsignedLocal: preview.next2.unsignedLocal,
             acceptPermissions: true
           }
         : undefined
@@ -77,12 +75,6 @@ export default function PluginInstallPreviewModal() {
   }
 
   const preview = installPreview?.data
-  const consentToken = installPreview?.installToken ?? ''
-  const nativeAccepted = consent.token === consentToken && consent.native
-  const localAccepted = consent.token === consentToken && consent.local
-  const consentReady =
-    (!preview?.next2?.nativeCode || nativeAccepted) &&
-    (!preview?.next2?.unsignedLocal || localAccepted)
   const fileName = activeInstallPath?.split(/[\\/]/).pop() ?? ''
   const batchActive =
     batchTotal > 1 && (queueRemaining > 0 || installPreview !== null || processing)
@@ -94,12 +86,15 @@ export default function PluginInstallPreviewModal() {
       <Modal
         title={batchActive ? `确认安装插件（第 ${currentIndex}/${batchTotal} 个）` : '确认安装插件'}
         open={installPreview !== null}
-        onCancel={() => void (batchActive ? handleCancelAll() : discardInstall())}
+        onCancel={() => {
+          if (!importing && !loading) void (batchActive ? handleCancelAll() : discardInstall())
+        }}
+        closable={!importing && !loading}
+        cancelButtonProps={{ disabled: importing || loading }}
         onOk={() => void handleCommit()}
         okText={batchActive && queueRemaining > 0 ? '确认并继续' : '确认安装'}
         cancelText={batchActive ? '取消全部' : '取消'}
         confirmLoading={importing || loading}
-        okButtonProps={{ disabled: !consentReady }}
         width={520}
         centered
         maskClosable={false}
@@ -122,7 +117,7 @@ export default function PluginInstallPreviewModal() {
                   data-ob-kind="primary"
                   type="primary"
                   loading={importing || loading}
-                  disabled={!consentReady}
+                  disabled={importing || loading}
                   onClick={() => void handleCommit()}
                 >
                   {queueRemaining > 0 ? '确认并继续' : '确认安装'}
@@ -140,6 +135,7 @@ export default function PluginInstallPreviewModal() {
             style={{ marginBottom: 12 }}
           />
         )}
+        <Text strong>{preview?.displayName || fileName}</Text>
         {preview && <InstallPreviewDetail preview={preview} />}
         {preview?.next2 && (
           <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
@@ -151,56 +147,33 @@ export default function PluginInstallPreviewModal() {
                 ? '本地未签名包，发布者身份尚未验证。'
                 : '签名已由已信任发布者密钥验证。'}
             </Text>
-            {preview.next2.unsignedLocal && (
-              <Checkbox
-                checked={localAccepted}
-                disabled={importing || loading}
-                onChange={(event) =>
-                  setConsent({
-                    token: consentToken,
-                    native: nativeAccepted,
-                    local: event.target.checked
-                  })
-                }
-              >
-                我信任此本地未签名包的来源
-              </Checkbox>
-            )}
-            {preview.next2.nativeCode && (
-              <>
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="原生插件将以当前用户权限运行"
-                  description="仅安装可信代码。进程隔离与生命周期管理不构成操作系统安全沙箱。"
-                />
-                <Checkbox
-                  checked={nativeAccepted}
-                  disabled={importing || loading}
-                  onChange={(event) =>
-                    setConsent({
-                      token: consentToken,
-                      native: event.target.checked,
-                      local: localAccepted
-                    })
-                  }
-                >
-                  我信任并允许运行此插件的原生代码
-                </Checkbox>
-              </>
-            )}
+            <Text>
+              点击“确认安装”或“确认并继续”，即授权：{permissionSummary(preview.permissions)}
+              {preview.next2.nativeCode ? '，并以你的 Windows 用户权限运行本地代码' : ''}。
+            </Text>
+            <details>
+              <summary>查看权限与来源详情</summary>
+              {preview.next2.nativeCode && (
+                <p>本地代码仅适用于可信来源。进程隔离与生命周期管理不构成操作系统安全沙箱。</p>
+              )}
+              <InstallPermissionDetail preview={preview} />
+            </details>
           </div>
         )}
       </Modal>
 
       <Modal
-        title="批量导入完成"
+        title={failures.length > 0 ? '插件安装结果' : '批量导入完成'}
         open={showSummary}
-        onOk={() => {
-          setShowSummary(false)
-          clearInstallQueue()
-        }}
-        cancelButtonProps={{ style: { display: 'none' } }}
+        onCancel={clearInstallQueue}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'end', gap: 8 }}>
+            {failedInstalls.length > 0 && <Button onClick={retryFailedInstalls}>重试失败项</Button>}
+            <Button type="primary" onClick={clearInstallQueue}>
+              完成
+            </Button>
+          </div>
+        }
         width={420}
         centered
       >
@@ -213,8 +186,8 @@ export default function PluginInstallPreviewModal() {
                 ❌ 失败：{failures.length} 个
               </span>
               <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-                {failures.map((name) => (
-                  <li key={name}>
+                {failures.map((name, index) => (
+                  <li key={`${index}:${name}`}>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {name}
                     </Text>
@@ -230,8 +203,6 @@ export default function PluginInstallPreviewModal() {
 }
 
 export function InstallPreviewDetail({ preview }: { preview: PluginInstallPreview }) {
-  const { token } = theme.useToken()
-
   return (
     <div style={{ padding: '8px 0' }}>
       {preview.isUpgrade ? (
@@ -274,7 +245,14 @@ export function InstallPreviewDetail({ preview }: { preview: PluginInstallPrevie
           description="完整信任插件可以调用全部宿主能力。请确认来源和用途后再继续安装。"
         />
       )}
+    </div>
+  )
+}
 
+function InstallPermissionDetail({ preview }: { preview: PluginInstallPreview }) {
+  const { token } = theme.useToken()
+  return (
+    <div style={{ marginTop: 12 }}>
       <div style={{ fontSize: 13, color: token.colorTextSecondary, marginBottom: 8 }}>权限清单</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
         {preview.permissions?.length ? (
@@ -322,4 +300,24 @@ export function InstallPreviewDetail({ preview }: { preview: PluginInstallPrevie
       )}
     </div>
   )
+}
+
+const PERMISSION_SUMMARIES: Record<string, string> = {
+  files: '读取选定文件或保存输出',
+  storage: '保存插件数据',
+  tasks: '执行和管理任务',
+  network: '访问网络',
+  browser: '下载文件',
+  theme: '调整界面主题',
+  dialog: '显示选择或确认窗口',
+  notification: '发送通知'
+}
+
+function permissionSummary(permissions: string[]): string {
+  const labels = permissions.map((permission) =>
+    permission === 'theme:assets'
+      ? '读取和导入主题素材'
+      : (PERMISSION_SUMMARIES[permission.split(':')[0]] ?? '其他扩展权限')
+  )
+  return [...new Set(labels)].join('、') || '仅使用基础插件能力'
 }

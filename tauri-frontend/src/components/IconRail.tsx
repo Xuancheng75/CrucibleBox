@@ -1,5 +1,5 @@
 import { Tooltip } from 'antd'
-import type { ReactNode } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 import {
   AppstoreOutlined,
   ClockCircleOutlined,
@@ -23,6 +23,7 @@ interface IconRailProps {
   onChange: (key: AppPage) => void
   compact: boolean
   onCompactChange: () => void
+  orientation?: 'rail' | 'top' | 'menu'
 }
 
 export default function IconRail({
@@ -30,8 +31,39 @@ export default function IconRail({
   selectedKey,
   onChange,
   compact,
-  onCompactChange
+  onCompactChange,
+  orientation = 'rail'
 }: IconRailProps) {
+  const moveFocus = (event: KeyboardEvent<HTMLElement>) => {
+    if (
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing
+    )
+      return
+    const buttons = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('.cbx-side-link')
+    )
+    const index = buttons.indexOf(event.target as HTMLButtonElement)
+    if (index < 0) return
+    const forward = orientation === 'top' ? 'ArrowRight' : 'ArrowDown'
+    const backward = orientation === 'top' ? 'ArrowLeft' : 'ArrowUp'
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? buttons.length - 1
+          : event.key === forward
+            ? (index + 1) % buttons.length
+            : event.key === backward
+              ? (index + buttons.length - 1) % buttons.length
+              : null
+    if (next === null) return
+    event.preventDefault()
+    buttons[next].focus()
+  }
   const navButton = (key: AppPage, label: string, icon: ReactNode) => (
     <Tooltip key={key} title={compact ? label : undefined} placement="right">
       <button
@@ -49,7 +81,13 @@ export default function IconRail({
   )
 
   return (
-    <nav className="cbx-side-nav" data-compact={compact ? 'true' : undefined} aria-label="应用导航">
+    <nav
+      className="cbx-side-nav"
+      data-orientation={orientation}
+      data-compact={compact ? 'true' : undefined}
+      aria-label="应用导航"
+      onKeyDown={moveFocus}
+    >
       <button
         type="button"
         className="cbx-side-brand"
@@ -65,19 +103,21 @@ export default function IconRail({
       <div className="cbx-side-bottom">
         <small aria-hidden={compact}>{compact ? '\u00a0' : appVersion}</small>
         {navButton('settings', '设置', <SettingOutlined />)}
-        <Tooltip title={compact ? '展开侧边栏' : '收起侧边栏'} placement="right">
-          <button
-            type="button"
-            className="cbx-side-collapse"
-            aria-expanded={!compact}
-            aria-controls="app-sidebar-links"
-            onClick={onCompactChange}
-            aria-label={compact ? '展开侧边栏' : '收起侧边栏'}
-          >
-            {compact ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            {!compact && <span>收起侧边栏</span>}
-          </button>
-        </Tooltip>
+        {orientation !== 'top' && (
+          <Tooltip title={compact ? '展开侧边栏' : '收起侧边栏'} placement="right">
+            <button
+              type="button"
+              className="cbx-side-collapse"
+              aria-expanded={!compact}
+              aria-controls="app-sidebar-links"
+              onClick={onCompactChange}
+              aria-label={compact ? '展开侧边栏' : '收起侧边栏'}
+            >
+              {compact ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              {!compact && <span>收起侧边栏</span>}
+            </button>
+          </Tooltip>
+        )}
       </div>
     </nav>
   )

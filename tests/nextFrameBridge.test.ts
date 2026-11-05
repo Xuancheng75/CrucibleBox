@@ -5,7 +5,7 @@ import {
   isNextReady,
   transport,
   nextSandbox,
-  scheduleNextLease,
+  createNextLease,
   type NextSession
 } from '../tauri-frontend/src/features/plugins/runtime/NextFrameBridge'
 const session: NextSession = {
@@ -271,18 +271,92 @@ test('only host-issued download capability adds downloads and never same-origin 
   )
 })
 
-test('browser capability lifetime ends at lease and cleanup cancels the disposal timer', () => {
+test('mounted pages renew bounded leases through multiple original expiry times and cancel on disposal', async () => {
   vi.useFakeTimers()
-  const close = vi.fn()
-  scheduleNextLease({ ...session, expiresAt: Date.now() + 500 }, close)
-  vi.advanceTimersByTime(499)
-  expect(close).not.toHaveBeenCalled()
-  vi.advanceTimersByTime(1)
-  expect(close).toHaveBeenCalledOnce()
-  const cancel = scheduleNextLease({ ...session, expiresAt: Date.now() + 500 }, close)
-  cancel()
-  vi.advanceTimersByTime(500)
-  expect(close).toHaveBeenCalledOnce()
+  const owned = { ...session, expiresAt: Date.now() + 1800000 }
+  const renew = vi.fn(async () => ({ expiresAt: Date.now() + 1800000 }))
+  const failed = vi.fn()
+  const lease = createNextLease(owned, renew, failed, vi.fn())
+  await vi.advanceTimersByTimeAsync(7200000)
+  expect(renew).toHaveBeenCalledTimes(8)
+  expect(owned.expiresAt).toBeGreaterThan(Date.now())
+  expect(owned.token).toBe(session.token)
+  expect(failed).not.toHaveBeenCalled()
+  lease.dispose()
+  await vi.advanceTimersByTimeAsync(1800000)
+  expect(renew).toHaveBeenCalledTimes(8)
+})
+
+test('resume deduplicates owner reauthorization and waits before sending an expired-session mutation', async () => {
+  vi.useFakeTimers()
+  const owned = { ...session, expiresAt: Date.now() + 1800000 }
+  let complete!: (value: { expiresAt: number }) => void
+  const renew = vi.fn(
+    () =>
+      new Promise<{ expiresAt: number }>((resolve) => {
+        complete = resolve
+      })
+  )
+  const lease = createNextLease(owned, renew, vi.fn(), vi.fn())
+  vi.setSystemTime(Date.now() + 7200000)
+  const first = lease.ensure()
+  const second = lease.ensure()
+  const invoke = vi.fn(async () => reply('resume'))
+  const send = vi.fn()
+  const bridge = createNextDispatcher(owned, invoke, send, () => lease.ensure())
+  bridge.dispatch({
+    ...request('resume'),
+    method: 'storage.set',
+    params: { key: 'draft', value: 'kept' }
+  })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(renew).toHaveBeenCalledTimes(1)
+  expect(invoke).not.toHaveBeenCalled()
+  complete({ expiresAt: Date.now() + 1800000 })
+  await Promise.all([first, second])
+  await vi.advanceTimersByTimeAsync(0)
+  expect(invoke).toHaveBeenCalledTimes(1)
+  expect(send).toHaveBeenCalledWith(reply('resume'))
+  bridge.dispose()
+  lease.dispose()
+})
+
+test('failed renewal stops automatic attempts, preserves the page owner and allows explicit retry', async () => {
+  vi.useFakeTimers()
+  const owned = { ...session, expiresAt: Date.now() + 1800000 }
+  const renew = vi
+    .fn()
+    .mockRejectedValueOnce(Error('STORAGE_UNAVAILABLE'))
+    .mockImplementation(async () => ({ expiresAt: Date.now() + 1800000 }))
+  const failed = vi.fn(),
+    restored = vi.fn()
+  const lease = createNextLease(owned, renew, failed, restored)
+  await vi.advanceTimersByTimeAsync(900000)
+  expect(failed).toHaveBeenCalledOnce()
+  await vi.advanceTimersByTimeAsync(7200000)
+  expect(renew).toHaveBeenCalledTimes(1)
+  await lease.ensure(true)
+  expect(renew).toHaveBeenCalledTimes(2)
+  expect(restored).toHaveBeenCalledOnce()
+  lease.dispose()
+  await expect(lease.ensure(true)).rejects.toThrow('SESSION_DENIED')
+  expect(renew).toHaveBeenCalledTimes(2)
+})
+
+test('a hung lease approval has a deadline and disposing during approval releases its timers', async () => {
+  vi.useFakeTimers()
+  const owned = { ...session, expiresAt: Date.now() + 1800000 }
+  const failed = vi.fn()
+  const lease = createNextLease(owned, () => new Promise(() => {}), failed, vi.fn())
+  const timed = expect(lease.ensure(true)).rejects.toThrow('TIMEOUT')
+  await vi.advanceTimersByTimeAsync(transport.requestTimeoutMs)
+  await timed
+  expect(failed).toHaveBeenCalledOnce()
+  const cancelled = expect(lease.ensure(true)).rejects.toThrow('SESSION_DENIED')
+  lease.dispose()
+  await cancelled
+  expect(failed).toHaveBeenCalledOnce()
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 test('same-session reads execute once in order while another frame remains independent', async () => {

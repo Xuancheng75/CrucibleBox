@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { expect, test, vi } from 'vitest'
-import { validateAppearance } from '../shared/frame-validation.mjs'
+import { validateAppearance, validateThemeStyle } from '../shared/frame-validation.mjs'
 import { themeToCssVars } from '../shared/themes/css-vars'
 import { PRESET_THEMES } from '../shared/themes/presets'
 const appearance = (index: number) => ({
@@ -17,12 +17,29 @@ function fixture() {
     .replace("import(new URL('./renderer.js', location.href).href)", "__import('renderer')")
   const listeners = new Map<string, (event: unknown) => unknown>()
   const css = new Map<string, string>()
+  const elements: Array<{ tag: string; textContent: string; removed: boolean }> = []
+  const createElement = (tag: string) => {
+    const element = {
+      tag,
+      textContent: '',
+      removed: false,
+      dataset: {},
+      className: '',
+      setAttribute: vi.fn(),
+      append: vi.fn(),
+      remove() {
+        this.removed = true
+      }
+    }
+    elements.push(element)
+    return element
+  }
   let release!: () => void
   const gate = new Promise<void>((resolve) => {
     release = resolve
   })
   const cleanup = vi.fn()
-  const mounted = vi.fn(() => cleanup)
+  const mounted = vi.fn((_context: unknown) => cleanup)
   const root = {
     dataset: {
       sessionToken: 'b'.repeat(64),
@@ -48,7 +65,13 @@ function fixture() {
     })
   }
   runInNewContext(source, {
-    document: { getElementById: () => root, documentElement: doc },
+    document: {
+      getElementById: () => root,
+      documentElement: doc,
+      createElement,
+      head: { append: vi.fn() },
+      body: { prepend: vi.fn() }
+    },
     parent,
     console,
     setTimeout,
@@ -59,7 +82,7 @@ function fixture() {
     __import: async (kind: string) => {
       if (kind === 'api') {
         await gate
-        return { validateAppearance }
+        return { validateAppearance, validateThemeStyle }
       }
       return { mount: mounted }
     }
@@ -70,6 +93,7 @@ function fixture() {
     doc,
     port,
     css,
+    elements,
     mounted,
     cleanup,
     connect: (value: unknown) =>
@@ -126,4 +150,59 @@ test('invalid initial appearance closes connection before plugin mount', async (
   expect(f.port.closed).toBe(true)
   expect(f.mounted).not.toHaveBeenCalled()
   f.close()
+})
+
+test('retained renderer receives current visibility and can unsubscribe', async () => {
+  const f = fixture()
+  f.release()
+  await f.connect(appearance(0))
+  const context = f.mounted.mock.calls[0][0] as unknown as {
+    onVisibilityChanged: (listener: (visible: boolean) => void) => () => void
+  }
+  const listener = vi.fn()
+  const stop = context.onVisibilityChanged(listener)
+  expect(listener).toHaveBeenLastCalledWith(true)
+  f.port.onmessage?.({ data: { kind: 'next-visibility', visible: false } })
+  expect(listener).toHaveBeenLastCalledWith(false)
+  stop()
+  f.port.onmessage?.({ data: { kind: 'next-visibility', visible: true } })
+  expect(listener).toHaveBeenCalledTimes(2)
+  f.close()
+})
+test('v2 styles require negotiation, replace safely and clear on v1 switch and disposal', async () => {
+  const f = fixture()
+  const connecting = f.connect(appearance(0))
+  f.release()
+  await connecting
+  expect(f.port.postMessage).not.toHaveBeenCalledWith(
+    expect.objectContaining({ kind: 'next-theme-style-subscribe' })
+  )
+  const context = (
+    f.mounted.mock.calls[0] as unknown as [{ enableThemeStyle: (version: number) => boolean }]
+  )[0]
+  expect(context.enableThemeStyle(3)).toBe(false)
+  expect(context.enableThemeStyle(2)).toBe(true)
+  context.enableThemeStyle(2)
+  expect(
+    f.port.postMessage.mock.calls.filter(([value]) => value.kind === 'next-theme-style-subscribe')
+  ).toHaveLength(1)
+  const style = {
+    version: 2,
+    css: '.sample{color:red}',
+    motion: 'off',
+    layers: [{ id: 'caption', scope: 'workspace', text: '<script>plain text</script>' }]
+  }
+  f.port.onmessage?.({ data: { kind: 'next-theme-style', style } })
+  expect(f.elements.find((item) => item.tag === 'style')?.textContent).toBe(style.css)
+  expect(f.elements.some((item) => item.textContent === style.layers[0].text)).toBe(true)
+  f.port.onmessage?.({ data: { kind: 'next-visibility', visible: false } })
+  expect((f.doc.dataset as Record<string, string>).obPageVisible).toBe('false')
+  f.port.onmessage?.({
+    data: { kind: 'next-theme-style', style: { ...style, css: '', layers: [] } }
+  })
+  expect(f.elements.filter((item) => item.tag === 'style').every((item) => item.removed)).toBe(true)
+  expect((f.doc.dataset as Record<string, string>).obThemeVersion).toBeUndefined()
+  f.port.onmessage?.({ data: { kind: 'next-theme-style', style } })
+  f.close()
+  expect(f.elements.filter((item) => item.tag === 'style').every((item) => item.removed)).toBe(true)
 })

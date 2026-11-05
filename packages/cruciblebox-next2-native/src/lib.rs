@@ -120,15 +120,32 @@ impl Client {
         self.call(json!({"kind":"service","id":id}), method, params)
     }
     fn call(&self, target: Value, method: &str, params: Value) -> Result<Value> {
-        let id = format!("native-{}", self.0.sequence.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = mpsc::sync_channel(1);
-        self.0
-            .pending
-            .lock()
-            .map_err(|_| Error::new("PROTOCOL_UNAVAILABLE", "Pending requests unavailable"))?
-            .insert(id.clone(), tx);
+        let id;
+        // Allocate and emit under the same lock: concurrent callers must put
+        // sequence IDs on the wire in order. Release it before awaiting a reply.
+        let sent = {
+            let mut output = self
+                .0
+                .output
+                .lock()
+                .map_err(|_| Error::new("OUTPUT_UNAVAILABLE", "Protocol output unavailable"))?;
+            id = format!(
+                "backend-seq-{}",
+                self.0.sequence.fetch_add(1, Ordering::Relaxed)
+            );
+            self.0
+                .pending
+                .lock()
+                .map_err(|_| Error::new("PROTOCOL_UNAVAILABLE", "Pending requests unavailable"))?
+                .insert(id.clone(), tx);
+            write(
+                &mut *output,
+                &json!({"kind":"capability","request":{"wireVersion":4,"requestId":id,"session":self.0.init["session"],"target":target,"method":method,"params":params}}),
+            )
+        };
         let result = (|| {
-            self.send(&json!({"kind":"capability","request":{"wireVersion":4,"requestId":id,"session":self.0.init["session"],"target":target,"method":method,"params":params}}))?;
+            sent?;
             let response = rx
                 .recv_timeout(Duration::from_secs(30))
                 .map_err(|error| Error::new("HOST_REQUEST_FAILED", error.to_string()))?;

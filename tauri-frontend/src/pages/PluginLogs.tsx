@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type Ref
+} from 'react'
 import { Table, App, Tag, Typography, Select, Space, Button, Popconfirm } from 'antd'
 import { ClearOutlined } from '@ant-design/icons'
 import { theme } from 'antd'
@@ -9,9 +17,19 @@ import type { PluginLogEntry } from '../../../shared/types/plugin.types'
 
 const { Title, Text } = Typography
 
-export default function PluginLogs({ embedded = false }: { embedded?: boolean }) {
+export interface PluginLogsHandle {
+  clear: () => void
+}
+
+export default function PluginLogs({
+  embedded = false,
+  ref
+}: {
+  embedded?: boolean
+  ref?: Ref<PluginLogsHandle>
+}) {
   const { token } = theme.useToken()
-  const { message } = App.useApp()
+  const { message, modal } = App.useApp()
   const { plugins } = usePlugins()
   const [logs, setLogs] = useState<PluginLogEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -76,6 +94,16 @@ export default function PluginLogs({ embedded = false }: { embedded?: boolean })
       message.error('清除日志失败')
     }
   }
+
+  useImperativeHandle(ref, () => ({
+    clear: () => {
+      modal.confirm({
+        title: pluginId ? '清除当前插件日志？' : '清除全部日志？',
+        content: '仅清除运行日志，不删除任务或用户文件。',
+        onOk: () => handleClear(pluginId)
+      })
+    }
+  }))
 
   const columns = [
     {
@@ -153,14 +181,13 @@ export default function PluginLogs({ embedded = false }: { embedded?: boolean })
           gap: 12
         }}
       >
-        {!embedded && <div>
-          <Title level={4} style={{ margin: 0, fontWeight: 600 }}>
-            插件日志
-          </Title>
-          <Text type="secondary" style={{ fontSize: 13 }}>
-            查看和筛选插件运行日志
-          </Text>
-        </div>}
+        {!embedded && (
+          <div>
+            <Title level={4} style={{ margin: 0, fontWeight: 600 }}>
+              插件日志
+            </Title>
+          </div>
+        )}
         <Space wrap>
           <Select
             allowClear
@@ -182,14 +209,16 @@ export default function PluginLogs({ embedded = false }: { embedded?: boolean })
             }))}
           />
           <Button onClick={fetchLogs}>刷新</Button>
-          <Popconfirm
-            title={pluginId ? '清除当前插件日志？' : '清除全部日志？'}
-            onConfirm={() => handleClear(pluginId)}
-          >
-            <Button data-ob-kind="danger" danger icon={<ClearOutlined />}>
-              清除日志
-            </Button>
-          </Popconfirm>
+          {!embedded && (
+            <Popconfirm
+              title={pluginId ? '清除当前插件日志？' : '清除全部日志？'}
+              onConfirm={() => handleClear(pluginId)}
+            >
+              <Button data-ob-kind="danger" danger icon={<ClearOutlined />}>
+                清除日志
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       </div>
 
@@ -201,7 +230,6 @@ export default function PluginLogs({ embedded = false }: { embedded?: boolean })
         size="small"
         pagination={{ pageSize: 50, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
         locale={{ emptyText: '暂无日志' }}
-        style={{ borderTop: `1px solid ${token.colorBorderSecondary}` }}
         expandable={{
           expandedRowRender: (record) => (
             <div style={{ padding: '4px 12px' }}>
@@ -212,7 +240,12 @@ export default function PluginLogs({ embedded = false }: { embedded?: boolean })
                 </Text>
                 <Typography.Paragraph
                   copyable={{ text: record.message, tooltips: ['复制完整日志', '已复制'] }}
-                  style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'monospace' }}
+                  style={{
+                    margin: 0,
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    fontFamily: 'monospace'
+                  }}
                 >
                   {record.message}
                 </Typography.Paragraph>

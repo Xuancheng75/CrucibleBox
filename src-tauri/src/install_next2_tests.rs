@@ -12,6 +12,204 @@ fn directory(path: &Path) -> InstallSource {
 }
 
 #[test]
+fn next2_failed_start_keeps_disabled_and_successful_start_survives_shutdown_preference() {
+    let (manager, _, root) = setup("next2-enable-lifecycle");
+    let source = root.join("source");
+    write_next2(
+        &source,
+        "1.0.0",
+        Some("throw new Error('fixture activation failed')"),
+    );
+    manager.remember_trusted_path(source.clone());
+    let preview = manager.preview(directory(&source)).unwrap();
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    let owner = "acme-independent";
+    assert!(manager.next_backend.next2.enable(owner).is_err());
+    assert!(
+        !lock(&manager.db)
+            .plugin_find_by_id(owner)
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+
+    write_next2(
+        &source,
+        "1.1.0",
+        Some("module.exports.activate = async () => ({ping: () => 'pong'});"),
+    );
+    let preview = manager.preview(directory(&source)).unwrap();
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    manager.next_backend.next2.enable(owner).unwrap();
+    assert!(
+        lock(&manager.db)
+            .plugin_find_by_id(owner)
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    manager.next_backend.shutdown().unwrap();
+    assert!(
+        lock(&manager.db)
+            .plugin_find_by_id(owner)
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+}
+
+#[test]
+fn next2_uninstall_removes_all_code_and_resources_but_restores_config_and_kv_by_manifest_identity()
+{
+    let (manager, plugins, root) = setup("next2-uninstall-managed-code");
+    let source = root.join("source");
+    write_next2(&source, "1.0.0", None);
+    manager.remember_trusted_path(source.clone());
+    let preview = manager.preview(directory(&source)).unwrap();
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    write_next2(&source, "1.1.0", None);
+    let preview = manager.preview(directory(&source)).unwrap();
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    let owner = "acme-independent";
+    let config = r#"{"setting":"preserved"}"#;
+    lock(&manager.db)
+        .plugin_update_config(owner, config)
+        .unwrap();
+    // Historical records can have a different installation ID from the manifest ID.
+    lock(&manager.db)
+        .conn()
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE plugins SET id = ?1 WHERE id = ?2",
+            ("retained-record-id", owner),
+        )
+        .unwrap();
+    lock(&manager.db)
+        .storage_set("retained-record-id", "sentinel", "原始值")
+        .unwrap();
+    let target = plugins.join(owner);
+    fs::write(target.join("user-note.txt"), "笔记").unwrap();
+    let resources = root.join("plugin-resources").join(owner);
+    fs::create_dir_all(&resources).unwrap();
+    fs::write(resources.join("model.bin"), "exclusive resource").unwrap();
+    let code = target.join(cruciblebox_next2_protocol::CODE_DIRECTORY);
+    fs::create_dir_all(code.join("old-version")).unwrap();
+    fs::write(code.join("old-version/old.js"), "retired code").unwrap();
+    let result = manager.uninstall("retained-record-id").unwrap();
+    assert!(!target.exists());
+    assert!(!resources.exists());
+    let retained = Path::new(result["data"]["retainedFiles"][0].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(retained.join("user-note.txt")).unwrap(),
+        "笔记"
+    );
+    assert!(!retained
+        .join(cruciblebox_next2_protocol::CODE_DIRECTORY)
+        .exists());
+    assert!(!retained.join("plugin.json").exists());
+    for entry in fs::read_dir(&plugins).unwrap() {
+        assert!(!entry
+            .unwrap()
+            .path()
+            .join(cruciblebox_next2_protocol::CODE_DIRECTORY)
+            .exists());
+    }
+    let preview = manager.preview(directory(&source)).unwrap();
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    let row = lock(&manager.db)
+        .plugin_find_by_name(owner)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.config_data, config);
+    assert_eq!(
+        lock(&manager.db)
+            .storage_get(&row.id, "sentinel")
+            .unwrap()
+            .as_deref(),
+        Some("原始值")
+    );
+}
+
+#[test]
+fn next2_uninstall_retries_cleanup_from_committed_journal_after_record_deletion() {
+    use crate::{
+        journal::{write_journal, Journal, JOURNAL_VERSION},
+        transaction::RemovalTransaction,
+    };
+    let (manager, plugins, root) = setup("next2-uninstall-recovery");
+    let source = root.join("source");
+    write_next2(&source, "1.0.0", None);
+    manager.remember_trusted_path(source.clone());
+    let preview = manager.preview(directory(&source)).unwrap();
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    let owner = "acme-independent";
+    let row = lock(&manager.db).plugin_find_by_id(owner).unwrap().unwrap();
+    let mut metadata = super::plugin_row_to_metadata(&row);
+    metadata["retainPreviousFiles"] = json!(true);
+    metadata["purgeManagedCode"] = json!(true);
+    let journal = Journal {
+        version: JOURNAL_VERSION,
+        operation: "uninstall".into(),
+        phase: "committed".into(),
+        plugin_name: owner.into(),
+        transaction_id: "cleanup-retry".into(),
+        previous_metadata: Some(metadata),
+        created_at: super::now_iso(),
+    };
+    let mut transaction = RemovalTransaction::new(
+        plugins.clone(),
+        owner.into(),
+        journal.transaction_id.clone(),
+    )
+    .unwrap();
+    transaction.quarantine().unwrap();
+    write_journal(transaction.quarantine_dir(), &journal).unwrap();
+    lock(&manager.db).plugin_delete(owner).unwrap();
+    let retained = transaction.commit_retaining_files().unwrap();
+    // Cleanup is interrupted after the DB commit; retry must still find this exact installation.
+    assert!(retained
+        .join(cruciblebox_next2_protocol::CODE_DIRECTORY)
+        .exists());
+    assert_eq!(
+        manager.uninstall(owner).unwrap()["data"]["cleanupResumed"],
+        true
+    );
+    assert!(!manager.is_blocked(owner));
+    assert!(!retained.exists());
+}
+
+#[test]
 fn next2_versioned_code_power_cut_restores_paired_metadata_and_data() {
     use super::{manifest_to_version_fields, now_iso, plugin_row_to_metadata};
     use crate::journal::{write_journal, Journal, JOURNAL_VERSION};
@@ -212,7 +410,16 @@ fn next2_service_binds_caller_storage_results_and_rejects_breaking_upgrade() {
         &provider,
         "1.0.0",
         Some(
-            r#"let requests = 0; module.exports.activate = ctx => ({ identity: async (_, execution) => { const response = await ctx.exchange({wireVersion:4,requestId:'provider-value-'+(++requests),session:ctx.session,target:{kind:'platform'},method:'storage.get',params:{key:'identity'}}); return {caller:execution.callerId, value:response.result}; } });"#,
+            r#"let requests = 0;
+module.exports.activate = ctx => ({ identity: async (params, execution) => {
+  let response;
+  for (let i = 0; i < (params.burst ? 4104 : 1); i++) {
+    const requestId = 'provider-value-' + (++requests);
+    response = await ctx.exchange({wireVersion:4,requestId,session:ctx.session,target:{kind:'platform'},method:'storage.get',params:{key:'identity'}});
+    if (!response.ok || response.requestId !== requestId) throw Error('Capability or correlation failed');
+  }
+  return {caller:execution.callerId, value:response.result};
+} });"#,
         ),
     );
     let mut manifest: Value =
@@ -280,7 +487,7 @@ fn next2_service_binds_caller_storage_results_and_rejects_breaking_upgrade() {
         .unwrap();
     manager.next_backend.activate("acme-independent").unwrap();
     let session = next2_session(&manager, &plugins);
-    let request = json!({"wireVersion":4,"requestId":"service-call","session":session.token,"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"owner":"forged"}});
+    let request = json!({"wireVersion":4,"requestId":"renderer-1","session":session.token,"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"owner":"forged"}});
     let result = manager
         .next_backend
         .next2
@@ -290,7 +497,7 @@ fn next2_service_binds_caller_storage_results_and_rejects_breaking_upgrade() {
         result["result"],
         json!({"caller":"acme-independent","value":"provider data"})
     );
-    let start = json!({"wireVersion":4,"requestId":"service-task","session":session.token,"target":{"kind":"platform"},"method":"tasks.start","params":{"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{}}});
+    let start = json!({"wireVersion":4,"requestId":"renderer-2","session":session.token,"target":{"kind":"platform"},"method":"tasks.start","params":{"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"burst":true}}});
     let started = manager
         .next_backend
         .next2
@@ -298,14 +505,18 @@ fn next2_service_binds_caller_storage_results_and_rejects_breaking_upgrade() {
         .unwrap();
     let id = started["result"]["taskId"].as_str().unwrap();
     let runtime = manager.task_runtime();
-    for _ in 0..500 {
-        if runtime.get("acme-independent", id).unwrap()["status"] == "succeeded" {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
+        if matches!(
+            runtime.get("acme-independent", id).unwrap()["status"].as_str(),
+            Some("succeeded" | "failed")
+        ) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let result = runtime.get("acme-independent", id).unwrap();
-    assert_eq!(result["status"], "succeeded");
+    assert_eq!(result["status"], "succeeded", "{result}");
     assert_eq!(
         result["result"],
         json!({"caller":"acme-independent","value":"provider data"})
@@ -367,8 +578,12 @@ fn next2_native_installed_backend_runs_cancels_crashes_and_upgrades() {
         .unwrap();
     manager.next_backend.activate("acme-independent").unwrap();
     let session = next2_session(&manager, &plugins);
+    let sequence = std::cell::Cell::new(0u64);
     let call = |id: &str, target, method, params| {
-        manager.next_backend.next2.renderer(&json!({"wireVersion":4,"requestId":id,"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap()
+        sequence.set(sequence.get() + 1);
+        let mut response=manager.next_backend.next2.renderer(&json!({"wireVersion":4,"requestId":format!("renderer-{}",sequence.get()),"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap();
+        response["requestId"] = json!(id);
+        response
     };
     assert_eq!(
         call(
@@ -379,6 +594,29 @@ fn next2_native_installed_backend_runs_cancels_crashes_and_upgrades() {
         )["result"],
         15
     );
+    let burst = call(
+        "burst",
+        json!({"kind":"platform"}),
+        "tasks.start",
+        json!({"target":{"kind":"backend"},"method":"burst","params":{}}),
+    );
+    let burst_id = burst["result"]["taskId"].as_str().unwrap();
+    let runtime = manager.task_runtime();
+    // The debug host rehashes the installed executable on each capability;
+    // the optimized fixture reached 74% at 120s. Keep a bounded total wait.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    while std::time::Instant::now() < deadline {
+        if matches!(
+            runtime.get("acme-independent", burst_id).unwrap()["status"].as_str(),
+            Some("succeeded" | "failed")
+        ) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let burst_result = runtime.get("acme-independent", burst_id).unwrap();
+    assert_eq!(burst_result["status"], "succeeded", "{burst_result}");
+    assert_eq!(burst_result["result"], 4104);
     let task = call(
         "start",
         json!({"kind":"platform"}),
@@ -387,16 +625,15 @@ fn next2_native_installed_backend_runs_cancels_crashes_and_upgrades() {
     );
     let task_id = task["result"]["taskId"].as_str().unwrap();
     let runtime = manager.task_runtime();
-    for _ in 0..300 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while std::time::Instant::now() < deadline {
         if runtime.get("acme-independent", task_id).unwrap()["progress"]["percent"] == 25 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(
-        runtime.get("acme-independent", task_id).unwrap()["progress"]["percent"],
-        25
-    );
+    let waiting = runtime.get("acme-independent", task_id).unwrap();
+    assert_eq!(waiting["progress"]["percent"], 25, "{waiting}");
     call(
         "cancel",
         json!({"kind":"platform"}),

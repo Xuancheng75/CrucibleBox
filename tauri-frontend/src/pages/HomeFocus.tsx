@@ -5,7 +5,8 @@ import {
   closestCenter,
   useSensor,
   useSensors,
-  type DragEndEvent
+  type DragEndEvent,
+  type Modifier
 } from '@dnd-kit/core'
 import {
   SortableContext,
@@ -14,7 +15,7 @@ import {
   arrayMove
 } from '@dnd-kit/sortable'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { App, Alert, Button, Checkbox, Drawer, Empty, Input, Modal, Spin, Tooltip } from 'antd'
+import { App, Alert, Button, Checkbox, Empty, Input, Modal, Spin } from 'antd'
 import {
   CheckSquareOutlined,
   ImportOutlined,
@@ -30,12 +31,31 @@ import { searchPlugins } from '../plugin-search'
 import PluginConfig from '../components/PluginConfig'
 import PluginImport from '../components/PluginImport'
 import PluginDirectoryRow from '../features/workbench/components/PluginDirectoryRow'
-import UserTagManager from '../components/UserTagManager'
+import { usePluginStore } from '../store/plugin.store'
 import './home-focus.css'
+import { APP_PAGE_LOADERS } from '../app-pages'
 
 const RECENT_PLUGIN_KEY = 'cruciblebox.recent-plugin-id'
 const ACTIVE_TASK_STATUSES = new Set(['queued', 'running', 'paused', 'waiting-user'])
 
+const restrictDirectoryDrag: Modifier = ({
+  transform,
+  draggingNodeRect,
+  scrollableAncestorRects
+}) => {
+  const bounds = scrollableAncestorRects[0]
+  return {
+    ...transform,
+    x: 0,
+    y:
+      bounds && draggingNodeRect
+        ? Math.max(
+            bounds.top - draggingNodeRect.top,
+            Math.min(transform.y, bounds.bottom - draggingNodeRect.bottom)
+          )
+        : transform.y
+  }
+}
 
 export default function HomeFocus() {
   const { message } = App.useApp()
@@ -55,6 +75,7 @@ export default function HomeFocus() {
     reorderBusy
   } = usePlugins()
   const tasks = useTaskStore((state) => state.tasks)
+  const failedOperation = usePluginStore((state) => state.failedOperation)
   const setCurrentPage = useAppStore((state) => state.setCurrentPage)
   const setActivePluginId = useAppStore((state) => state.setActivePluginId)
   const importOpen = useAppStore((state) => state.pluginImportOpen)
@@ -73,8 +94,6 @@ export default function HomeFocus() {
   const [batchBusy, setBatchBusy] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [configPlugin, setConfigPlugin] = useState<PluginMeta | null>(null)
-  const [tagDrawerOpen, setTagDrawerOpen] = useState(false)
-  const [tagFilterIds, setTagFilterIds] = useState<string[] | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
   const preview = useMemo(
@@ -82,10 +101,7 @@ export default function HomeFocus() {
     [plugins, previewId]
   )
   const visiblePlugins = useMemo(() => {
-    const tagged = plugins.filter(
-      (plugin) => tagFilterIds === null || tagFilterIds.includes(plugin.id)
-    )
-    return searchPlugins(tagged, query, (plugin) => {
+    return searchPlugins(plugins, query, (plugin) => {
       return {
         name: plugin.displayName || plugin.name,
         id: plugin.id,
@@ -93,7 +109,7 @@ export default function HomeFocus() {
         description: plugin.description
       }
     })
-  }, [plugins, query, tagFilterIds])
+  }, [plugins, query])
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const selectedVisibleCount = visiblePlugins.filter((plugin) => selectedSet.has(plugin.id)).length
   const allVisibleSelected =
@@ -113,6 +129,10 @@ export default function HomeFocus() {
     const ids = new Set(plugins.map((plugin) => plugin.id))
     setSelectedIds((current) => current.filter((id) => ids.has(id)))
   }, [plugins])
+
+  useEffect(() => {
+    void APP_PAGE_LOADERS.pluginView().catch((error) => console.warn('插件页面预载失败', error))
+  }, [])
 
   const openPlugin = useCallback(
     (plugin: PluginMeta) => {
@@ -237,7 +257,6 @@ export default function HomeFocus() {
     <div className="cbx-workbench">
       <header className="cbx-workbench-head">
         <div className="cbx-workbench-heading">
-          <span>YOUR WORKSPACE</span>
           <h1>工作台</h1>
         </div>
         <div className="cbx-workbench-actions">
@@ -270,11 +289,17 @@ export default function HomeFocus() {
         <Alert
           type="error"
           showIcon
-          message="插件加载失败"
+          message="插件操作失败"
           description={error}
           action={
-            <Button size="small" onClick={() => void refresh()}>
-              重试
+            <Button
+              size="small"
+              onClick={() => {
+                if (failedOperation) void usePluginStore.getState().retryFailedOperation()
+                else void refresh()
+              }}
+            >
+              {failedOperation ? '重试' : '刷新列表'}
             </Button>
           }
         />
@@ -290,9 +315,9 @@ export default function HomeFocus() {
         </div>
       ) : (
         <div className="cbx-workbench-body">
-          <section className="cbx-focus-panel" aria-label="插件简介">
+          <section className="cbx-focus-panel ob-surface-card" aria-label="插件简介">
             <div className="cbx-focus-top">
-              <span>工作台焦点</span>
+              <span>{preview ? `v${preview.version}` : '插件版本'}</span>
               <span>
                 {String(plugins.findIndex((plugin) => plugin.id === preview?.id) + 1).padStart(
                   2,
@@ -304,9 +329,6 @@ export default function HomeFocus() {
             {preview && (
               <>
                 <div className="cbx-focus-summary">
-                  <span className="cbx-focus-eyebrow">
-                    {preview.id === previewId ? '当前预览的插件' : '最近使用的插件'}
-                  </span>
                   <h2>{preview.displayName}</h2>
                   <p>{preview.description || '该插件尚未提供简介。'}</p>
                 </div>
@@ -318,9 +340,7 @@ export default function HomeFocus() {
                   <div>
                     <span>插件来源</span>
                     <strong>
-                      {isOfficialPlugin(preview)
-                        ? 'CrucibleBox 官方'
-                        : preview.author || '第三方'}
+                      {isOfficialPlugin(preview) ? 'CrucibleBox 官方' : preview.author || '第三方'}
                     </strong>
                   </div>
                 </div>
@@ -368,13 +388,11 @@ export default function HomeFocus() {
             )}
           </section>
 
-          <section className="cbx-directory" aria-label="已安装插件">
+          <section className="cbx-directory ob-surface-card" aria-label="已安装插件">
             <div className="cbx-directory-head">
               <div>
                 <strong>插件目录</strong>
-                <span>已安装 {plugins.length} 个插件</span>
               </div>
-              <span>ALL TOOLS</span>
             </div>
             <div className="cbx-directory-tools">
               <Input
@@ -385,9 +403,6 @@ export default function HomeFocus() {
                 aria-label="搜索插件"
                 allowClear
               />
-              <Tooltip title="筛选与管理标签">
-                <Button onClick={() => setTagDrawerOpen(true)}>标签</Button>
-              </Tooltip>
             </div>
             {batchMode && (
               <div className="cbx-directory-select-all">
@@ -396,12 +411,13 @@ export default function HomeFocus() {
                   indeterminate={selectedVisibleCount > 0 && !allVisibleSelected}
                   onChange={toggleSelectAll}
                 >
-                  选择当前结果
+                  {allVisibleSelected ? '取消全选' : '全选'}
                 </Checkbox>
                 <span>已选 {selectedIds.length}</span>
               </div>
             )}
             <DndContext
+              modifiers={[restrictDirectoryDrag]}
               sensors={sensors}
               collisionDetection={closestCenter}
               onDragEnd={(event) => void onDragEnd(event)}
@@ -427,6 +443,13 @@ export default function HomeFocus() {
                       onSelect={() => toggleSelected(plugin.id)}
                       onPreview={() => setPreviewId(plugin.id)}
                       onOpen={() => openPlugin(plugin)}
+                      onToggle={() => {
+                        void (plugin.enabled ? disablePlugin(plugin.id) : enablePlugin(plugin.id))
+                      }}
+                      onUninstall={() => {
+                        setSelectedIds([plugin.id])
+                        setDeleteConfirmOpen(true)
+                      }}
                     />
                   ))}
                 </div>
@@ -460,9 +483,7 @@ export default function HomeFocus() {
                   </Button>
                 </div>
               </div>
-            ) : (
-              <div className="cbx-directory-foot">单击预览 · 双击打开 · 长按拖动排序</div>
-            )}
+            ) : null}
           </section>
         </div>
       )}
@@ -473,18 +494,6 @@ export default function HomeFocus() {
         onClose={() => setConfigPlugin(null)}
       />
       <PluginImport open={importOpen} onClose={() => setImportOpen(false)} />
-      <Drawer
-        title="插件标签"
-        open={tagDrawerOpen}
-        onClose={() => setTagDrawerOpen(false)}
-        width={400}
-      >
-        <UserTagManager
-          plugins={plugins}
-          selectedPluginIds={selectedIds}
-          onFilterChange={setTagFilterIds}
-        />
-      </Drawer>
       <Modal
         title="确认卸载插件"
         open={deleteConfirmOpen}
@@ -494,7 +503,9 @@ export default function HomeFocus() {
         okButtonProps={{ danger: true, loading: batchBusy }}
         centered
       >
-        <p>将卸载选中的 {selectedIds.length} 个插件及其数据。此操作无法撤销。</p>
+        <p>
+          将卸载选中的 {selectedIds.length} 个插件及其独占模型和运行时。配置、笔记及用户文件保留。
+        </p>
         <ul className="cbx-batch-names">
           {selectedIds.map((id) => (
             <li key={id}>{plugins.find((plugin) => plugin.id === id)?.displayName ?? id}</li>

@@ -1,7 +1,8 @@
 import type { ToolboxTheme } from '../../../../../shared/types/theme.types'
 import { normalizeTheme } from '../../../../../shared/themes/normalize'
-import { PRESET_THEMES } from '../../../../../shared/themes/presets'
+import { DEFAULT_THEME, PRESET_THEMES } from '../../../../../shared/themes/presets'
 import { useThemeStore } from '../../../store/theme.store'
+import { prepareThemeStyle } from '../../../theme/prepare'
 let holder: symbol | null = null
 let queue: Promise<unknown> = Promise.resolve()
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -15,6 +16,7 @@ function enqueue<T>(operation: () => Promise<T>): Promise<T> {
 export function createNextThemeController() {
   const identity = Symbol()
   let active = true
+  let visible = true
   let original: ToolboxTheme | null = null
   let preview: ToolboxTheme | null = null
   const rollback = () => {
@@ -33,6 +35,8 @@ export function createNextThemeController() {
     execute(operation: string, params: Record<string, unknown>): Promise<unknown> {
       return enqueue(async () => {
         if (!active) throw new Error('SESSION_DENIED')
+        if (!visible && ['theme.preview', 'theme.commit', 'theme.set'].includes(operation))
+          throw new Error('SESSION_DENIED')
         if (operation === 'theme.get') return useThemeStore.getState().theme
         if (operation === 'theme.list') return PRESET_THEMES
         if (operation === 'theme.rollback') return rollback()
@@ -64,6 +68,8 @@ export function createNextThemeController() {
         }
         if (operation === 'theme.preview') {
           if (holder !== null && holder !== identity) throw new Error('BUSY')
+          await prepareThemeStyle(theme)
+          if (!active || !visible) throw new Error('SESSION_DENIED')
           holder = identity
           if (!preview || useThemeStore.getState().theme !== preview)
             original = useThemeStore.getState().theme
@@ -74,6 +80,10 @@ export function createNextThemeController() {
         throw new Error('INVALID_REQUEST')
       })
     },
+    setVisible(value: boolean) {
+      visible = value
+      if (!value) void enqueue(async () => rollback())
+    },
     dispose() {
       active = false
       void enqueue(async () => {
@@ -81,4 +91,12 @@ export function createNextThemeController() {
       })
     }
   }
+}
+
+// Share the queue with in-flight preview/commit work so an explicit reset wins.
+export function restoreDefaultTheme() {
+  return enqueue(async () => {
+    holder = null
+    return useThemeStore.getState().setTheme(DEFAULT_THEME)
+  })
 }
