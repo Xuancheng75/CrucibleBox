@@ -158,6 +158,9 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let session_raw = serde_json::to_string(&token).map_err(|e| e.to_string())?;
     evaluate(&context, &format!("__cjsCurrentDir={parent_raw};globalThis.__nextPlugin=require({entry_raw});globalThis.__nextContext={{...{},session:{session_raw},exchange:async request=>JSON.parse(__nextExchange(JSON.stringify(request))),isCancelled:()=>__nextCancelled()}};Promise.resolve(__nextPlugin.activate(__nextContext)).then(api=>{{globalThis.__nextApi=api;return null;}})", init))?;
+    if manifest.background_interval_ms.is_some() {
+        evaluate(&context, "if (typeof __nextPlugin.background !== 'function') throw Error('BACKGROUND_HOOK_REQUIRED'); null")?;
+    }
     transport::write_frame(
         &mut *output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?,
         &json!({"kind":"ready","wireVersion":4}),
@@ -184,7 +187,12 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
         let name = request["method"].to_string();
         let params = request["params"].to_string();
         let execution = json!({"callerId":frame["callerId"],"taskId":frame["taskId"]});
-        let result = evaluate(&context, &format!("Promise.resolve().then(()=>{{const name={name};if(!Object.hasOwn(__nextApi,name)||typeof __nextApi[name]!== 'function')throw Object.assign(Error('Unknown backend method'),{{code:'METHOD_UNAVAILABLE'}});return __nextApi[name]({params},{{...{execution},isCancelled:__nextContext.isCancelled}});}}).then(result=>({{ok:true,result:result===undefined?null:result}}),error=>({{ok:false,error:{{code:typeof error.code==='string'?error.code:'JS_EXECUTION_FAILED',message:String(error.message||error)}}}}))"));
+        let body = if request["method"] == protocol::BACKGROUND_METHOD {
+            "return __nextPlugin.background(__nextContext);".to_owned()
+        } else {
+            format!("const name={name};if(!Object.hasOwn(__nextApi,name)||typeof __nextApi[name]!== 'function')throw Object.assign(Error('Unknown backend method'),{{code:'METHOD_UNAVAILABLE'}});return __nextApi[name]({params},{{...{execution},isCancelled:__nextContext.isCancelled}});")
+        };
+        let result = evaluate(&context, &format!("Promise.resolve().then(()=>{{{body}}}).then(result=>({{ok:true,result:result===undefined?null:result}}),error=>({{ok:false,error:{{code:typeof error.code==='string'?error.code:'JS_EXECUTION_FAILED',message:String(error.message||error)}}}}))"));
         let response = match result {
             Ok(value) => {
                 let mut value = value;

@@ -23,6 +23,14 @@ enum Outcome {
     Value(Value),
     DomainError(RpcError),
 }
+
+/// Long-lived service state and the serial task executor have separate processes.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum InstanceKind {
+    Service,
+    Task,
+}
+
 pub struct Worker {
     process: Process,
     input: Option<mpsc::SyncSender<Value>>,
@@ -37,7 +45,6 @@ impl Worker {
         data: &Path,
         resources: &[ResourceMount],
     ) -> Result<Self, String> {
-        plugin.revalidate()?;
         let Some(Backend::NativeBackend(backend)) = &plugin.manifest.backend else {
             return Err("NATIVE_BACKEND_REQUIRED".into());
         };
@@ -51,11 +58,26 @@ impl Worker {
         resources: &[ResourceMount],
         runner: &Path,
     ) -> Result<Self, String> {
-        let Some(Backend::JsBackend(backend)) = &plugin.manifest.backend else {
+        if !matches!(plugin.manifest.backend, Some(Backend::JsBackend(_))) {
             return Err("JS_BACKEND_REQUIRED".into());
+        }
+        Self::launch(plugin, data, resources, runner)
+    }
+    pub fn launch(
+        plugin: &ApprovedPlugin,
+        data: &Path,
+        resources: &[ResourceMount],
+        runner: &Path,
+    ) -> Result<Self, String> {
+        let command = match &plugin.manifest.backend {
+            Some(Backend::NativeBackend(backend)) => Command::new(plugin.root.join(&backend.entry)),
+            Some(Backend::JsBackend(backend)) => {
+                let mut command = Command::new(runner);
+                command.arg("--next2").arg(&plugin.root).arg(&backend.entry);
+                command
+            }
+            None => return Err("BACKEND_UNAVAILABLE".into()),
         };
-        let mut command = Command::new(runner);
-        command.arg("--next2").arg(&plugin.root).arg(&backend.entry);
         Self::start_command(plugin, data, resources, command)
     }
     fn start_command(
@@ -163,6 +185,45 @@ impl Worker {
     pub fn stop_handle(&self) -> StopHandle {
         self.process.stop_handle()
     }
+
+    /// Check the process even when a descendant still has the protocol pipe open.
+    pub fn poll_idle(
+        &mut self,
+        mut capability: impl FnMut(&Request) -> Result<Value, RpcError>,
+    ) -> Result<(), String> {
+        if let Some(status) = self.process.child.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("BACKEND_EXITED: {status}"));
+        }
+        match self.output.as_ref().ok_or("NATIVE_STOPPED")?.try_recv() {
+            Ok(Output::Frame(frame)) if frame["kind"] == "capability" => {
+                self.reply_capability(&frame, &mut capability)
+            }
+            Ok(Output::Frame(_)) => Err("UNEXPECTED_IDLE_FRAME".into()),
+            Ok(Output::Failure(error)) => Err(error),
+            Err(mpsc::TryRecvError::Empty) => Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => Err("NATIVE_DISCONNECTED".into()),
+        }
+    }
+
+    fn reply_capability(
+        &self,
+        frame: &Value,
+        capability: &mut impl FnMut(&Request) -> Result<Value, RpcError>,
+    ) -> Result<(), String> {
+        let request = cruciblebox_next2_protocol::validate_request(&frame["request"].to_string())?;
+        if request.session != self.session {
+            return Err("SESSION_DENIED".into());
+        }
+        let response = match capability(&request) {
+            Ok(result) => {
+                json!({"wireVersion":4,"requestId":request.request_id,"ok":true,"result":result})
+            }
+            Err(error) => {
+                json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":error})
+            }
+        };
+        self.send(json!({"kind":"capability-result","response":response}))
+    }
     /// `caller_id`, task ID and capability authorization come from host admission.
     pub fn call(
         &mut self,
@@ -267,28 +328,23 @@ impl Worker {
                     };
                 }
                 Some("capability") => {
-                    let request = cruciblebox_next2_protocol::validate_request(
-                        &frame["request"].to_string(),
-                    )?;
-                    if request.session != self.session {
-                        return Err("SESSION_DENIED".into());
-                    }
-                    let response = match capability(&request) {
-                        Ok(result) => {
-                            json!({"wireVersion":4,"requestId":request.request_id,"ok":true,"result":result})
-                        }
-                        Err(error) => {
-                            json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":error})
-                        }
-                    };
-                    self.send(json!({"kind":"capability-result","response":response}))?;
+                    self.reply_capability(&frame, capability)?;
                 }
                 _ => return Err("UNEXPECTED_NATIVE_FRAME".into()),
             }
         }
     }
     pub fn stop(mut self) -> Result<(), String> {
-        self.send(json!({"kind":"stop","wireVersion":4}))?;
+        if self
+            .process
+            .child
+            .try_wait()
+            .map_err(|e| e.to_string())?
+            .is_some()
+            || self.send(json!({"kind":"stop","wireVersion":4})).is_err()
+        {
+            return self.process.force_stop();
+        }
         let deadline = Instant::now()
             + Duration::from_millis(cruciblebox_next2_protocol::BUDGET_STOP_TIMEOUT_MS as u64);
         while Instant::now() < deadline {

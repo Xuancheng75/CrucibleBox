@@ -242,6 +242,7 @@ export type Manifest = {
     | 'network:fetch'
   )[]
   background: boolean
+  backgroundIntervalMs?: number
   contributes: Contributions
   exports: ServiceExport[]
   dependencies: ServiceDependency[]

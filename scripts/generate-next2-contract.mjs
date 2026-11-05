@@ -97,6 +97,7 @@ const rustTypes = Object.entries(defs).map(rustDefinition).join('\n')
 const rustSource =
   `// Generated from contracts/next2/contract.json.\npub const CONTRACT_JSON: &str = r###"${JSON.stringify(contract)}"###;\n` +
   `pub const CODE_DIRECTORY: &str = ${JSON.stringify(contract.install.codeDirectory)};\n` +
+  `pub const BACKGROUND_METHOD: &str = ${JSON.stringify(contract.transport.backgroundMethod)};\n` +
   Object.entries(contract.budget)
     .map(([name, value]) => `pub const BUDGET_${snake(name).toUpperCase()}: usize = ${value};`)
     .join('\n') +

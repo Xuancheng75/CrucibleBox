@@ -39,6 +39,11 @@ function validateCapabilitySchema(rule) {
 
 export function validateManifest(raw) {
   const manifest = parse(raw, 'Manifest', contract.budget.manifestBytes)
+  if (
+    manifest.backgroundIntervalMs !== undefined &&
+    (!manifest.background || manifest.backend?.kind !== 'js')
+  )
+    throw Error('BACKGROUND_INTERVAL_REQUIRES_JS_SERVICE')
   validateInventory(manifest.files)
   if (manifest.files.reduce((sum, file) => sum + file.bytes, 0) > contract.budget.packageBytes)
     throw Error('BUDGET_EXCEEDED')

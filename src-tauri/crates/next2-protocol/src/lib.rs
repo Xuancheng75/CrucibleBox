@@ -117,6 +117,11 @@ fn validate_capability_schema(rule: &Value) -> Result<(), String> {
 
 pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     let manifest: Manifest = schema::parse(raw, "Manifest", BUDGET_MANIFEST_BYTES)?;
+    if manifest.background_interval_ms.is_some()
+        && (!manifest.background || !matches!(manifest.backend, Some(Backend::JsBackend(_))))
+    {
+        return Err("BACKGROUND_INTERVAL_REQUIRES_JS_SERVICE".into());
+    }
     inventory(&manifest.files)?;
     if manifest.files.iter().map(|v| v.bytes).sum::<u64>() > BUDGET_PACKAGE_BYTES as u64 {
         return Err("BUDGET_EXCEEDED".into());

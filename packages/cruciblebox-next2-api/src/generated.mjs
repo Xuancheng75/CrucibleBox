@@ -995,6 +995,7 @@ export const contract = {
           uniqueItems: true
         },
         background: { type: 'boolean' },
+        backgroundIntervalMs: { type: 'integer', minimum: 1000, maximum: 60000 },
         contributes: { $ref: '#/$defs/Contributions' },
         exports: { type: 'array', items: { $ref: '#/$defs/ServiceExport' }, maxItems: 64 },
         dependencies: { type: 'array', items: { $ref: '#/$defs/ServiceDependency' }, maxItems: 64 },
@@ -2012,6 +2013,7 @@ export const contract = {
   methodsPolicy:
     'The gateway enforces built-in method contracts and typed service methods. Self-backend and legacy string service methods have opaque payloads.',
   transport: {
+    backgroundMethod: 'cruciblebox.lifecycle.background',
     framing: 'uint32-big-endian-length-prefixed-utf8-json',
     stdout: 'protocol-only',
     stderr: 'diagnostics',

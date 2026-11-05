@@ -221,6 +221,9 @@ impl Registry {
         context: &str,
     ) -> Result<Route, String> {
         let caller = self.enabled(caller_id)?;
+        if request.method == crate::BACKGROUND_METHOD {
+            return Err("METHOD_UNAVAILABLE".into());
+        }
         let (provider, service) = match &request.target {
             Target::PlatformTarget(_) => return Ok(Route::Platform),
             Target::BackendTarget(_) => (caller, None),

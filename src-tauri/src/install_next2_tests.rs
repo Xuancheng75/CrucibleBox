@@ -75,6 +75,19 @@ fn background_services_restore_without_renderer_and_isolate_failed_startup() {
         let source = root.join(id);
         let backend = if fails {
             "throw Error('fixture startup failure')"
+        } else if id == "healthy" {
+            r#"let sequence = 0;
+module.exports.activate = () => ({ ping: () => 'restored' });
+module.exports.background = async ctx => {
+  const call = async (method, params) => {
+    const requestId = 'heartbeat-' + (++sequence);
+    const reply = await ctx.exchange({wireVersion:4,requestId,session:ctx.session,target:{kind:'platform'},method,params});
+    if (!reply.ok) throw Error(reply.error.code);
+    return reply.result;
+  };
+  if (await call('storage.get', {key:'fail-tick'})) throw Error('intentional hook failure');
+  await call('storage.set', {key:'heartbeat',value:1+(await call('storage.get', {key:'heartbeat'}) || 0)});
+};"#
         } else {
             "module.exports.activate = () => ({ ping: () => 'restored' });"
         };
@@ -93,6 +106,9 @@ fn background_services_restore_without_renderer_and_isolate_failed_startup() {
         fs::remove_file(source.join("dist/renderer.js")).unwrap();
         manifest["id"] = json!(id);
         manifest["background"] = json!(background);
+        if id == "healthy" {
+            manifest["backgroundIntervalMs"] = json!(1000);
+        }
         manifest["dependencies"] = dependencies;
         manifest["exports"] = json!([{"id":id,"version":"1.0.0","methods":["ping"]}]);
         manifest["contributes"]["commands"] = json!([{"id":"ping","title":"Ping","method":"ping"}]);
@@ -139,9 +155,117 @@ fn background_services_restore_without_renderer_and_isolate_failed_startup() {
     );
     let logs = db.plugin_logs(Some("a-broken"), Some("error"), 1).unwrap();
     assert!(logs[0].message.contains("Background activation failed"));
+    let wait = |predicate: &dyn Fn() -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !predicate() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "supervisor state timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    };
+    wait(&|| db.storage_get("healthy", "heartbeat").unwrap().is_some());
+    db.storage_set("healthy", "fail-tick", "true").unwrap();
+    wait(&|| {
+        !restarted.next2.has_backend_slot("healthy")
+            && !db
+                .plugin_logs(Some("healthy"), Some("error"), 1)
+                .unwrap()
+                .is_empty()
+    });
+    assert!(db.plugin_find_by_id("healthy").unwrap().unwrap().enabled);
+    assert!(restarted.next2.has_backend_slot("z-dependency"));
+    db.storage_set("healthy", "fail-tick", "false").unwrap();
+    assert_eq!(
+        restarted.next2.execute_command("healthy", "ping").unwrap(),
+        json!("restored")
+    );
     restarted.shutdown().unwrap();
     assert!(!restarted.next2.has_backend_slot("healthy"));
     assert!(!restarted.next2.has_backend_slot("z-dependency"));
+}
+
+#[test]
+fn background_service_survives_two_headless_host_process_starts() {
+    const PARENT: &str = "CRUCIBLEBOX_P2_RESTART_FIXTURE_PARENT";
+    if let Ok(parent) = std::env::var(PARENT) {
+        let parent: u32 = parent.parse().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "cruciblebox-install-test-next2-host-process-restart-{parent}/data/openbox.db"
+        ));
+        let db = crate::db::Db::open(&path).unwrap();
+        let backend =
+            crate::next_backend::Manager::new(std::sync::Arc::new(std::sync::Mutex::new(db)));
+        backend.next2.restore_background().unwrap();
+        assert!(backend.next2.has_backend_slot("acme-independent"));
+        backend
+            .next2
+            .execute_command("acme-independent", "increment")
+            .unwrap();
+        backend.shutdown().unwrap();
+        assert!(!backend.next2.has_backend_slot("acme-independent"));
+        return;
+    }
+    let (manager, _, root) = setup("next2-host-process-restart");
+    let source = root.join("source");
+    write_next2(
+        &source,
+        "1.0.0",
+        Some(
+            r#"module.exports.activate = ctx => ({ increment: async () => {
+  const call = async (requestId, method, params) => {
+    const reply = await ctx.exchange({wireVersion:4,requestId,session:ctx.session,target:{kind:'platform'},method,params});
+    if (!reply.ok) throw Error(reply.error.code);
+    return reply.result;
+  };
+  const count = (await call('r1','storage.get',{key:'boots'})) || 0;
+  await call('r2','storage.set',{key:'boots',value:count+1});
+  return count+1;
+} });"#,
+        ),
+    );
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(source.join("plugin.json")).unwrap()).unwrap();
+    manifest["background"] = json!(true);
+    manifest["contributes"]["commands"] =
+        json!([{"id":"increment","title":"Increment","method":"increment"}]);
+    fs::write(source.join("plugin.json"), manifest.to_string()).unwrap();
+    manager.remember_trusted_path(source.clone());
+    let preview = manager.preview(directory(&source)).unwrap();
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    manager
+        .next_backend
+        .next2
+        .enable("acme-independent")
+        .unwrap();
+    manager.next_backend.shutdown().unwrap();
+    drop(manager);
+    let path = root.join("data/openbox.db");
+    for _ in 0..2 {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "install::next2_tests::background_service_survives_two_headless_host_process_starts", "--nocapture"])
+            .env(PARENT, std::process::id().to_string()).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+    let db = crate::db::Db::open(&path).unwrap();
+    assert_eq!(
+        db.storage_get("acme-independent", "boots")
+            .unwrap()
+            .as_deref(),
+        Some("2")
+    );
 }
 
 #[test]
