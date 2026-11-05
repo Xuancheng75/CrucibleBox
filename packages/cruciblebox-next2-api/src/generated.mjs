@@ -141,17 +141,43 @@ export const contract = {
           items: { type: 'string', minLength: 1, maxLength: 128 },
           maxItems: 128,
           minItems: 1
-        }
+        },
+        interchangeable: { type: 'boolean' }
       }
     },
     ServiceDependency: {
       type: 'object',
       additionalProperties: false,
-      required: ['id', 'providerId', 'version'],
+      required: ['id', 'version'],
       properties: {
         id: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
         providerId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
-        version: { $ref: '#/$defs/VersionRange' }
+        version: { $ref: '#/$defs/VersionRange' },
+        optional: { type: 'boolean' }
+      }
+    },
+    CapabilityResolveParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id'],
+      properties: { id: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' } }
+    },
+    CapabilityBinding: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['providerId', 'export'],
+      properties: {
+        providerId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        export: { $ref: '#/$defs/ServiceExport' }
+      }
+    },
+    LogWriteParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['level', 'message'],
+      properties: {
+        level: { enum: ['debug', 'info', 'warn', 'error'] },
+        message: { type: 'string', minLength: 1, maxLength: 2048 }
       }
     },
     ResourceDependency: {
@@ -829,7 +855,6 @@ export const contract = {
         'publisher',
         'minHostVersion',
         'sdk',
-        'renderer',
         'permissions',
         'background',
         'contributes',
@@ -860,6 +885,7 @@ export const contract = {
           items: {
             enum: [
               'storage:read',
+              'logging:write',
               'storage:write',
               'tasks:read',
               'tasks:control',
@@ -1519,6 +1545,18 @@ export const contract = {
     }
   },
   methods: {
+    'logging.write': {
+      permission: 'logging:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/LogWriteParams' },
+      result: { type: 'boolean' }
+    },
+    'capabilities.resolve': {
+      permission: null,
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/CapabilityResolveParams' },
+      result: { $ref: '#/$defs/CapabilityBinding' }
+    },
     'runtime.ping': {
       permission: null,
       contexts: ['renderer', 'backend'],
@@ -1635,55 +1673,55 @@ export const contract = {
     },
     'theme.get': {
       permission: 'theme:read',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeGetParams' },
       result: { $ref: '#/$defs/ThemeGetResult' }
     },
     'theme.list': {
       permission: 'theme:read',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeListParams' },
       result: { $ref: '#/$defs/ThemeListResult' }
     },
     'theme.preview': {
       permission: 'theme:write',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemePreviewParams' },
       result: { $ref: '#/$defs/ThemePreviewResult' }
     },
     'theme.commit': {
       permission: 'theme:write',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeCommitParams' },
       result: { $ref: '#/$defs/ThemeCommitResult' }
     },
     'theme.rollback': {
       permission: 'theme:write',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeRollbackParams' },
       result: { $ref: '#/$defs/ThemeRollbackResult' }
     },
     'theme.set': {
       permission: 'theme:write',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeSetParams' },
       result: { $ref: '#/$defs/ThemeSetResult' }
     },
     'dialog.open': {
       permission: 'dialog',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/DialogOpenParams' },
       result: { $ref: '#/$defs/DialogOpenResult' }
     },
     'dialog.confirm': {
       permission: 'dialog',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/DialogConfirmParams' },
       result: { $ref: '#/$defs/DialogConfirmResult' }
     },
     'notification.show': {
       permission: 'notification',
-      contexts: ['renderer', 'backend'],
+      contexts: ['renderer'],
       params: { $ref: '#/$defs/NotificationShowParams' },
       result: { $ref: '#/$defs/NotificationShowResult' }
     },

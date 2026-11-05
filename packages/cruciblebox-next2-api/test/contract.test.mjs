@@ -77,3 +77,20 @@ test('client rejects wrong correlation and oversized frames', async () => {
     /BUDGET/
   )
 })
+test('capability discovery uses a declared binding response', async () => {
+  const binding = {
+    providerId: 'sample-provider',
+    export: { id: 'transform', version: '1.2.0', methods: ['recognize'], interchangeable: true }
+  }
+  const client = createClient({
+    session: 'a'.repeat(64),
+    exchange: async (request) => {
+      assert.deepEqual(request.target, { kind: 'platform' })
+      assert.equal(request.method, 'capabilities.resolve')
+      assert.deepEqual(request.params, { id: 'transform' })
+      return { wireVersion: 4, requestId: request.requestId, ok: true, result: binding }
+    }
+  })
+  assert.deepEqual(await client.resolveCapability('transform'), binding)
+  await assert.rejects(client.resolveCapability('invalid/id'), /INVALID_PLATFORM_CALL/)
+})

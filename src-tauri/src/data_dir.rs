@@ -1,8 +1,8 @@
 // L3 数据路径迁移（1.8.1）
 // 目标：把既有数据从 %APPDATA%\openbox 一次性搬迁到 %APPDATA%\cruciblebox。
 // 语义（与 docs/tauri-migration-plan.md L3 对齐）：
-// - 仅当源目录存在且目标未被成功迁移过时执行（以 .migrated 标记文件判定，幂等）
-// - 搬迁 = 拷贝到同卷 .tmp 目录后原子 rename（保留源目录可回滚；避免部分拷贝陷阱）
+// - 仅在源目录存在且目标目录尚未创建时执行（.migrated 表示已完成）
+// - 搬迁 = 拷贝到同卷临时目录后原子 rename，保留源目录
 // - DB 先做 wal_checkpoint(TRUNCATE) 合并 WAL；checkpoint 失败且 -wal 非空 → 中止报错
 // - 拷贝子集：data/openbox.db、plugins/、logs/
 
@@ -46,12 +46,25 @@ pub fn migrate(base_dir: Option<&Path>) -> std::io::Result<DataMigrationReport> 
         ..Default::default()
     };
 
-    // 幂等判定：以标记文件为准（target 目录残留但不完整时也重新迁移）
     if marker.exists() {
         return Ok(report); // 已成功迁移过
     }
     if !source.exists() {
         return Ok(report); // 无旧数据，无需搬迁
+    }
+    match target.symlink_metadata() {
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "迁移目标 {} 已存在且缺少迁移标记。请核查源目录 {} 与目标目录中的数据，确认恢复方案后再继续。",
+                    target.display(),
+                    source.display()
+                ),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
 
     // 1) DB：先 checkpoint 合并 WAL；失败且 -wal 非空 → 中止（避免拷贝陈旧主文件）
@@ -72,10 +85,11 @@ pub fn migrate(base_dir: Option<&Path>) -> std::io::Result<DataMigrationReport> 
         }
     }
 
-    // 2) 拷贝到同卷临时目录，成功后原子 rename（H3：避免部分拷贝 + target.exists() 幂等陷阱）
-    let tmp = appdata_root(base_dir).join(format!("{}.tmp", NEW_DATA_DIR_NAME));
-    let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(&tmp)?;
+    // 标记与数据一起发布，失败时只清理由本次迁移创建的暂存目录。
+    let staging = tempfile::Builder::new()
+        .prefix("cruciblebox-migration-")
+        .tempdir_in(appdata_root(base_dir))?;
+    let tmp = staging.path();
 
     if source.join("data").exists() {
         copy_tree(&source.join("data"), &tmp.join("data"))?;
@@ -90,12 +104,8 @@ pub fn migrate(base_dir: Option<&Path>) -> std::io::Result<DataMigrationReport> 
         report.copied_entries.push("logs".into());
     }
 
-    // 3) 原子落位 + 写标记（先写标记再 rename 会丢；故 rename 后写标记）
-    if target.exists() {
-        fs::remove_dir_all(&target)?;
-    }
-    fs::rename(&tmp, &target)?;
-    fs::write(&marker, "1.8.1")?;
+    fs::write(tmp.join(MIGRATED_MARKER), "1.8.1")?;
+    fs::rename(tmp, &target)?;
 
     report.migrated = !report.copied_entries.is_empty();
     Ok(report)
@@ -210,23 +220,25 @@ mod tests {
     }
 
     #[test]
-    fn retries_after_partial_copy_without_marker() {
-        let root = temp_root("partial");
+    fn refuses_to_replace_existing_unmarked_data() {
+        let root = temp_root("unmarked-target");
         let old = root.join(OLD_DATA_DIR_NAME);
         fs::create_dir_all(old.join("data")).unwrap();
         fs::create_dir_all(old.join("plugins")).unwrap();
         fs::write(old.join("data").join("openbox.db"), b"sqlite").unwrap();
         fs::write(old.join("plugins").join("note.txt"), b"hi").unwrap();
-        // 模拟上次部分拷贝残留：target 存在但无标记
         let new = root.join(NEW_DATA_DIR_NAME);
-        fs::create_dir_all(&new).unwrap();
-        fs::write(new.join("truncated.db"), b"x").unwrap();
+        fs::create_dir_all(new.join("data")).unwrap();
+        fs::write(new.join("data/openbox.db"), b"new user database").unwrap();
 
-        let report = migrate(Some(&root)).unwrap();
-        assert!(report.migrated);
-        assert!(!new.join("truncated.db").exists()); // 残留被替换
-        assert!(new.join("data/openbox.db").exists());
-        assert!(new.join(MIGRATED_MARKER).exists());
+        let error = migrate(Some(&root)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(new.join("data/openbox.db")).unwrap(),
+            b"new user database"
+        );
+        assert_eq!(fs::read(old.join("data/openbox.db")).unwrap(), b"sqlite");
+        assert!(!new.join(MIGRATED_MARKER).exists());
     }
 
     #[test]

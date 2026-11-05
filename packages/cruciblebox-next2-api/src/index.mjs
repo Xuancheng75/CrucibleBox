@@ -50,7 +50,14 @@ export function validateManifest(raw) {
     throw Error('INVALID_NATIVE_ENTRY')
   if (manifest.backend?.kind === 'js' && !manifest.backend.entry.endsWith('.js'))
     throw Error('INVALID_JS_ENTRY')
-  if (!manifest.renderer.endsWith('.js')) throw Error('INVALID_RENDERER_ENTRY')
+  if (manifest.renderer && !manifest.renderer.endsWith('.js')) throw Error('INVALID_RENDERER_ENTRY')
+  if (
+    !manifest.renderer &&
+    (!manifest.backend ||
+      manifest.contributes.navigation ||
+      manifest.contributes.fileHandlers?.length)
+  )
+    throw Error('RENDERER_REQUIRED')
   if (!manifest.backend && (manifest.background || manifest.exports.length))
     throw Error('BACKEND_REQUIRED')
   if (manifest.dependencies.some((item) => item.providerId === manifest.id))
@@ -123,6 +130,8 @@ export function createClient({ session, exchange }) {
   }
   return {
     platform: (method, params) => call({ kind: 'platform' }, method, params),
+    resolveCapability: (id) => call({ kind: 'platform' }, 'capabilities.resolve', { id }),
+    writeLog: (entry) => call({ kind: 'platform' }, 'logging.write', entry),
     backend: (method, params) => call({ kind: 'backend' }, method, params),
     service: (id, method, params) => call({ kind: 'service', id }, method, params)
   }

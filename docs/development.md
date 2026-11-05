@@ -1,5 +1,7 @@
 # 底座开发
 
+2.2.0 开发分支的源码审查、架构决策与实测进度见 [平台审查](2.2.0-platform-review.md) 和 [开发记录](2.2.0-platform-progress.md)。
+
 宿主目录只保存平台、公共 SDK/契约和必要开发资料。业务插件在独立仓库开发。所有本地构建/测试都把 TEMP、TMP、TMPDIR 指向本仓库 .workbench/temp，npm cache 指向 .workbench/npm-cache；不向系统临时目录生成测试树。
 
 ```powershell

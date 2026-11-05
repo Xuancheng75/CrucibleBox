@@ -1,6 +1,7 @@
 export enum Permission {
   StorageRead = 'storage:read',
   StorageWrite = 'storage:write',
+  LoggingWrite = 'logging:write',
   TasksRead = 'tasks:read',
   TasksControl = 'tasks:control',
   ThemeRead = 'theme:read',
@@ -19,6 +20,7 @@ export const ALL_PERMISSIONS: Permission[] = Object.values(Permission)
 export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   [Permission.StorageRead]: 'storage:read',
   [Permission.StorageWrite]: 'storage:write',
+  [Permission.LoggingWrite]: 'logging:write',
   [Permission.TasksRead]: 'tasks:read',
   [Permission.TasksControl]: 'tasks:control',
   [Permission.ThemeRead]: 'theme:read',

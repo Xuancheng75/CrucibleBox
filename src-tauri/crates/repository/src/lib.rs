@@ -262,7 +262,7 @@ impl Db {
         let guard = self.conn.lock().unwrap();
         guard
             .query_row(
-                "SELECT enabled, permissions, installed_path, entry_main, name, config_schema, config_data
+                "SELECT enabled, permissions, installed_path, entry_main, name, config_schema, config_data, version
                  FROM plugins WHERE id = ?1",
                 [plugin_id],
                 |row| {
@@ -274,6 +274,7 @@ impl Db {
                         name: row.get::<_, String>(4)?,
                         config_schema: row.get::<_, String>(5)?,
                         config_data: row.get::<_, String>(6)?,
+                        version: row.get(7)?,
                     })
                 },
             )
@@ -286,7 +287,7 @@ impl Db {
     ) -> rusqlite::Result<Vec<(String, PluginBackendRecord)>> {
         let guard = self.conn.lock().unwrap();
         let mut stmt = guard.prepare(
-            "SELECT id, enabled, permissions, installed_path, entry_main, name, config_schema, config_data
+            "SELECT id, enabled, permissions, installed_path, entry_main, name, config_schema, config_data, version
              FROM plugins WHERE enabled = 1 ORDER BY sort_order ASC, id ASC",
         )?;
         let rows = stmt
@@ -301,6 +302,7 @@ impl Db {
                         name: row.get::<_, String>(5)?,
                         config_schema: row.get::<_, String>(6)?,
                         config_data: row.get::<_, String>(7)?,
+                        version: row.get(8)?,
                     },
                 ))
             })?
@@ -684,6 +686,7 @@ pub struct PluginBackendRecord {
     pub entry_main: String,
     #[allow(dead_code)] // 1.9.2-b 日志/诊断用
     pub name: String,
+    pub version: String,
     pub config_schema: String,
     pub config_data: String,
 }

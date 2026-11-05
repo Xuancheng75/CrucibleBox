@@ -157,7 +157,7 @@ impl RendererSessionRegistry {
             let manifest = cruciblebox_next2_protocol::validate_manifest(manifest_json)?;
             if input.owner_webview_label != "main"
                 || input.plugin_name != manifest.id
-                || input.renderer_entry != manifest.renderer
+                || manifest.renderer.as_deref() != Some(input.renderer_entry.as_str())
                 || input.permissions != manifest.permissions
             {
                 return Err("Next session metadata does not match verified installation".into());

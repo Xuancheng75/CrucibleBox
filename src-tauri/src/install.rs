@@ -1369,7 +1369,7 @@ mod tests {
                     plugin_id: manifest.id.clone(),
                     plugin_name: manifest.id,
                     plugin_directory: root.to_string_lossy().into(),
-                    renderer_entry: manifest.renderer,
+                    renderer_entry: manifest.renderer.unwrap(),
                     runtime_path: String::new(),
                     renderer_api_version: 6,
                     permissions: manifest.permissions,

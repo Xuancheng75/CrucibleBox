@@ -21,8 +21,21 @@ export type Contributions = {
   commands: Command[]
   fileHandlers?: FileHandler[]
 }
-export type ServiceExport = { id: string; version: string; methods: string[] }
-export type ServiceDependency = { id: string; providerId: string; version: VersionRange }
+export type ServiceExport = {
+  id: string
+  version: string
+  methods: string[]
+  interchangeable?: boolean
+}
+export type ServiceDependency = {
+  id: string
+  providerId?: string
+  version: VersionRange
+  optional?: boolean
+}
+export type CapabilityResolveParams = { id: string }
+export type CapabilityBinding = { providerId: string; export: ServiceExport }
+export type LogWriteParams = { level: 'debug' | 'info' | 'warn' | 'error'; message: string }
 export type ResourceDependency = {
   id: string
   version: VersionRange
@@ -184,10 +197,11 @@ export type Manifest = {
   publisher: Publisher
   minHostVersion: string
   sdk: ApiRange
-  renderer: string
+  renderer?: string
   backend?: Backend
   permissions: (
     | 'storage:read'
+    | 'logging:write'
     | 'storage:write'
     | 'tasks:read'
     | 'tasks:control'

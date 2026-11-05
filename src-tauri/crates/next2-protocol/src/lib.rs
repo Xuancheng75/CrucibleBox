@@ -90,14 +90,29 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     }
     for dependency in &manifest.dependencies {
         compatible(&dependency.version.min, &dependency.version)?;
-        if dependency.provider_id == manifest.id {
+        if dependency.provider_id.as_deref() == Some(manifest.id.as_str()) {
             return Err("SELF_DEPENDENCY".into());
         }
     }
     for resource in &manifest.resources {
         compatible(&resource.version.min, &resource.version)?;
     }
-    let mut entries = vec![manifest.renderer.as_str()];
+    let mut entries = Vec::new();
+    if let Some(renderer) = &manifest.renderer {
+        if !renderer.ends_with(".js") {
+            return Err("INVALID_RENDERER_ENTRY".into());
+        }
+        entries.push(renderer.as_str());
+    } else if manifest.backend.is_none()
+        || manifest.contributes.navigation.is_some()
+        || manifest
+            .contributes
+            .file_handlers
+            .as_ref()
+            .is_some_and(|items| !items.is_empty())
+    {
+        return Err("RENDERER_REQUIRED".into());
+    }
     entries.extend(
         manifest
             .resources
@@ -121,9 +136,6 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
             return Err("BACKEND_REQUIRED".into())
         }
         None => {}
-    }
-    if !manifest.renderer.ends_with(".js") {
-        return Err("INVALID_RENDERER_ENTRY".into());
     }
     if let Some(icon) = manifest
         .contributes

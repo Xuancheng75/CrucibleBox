@@ -69,6 +69,82 @@ fn next2_failed_start_keeps_disabled_and_successful_start_survives_shutdown_pref
 }
 
 #[test]
+fn background_services_restore_without_renderer_and_isolate_failed_startup() {
+    let (manager, _, root) = setup("next2-background-restore");
+    let install = |id: &str, background: bool, fails: bool, dependencies: Value| {
+        let source = root.join(id);
+        let backend = if fails {
+            "throw Error('fixture startup failure')"
+        } else {
+            "module.exports.activate = () => ({ ping: () => 'restored' });"
+        };
+        write_next2(&source, "1.0.0", Some(backend));
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(source.join("plugin.json")).unwrap()).unwrap();
+        manifest.as_object_mut().unwrap().remove("renderer");
+        manifest["contributes"]
+            .as_object_mut()
+            .unwrap()
+            .remove("navigation");
+        manifest["files"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|file| file["path"] != "dist/renderer.js");
+        fs::remove_file(source.join("dist/renderer.js")).unwrap();
+        manifest["id"] = json!(id);
+        manifest["background"] = json!(background);
+        manifest["dependencies"] = dependencies;
+        manifest["exports"] = json!([{"id":id,"version":"1.0.0","methods":["ping"]}]);
+        manifest["contributes"]["commands"] = json!([{"id":"ping","title":"Ping","method":"ping"}]);
+        fs::write(source.join("plugin.json"), manifest.to_string()).unwrap();
+        manager.remember_trusted_path(source.clone());
+        let preview = manager.preview(directory(&source)).unwrap();
+        manager
+            .commit_approved(
+                preview["installToken"].as_str().unwrap().into(),
+                Some(next2_approval(&preview)),
+            )
+            .unwrap();
+    };
+    install("a-broken", true, true, json!([]));
+    install("on-demand", false, false, json!([]));
+    install("z-dependency", false, false, json!([]));
+    install(
+        "healthy",
+        true,
+        false,
+        json!([{"id":"z-dependency","providerId":"z-dependency","version":{"min":"1.0.0","maxExclusive":"2.0.0"}}]),
+    );
+    for id in ["on-demand", "z-dependency", "healthy"] {
+        manager.next_backend.next2.enable(id).unwrap();
+    }
+    // An enabled service can fail on a later startup even with a valid package.
+    lock(&manager.db)
+        .set_plugin_enabled("a-broken", true)
+        .unwrap();
+    manager.next_backend.shutdown().unwrap();
+    assert!(!manager.next_backend.next2.has_backend_slot("healthy"));
+
+    let db = crate::db::Db::open(&root.join("data/openbox.db")).unwrap();
+    let restarted =
+        crate::next_backend::Manager::new(std::sync::Arc::new(std::sync::Mutex::new(db.clone())));
+    restarted.next2.restore_background().unwrap();
+    assert!(!restarted.next2.has_backend_slot("a-broken"));
+    assert!(!restarted.next2.has_backend_slot("on-demand"));
+    assert!(restarted.next2.has_backend_slot("z-dependency"));
+    assert!(restarted.next2.has_backend_slot("healthy"));
+    assert_eq!(
+        restarted.next2.execute_command("healthy", "ping").unwrap(),
+        json!("restored")
+    );
+    let logs = db.plugin_logs(Some("a-broken"), Some("error"), 1).unwrap();
+    assert!(logs[0].message.contains("Background activation failed"));
+    restarted.shutdown().unwrap();
+    assert!(!restarted.next2.has_backend_slot("healthy"));
+    assert!(!restarted.next2.has_backend_slot("z-dependency"));
+}
+
+#[test]
 fn next2_uninstall_removes_all_code_and_resources_but_restores_config_and_kv_by_manifest_identity()
 {
     let (manager, plugins, root) = setup("next2-uninstall-managed-code");
@@ -418,6 +494,8 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
     response = await ctx.exchange({wireVersion:4,requestId,session:ctx.session,target:{kind:'platform'},method:'storage.get',params:{key:'identity'}});
     if (!response.ok || response.requestId !== requestId) throw Error('Capability or correlation failed');
   }
+  const logged = await ctx.exchange({wireVersion:4,requestId:'provider-log-' + (++requests),session:ctx.session,target:{kind:'platform'},method:'logging.write',params:{level:'info',message:'Sample capability executed'}});
+  if (!logged.ok || logged.result !== true) throw Error('Logging failed');
   return {caller:execution.callerId, value:response.result};
 } });"#,
         ),
@@ -425,7 +503,11 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(provider.join("plugin.json")).unwrap()).unwrap();
     manifest["id"] = json!("service-provider");
-    manifest["exports"] = json!([{"id":"sample-service","version":"1.0.0","methods":["identity"]}]);
+    manifest["permissions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("logging:write"));
+    manifest["exports"] = json!([{"id":"sample-service","version":"1.0.0","methods":["identity"],"interchangeable":true}]);
     manifest["contributes"]["commands"] =
         json!([{"id":"show-value","title":"Show value","method":"identity"}]);
     fs::write(provider.join("plugin.json"), manifest.to_string()).unwrap();
@@ -475,7 +557,8 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
     write_next2(&client, "1.0.0", None);
     let mut caller: Value =
         serde_json::from_slice(&fs::read(client.join("plugin.json")).unwrap()).unwrap();
-    caller["dependencies"] = json!([{"id":"sample-service","providerId":"service-provider","version":{"min":"1.0.0","maxExclusive":"2.0.0"}}]);
+    caller["dependencies"] =
+        json!([{"id":"sample-service","version":{"min":"1.0.0","maxExclusive":"2.0.0"}}]);
     fs::write(client.join("plugin.json"), caller.to_string()).unwrap();
     manager.remember_trusted_path(client.clone());
     install(&client).unwrap();
@@ -486,8 +569,46 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         .storage_set("acme-independent", "identity", "\"caller secret\"")
         .unwrap();
     manager.next_backend.activate("acme-independent").unwrap();
+    let unrelated = root.join("unrelated");
+    write_next2(&unrelated, "1.0.0", None);
+    let mut unrelated_manifest: Value =
+        serde_json::from_slice(&fs::read(unrelated.join("plugin.json")).unwrap()).unwrap();
+    unrelated_manifest["id"] = json!("unrelated-plugin");
+    fs::write(
+        unrelated.join("plugin.json"),
+        unrelated_manifest.to_string(),
+    )
+    .unwrap();
+    manager.remember_trusted_path(unrelated.clone());
+    install(&unrelated).unwrap();
+    manager
+        .next_backend
+        .next2
+        .enable("unrelated-plugin")
+        .unwrap();
+    let unrelated_path = lock(&manager.db)
+        .plugin_find_by_name("unrelated-plugin")
+        .unwrap()
+        .unwrap()
+        .installed_path;
+    fs::write(
+        Path::new(&unrelated_path).join("plugin.json"),
+        "broken manifest",
+    )
+    .unwrap();
+
     let session = next2_session(&manager, &plugins);
-    let request = json!({"wireVersion":4,"requestId":"renderer-1","session":session.token,"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"owner":"forged"}});
+    let discovery = json!({"wireVersion":4,"requestId":"renderer-1","session":session.token,"target":{"kind":"platform"},"method":"capabilities.resolve","params":{"id":"sample-service"}});
+    let binding = manager
+        .next_backend
+        .next2
+        .renderer(&discovery.to_string(), &session)
+        .unwrap();
+    assert_eq!(
+        binding["result"],
+        json!({"providerId":"service-provider","export":manifest["exports"][0]})
+    );
+    let request = json!({"wireVersion":4,"requestId":"renderer-2","session":session.token,"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"owner":"forged"}});
     let result = manager
         .next_backend
         .next2
@@ -497,7 +618,7 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         result["result"],
         json!({"caller":"acme-independent","value":"provider data"})
     );
-    let start = json!({"wireVersion":4,"requestId":"renderer-2","session":session.token,"target":{"kind":"platform"},"method":"tasks.start","params":{"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"burst":true}}});
+    let start = json!({"wireVersion":4,"requestId":"renderer-3","session":session.token,"target":{"kind":"platform"},"method":"tasks.start","params":{"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"burst":true}}});
     let started = manager
         .next_backend
         .next2
@@ -522,6 +643,43 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         json!({"caller":"acme-independent","value":"provider data"})
     );
     assert!(runtime.get(provider_id, id).is_none());
+    let db = lock(&manager.db);
+    let logs = db.plugin_logs(Some(provider_id), Some("info"), 10).unwrap();
+    assert_eq!(logs.len(), 3);
+    let log: Value = serde_json::from_str(&logs[0].message).unwrap();
+    assert_eq!(log["taskId"], id);
+    assert_eq!(log["runtime"], "backend");
+    assert!(db
+        .plugin_logs(Some("acme-independent"), None, 10)
+        .unwrap()
+        .is_empty());
+    drop(db);
+    let provider_path = lock(&manager.db)
+        .plugin_find_by_id(provider_id)
+        .unwrap()
+        .unwrap()
+        .installed_path;
+    let executable = Path::new(&provider_path).join("dist/main.js");
+    let approved_code = fs::read(&executable).unwrap();
+    let mut modified_code = approved_code.clone();
+    modified_code[0] ^= 1;
+    fs::write(&executable, modified_code).unwrap();
+    let mut tampered = request;
+    tampered["requestId"] = json!("renderer-4");
+    let rejected = manager
+        .next_backend
+        .next2
+        .renderer(&tampered.to_string(), &session)
+        .unwrap();
+    assert_eq!(rejected["ok"], false, "{rejected}");
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("PACKAGE_DIGEST_MISMATCH"),
+        "{rejected}"
+    );
+    fs::write(executable, approved_code).unwrap();
     assert!(manager
         .next_backend
         .next2

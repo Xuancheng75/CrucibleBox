@@ -1,5 +1,6 @@
 //! Routing identity is supplied by the host, never by domain parameters.
-use crate::{compatible, contract, validate_request, Manifest, Request, Target};
+use crate::{compatible, contract, validate_request, CapabilityBinding, Manifest, Request, Target};
+use semver::Version;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
@@ -9,6 +10,7 @@ pub struct Installed {
 }
 pub struct Registry {
     plugins: HashMap<String, Installed>,
+    capabilities: HashMap<String, Vec<(Version, CapabilityBinding)>>,
 }
 #[derive(Debug, PartialEq)]
 pub enum Route {
@@ -20,22 +22,38 @@ pub enum Route {
     },
 }
 impl Registry {
-    /// Inputs have passed package validation. This only checks the installed dependency graph.
+    /// Index approved manifests. A broken dependency chain is local to its consumers.
     pub fn new(plugins: impl IntoIterator<Item = Installed>) -> Result<Self, String> {
         let mut map = HashMap::new();
+        let mut capabilities: HashMap<String, Vec<(Version, CapabilityBinding)>> = HashMap::new();
         for plugin in plugins {
+            if plugin.enabled {
+                for export in &plugin.manifest.exports {
+                    let version = Version::parse(&export.version).map_err(|_| "INVALID_VERSION")?;
+                    capabilities.entry(export.id.clone()).or_default().push((
+                        version,
+                        CapabilityBinding {
+                            provider_id: plugin.manifest.id.clone(),
+                            export: export.clone(),
+                        },
+                    ));
+                }
+            }
             if map.insert(plugin.manifest.id.clone(), plugin).is_some() {
                 return Err("DUPLICATE_PLUGIN".into());
             }
         }
-        let registry = Self { plugins: map };
-        let mut visited = HashSet::new();
-        for (id, plugin) in &registry.plugins {
-            if plugin.enabled {
-                registry.visit(id, &mut HashSet::new(), &mut visited)?;
-            }
+        for candidates in capabilities.values_mut() {
+            candidates.sort_by(|(left, a), (right, b)| {
+                right
+                    .cmp(left)
+                    .then_with(|| a.provider_id.cmp(&b.provider_id))
+            });
         }
-        Ok(registry)
+        Ok(Self {
+            plugins: map,
+            capabilities,
+        })
     }
     fn enabled(&self, id: &str) -> Result<&Installed, String> {
         self.plugins
@@ -43,37 +61,77 @@ impl Registry {
             .filter(|plugin| plugin.enabled)
             .ok_or_else(|| "DEPENDENCY_UNAVAILABLE".into())
     }
-    fn service(
+    fn select(
         &self,
-        caller: &Manifest,
-        id: &str,
-        method: Option<&str>,
-    ) -> Result<&Installed, String> {
-        let dependency = caller
+        caller: &str,
+        dependency: &crate::ServiceDependency,
+    ) -> Result<&CapabilityBinding, String> {
+        if let Some(provider) = &dependency.provider_id {
+            self.enabled(provider)?;
+        }
+        let mut found = false;
+        for (_, binding) in self.capabilities.get(&dependency.id).into_iter().flatten() {
+            if binding.provider_id == caller
+                || dependency.provider_id.as_ref().map_or_else(
+                    || binding.export.interchangeable != Some(true),
+                    |provider| provider != &binding.provider_id,
+                )
+            {
+                continue;
+            }
+            found = true;
+            if compatible(&binding.export.version, &dependency.version)? {
+                return Ok(binding);
+            }
+        }
+        Err(if found {
+            "DEPENDENCY_INCOMPATIBLE"
+        } else {
+            "SERVICE_UNAVAILABLE"
+        }
+        .into())
+    }
+    pub fn capability(&self, caller: &str, id: &str) -> Result<&CapabilityBinding, String> {
+        let dependency = self
+            .enabled(caller)?
+            .manifest
             .dependencies
             .iter()
             .find(|item| item.id == id)
             .ok_or("DEPENDENCY_UNDECLARED")?;
-        let provider = self.enabled(&dependency.provider_id)?;
-        let export = provider
-            .manifest
-            .exports
-            .iter()
-            .find(|item| item.id == id)
-            .ok_or("SERVICE_UNAVAILABLE")?;
-        if !compatible(&export.version, &dependency.version)? {
-            return Err("DEPENDENCY_INCOMPATIBLE".into());
-        }
-        if method.is_some_and(|name| !export.methods.iter().any(|item| item == name)) {
-            return Err("METHOD_UNAVAILABLE".into());
-        }
-        Ok(provider)
+        let binding = self.select(caller, dependency)?;
+        self.visit(
+            &binding.provider_id,
+            &mut HashSet::from([caller.to_owned()]),
+            &mut HashSet::new(),
+            &mut Vec::new(),
+        )?;
+        Ok(binding)
     }
-    fn visit(
-        &self,
+    pub fn validate_plugin(&self, id: &str) -> Result<(), String> {
+        self.activation_order(id).map(|_| ())
+    }
+    pub fn background_plugins(&self) -> Vec<&str> {
+        let mut plugins: Vec<_> = self
+            .plugins
+            .values()
+            .filter(|plugin| plugin.enabled && plugin.manifest.background)
+            .map(|plugin| plugin.manifest.id.as_str())
+            .collect();
+        plugins.sort_unstable();
+        plugins
+    }
+    pub fn activation_order(&self, id: &str) -> Result<Vec<&Manifest>, String> {
+        let mut order = Vec::new();
+        self.visit(id, &mut HashSet::new(), &mut HashSet::new(), &mut order)?;
+        Ok(order)
+    }
+    fn visit<'a>(
+        &'a self,
         id: &str,
         stack: &mut HashSet<String>,
         visited: &mut HashSet<String>,
+        order: &mut Vec<&'a Manifest>,
     ) -> Result<(), String> {
         if visited.contains(id) {
             return Ok(());
@@ -83,11 +141,22 @@ impl Registry {
         }
         let plugin = self.enabled(id)?;
         for dependency in &plugin.manifest.dependencies {
-            self.service(&plugin.manifest, &dependency.id, None)?;
-            self.visit(&dependency.provider_id, stack, visited)?;
+            match self.select(id, dependency) {
+                Ok(binding) => self.visit(&binding.provider_id, stack, visited, order)?,
+                Err(error)
+                    if dependency.optional == Some(true)
+                        && matches!(
+                            error.as_str(),
+                            "DEPENDENCY_UNAVAILABLE"
+                                | "SERVICE_UNAVAILABLE"
+                                | "DEPENDENCY_INCOMPATIBLE"
+                        ) => {}
+                Err(error) => return Err(error),
+            }
         }
         stack.remove(id);
         visited.insert(id.to_owned());
+        order.push(&plugin.manifest);
         Ok(())
     }
     pub fn dependents(&self, provider: &str) -> Vec<String> {
@@ -96,11 +165,10 @@ impl Registry {
             let before = affected.len();
             for (id, plugin) in &self.plugins {
                 if plugin.enabled
-                    && plugin
-                        .manifest
-                        .dependencies
-                        .iter()
-                        .any(|item| affected.contains(&item.provider_id))
+                    && plugin.manifest.dependencies.iter().any(|item| {
+                        self.select(id, item)
+                            .is_ok_and(|binding| affected.contains(&binding.provider_id))
+                    })
                 {
                     affected.insert(id.clone());
                 }
@@ -115,14 +183,17 @@ impl Registry {
         result
     }
     pub fn resolve(&self, caller_id: &str, target: &Target, method: &str) -> Result<Route, String> {
-        let caller = &self.enabled(caller_id)?.manifest;
+        let caller = self.enabled(caller_id)?;
         let (provider, service) = match target {
             Target::PlatformTarget(_) => return Ok(Route::Platform),
-            Target::BackendTarget(_) => (self.enabled(caller_id)?, None),
-            Target::ServiceTarget(target) => (
-                self.service(caller, &target.id, Some(method))?,
-                Some(target.id.clone()),
-            ),
+            Target::BackendTarget(_) => (caller, None),
+            Target::ServiceTarget(target) => {
+                let binding = self.capability(caller_id, &target.id)?;
+                if !binding.export.methods.iter().any(|item| item == method) {
+                    return Err("METHOD_UNAVAILABLE".into());
+                }
+                (self.enabled(&binding.provider_id)?, Some(target.id.clone()))
+            }
         };
         if provider.manifest.backend.is_none() {
             return Err("BACKEND_UNAVAILABLE".into());

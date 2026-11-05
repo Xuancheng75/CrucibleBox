@@ -6,6 +6,8 @@ import type {
   Request,
   Response,
   BackendFrame,
+  CapabilityBinding,
+  LogWriteParams,
   Json,
   VersionRange,
   RendererAppearance
@@ -34,6 +36,8 @@ export declare function createClient(options: {
   exchange(request: Request): Promise<Response>
 }): {
   platform(method: string, params?: Json): Promise<Json>
+  resolveCapability(id: string): Promise<CapabilityBinding>
+  writeLog(entry: LogWriteParams): Promise<boolean>
   backend(method: string, params?: Json): Promise<Json>
   service(id: string, method: string, params?: Json): Promise<Json>
 }

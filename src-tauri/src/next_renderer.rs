@@ -45,7 +45,11 @@ pub fn create_next_renderer_session(
     };
     let root = std::path::Path::new(&directory);
     let manifest = crate::manifest::read_manifest(root)?;
-    if manifest.manifest_version != Some(6) || manifest.name != name || manifest.renderer != entry {
+    if manifest.manifest_version != Some(6)
+        || manifest.name != name
+        || entry.is_empty()
+        || manifest.renderer != entry
+    {
         return Err("SESSION_DENIED".into());
     }
     crate::manifest::validate_entrypoints(root, &manifest)?;

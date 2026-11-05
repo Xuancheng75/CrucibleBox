@@ -105,6 +105,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
             None => String::new(),
         };
         let has_backend = next.backend.is_some();
+        let has_renderer = next.renderer.is_some();
         return Ok(Manifest {
             manifest_version: Some(6),
             name: next.id,
@@ -118,10 +119,10 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
                 .as_ref()
                 .and_then(|item| item.icon.clone()),
             main,
-            renderer: next.renderer,
+            renderer: next.renderer.unwrap_or_default(),
             backend: Some(has_backend),
             backend_api_version: has_backend.then_some(6),
-            renderer_api_version: Some(6),
+            renderer_api_version: has_renderer.then_some(6),
             min_host_version: Some(next.min_host_version),
             trust_level: "standard".into(),
             capabilities: serde_json::json!({}),
@@ -432,7 +433,9 @@ pub fn validate_entrypoints(root: &Path, manifest: &Manifest) -> Result<(), Stri
     if manifest.manifest_version == Some(6) {
         // Package inventory, native architecture and signatures are checked by the
         // installer. The renderer still uses the existing contained JS resolver.
-        resolve_entrypoint(&canonical_root, &manifest.renderer)?;
+        if !manifest.renderer.is_empty() {
+            resolve_entrypoint(&canonical_root, &manifest.renderer)?;
+        }
         return Ok(());
     }
     if manifest.manifest_version != Some(5) || !manifest.main.is_empty() {

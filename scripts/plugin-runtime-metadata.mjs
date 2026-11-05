@@ -7,7 +7,7 @@ export function artifactRuntimeMetadata(manifest) {
       manifestVersion: 6,
       backend,
       backendApiVersion: backend ? 6 : null,
-      rendererApiVersion: 6,
+      rendererApiVersion: checked.renderer === undefined ? null : 6,
       sdkApiVersion: 6,
       wireVersion: 4,
       dataSchemaVersion: 1

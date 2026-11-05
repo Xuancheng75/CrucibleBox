@@ -28,11 +28,15 @@ if (command === 'init') {
   const root = resolve(directory),
     kind = output ?? 'frontend'
   const id = idFlag?.slice('--id='.length) ?? basename(root)
-  if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id) || !['frontend', 'js', 'native'].includes(kind))
-    throw Error('Choose a valid plugin ID and frontend|js|native kind')
+  if (
+    !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id) ||
+    !['frontend', 'js', 'native', 'provider'].includes(kind)
+  )
+    throw Error('Choose a valid plugin ID and frontend|js|native|provider kind')
   if (existsSync(root)) throw Error('Init requires a new directory')
   if (kind === 'native' && !sdkFlag)
     throw Error('Native init requires --native-sdk=<unpacked public Rust SDK>')
+  const provider = kind === 'provider'
   const manifest = {
     manifestVersion: 6,
     sdkApiVersion: 6,
@@ -41,17 +45,19 @@ if (command === 'init') {
     displayName: id,
     description: 'Independent plugin example',
     publisher: { id: 'local-developer', displayName: 'Local developer' },
-    minHostVersion: '2.1.0',
+    minHostVersion: provider ? '2.2.0' : '2.1.0',
     sdk: { min: 6, maxExclusive: 7 },
-    renderer: 'dist/renderer.js',
-    permissions: ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
-    background: false,
-    contributes: { navigation: { title: id }, commands: [] },
-    exports: [],
+    ...(provider ? {} : { renderer: 'dist/renderer.js' }),
+    permissions: provider
+      ? []
+      : ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
+    background: provider,
+    contributes: provider ? { commands: [] } : { navigation: { title: id }, commands: [] },
+    exports: provider ? [{ id, version: '1.0.0', methods: ['sum'], interchangeable: true }] : [],
     dependencies: [],
     resources: []
   }
-  if (kind === 'js') manifest.backend = { kind: 'js', entry: 'dist/main.js' }
+  if (kind === 'js' || provider) manifest.backend = { kind: 'js', entry: 'dist/main.js' }
   if (kind === 'native')
     manifest.backend = {
       kind: 'native',
@@ -60,8 +66,8 @@ if (command === 'init') {
       arch: 'x86_64',
       trust: 'trusted-local-code'
     }
-  const config = { schemaVersion: 1, renderer: 'src/renderer.mjs' }
-  if (kind === 'js') config.backend = 'src/main.mjs'
+  const config = { schemaVersion: 1, ...(provider ? {} : { renderer: 'src/renderer.mjs' }) }
+  if (kind === 'js' || provider) config.backend = 'src/main.mjs'
   if (kind === 'native') config.native = { manifest: 'native/Cargo.toml', binary: 'plugin-backend' }
   await mkdir(join(root, 'src'), { recursive: true })
   await writeFile(join(root, 'plugin.source.json'), JSON.stringify(manifest, null, 2) + '\n')
@@ -89,11 +95,12 @@ if (command === 'init') {
     kind === 'frontend'
       ? "await api.platform('storage.set',{key:'example.value',value:{numbers:[7,19]}}); const result = await api.platform('storage.get',{key:'example.value'})"
       : "const result = await api.backend('sum',{numbers:[7,19]})"
-  await writeFile(
-    join(root, 'src/renderer.mjs'),
-    `import {createClient} from '@cruciblebox/next2-api'\nexport function mount(context) {\n const api=createClient(context), button=document.createElement('button'), status=document.createElement('p'); button.textContent='Run example'; status.setAttribute('role','status'); context.root.replaceChildren(button,status);\n const run=async()=>{button.disabled=true;try{${operation};status.textContent=JSON.stringify(result)}catch(error){status.textContent=String(error)}finally{button.disabled=false}};button.addEventListener('click',run);return()=>{button.removeEventListener('click',run);context.root.replaceChildren()};\n}\n`
-  )
-  if (kind === 'js')
+  if (!provider)
+    await writeFile(
+      join(root, 'src/renderer.mjs'),
+      `import {createClient} from '@cruciblebox/next2-api'\nexport function mount(context) {\n const api=createClient(context), button=document.createElement('button'), status=document.createElement('p'); button.textContent='Run example'; status.setAttribute('role','status'); context.root.replaceChildren(button,status);\n const run=async()=>{button.disabled=true;try{${operation};status.textContent=JSON.stringify(result)}catch(error){status.textContent=String(error)}finally{button.disabled=false}};button.addEventListener('click',run);return()=>{button.removeEventListener('click',run);context.root.replaceChildren()};\n}\n`
+    )
+  if (kind === 'js' || provider)
     await writeFile(
       join(root, 'src/main.mjs'),
       "export function activate(){return {sum(params){if(!Array.isArray(params.numbers)||!params.numbers.every(Number.isSafeInteger))throw Object.assign(Error('Expected integers'),{code:'INVALID_NUMBERS'});const sum=params.numbers.reduce((a,b)=>a+b,0);if(!Number.isSafeInteger(sum))throw Object.assign(Error('Sum overflow'),{code:'OVERFLOW'});return sum}}}\n"
@@ -297,7 +304,11 @@ object(
   ['schemaVersion', 'renderer', 'backend', 'native', 'workers', 'assets', 'css', 'jsx', 'aliases'],
   'build configuration'
 )
-if (config.schemaVersion !== 1 || (!manifest.backend && config.backend !== undefined))
+if (
+  config.schemaVersion !== 1 ||
+  (!manifest.backend && config.backend !== undefined) ||
+  (!manifest.renderer && config.renderer !== undefined)
+)
   throw Error('Build configuration/manifest mismatch')
 if (config.css !== undefined && !['style', 'string'].includes(config.css))
   throw Error('Invalid CSS mode')
@@ -311,14 +322,14 @@ if (config.aliases !== undefined) {
     aliases[name] = await file(path(value, 'vendor/'))
   }
 }
-const jobs = [
-  {
+const jobs = []
+if (manifest.renderer)
+  jobs.push({
     source: await entry(config.renderer, 'renderer'),
     target: manifest.renderer,
     platform: 'browser',
     format: 'esm'
-  }
-]
+  })
 if (manifest.backend?.kind === 'js')
   jobs.push({
     source: await entry(config.backend, 'main'),

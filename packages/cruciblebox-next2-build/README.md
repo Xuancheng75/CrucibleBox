@@ -5,6 +5,7 @@ Install the published-shape `@cruciblebox/next2-api` and `@cruciblebox/next2-bui
 ```
 cruciblebox-next2 init my-plugin frontend
 cruciblebox-next2 init my-js-plugin js
+cruciblebox-next2 init my-sum-service provider
 cruciblebox-next2 init my-native-plugin native --native-sdk=<unpacked-cruciblebox-next2-native-crate>
 ```
 
@@ -13,3 +14,5 @@ Inside the new project, install npm dependencies and run `npm run build`, then `
 `plugin.source.json` contains metadata; `plugin.build.json` declares source entries, assets, browser workers and an optional native Cargo target. Build writes the exact payload inventory into `plugin.json`; pack rejects changed output and never replaces an existing ZIP. Backend methods remain plugin-defined strings. Model binaries belong in separately reviewed resource packages, not these templates.
 
 Source aliases and workspace dependency reuse are build conveniences only. The packed renderer is bundled; no host-relative source import or runtime node_modules lookup is supported. Native plugins need explicit local-code trust at installation. The examples exercise platform transport and do not count as official-plugin, OCR, translation or fixed-host P6 acceptance.
+
+The `provider` template targets CrucibleBox 2.2.0. It has a QuickJS backend and no renderer. It exports `sum` under a capability with the same ID as the project. A consumer declares that ID and interface version range in `dependencies`, then calls `resolveCapability(id)` and `service(id, 'sum', { numbers: [7, 19] })`. A pinned `providerId` is appropriate when the consumer depends on a specific provider's identity or private state.

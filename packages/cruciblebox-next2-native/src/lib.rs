@@ -116,6 +116,12 @@ impl Client {
     pub fn platform(&self, method: &str, params: Value) -> Result<Value> {
         self.call(json!({"kind":"platform"}), method, params)
     }
+    pub fn resolve_capability(&self, id: &str) -> Result<Value> {
+        self.platform("capabilities.resolve", json!({"id":id}))
+    }
+    pub fn write_log(&self, level: &str, message: &str) -> Result<Value> {
+        self.platform("logging.write", json!({"level":level,"message":message}))
+    }
     pub fn service(&self, id: &str, method: &str, params: Value) -> Result<Value> {
         self.call(json!({"kind":"service","id":id}), method, params)
     }

@@ -322,11 +322,13 @@ fn declared_service_version_identity_and_dependency_failures() {
         id: "transform".into(),
         version: "1.2.0".into(),
         methods: vec!["recognize".into()],
+        interchangeable: None,
     }];
     let mut caller = native("translate-client");
     caller.dependencies = vec![ServiceDependency {
         id: "transform".into(),
-        provider_id: "sample-provider".into(),
+        provider_id: Some("sample-provider".into()),
+        optional: None,
         version: VersionRange {
             min: "1.0.0".into(),
             max_exclusive: "2.0.0".into(),
@@ -355,7 +357,10 @@ fn declared_service_version_identity_and_dependency_failures() {
         registry.dependents("sample-provider"),
         vec!["translate-client"]
     );
-    assert!(Registry::new([installed(caller.clone())]).is_err());
+    assert!(Registry::new([installed(caller.clone())])
+        .unwrap()
+        .validate_plugin(&caller.id)
+        .is_err());
     assert!(Registry::new([
         installed(caller.clone()),
         Installed {
@@ -363,13 +368,21 @@ fn declared_service_version_identity_and_dependency_failures() {
             enabled: false
         }
     ])
+    .unwrap()
+    .validate_plugin(&caller.id)
     .is_err());
     provider.exports[0].version = "2.0.0".into();
-    assert!(Registry::new([installed(caller.clone()), installed(provider.clone())]).is_err());
+    assert!(
+        Registry::new([installed(caller.clone()), installed(provider.clone())])
+            .unwrap()
+            .validate_plugin(&caller.id)
+            .is_err()
+    );
     provider.exports[0].version = "1.2.0".into();
     provider.dependencies = vec![ServiceDependency {
         id: "translation".into(),
-        provider_id: caller.id.clone(),
+        provider_id: Some(caller.id.clone()),
+        optional: None,
         version: VersionRange {
             min: "1.0.0".into(),
             max_exclusive: "2.0.0".into(),
@@ -379,8 +392,73 @@ fn declared_service_version_identity_and_dependency_failures() {
         id: "translation".into(),
         version: "1.0.0".into(),
         methods: vec!["translate".into()],
+        interchangeable: None,
     }];
-    assert!(Registry::new([installed(caller), installed(provider)]).is_err());
+    assert_eq!(
+        Registry::new([installed(caller), installed(provider)])
+            .unwrap()
+            .validate_plugin("translate-client")
+            .unwrap_err(),
+        "DEPENDENCY_CYCLE"
+    );
+}
+
+#[test]
+fn interchangeable_capabilities_select_by_interface_version_then_identity() {
+    let mut client = native("client");
+    client.dependencies.push(ServiceDependency {
+        id: "transform".into(),
+        provider_id: None,
+        optional: Some(true),
+        version: VersionRange {
+            min: "1.0.0".into(),
+            max_exclusive: "2.0.0".into(),
+        },
+    });
+    let provider = |id: &str, version: &str, interchangeable| {
+        let mut manifest = native(id);
+        manifest.exports.push(ServiceExport {
+            id: "transform".into(),
+            version: version.into(),
+            methods: vec!["recognize".into()],
+            interchangeable,
+        });
+        installed(manifest)
+    };
+    let missing = Registry::new([
+        installed(client.clone()),
+        provider("stateful", "1.9.0", None),
+    ])
+    .unwrap();
+    missing.validate_plugin("client").unwrap();
+    assert_eq!(
+        missing.capability("client", "transform").unwrap_err(),
+        "SERVICE_UNAVAILABLE"
+    );
+    let mut plugins = vec![
+        installed(client),
+        provider("incompatible", "2.0.0", Some(true)),
+        provider("stateful", "1.9.0", None),
+        provider("low", "1.0.0", Some(true)),
+        provider("winner-b", "1.8.0", Some(true)),
+        provider("winner-a", "1.8.0", Some(true)),
+    ];
+    for _ in 0..2 {
+        let registry = Registry::new(plugins.clone()).unwrap();
+        assert_eq!(
+            registry
+                .capability("client", "transform")
+                .unwrap()
+                .provider_id,
+            "winner-a"
+        );
+        assert_eq!(
+            registry.capability("client", "private").unwrap_err(),
+            "DEPENDENCY_UNDECLARED"
+        );
+        assert_eq!(registry.dependents("winner-a"), vec!["client"]);
+        plugins.reverse();
+    }
 }
 #[test]
 fn updates_revoke_old_sessions_and_task_providers_cannot_impersonate_initiators() {

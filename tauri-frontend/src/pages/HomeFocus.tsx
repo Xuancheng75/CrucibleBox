@@ -136,6 +136,10 @@ export default function HomeFocus() {
 
   const openPlugin = useCallback(
     (plugin: PluginMeta) => {
+      if (!plugin.entryRenderer) {
+        setConfigPlugin(plugin)
+        return
+      }
       try {
         window.localStorage.setItem(RECENT_PLUGIN_KEY, plugin.id)
       } catch {
@@ -353,10 +357,17 @@ export default function HomeFocus() {
                   </span>
                 </div>
                 <div className="cbx-focus-actions">
-                  <Button type="primary" onClick={() => openPlugin(preview)}>
-                    打开插件 ↗
+                  {preview.entryRenderer && (
+                    <Button type="primary" onClick={() => openPlugin(preview)}>
+                      打开插件 ↗
+                    </Button>
+                  )}
+                  <Button
+                    type={preview.entryRenderer ? 'default' : 'primary'}
+                    onClick={() => setConfigPlugin(preview)}
+                  >
+                    {preview.entryRenderer ? '插件配置' : '服务配置'}
                   </Button>
-                  <Button onClick={() => setConfigPlugin(preview)}>插件配置</Button>
                 </div>
                 <div className="cbx-focus-utilities">
                   <Button

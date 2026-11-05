@@ -258,13 +258,16 @@
           },
           "maxItems": 128,
           "minItems": 1
+        },
+        "interchangeable": {
+          "type": "boolean"
         }
       }
     },
     "ServiceDependency": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "providerId", "version"],
+      "required": ["id", "version"],
       "properties": {
         "id": {
           "type": "string",
@@ -280,7 +283,36 @@
         },
         "version": {
           "$ref": "#/$defs/VersionRange"
+        },
+        "optional": {
+          "type": "boolean"
         }
+      }
+    },
+    "CapabilityResolveParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "format": "plugin-id" }
+      }
+    },
+    "CapabilityBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerId", "export"],
+      "properties": {
+        "providerId": { "type": "string", "minLength": 1, "maxLength": 64, "format": "plugin-id" },
+        "export": { "$ref": "#/$defs/ServiceExport" }
+      }
+    },
+    "LogWriteParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "message"],
+      "properties": {
+        "level": { "enum": ["debug", "info", "warn", "error"] },
+        "message": { "type": "string", "minLength": 1, "maxLength": 2048 }
       }
     },
     "ResourceDependency": {
@@ -1507,7 +1539,6 @@
         "publisher",
         "minHostVersion",
         "sdk",
-        "renderer",
         "permissions",
         "background",
         "contributes",
@@ -1570,6 +1601,7 @@
           "items": {
             "enum": [
               "storage:read",
+              "logging:write",
               "storage:write",
               "tasks:read",
               "tasks:control",
@@ -2761,6 +2793,18 @@
     }
   },
   "methods": {
+    "logging.write": {
+      "permission": "logging:write",
+      "contexts": ["renderer", "backend"],
+      "params": { "$ref": "#/$defs/LogWriteParams" },
+      "result": { "type": "boolean" }
+    },
+    "capabilities.resolve": {
+      "permission": null,
+      "contexts": ["renderer", "backend"],
+      "params": { "$ref": "#/$defs/CapabilityResolveParams" },
+      "result": { "$ref": "#/$defs/CapabilityBinding" }
+    },
     "runtime.ping": {
       "permission": null,
       "contexts": ["renderer", "backend"],
@@ -2953,7 +2997,7 @@
     },
     "theme.get": {
       "permission": "theme:read",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/ThemeGetParams"
       },
@@ -2963,7 +3007,7 @@
     },
     "theme.list": {
       "permission": "theme:read",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/ThemeListParams"
       },
@@ -2973,7 +3017,7 @@
     },
     "theme.preview": {
       "permission": "theme:write",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/ThemePreviewParams"
       },
@@ -2983,7 +3027,7 @@
     },
     "theme.commit": {
       "permission": "theme:write",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/ThemeCommitParams"
       },
@@ -2993,7 +3037,7 @@
     },
     "theme.rollback": {
       "permission": "theme:write",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/ThemeRollbackParams"
       },
@@ -3003,7 +3047,7 @@
     },
     "theme.set": {
       "permission": "theme:write",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/ThemeSetParams"
       },
@@ -3013,7 +3057,7 @@
     },
     "dialog.open": {
       "permission": "dialog",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/DialogOpenParams"
       },
@@ -3023,7 +3067,7 @@
     },
     "dialog.confirm": {
       "permission": "dialog",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/DialogConfirmParams"
       },
@@ -3033,7 +3077,7 @@
     },
     "notification.show": {
       "permission": "notification",
-      "contexts": ["renderer", "backend"],
+      "contexts": ["renderer"],
       "params": {
         "$ref": "#/$defs/NotificationShowParams"
       },

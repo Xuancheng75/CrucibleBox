@@ -32,7 +32,6 @@ mod next_renderer;
 mod platform_storage;
 
 mod output_transaction;
-mod platform_service;
 mod plugin_protocol;
 mod plugin_session;
 mod rand_token;
@@ -195,7 +194,7 @@ fn main() {
             let migration = match data_dir::migrate(None) {
                 Ok(m) => m,
                 Err(err) => show_fatal_error(&format!(
-                    "数据库迁移失败：{}\n\n源数据未受影响，请关闭旧版应用后重试。",
+                    "数据库迁移失败：{}\n\n请保留现有数据目录，并按上述错误核查后再试。",
                     err
                 )),
             };
@@ -301,8 +300,13 @@ fn main() {
                     host_task::executor_observer(db.clone(), emitter.clone(), owner),
                 );
             }
-            // 1.9.18：剪贴板插件的监控必须在应用启动时就运行，不能依赖用户先打开插件页面。
             backend.retain_unsupported_disabled();
+            let background = next_backend.next2.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = background.restore_background() {
+                    eprintln!("[next2] background recovery failed: {error}");
+                }
+            });
             diagnostics::record("plugins-ready", None);
 
             // 5) 插件 renderer 会话 registry（协议 handler 经 state 访问）

@@ -258,6 +258,17 @@ pub fn inspect_plugin(
     trusted_keys: &[PublisherKey],
     host_version: &str,
 ) -> Result<InspectedPlugin, String> {
+    let inspected = inspect_plugin_manifest(root, trusted_keys, host_version)?;
+    verify_payload(&inspected.root, &inspected.manifest)?;
+    Ok(inspected)
+}
+
+/// For discovery only. Before executing or serving package code, verify its payload.
+pub fn inspect_plugin_manifest(
+    root: &Path,
+    trusted_keys: &[PublisherKey],
+    host_version: &str,
+) -> Result<InspectedPlugin, String> {
     let meta = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
     if !plain(&meta) || !meta.is_dir() {
         return Err("INVALID_PACKAGE_ROOT".into());
@@ -274,7 +285,6 @@ pub fn inspect_plugin(
         return Err("HOST_VERSION_INCOMPATIBLE".into());
     }
     let provenance = verify_provenance(&root, &raw, &manifest.publisher.id, trusted_keys)?;
-    verify_payload(&root, &manifest)?;
     Ok(InspectedPlugin {
         root,
         manifest,

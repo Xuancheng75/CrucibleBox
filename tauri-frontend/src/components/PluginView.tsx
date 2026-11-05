@@ -138,14 +138,18 @@ export default function PluginView({ pluginId }: { pluginId?: string } = {}) {
         )}
       </div>
 
-      <PluginHost
-        pluginId={plugin.id}
-        pluginName={plugin.name}
-        rendererEntry={plugin.entryRenderer}
-        config={plugin.configData || {}}
-        permissions={plugin.permissions}
-        onConfigChange={(config) => updatePluginConfig(plugin.id, config)}
-      />
+      {plugin.entryRenderer ? (
+        <PluginHost
+          pluginId={plugin.id}
+          pluginName={plugin.name}
+          rendererEntry={plugin.entryRenderer}
+          config={plugin.configData || {}}
+          permissions={plugin.permissions}
+          onConfigChange={(config) => updatePluginConfig(plugin.id, config)}
+        />
+      ) : (
+        <Alert type="info" message="此插件提供后台服务，可在工作台管理配置和启停。" showIcon />
+      )}
     </div>
   )
 }

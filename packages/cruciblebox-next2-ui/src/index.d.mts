@@ -1,6 +1,8 @@
 export * from '@cruciblebox/next2-api'
 import type {
   Json,
+  CapabilityBinding,
+  LogWriteParams,
   RendererContext,
   TaskSnapshot,
   Target,
@@ -18,6 +20,8 @@ export declare function createClient(
   context: Pick<RendererContext, 'session' | 'exchange' | 'enableThemeStyle'>
 ): {
   platform(method: string, params?: Json): Promise<Json>
+  resolveCapability(id: string): Promise<CapabilityBinding>
+  writeLog(entry: LogWriteParams): Promise<boolean>
   backend(method: string, params?: Json): Promise<Json>
   service(id: string, method: string, params?: Json): Promise<Json>
   ping(): Promise<Json>

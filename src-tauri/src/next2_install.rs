@@ -78,7 +78,15 @@ pub fn save(db: &Db, root: &Path, approval: Approval) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 pub fn load(db: &Db, root: &Path) -> Result<ApprovedPlugin, String> {
-    let inspected = inspect(db, root)?;
+    approve_installed(db, inspect(db, root)?)
+}
+
+pub fn load_manifest(db: &Db, root: &Path) -> Result<cruciblebox_next2_protocol::Manifest, String> {
+    let inspected = package::inspect_plugin_manifest(root, &keys(db)?, env!("CARGO_PKG_VERSION"))?;
+    Ok(approve_installed(db, inspected)?.manifest().clone())
+}
+
+fn approve_installed(db: &Db, inspected: InspectedPlugin) -> Result<ApprovedPlugin, String> {
     let raw = db
         .setting_get(&consent_key(&inspected))
         .map_err(|e| e.to_string())?
