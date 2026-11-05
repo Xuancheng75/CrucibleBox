@@ -60,28 +60,20 @@ export function matches(rule, value) {
       typeof value === 'object' &&
       !Array.isArray(value) &&
       (rule.required ?? []).every((key) => Object.hasOwn(value, key)) &&
-      (rule.additionalProperties !== false ||
-        Object.keys(value).every((key) => Object.hasOwn(rule.properties, key))) &&
-      Object.entries(rule.properties ?? {}).every(
-        ([key, child]) => !Object.hasOwn(value, key) || matches(child, value[key])
-      )
+      Object.entries(value).every(([key, child]) => {
+        if (Object.hasOwn(rule.properties ?? {}, key)) return matches(rule.properties[key], child)
+        const additional = rule.additionalProperties
+        return (
+          additional !== false && (typeof additional !== 'object' || matches(additional, child))
+        )
+      })
     )
   return true
 }
-export function parse(raw, name, maxBytes = contract.budget.bytes) {
-  if (typeof raw !== 'string' || new TextEncoder().encode(raw).length > maxBytes)
-    throw Error('BUDGET_EXCEEDED')
-  const value = JSON.parse(raw)
+export function validateBudget(value, maxNodes, budgetError = 'BUDGET_EXCEEDED') {
   let nodes = 0
   function visit(child, depth) {
-    if (
-      ++nodes >
-        (maxBytes === contract.budget.bytes
-          ? contract.budget.nodes
-          : contract.budget.manifestNodes) ||
-      depth > contract.budget.depth
-    )
-      throw Error('BUDGET_EXCEEDED')
+    if (++nodes > maxNodes || depth > contract.budget.depth) throw Error(budgetError)
     if (
       typeof child === 'number' &&
       (!Number.isFinite(child) || Math.abs(child) > Number.MAX_SAFE_INTEGER)
@@ -95,6 +87,15 @@ export function parse(raw, name, maxBytes = contract.budget.bytes) {
     }
   }
   visit(value, 1)
+}
+export function parse(raw, name, maxBytes = contract.budget.bytes) {
+  if (typeof raw !== 'string' || new TextEncoder().encode(raw).length > maxBytes)
+    throw Error('BUDGET_EXCEEDED')
+  const value = JSON.parse(raw)
+  validateBudget(
+    value,
+    maxBytes === contract.budget.bytes ? contract.budget.nodes : contract.budget.manifestNodes
+  )
   if (!matches(contract.$defs[name], value)) throw Error('INVALID_' + name.toUpperCase())
   return value
 }

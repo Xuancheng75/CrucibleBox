@@ -75,6 +75,46 @@ fn inventory(files: &[FileEntry]) -> Result<(), String> {
     }
     Ok(())
 }
+impl ServiceMethod {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::LegacyServiceMethod(name) => name,
+            Self::CapabilityMethod(method) => &method.name,
+        }
+    }
+}
+
+fn validate_capability_schema(rule: &Value) -> Result<(), String> {
+    for (min, max) in [
+        ("minimum", "maximum"),
+        ("minLength", "maxLength"),
+        ("minItems", "maxItems"),
+    ] {
+        if rule[min]
+            .as_f64()
+            .zip(rule[max].as_f64())
+            .is_some_and(|(min, max)| min > max)
+        {
+            return Err("INVALID_CAPABILITY_SCHEMA".into());
+        }
+    }
+    if let Some(properties) = rule["properties"].as_object() {
+        if rule["required"].as_array().is_some_and(|keys| {
+            keys.iter()
+                .any(|key| !properties.contains_key(key.as_str().unwrap()))
+        }) {
+            return Err("INVALID_CAPABILITY_SCHEMA".into());
+        }
+        for child in properties.values() {
+            validate_capability_schema(child)?;
+        }
+    }
+    if let Some(items) = rule.get("items") {
+        validate_capability_schema(items)?;
+    }
+    Ok(())
+}
+
 pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     let manifest: Manifest = schema::parse(raw, "Manifest", BUDGET_MANIFEST_BYTES)?;
     inventory(&manifest.files)?;
@@ -86,7 +126,19 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     unique(manifest.resources.iter().map(|v| v.id.as_str()))?;
     unique(manifest.contributes.commands.iter().map(|v| v.id.as_str()))?;
     for export in &manifest.exports {
-        unique(export.methods.iter().map(String::as_str))?;
+        let descriptor = serde_json::to_value(export).map_err(|error| error.to_string())?;
+        if descriptor.to_string().len() > BUDGET_CAPABILITY_DESCRIPTOR_BYTES {
+            return Err("CAPABILITY_DESCRIPTOR_BUDGET_EXCEEDED".into());
+        }
+        schema::budget(&descriptor, 1, &mut 0, BUDGET_CAPABILITY_DESCRIPTOR_NODES)
+            .map_err(|_| "CAPABILITY_DESCRIPTOR_BUDGET_EXCEEDED")?;
+        unique(export.methods.iter().map(ServiceMethod::name))?;
+        for method in &export.methods {
+            if let ServiceMethod::CapabilityMethod(method) = method {
+                validate_capability_schema(&method.params)?;
+                validate_capability_schema(&method.result)?;
+            }
+        }
     }
     for dependency in &manifest.dependencies {
         compatible(&dependency.version.min, &dependency.version)?;

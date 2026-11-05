@@ -66,7 +66,7 @@ jobs:
         run: npm run check
 
       - name: Verify API 6 contract and SDK
-        run: npm run test:next
+        run: npm run test:next && node scripts/check-platform-boundaries.mjs
 
       - name: Verify API 6 Rust protocol
         working-directory: src-tauri/crates/next2-protocol

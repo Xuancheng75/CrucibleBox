@@ -14,6 +14,8 @@ function ts(rule) {
   if (rule.oneOf) return rule.oneOf.map(ts).join(' | ')
   if (rule.type === 'array') return `(${ts(rule.items)})[]`
   if (rule.type === 'object') {
+    if (typeof rule.additionalProperties === 'object')
+      return `{ [key: string]: ${ts(rule.additionalProperties)} }`
     if (rule.additionalProperties === true && !Object.keys(rule.properties ?? {}).length)
       return 'Record<string, Json>'
     if (Object.keys(rule.properties ?? {}).length === 0) return 'Record<string, never>'
@@ -54,45 +56,44 @@ const typescript = Object.entries(defs)
       `export type ${name} = ${name === 'Json' ? 'null | boolean | number | string | Json[] | { [key: string]: Json }' : ts(rule)}`
   )
   .join('\n')
-const rustTypes = Object.entries(defs)
-  .map(([name, rule]) => {
-    const derive = '#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]'
-    if (rule.type === 'object' && rule.additionalProperties === false) {
-      const literalNames = Object.fromEntries(
-        Object.entries(rule.properties)
-          .filter(([, value]) => typeof value.const === 'string')
-          .map(([field]) => [field, name + field[0].toUpperCase() + field.slice(1)])
+function rustDefinition([name, rule]) {
+  const derive = '#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]'
+  if (rule.type === 'object' && rule.additionalProperties === false) {
+    const literalNames = Object.fromEntries(
+      Object.entries(rule.properties)
+        .filter(([, value]) => typeof value.const === 'string')
+        .map(([field]) => [field, name + field[0].toUpperCase() + field.slice(1)])
+    )
+    const literals = Object.entries(literalNames)
+      .map(
+        ([field, type]) =>
+          `${derive}\n#[derive(Default)]\npub enum ${type} { #[default] #[serde(rename = ${JSON.stringify(rule.properties[field].const)})] Value }\n`
       )
-      const literals = Object.entries(literalNames)
-        .map(
-          ([field, type]) =>
-            `${derive}\n#[derive(Default)]\npub enum ${type} { #[default] #[serde(rename = ${JSON.stringify(rule.properties[field].const)})] Value }\n`
-        )
-        .join('')
+      .join('')
+    return (
+      literals +
+      `${derive}\n#[serde(rename_all = "camelCase", deny_unknown_fields)]\npub struct ${name} {\n` +
+      Object.entries(rule.properties)
+        .map(([field, value]) => {
+          const required = rule.required.includes(field)
+          const type = literalNames[field] ?? rust(value)
+          return `${required ? '' : '#[serde(default, skip_serializing_if = "Option::is_none")]\n'}pub ${snake(field)}: ${required ? type : `Option<${type}>`},`
+        })
+        .join('\n') +
+      '\n}'
+    )
+  }
+  if (rule.oneOf) {
+    if (rule.oneOf.every((choice) => choice.$ref))
       return (
-        literals +
-        `${derive}\n#[serde(rename_all = "camelCase", deny_unknown_fields)]\npub struct ${name} {\n` +
-        Object.entries(rule.properties)
-          .map(([field, value]) => {
-            const required = rule.required.includes(field)
-            const type = literalNames[field] ?? rust(value)
-            return `${required ? '' : '#[serde(default, skip_serializing_if = "Option::is_none")]\n'}pub ${snake(field)}: ${required ? type : `Option<${type}>`},`
-          })
-          .join('\n') +
+        `${derive}\n#[serde(untagged)]\npub enum ${name} {\n` +
+        rule.oneOf.map((choice) => `${reference(choice)}(${reference(choice)}),`).join('\n') +
         '\n}'
       )
-    }
-    if (rule.oneOf) {
-      if (rule.oneOf.every((choice) => choice.$ref))
-        return (
-          `${derive}\n#[serde(untagged)]\npub enum ${name} {\n` +
-          rule.oneOf.map((choice) => `${reference(choice)}(${reference(choice)}),`).join('\n') +
-          '\n}'
-        )
-    }
-    return `pub type ${name} = ${rust(rule)};`
-  })
-  .join('\n')
+  }
+  return `pub type ${name} = ${rust(rule)};`
+}
+const rustTypes = Object.entries(defs).map(rustDefinition).join('\n')
 const rustSource =
   `// Generated from contracts/next2/contract.json.\npub const CONTRACT_JSON: &str = r###"${JSON.stringify(contract)}"###;\n` +
   `pub const CODE_DIRECTORY: &str = ${JSON.stringify(contract.install.codeDirectory)};\n` +
@@ -100,12 +101,31 @@ const rustSource =
     .map(([name, value]) => `pub const BUDGET_${snake(name).toUpperCase()}: usize = ${value};`)
     .join('\n') +
   `\n${rustTypes}\n`
-const formattedRust = spawnSync('rustfmt', ['--emit', 'stdout', '--edition', '2021'], {
-  input: rustSource,
-  encoding: 'utf8',
-  windowsHide: true
-})
-if (formattedRust.status !== 0) throw Error(formattedRust.stderr || 'rustfmt failed')
+function formatRust(source) {
+  const result = spawnSync('rustfmt', ['--emit', 'stdout', '--edition', '2021'], {
+    input: source,
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  if (result.status !== 0) throw Error(result.stderr || 'rustfmt failed')
+  return result.stdout.replaceAll('\r\n', '\n')
+}
+const nativeDefinitions = [
+  'CapabilitySchema',
+  'LegacyServiceMethod',
+  'CapabilityMethod',
+  'ServiceMethod',
+  'ServiceExport',
+  'CapabilityBinding',
+  'RpcError'
+]
+const nativeSource =
+  '// Generated from contracts/next2/contract.json.\n' +
+  `pub const MAX_FRAME_BYTES: usize = ${contract.budget.bytes};\n` +
+  `pub(crate) const WIRE_VERSION: u64 = ${contract.versions.wireVersion};\n` +
+  `pub(crate) const SDK_API_VERSION: u64 = ${contract.versions.sdkApiVersion};\n` +
+  `pub(crate) const REQUEST_TIMEOUT_MS: u64 = ${contract.budget.requestTimeoutMs};\n` +
+  nativeDefinitions.map((name) => rustDefinition([name, defs[name]])).join('\n')
 function pretty(source, filename) {
   const result = spawnSync(
     process.execPath,
@@ -146,7 +166,8 @@ const outputs = {
     ),
     'frame-validation.mjs'
   ),
-  'src-tauri/crates/next2-protocol/src/generated.rs': formattedRust.stdout.replaceAll('\r\n', '\n')
+  'src-tauri/crates/next2-protocol/src/generated.rs': formatRust(rustSource),
+  'packages/cruciblebox-next2-native/src/generated.rs': formatRust(nativeSource)
 }
 for (const [name, content] of Object.entries(outputs)) {
   const target = resolve(root, name)
@@ -157,4 +178,6 @@ for (const [name, content] of Object.entries(outputs)) {
     writeFileSync(target, content)
   }
 }
-console.log('Next 2.0 contract: Manifest/API 6, wire 4, data 1')
+console.log(
+  `Next 2.0 contract: Manifest ${contract.versions.manifestVersion}, API ${contract.versions.sdkApiVersion}, wire ${contract.versions.wireVersion}, data ${contract.versions.dataSchemaVersion}`
+)

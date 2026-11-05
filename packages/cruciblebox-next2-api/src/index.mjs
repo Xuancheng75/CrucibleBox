@@ -1,5 +1,5 @@
 import { contract } from './generated.mjs'
-import { parse, matches, unique, validRange, validateInventory } from './schema.mjs'
+import { parse, matches, unique, validRange, validateInventory, validateBudget } from './schema.mjs'
 export { contract } from './generated.mjs'
 export { compatible } from './schema.mjs'
 
@@ -21,6 +21,22 @@ export function validateThemeDesign(raw) {
   return design
 }
 
+function validateCapabilitySchema(rule) {
+  for (const [min, max] of [
+    ['minimum', 'maximum'],
+    ['minLength', 'maxLength'],
+    ['minItems', 'maxItems']
+  ]) {
+    if (rule[min] > rule[max]) throw Error('INVALID_CAPABILITY_SCHEMA')
+  }
+  if (rule.properties) {
+    if (rule.required?.some((key) => !Object.hasOwn(rule.properties, key)))
+      throw Error('INVALID_CAPABILITY_SCHEMA')
+    for (const child of Object.values(rule.properties)) validateCapabilitySchema(child)
+  }
+  if (rule.items) validateCapabilitySchema(rule.items)
+}
+
 export function validateManifest(raw) {
   const manifest = parse(raw, 'Manifest', contract.budget.manifestBytes)
   validateInventory(manifest.files)
@@ -33,8 +49,24 @@ export function validateManifest(raw) {
   ]) {
     unique(list, (item) => item.id)
     for (const item of list) {
-      if (name === 'exports') unique(item.methods, (method) => method)
-      else validRange(item.version)
+      if (name === 'exports') {
+        if (
+          new TextEncoder().encode(JSON.stringify(item)).length >
+          contract.budget.capabilityDescriptorBytes
+        )
+          throw Error('CAPABILITY_DESCRIPTOR_BUDGET_EXCEEDED')
+        validateBudget(
+          item,
+          contract.budget.capabilityDescriptorNodes,
+          'CAPABILITY_DESCRIPTOR_BUDGET_EXCEEDED'
+        )
+        unique(item.methods, (method) => (typeof method === 'string' ? method : method.name))
+        for (const method of item.methods) {
+          if (typeof method === 'string') continue
+          validateCapabilitySchema(method.params)
+          validateCapabilitySchema(method.result)
+        }
+      } else validRange(item.version)
     }
   }
   unique(manifest.contributes.commands, (command) => command.id)
@@ -113,7 +145,7 @@ export function createClient({ session, exchange }) {
   const call = async (target, method, params = {}) => {
     const request = validateRequest(
       JSON.stringify({
-        wireVersion: 4,
+        wireVersion: contract.versions.wireVersion,
         requestId: `sdk-${++sequence}`,
         session,
         target,

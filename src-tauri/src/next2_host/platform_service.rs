@@ -100,7 +100,7 @@ impl Manager {
             row,
             request,
             task,
-            ..
+            file_caller,
         } = *call;
         let params = &request.params;
         let result: Result<Value, String> = match request.method.as_str() {
@@ -108,13 +108,20 @@ impl Manager {
                 if task.is_some() {
                     return Err(error("NESTED_TASK_DENIED".into()));
                 }
-                let target: protocol::Target = serde_json::from_value(params["target"].clone())
+                let mut execution = request.clone();
+                execution.target = serde_json::from_value(params["target"].clone())
                     .map_err(|e| error(e.to_string()))?;
-                let method = params["method"].as_str().unwrap().to_owned();
+                execution.method = params["method"].as_str().unwrap().to_owned();
+                execution.params = params["params"].clone();
+                let context = if file_caller.is_some() {
+                    "backend"
+                } else {
+                    "renderer"
+                };
                 let route = self
                     .registry()
                     .map_err(error)?
-                    .resolve(owner, &target, &method)
+                    .resolve(owner, &execution, context)
                     .map_err(error)?;
                 let Route::Backend { provider, .. } = &route else {
                     return Err(error("INVALID_TASK_TARGET".into()));
@@ -135,10 +142,6 @@ impl Manager {
                 let execution_owner = row.id.clone();
                 let manager = self.clone();
                 let owner = owner.to_owned();
-                let mut request = request.clone();
-                request.target = target;
-                request.method = method;
-                request.params = params["params"].clone();
                 let id = self
                     .services
                     .runtime
@@ -148,7 +151,13 @@ impl Manager {
                         Box::new(move |ctx| {
                             ctx.check_cancelled()?;
                             let result = manager
-                                .execute(&owner, &request, route, Some((ctx, &task_provider)), None)
+                                .execute(
+                                    &owner,
+                                    &execution,
+                                    route,
+                                    Some((ctx, &task_provider)),
+                                    None,
+                                )
                                 .map_err(|error| format!("{}: {}", error.code, error.message));
                             let created = manager
                                 .services

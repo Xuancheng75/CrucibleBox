@@ -80,6 +80,8 @@ test('client rejects wrong correlation and oversized frames', async () => {
 test('capability discovery uses a declared binding response', async () => {
   const binding = {
     providerId: 'sample-provider',
+    providerVersion: '1.0.0',
+    lifecycle: 'on-demand',
     export: { id: 'transform', version: '1.2.0', methods: ['recognize'], interchangeable: true }
   }
   const client = createClient({

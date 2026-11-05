@@ -37,6 +37,7 @@ fn error(message: String) -> RpcError {
     }
 }
 struct Slot {
+    version: String,
     worker: Mutex<Option<Worker>>,
     stop: StopHandle,
     admission: Mutex<Session>,
@@ -297,6 +298,9 @@ impl Manager {
         let mut workers = self.workers.lock().map_err(|_| "INTERNAL_ERROR")?;
         let key = (row.id.clone(), task);
         if let Some(slot) = workers.get(&key) {
+            if slot.version != row.version {
+                return Err("PROVIDER_CHANGED".into());
+            }
             self.installed(row)?;
             return Ok(slot.clone());
         }
@@ -315,6 +319,7 @@ impl Manager {
             None => return Err("BACKEND_UNAVAILABLE".into()),
         };
         let slot = Arc::new(Slot {
+            version: row.version.clone(),
             stop: worker.stop_handle(),
             admission: Mutex::new(Session::new(
                 plugin.manifest().clone(),
@@ -481,9 +486,7 @@ impl Manager {
             .ok_or("COMMAND_NOT_DECLARED")?;
         let raw = json!({"wireVersion":4,"requestId":crate::rand_token::random_token_hex()?,"session":crate::rand_token::random_token_hex()?,"target":{"kind":"backend"},"method":command.method,"params":{}}).to_string();
         let request = protocol::validate_request(&raw)?;
-        let route = self
-            .registry()?
-            .resolve(owner, &request.target, &request.method)?;
+        let route = self.registry()?.resolve(owner, &request, "host")?;
         self.execute(owner, &request, route, None, None)
             .map_err(|failure| format!("{}: {}", failure.code, failure.message))
     }
@@ -594,9 +597,14 @@ impl Manager {
             Route::Backend {
                 initiator,
                 provider,
-                ..
+                provider_version,
+                service,
             } => {
-                let slot = self.slot(&provider, task.is_some()).map_err(error)?;
+                let row = self.record(&provider).map_err(error)?;
+                if row.version != provider_version {
+                    return Err(error("PROVIDER_CHANGED".into()));
+                }
+                let slot = self.slot_for_record(&row, task.is_some()).map_err(error)?;
                 let mut locked = slot.worker.try_lock().map_err(|_| error("BUSY".into()))?;
                 let worker = locked
                     .as_mut()
@@ -700,6 +708,12 @@ impl Manager {
                 );
                 drop(session);
                 drop(locked);
+                let result = result.and_then(|value| {
+                    if let Some(service) = &service {
+                        service.validate_result(&value).map_err(error)?;
+                    }
+                    Ok(value)
+                });
                 if let Some((ctx, _)) = task {
                     let outcome = result.clone().map_err(|failure| {
                         if matches!(

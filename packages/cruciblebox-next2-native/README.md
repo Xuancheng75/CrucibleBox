@@ -7,3 +7,5 @@ Use `serve(factory, handler)` from the executable's main function. The factory i
 Read persistent data from `Client::data_directory()` and resource mounts from `Client::resource(id)`. Missing optional models must produce an explicit business error, with no automatic download on activation. Model download/import is a separate user action in the host resource UI. Large output belongs in files; frames are limited to 64 KiB.
 
 `cargo build --example arithmetic` builds the sample using only this crate and its public dependencies. The sample proves arithmetic/capability/progress transport and is not OCR, translation or P6 acceptance.
+
+`Client::resolve_capability(id)` returns a generated `CapabilityBinding` with the provider ID, provider package version, lifecycle and exported method descriptors. Declare the dependency in your manifest before querying or calling it. The host checks a typed service's declared contexts, input schema and successful result. The generated binding, RPC error and transport constants come from the public contract.

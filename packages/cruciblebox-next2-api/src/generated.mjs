@@ -11,6 +11,8 @@ export const contract = {
     catalogVersion: 1
   },
   budget: {
+    capabilityDescriptorBytes: 32768,
+    capabilityDescriptorNodes: 8192,
     bytes: 65536,
     depth: 32,
     nodes: 16384,
@@ -129,6 +131,86 @@ export const contract = {
         fileHandlers: { type: 'array', maxItems: 16, items: { $ref: '#/$defs/FileHandler' } }
       }
     },
+    LegacyServiceMethod: { type: 'string', minLength: 1, maxLength: 128 },
+    CapabilitySchema: {
+      oneOf: [
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['type'],
+          properties: { type: { enum: ['null', 'boolean'] } }
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['type'],
+          properties: {
+            type: { enum: ['integer', 'number'] },
+            minimum: { type: 'number' },
+            maximum: { type: 'number' }
+          }
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['type'],
+          properties: {
+            type: { const: 'string' },
+            minLength: { type: 'integer', minimum: 0, maximum: 65536 },
+            maxLength: { type: 'integer', minimum: 0, maximum: 65536 }
+          }
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['type', 'items'],
+          properties: {
+            type: { const: 'array' },
+            items: { $ref: '#/$defs/CapabilitySchema' },
+            minItems: { type: 'integer', minimum: 0, maximum: 65536 },
+            maxItems: { type: 'integer', minimum: 0, maximum: 65536 }
+          }
+        },
+        {
+          type: 'object',
+          additionalProperties: false,
+          required: ['type', 'properties', 'additionalProperties'],
+          properties: {
+            type: { const: 'object' },
+            properties: {
+              type: 'object',
+              additionalProperties: { $ref: '#/$defs/CapabilitySchema' }
+            },
+            required: {
+              type: 'array',
+              items: { type: 'string', minLength: 1, maxLength: 128 },
+              uniqueItems: true
+            },
+            additionalProperties: { const: false }
+          }
+        }
+      ]
+    },
+    CapabilityMethod: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'params', 'result'],
+      properties: {
+        name: { $ref: '#/$defs/LegacyServiceMethod' },
+        params: { $ref: '#/$defs/CapabilitySchema' },
+        result: { $ref: '#/$defs/CapabilitySchema' },
+        contexts: {
+          type: 'array',
+          items: { enum: ['renderer', 'backend'] },
+          minItems: 1,
+          maxItems: 2,
+          uniqueItems: true
+        }
+      }
+    },
+    ServiceMethod: {
+      oneOf: [{ $ref: '#/$defs/LegacyServiceMethod' }, { $ref: '#/$defs/CapabilityMethod' }]
+    },
     ServiceExport: {
       type: 'object',
       additionalProperties: false,
@@ -138,7 +220,7 @@ export const contract = {
         version: { type: 'string', minLength: 1, maxLength: 100, format: 'semver-without-build' },
         methods: {
           type: 'array',
-          items: { type: 'string', minLength: 1, maxLength: 128 },
+          items: { $ref: '#/$defs/ServiceMethod' },
           maxItems: 128,
           minItems: 1
         },
@@ -165,9 +247,16 @@ export const contract = {
     CapabilityBinding: {
       type: 'object',
       additionalProperties: false,
-      required: ['providerId', 'export'],
+      required: ['providerId', 'providerVersion', 'lifecycle', 'export'],
       properties: {
         providerId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        providerVersion: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 100,
+          format: 'semver-without-build'
+        },
+        lifecycle: { enum: ['on-demand', 'background'] },
         export: { $ref: '#/$defs/ServiceExport' }
       }
     },
@@ -1921,7 +2010,7 @@ export const contract = {
     publisher: 'verified-key-policy-not-display-name'
   },
   methodsPolicy:
-    'Only platform methods are enumerated. Backend and declared service methods are opaque to the host.',
+    'The gateway enforces built-in method contracts and typed service methods. Self-backend and legacy string service methods have opaque payloads.',
   transport: {
     framing: 'uint32-big-endian-length-prefixed-utf8-json',
     stdout: 'protocol-only',

@@ -488,6 +488,7 @@ fn next2_service_binds_caller_storage_results_and_rejects_breaking_upgrade() {
         Some(
             r#"let requests = 0;
 module.exports.activate = ctx => ({ identity: async (params, execution) => {
+  if (params.badResult) return 'not the declared object';
   let response;
   for (let i = 0; i < (params.burst ? 4104 : 1); i++) {
     const requestId = 'provider-value-' + (++requests);
@@ -503,11 +504,25 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
     let mut manifest: Value =
         serde_json::from_slice(&fs::read(provider.join("plugin.json")).unwrap()).unwrap();
     manifest["id"] = json!("service-provider");
+    manifest.as_object_mut().unwrap().remove("renderer");
+    manifest["contributes"]
+        .as_object_mut()
+        .unwrap()
+        .remove("navigation");
+    manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|file| file["path"] != "dist/renderer.js");
+    fs::remove_file(provider.join("dist/renderer.js")).unwrap();
     manifest["permissions"]
         .as_array_mut()
         .unwrap()
         .push(json!("logging:write"));
-    manifest["exports"] = json!([{"id":"sample-service","version":"1.0.0","methods":["identity"],"interchangeable":true}]);
+    manifest["exports"] = json!([{"id":"sample-service","version":"1.0.0","interchangeable":true,"methods":[{
+        "name":"identity", "contexts":["renderer"],
+        "params":{"type":"object","properties":{"owner":{"type":"string"},"burst":{"type":"boolean"},"badResult":{"type":"boolean"}},"additionalProperties":false},
+        "result":{"type":"object","properties":{"caller":{"type":"string"},"value":{"type":"string"}},"required":["caller","value"],"additionalProperties":false}
+    }]}]);
     manifest["contributes"]["commands"] =
         json!([{"id":"show-value","title":"Show value","method":"identity"}]);
     fs::write(provider.join("plugin.json"), manifest.to_string()).unwrap();
@@ -606,7 +621,7 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         .unwrap();
     assert_eq!(
         binding["result"],
-        json!({"providerId":"service-provider","export":manifest["exports"][0]})
+        json!({"providerId":"service-provider","providerVersion":"1.0.0","lifecycle":"on-demand","export":manifest["exports"][0]})
     );
     let request = json!({"wireVersion":4,"requestId":"renderer-2","session":session.token,"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"owner":"forged"}});
     let result = manager
@@ -626,17 +641,21 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         .unwrap();
     let id = started["result"]["taskId"].as_str().unwrap();
     let runtime = manager.task_runtime();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while std::time::Instant::now() < deadline {
-        if matches!(
-            runtime.get("acme-independent", id).unwrap()["status"].as_str(),
-            Some("succeeded" | "failed")
-        ) {
-            break;
+    let wait_for_task = |id: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let result = runtime.get("acme-independent", id).unwrap();
+            if matches!(result["status"].as_str(), Some("succeeded" | "failed")) {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "task timeout: {result}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let result = runtime.get("acme-independent", id).unwrap();
+    };
+    let result = wait_for_task(id);
     assert_eq!(result["status"], "succeeded", "{result}");
     assert_eq!(
         result["result"],
@@ -654,6 +673,54 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         .unwrap()
         .is_empty());
     drop(db);
+    let mut invalid = request.clone();
+    invalid["requestId"] = json!("renderer-4");
+    invalid["params"] = json!({"owner":123});
+    let rejected = manager
+        .next_backend
+        .next2
+        .renderer(&invalid.to_string(), &session)
+        .unwrap();
+    assert_eq!(
+        rejected["error"]["code"], "INVALID_CAPABILITY_PARAMS",
+        "{rejected}"
+    );
+    let mut invalid_task = start.clone();
+    invalid_task["requestId"] = json!("renderer-5");
+    invalid_task["params"]["params"] = json!({"burst":123});
+    let rejected = manager
+        .next_backend
+        .next2
+        .renderer(&invalid_task.to_string(), &session)
+        .unwrap();
+    assert_eq!(
+        rejected["error"]["code"], "INVALID_CAPABILITY_PARAMS",
+        "{rejected}"
+    );
+    invalid["requestId"] = json!("renderer-6");
+    invalid["params"] = json!({"badResult":true});
+    let rejected = manager
+        .next_backend
+        .next2
+        .renderer(&invalid.to_string(), &session)
+        .unwrap();
+    assert_eq!(
+        rejected["error"]["code"], "INVALID_CAPABILITY_RESULT",
+        "{rejected}"
+    );
+    invalid_task["requestId"] = json!("renderer-7");
+    invalid_task["params"]["params"] = json!({"badResult":true});
+    let started = manager
+        .next_backend
+        .next2
+        .renderer(&invalid_task.to_string(), &session)
+        .unwrap();
+    let failed = wait_for_task(started["result"]["taskId"].as_str().unwrap());
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert!(failed["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("INVALID_CAPABILITY_RESULT"));
     let provider_path = lock(&manager.db)
         .plugin_find_by_id(provider_id)
         .unwrap()
@@ -665,7 +732,7 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
     modified_code[0] ^= 1;
     fs::write(&executable, modified_code).unwrap();
     let mut tampered = request;
-    tampered["requestId"] = json!("renderer-4");
+    tampered["requestId"] = json!("renderer-8");
     let rejected = manager
         .next_backend
         .next2

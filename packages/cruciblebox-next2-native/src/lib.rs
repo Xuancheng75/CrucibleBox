@@ -1,5 +1,10 @@
 //! Wire 4 backend helpers. Native plugins execute as trusted local code.
-use serde::{Deserialize, Serialize};
+mod generated;
+pub use generated::{
+    CapabilityBinding, CapabilityMethod, CapabilitySchema, RpcError as Error, ServiceExport,
+    ServiceMethod, MAX_FRAME_BYTES,
+};
+use generated::{REQUEST_TIMEOUT_MS, SDK_API_VERSION, WIRE_VERSION};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -11,12 +16,6 @@ use std::{
     },
     time::Duration,
 };
-pub const MAX_FRAME_BYTES: usize = 65536;
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Error {
-    pub code: String,
-    pub message: String,
-}
 impl Error {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
@@ -116,8 +115,10 @@ impl Client {
     pub fn platform(&self, method: &str, params: Value) -> Result<Value> {
         self.call(json!({"kind":"platform"}), method, params)
     }
-    pub fn resolve_capability(&self, id: &str) -> Result<Value> {
-        self.platform("capabilities.resolve", json!({"id":id}))
+    pub fn resolve_capability(&self, id: &str) -> Result<CapabilityBinding> {
+        let value = self.platform("capabilities.resolve", json!({"id":id}))?;
+        serde_json::from_value(value)
+            .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))
     }
     pub fn write_log(&self, level: &str, message: &str) -> Result<Value> {
         self.platform("logging.write", json!({"level":level,"message":message}))
@@ -147,15 +148,15 @@ impl Client {
                 .insert(id.clone(), tx);
             write(
                 &mut *output,
-                &json!({"kind":"capability","request":{"wireVersion":4,"requestId":id,"session":self.0.init["session"],"target":target,"method":method,"params":params}}),
+                &json!({"kind":"capability","request":{"wireVersion":WIRE_VERSION,"requestId":id,"session":self.0.init["session"],"target":target,"method":method,"params":params}}),
             )
         };
         let result = (|| {
             sent?;
             let response = rx
-                .recv_timeout(Duration::from_secs(30))
+                .recv_timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
                 .map_err(|error| Error::new("HOST_REQUEST_FAILED", error.to_string()))?;
-            if response["wireVersion"] != 4 || response["requestId"] != id {
+            if response["wireVersion"] != WIRE_VERSION || response["requestId"] != id {
                 return Err(Error::new(
                     "RESPONSE_MISMATCH",
                     "Host response did not correlate",
@@ -214,12 +215,12 @@ pub fn serve<S: Send + 'static>(
     let mut input = std::io::stdin();
     write(
         &mut std::io::stdout(),
-        &json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}),
+        &json!({"kind":"hello","wireVersion":WIRE_VERSION,"sdkApiVersion":SDK_API_VERSION}),
     )?;
     let init = read(&mut input)?
         .ok_or_else(|| Error::new("HOST_DISCONNECTED", "Missing initialization"))?;
     if init["kind"] != "initialize"
-        || init["wireVersion"] != 4
+        || init["wireVersion"] != WIRE_VERSION
         || init["session"].as_str().is_none()
         || init["pluginId"].as_str().is_none()
         || init["dataDirectory"].as_str().is_none()
@@ -256,22 +257,22 @@ pub fn serve<S: Send + 'static>(
             }));
             let panicked = result.is_err();
             let result = result.unwrap_or_else(|_| Err(Error::new("PLUGIN_PANIC", "Plugin execution panicked; backend will stop")));
-            let response = match result { Ok(result) => json!({"wireVersion":4,"requestId":request["requestId"],"ok":true,"result":result}), Err(error) => json!({"wireVersion":4,"requestId":request["requestId"],"ok":false,"error":error}) };
+            let response = match result { Ok(result) => json!({"wireVersion":WIRE_VERSION,"requestId":request["requestId"],"ok":true,"result":result}), Err(error) => json!({"wireVersion":WIRE_VERSION,"requestId":request["requestId"],"ok":false,"error":error}) };
             *worker_active.lock().map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))? = None;
             if let Err(error) = worker_client.send(&json!({"kind":"reply","response":response})) {
-                let _ = worker_client.send(&json!({"kind":"reply","response":{"wireVersion":4,"requestId":request["requestId"],"ok":false,"error":error}}));
+                let _ = worker_client.send(&json!({"kind":"reply","response":{"wireVersion":WIRE_VERSION,"requestId":request["requestId"],"ok":false,"error":error}}));
                 std::process::exit(70);
             }
             if panicked { std::process::exit(70); }
         }
         Ok(())
     })?;
-    client.send(&json!({"kind":"ready","wireVersion":4}))?;
+    client.send(&json!({"kind":"ready","wireVersion":WIRE_VERSION}))?;
     let result = (|| {
         while let Some(frame) = read(&mut input)? {
             match frame["kind"].as_str() {
                 Some("execute") => {
-                    if frame["request"]["wireVersion"] != 4
+                    if frame["request"]["wireVersion"] != WIRE_VERSION
                         || frame["request"]["session"] != client.0.init["session"]
                     {
                         return Err(Error::new("SESSION_DENIED", "Execution session mismatch"));

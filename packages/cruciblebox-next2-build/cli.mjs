@@ -53,7 +53,27 @@ if (command === 'init') {
       : ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
     background: provider,
     contributes: provider ? { commands: [] } : { navigation: { title: id }, commands: [] },
-    exports: provider ? [{ id, version: '1.0.0', methods: ['sum'], interchangeable: true }] : [],
+    exports: provider
+      ? [
+          {
+            id,
+            version: '1.0.0',
+            interchangeable: true,
+            methods: [
+              {
+                name: 'sum',
+                params: {
+                  type: 'object',
+                  properties: { numbers: { type: 'array', items: { type: 'integer' } } },
+                  required: ['numbers'],
+                  additionalProperties: false
+                },
+                result: { type: 'integer' }
+              }
+            ]
+          }
+        ]
+      : [],
     dependencies: [],
     resources: []
   }
@@ -114,6 +134,7 @@ if (command === 'init') {
       'LICENSE',
       'README.md',
       'src/lib.rs',
+      'src/generated.rs',
       'examples/arithmetic.rs'
     ]) {
       await mkdir(dirname(join(target, name)), { recursive: true })

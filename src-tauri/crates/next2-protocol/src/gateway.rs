@@ -1,6 +1,10 @@
 //! Routing identity is supplied by the host, never by domain parameters.
-use crate::{compatible, contract, validate_request, CapabilityBinding, Manifest, Request, Target};
+use crate::{
+    compatible, contract, schema, validate_request, CapabilityBinding, Manifest, Request,
+    ServiceMethod, Target,
+};
 use semver::Version;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
@@ -18,9 +22,30 @@ pub enum Route {
     Backend {
         initiator: String,
         provider: String,
-        service: Option<String>,
+        provider_version: String,
+        service: Option<ServiceCall>,
     },
 }
+
+#[derive(Debug, PartialEq)]
+pub struct ServiceCall {
+    pub id: String,
+    result: Option<Value>,
+}
+
+impl ServiceCall {
+    pub fn validate_result(&self, value: &Value) -> Result<(), String> {
+        if self
+            .result
+            .as_ref()
+            .is_some_and(|rule| !schema::matches(rule, value))
+        {
+            return Err("INVALID_CAPABILITY_RESULT".into());
+        }
+        Ok(())
+    }
+}
+
 impl Registry {
     /// Index approved manifests. A broken dependency chain is local to its consumers.
     pub fn new(plugins: impl IntoIterator<Item = Installed>) -> Result<Self, String> {
@@ -34,6 +59,13 @@ impl Registry {
                         version,
                         CapabilityBinding {
                             provider_id: plugin.manifest.id.clone(),
+                            provider_version: plugin.manifest.version.clone(),
+                            lifecycle: if plugin.manifest.background {
+                                "background"
+                            } else {
+                                "on-demand"
+                            }
+                            .into(),
                             export: export.clone(),
                         },
                     ));
@@ -182,17 +214,47 @@ impl Registry {
         result.sort();
         result
     }
-    pub fn resolve(&self, caller_id: &str, target: &Target, method: &str) -> Result<Route, String> {
+    pub fn resolve(
+        &self,
+        caller_id: &str,
+        request: &Request,
+        context: &str,
+    ) -> Result<Route, String> {
         let caller = self.enabled(caller_id)?;
-        let (provider, service) = match target {
+        let (provider, service) = match &request.target {
             Target::PlatformTarget(_) => return Ok(Route::Platform),
             Target::BackendTarget(_) => (caller, None),
             Target::ServiceTarget(target) => {
                 let binding = self.capability(caller_id, &target.id)?;
-                if !binding.export.methods.iter().any(|item| item == method) {
-                    return Err("METHOD_UNAVAILABLE".into());
-                }
-                (self.enabled(&binding.provider_id)?, Some(target.id.clone()))
+                let method = binding
+                    .export
+                    .methods
+                    .iter()
+                    .find(|item| item.name() == request.method)
+                    .ok_or("METHOD_UNAVAILABLE")?;
+                let result = match method {
+                    ServiceMethod::LegacyServiceMethod(_) => None,
+                    ServiceMethod::CapabilityMethod(method) => {
+                        if method
+                            .contexts
+                            .as_ref()
+                            .is_some_and(|items| !items.iter().any(|item| item == context))
+                        {
+                            return Err("CONTEXT_DENIED".into());
+                        }
+                        if !schema::matches(&method.params, &request.params) {
+                            return Err("INVALID_CAPABILITY_PARAMS".into());
+                        }
+                        Some(method.result.clone())
+                    }
+                };
+                (
+                    self.enabled(&binding.provider_id)?,
+                    Some(ServiceCall {
+                        id: target.id.clone(),
+                        result,
+                    }),
+                )
             }
         };
         if provider.manifest.backend.is_none() {
@@ -201,6 +263,7 @@ impl Registry {
         Ok(Route::Backend {
             initiator: caller_id.into(),
             provider: provider.manifest.id.clone(),
+            provider_version: provider.manifest.version.clone(),
             service,
         })
     }
@@ -269,7 +332,7 @@ impl Session {
         if registry.enabled(&self.manifest.id)?.manifest != self.manifest {
             return Err("SESSION_REPLACED".into());
         }
-        let route = registry.resolve(&self.manifest.id, &request.target, &request.method)?;
+        let route = registry.resolve(&self.manifest.id, &request, &self.context)?;
         if self.context == "backend" && matches!(request.target, Target::BackendTarget(_)) {
             return Err("REENTRANT_BACKEND_CALL".into());
         }

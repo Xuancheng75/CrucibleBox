@@ -85,15 +85,14 @@ pub fn matches(rule: &Value, value: &Value) -> bool {
                 required
                     .iter()
                     .all(|key| object.contains_key(key.as_str().unwrap()))
-            }) && (rule["additionalProperties"] != false
-                || object
-                    .keys()
-                    .all(|key| rule["properties"].get(key).is_some()))
-                && rule["properties"].as_object().is_none_or(|properties| {
-                    properties
-                        .iter()
-                        .all(|(key, child)| object.get(key).is_none_or(|v| matches(child, v)))
-                })
+            }) && object.iter().all(|(key, value)| {
+                if let Some(child) = rule["properties"].get(key) {
+                    matches(child, value)
+                } else {
+                    let additional = &rule["additionalProperties"];
+                    additional != false && (!additional.is_object() || matches(additional, value))
+                }
+            })
         }),
         _ => true,
     }
@@ -118,6 +117,8 @@ pub fn normalize(rule: &Value, value: &mut Value) {
         for (key, item) in object {
             if let Some(child) = rule["properties"].get(key) {
                 normalize(child, item);
+            } else if rule["additionalProperties"].is_object() {
+                normalize(&rule["additionalProperties"], item);
             }
         }
     }

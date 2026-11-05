@@ -21,10 +21,29 @@ export type Contributions = {
   commands: Command[]
   fileHandlers?: FileHandler[]
 }
+export type LegacyServiceMethod = string
+export type CapabilitySchema =
+  | { type: 'null' | 'boolean' }
+  | { type: 'integer' | 'number'; minimum?: number; maximum?: number }
+  | { type: 'string'; minLength?: number; maxLength?: number }
+  | { type: 'array'; items: CapabilitySchema; minItems?: number; maxItems?: number }
+  | {
+      type: 'object'
+      properties: { [key: string]: CapabilitySchema }
+      required?: string[]
+      additionalProperties: false
+    }
+export type CapabilityMethod = {
+  name: LegacyServiceMethod
+  params: CapabilitySchema
+  result: CapabilitySchema
+  contexts?: ('renderer' | 'backend')[]
+}
+export type ServiceMethod = LegacyServiceMethod | CapabilityMethod
 export type ServiceExport = {
   id: string
   version: string
-  methods: string[]
+  methods: ServiceMethod[]
   interchangeable?: boolean
 }
 export type ServiceDependency = {
@@ -34,7 +53,12 @@ export type ServiceDependency = {
   optional?: boolean
 }
 export type CapabilityResolveParams = { id: string }
-export type CapabilityBinding = { providerId: string; export: ServiceExport }
+export type CapabilityBinding = {
+  providerId: string
+  providerVersion: string
+  lifecycle: 'on-demand' | 'background'
+  export: ServiceExport
+}
 export type LogWriteParams = { level: 'debug' | 'info' | 'warn' | 'error'; message: string }
 export type ResourceDependency = {
   id: string

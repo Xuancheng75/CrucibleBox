@@ -270,6 +270,7 @@ fn opaque_sessions_keep_their_existing_request_budget_after_renewal() {
 fn owner_is_derived_from_host_and_business_methods_are_opaque() {
     let manifest = native("acme-independent");
     let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let provider_version = manifest.version.clone();
     let mut session = session(manifest);
     let raw = request(
         1,
@@ -285,6 +286,7 @@ fn owner_is_derived_from_host_and_business_methods_are_opaque() {
         Route::Backend {
             initiator: "acme-independent".into(),
             provider: "acme-independent".into(),
+            provider_version,
             service: None
         }
     );
@@ -321,7 +323,7 @@ fn declared_service_version_identity_and_dependency_failures() {
     provider.exports = vec![ServiceExport {
         id: "transform".into(),
         version: "1.2.0".into(),
-        methods: vec!["recognize".into()],
+        methods: vec![ServiceMethod::LegacyServiceMethod("recognize".into())],
         interchangeable: None,
     }];
     let mut caller = native("translate-client");
@@ -335,24 +337,29 @@ fn declared_service_version_identity_and_dependency_failures() {
         },
     }];
     let registry = Registry::new([installed(caller.clone()), installed(provider.clone())]).unwrap();
+    let call = validate_request(&request(
+        1,
+        json!({"kind":"service","id":"transform"}),
+        "recognize",
+        json!({}),
+    ))
+    .unwrap();
     let route = registry
-        .resolve(
-            "translate-client",
-            &Target::ServiceTarget(ServiceTarget {
-                kind: Default::default(),
-                id: "transform".into(),
-            }),
-            "recognize",
-        )
+        .resolve("translate-client", &call, "renderer")
         .unwrap();
-    assert_eq!(
-        route,
-        Route::Backend {
-            initiator: "translate-client".into(),
-            provider: "sample-provider".into(),
-            service: Some("transform".into())
-        }
-    );
+    let Route::Backend {
+        initiator,
+        provider: resolved,
+        provider_version,
+        service: Some(service),
+    } = route
+    else {
+        panic!("service route required");
+    };
+    assert_eq!(initiator, "translate-client");
+    assert_eq!(resolved, "sample-provider");
+    assert_eq!(provider_version, provider.version);
+    assert_eq!(service.id, "transform");
     assert_eq!(
         registry.dependents("sample-provider"),
         vec!["translate-client"]
@@ -391,7 +398,7 @@ fn declared_service_version_identity_and_dependency_failures() {
     caller.exports = vec![ServiceExport {
         id: "translation".into(),
         version: "1.0.0".into(),
-        methods: vec!["translate".into()],
+        methods: vec![ServiceMethod::LegacyServiceMethod("translate".into())],
         interchangeable: None,
     }];
     assert_eq!(
@@ -420,7 +427,7 @@ fn interchangeable_capabilities_select_by_interface_version_then_identity() {
         manifest.exports.push(ServiceExport {
             id: "transform".into(),
             version: version.into(),
-            methods: vec!["recognize".into()],
+            methods: vec![ServiceMethod::LegacyServiceMethod("recognize".into())],
             interchangeable,
         });
         installed(manifest)
@@ -459,6 +466,61 @@ fn interchangeable_capabilities_select_by_interface_version_then_identity() {
         assert_eq!(registry.dependents("winner-a"), vec!["client"]);
         plugins.reverse();
     }
+}
+
+#[test]
+fn typed_service_admission_checks_context_params_and_result() {
+    let mut manifest = fixtures()["native"].clone();
+    manifest["id"] = json!("calculator");
+    manifest["exports"] = json!([{"id":"arithmetic","version":"1.0.0","interchangeable":true,"methods":[{
+        "name":"sum", "contexts":["renderer"],
+        "params":{"type":"array","items":{"type":"integer","minimum":-20},"minItems":1},
+        "result":{"type":"integer"}
+    }]}]);
+    let provider = validate_manifest(&manifest.to_string()).unwrap();
+    let mut client = native("client");
+    client.dependencies.push(ServiceDependency {
+        id: "arithmetic".into(),
+        provider_id: None,
+        optional: None,
+        version: VersionRange {
+            min: "1.0.0".into(),
+            max_exclusive: "2.0.0".into(),
+        },
+    });
+    let registry = Registry::new([installed(client.clone()), installed(provider)]).unwrap();
+    let target = json!({"kind":"service","id":"arithmetic"});
+    let mut call = validate_request(&request(1, target, "sum", json!([4, -9]))).unwrap();
+    assert_eq!(
+        registry.resolve("client", &call, "backend").unwrap_err(),
+        "CONTEXT_DENIED"
+    );
+    let mut active = session(client);
+    let admitted = active
+        .admit(
+            &registry,
+            &serde_json::to_string(&call).unwrap(),
+            "main:frame-1",
+            1,
+        )
+        .unwrap();
+    let Route::Backend {
+        service: Some(service),
+        ..
+    } = admitted.route
+    else {
+        panic!("service route required");
+    };
+    service.validate_result(&json!(-5)).unwrap();
+    assert_eq!(
+        service.validate_result(&json!("-5")).unwrap_err(),
+        "INVALID_CAPABILITY_RESULT"
+    );
+    call.params = json!([4, -21]);
+    assert_eq!(
+        registry.resolve("client", &call, "renderer").unwrap_err(),
+        "INVALID_CAPABILITY_PARAMS"
+    );
 }
 #[test]
 fn updates_revoke_old_sessions_and_task_providers_cannot_impersonate_initiators() {
