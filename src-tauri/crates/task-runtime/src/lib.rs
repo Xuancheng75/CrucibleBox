@@ -607,17 +607,18 @@ impl Context {
         let snapshot = self.runtime.snapshot(&self.owner, &self.id)?;
         if snapshot.status.terminal() {
             if snapshot.status == Status::Succeeded {
-                if let Ok(value) = &result {
-                    if let Some(view) = self
-                        .runtime
-                        .views
-                        .lock()
-                        .map_err(|_| "task views unavailable")?
-                        .get_mut(&self.id)
-                    {
-                        view.payload["result"] = value.clone();
-                        view.payload["completedAt"] = json!(time());
+                if let Some(view) = self
+                    .runtime
+                    .views
+                    .lock()
+                    .map_err(|_| "task views unavailable")?
+                    .get_mut(&self.id)
+                {
+                    match &result {
+                        Ok(value) => view.payload["result"] = value.clone(),
+                        Err(error) => view.payload["executionError"] = json!(error),
                     }
+                    view.payload["completedAt"] = json!(time());
                 }
                 drop(gate);
                 self.runtime.emit(&self.owner, &self.id);
@@ -674,17 +675,26 @@ impl Context {
     /// Reserve an irreversible operation performed by a trusted native provider.
     /// If the process dies, the reservation stays visible for startup recovery.
     pub fn begin_external_commit(&self) -> Result<(), String> {
-        let _gate = self
-            .runtime
-            .gate
-            .lock()
-            .map_err(|_| "task authority unavailable")?;
-        self.runtime.apply(
-            &self.owner,
-            &self.id,
-            Action::PreparePublication(format!("external:{}", self.id)),
-        )?;
-        Ok(())
+        loop {
+            self.wait_if_paused()?;
+            let gate = self
+                .runtime
+                .gate
+                .lock()
+                .map_err(|_| "task authority unavailable")?;
+            // A pause accepted after the checkpoint still wins before publication.
+            // Once publication is reserved, pause/cancel retain their existing refusal.
+            if self.control.pause.load(Ordering::SeqCst) {
+                drop(gate);
+                continue;
+            }
+            self.runtime.apply(
+                &self.owner,
+                &self.id,
+                Action::PreparePublication(format!("external:{}", self.id)),
+            )?;
+            return Ok(());
+        }
     }
     pub fn finish_external_commit(&self, result: &Result<Value, String>) -> Result<(), String> {
         let _gate = self
@@ -928,6 +938,84 @@ fn random_task_id() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn executor_failure_after_publication_is_visible_and_finished() {
+        let runtime = TaskRuntime::memory();
+        let ctx = runtime
+            .prepare("sample-alpha", "convert", Some("published-failure"))
+            .unwrap();
+        ctx.start_running().unwrap();
+        runtime
+            .apply(
+                "sample-alpha",
+                "published-failure",
+                Action::Succeed(vec!["preserved.pdf".into()]),
+            )
+            .unwrap();
+        ctx.finish(Err("outcome persistence failed".into()))
+            .unwrap();
+        let snapshot = runtime.get("sample-alpha", "published-failure").unwrap();
+        assert_eq!(snapshot["status"], "succeeded");
+        assert_eq!(snapshot["executionError"], "outcome persistence failed");
+        assert!(snapshot["completedAt"].as_u64().unwrap() > 0);
+        assert_eq!(snapshot["resultRefs"], json!(["preserved.pdf"]));
+    }
+    #[test]
+    fn native_commit_honors_an_accepted_pause_before_reserving_publication() {
+        let runtime = TaskRuntime::memory();
+        let context = runtime
+            .prepare("sample-alpha", "convert", Some("pause-before-commit"))
+            .unwrap();
+        context.start_running().unwrap();
+        assert!(runtime.pause("sample-alpha", "pause-before-commit"));
+        let worker = context.clone();
+        let join = std::thread::spawn(move || worker.begin_external_commit());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while runtime.get("sample-alpha", "pause-before-commit").unwrap()["status"] != "paused" {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(!context.publication_pending());
+        assert!(runtime.resume("sample-alpha", "pause-before-commit"));
+        join.join().unwrap().unwrap();
+        assert!(context.publication_pending());
+        context.confirm_paused().unwrap();
+        assert_eq!(
+            runtime.get("sample-alpha", "pause-before-commit").unwrap()["status"],
+            "running"
+        );
+        assert!(!runtime.cancel("sample-alpha", "pause-before-commit"));
+        context
+            .finish_external_commit(&Ok(json!({"complete":true})))
+            .unwrap();
+        context.finish(Ok(json!({"complete":true}))).unwrap();
+    }
+    #[test]
+    fn cancellation_while_paused_never_reserves_native_publication() {
+        let runtime = TaskRuntime::memory();
+        let context = runtime
+            .prepare("sample-alpha", "convert", Some("cancel-before-commit"))
+            .unwrap();
+        context.start_running().unwrap();
+        assert!(runtime.pause("sample-alpha", "cancel-before-commit"));
+        let worker = context.clone();
+        let join = std::thread::spawn(move || worker.begin_external_commit());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while runtime.get("sample-alpha", "cancel-before-commit").unwrap()["status"] != "paused" {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(runtime.cancel("sample-alpha", "cancel-before-commit"));
+        assert!(join.join().unwrap().is_err());
+        assert!(!context.publication_pending());
+        context
+            .finish(Err("cancelled before publication".into()))
+            .unwrap();
+        assert_eq!(
+            runtime.get("sample-alpha", "cancel-before-commit").unwrap()["status"],
+            "cancelled"
+        );
+    }
     #[test]
     fn executor_pause_confirmation_requires_current_pause_intent() {
         let runtime = TaskRuntime::memory();

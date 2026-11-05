@@ -1,6 +1,6 @@
 # 工具箱底座架构
 
-当前执行契约为 Manifest/API 6、wire 4、数据 schema 1；宿主版本为 2.1.0。Tauri/Rust 管理安装、生命周期与持久数据，React 界面管理插件导航、市场、设置与任务。
+当前执行契约为 Manifest/API 6、wire 4、数据 schema 1；宿主版本为 2.1.1。Tauri/Rust 管理安装、生命周期与持久数据，React 界面管理插件导航、市场、设置与任务。
 
 宿主不编译任何插件业务，也不按插件名称选择分发路径。前端插件使用 opaque sandbox iframe 与 MessagePort；JS backend 由独立 QuickJS runner 执行；Windows x64 原生 backend 由通用进程监督器执行。服务由 manifest 的 exports/dependencies 声明；宿主只识别平台方法，业务方法按声明路由。
 

@@ -3,7 +3,7 @@
   "contracts/next2/*.{json,md}",
   "packages/cruciblebox-next2-api/{src,test}/**/*.{mjs,mts,ts,json}",
   "tests/**/*.ts",
-  "shared/themes/{css-vars,normalize,presets}.ts",
+  "shared/themes/{css-vars,normalize,presets,style}.ts",
   "packages/*/package.json",
   "packages/*/src/**/*.ts",
   "package.json",

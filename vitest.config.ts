@@ -6,7 +6,11 @@ const repositoryRoot = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   resolve: {
+    dedupe: ['react', 'react-dom'],
     alias: {
+      react: resolve(repositoryRoot, 'node_modules/react'),
+      'react-dom': resolve(repositoryRoot, 'node_modules/react-dom'),
+      antd: resolve(repositoryRoot, 'node_modules/antd'),
       '@shared': resolve(repositoryRoot, 'shared')
     }
   },
@@ -26,8 +30,16 @@ export default defineConfig({
       'tests/tauriRuntimeAssets.test.ts',
       'tests/pluginGroupReorder.test.ts',
       'tests/pluginSearch.test.ts',
+      'tests/pluginInstallStore.test.ts',
+      'tests/pluginImport.test.ts',
+      'tests/appWorkspaceState.test.ts',
+      'tests/retainedPluginFrames.test.ts',
       'tests/pluginSources.test.ts',
       'tests/themes.test.ts',
+      'tests/themeDesign.test.ts',
+      'tests/navigationKeyboard.test.ts',
+      'tests/mainLayoutNavigation.test.ts',
+      'tests/pageHandoff.test.ts',
       'tests/updateCheck.test.ts'
     ],
     globals: true

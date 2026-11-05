@@ -23,6 +23,7 @@ const PAGE_COMPONENTS: Record<AppPage, React.LazyExoticComponent<React.Component
 }
 
 const StartupUpdatePrompt = lazy(() => import('./components/StartupUpdatePrompt'))
+const PluginWorkspace = lazy(() => import('./components/PluginView'))
 
 const PAGE_NAMES: Record<AppPage, string> = {
   home: '主页',
@@ -57,6 +58,9 @@ export default function App() {
   const currentPage = useAppStore((s) => s.currentPage)
   const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const activePluginId = useAppStore((s) => s.activePluginId)
+  const openedPluginIds = useAppStore((s) => s.openedPluginIds)
+  const visitedPages = useAppStore((s) => s.visitedPages)
+  const plugins = usePluginStore((s) => s.plugins)
   const setActivityTab = useAppStore((s) => s.setActivityTab)
   const setPluginImportOpen = useAppStore((s) => s.setPluginImportOpen)
   // 全窗口拖拽导入（插件包/目录及插件声明的文件类型）+ 全局安装确认弹窗
@@ -92,8 +96,8 @@ export default function App() {
 
   useEffect(() => {
     if (currentPage !== 'logs') return
-    setActivityTab('logs')
     setCurrentPage('tasks')
+    setActivityTab('logs')
   }, [currentPage, setActivityTab, setCurrentPage])
 
   // 菜单「导入插件」事件（Tauri 2 菜单点击经 tauri://menu 事件下发，payload 为菜单项 id）。
@@ -138,25 +142,38 @@ export default function App() {
     return () => unlisten?.()
   }, [])
 
-  const PluginPage = PAGE_COMPONENTS.pluginView
-  const CurrentPage = PAGE_COMPONENTS[currentPage === 'logs' ? 'tasks' : currentPage]
-
   return (
     <ThemeProvider>
       <MainLayout appVersion={appVersion}>
-        <Suspense fallback={<PageLoading />}>
-          {currentPage === 'pluginView' && activePluginId ? (
-            <div>
-              <PageErrorBoundary key={activePluginId} pageName={PAGE_NAMES.pluginView}>
-                <PluginPage />
-              </PageErrorBoundary>
+        {visitedPages
+          .filter((page) => page !== 'pluginView' && page !== 'logs')
+          .map((page) => {
+            const Page = PAGE_COMPONENTS[page]
+            return (
+              <div key={page} hidden={currentPage !== page} className="cbx-page-instance">
+                <Suspense fallback={<PageLoading />}>
+                  <PageErrorBoundary pageName={PAGE_NAMES[page]}>
+                    <Page />
+                  </PageErrorBoundary>
+                </Suspense>
+              </div>
+            )
+          })}
+        {openedPluginIds
+          .flatMap((id) => plugins.filter((plugin) => plugin.id === id && plugin.enabled))
+          .map((plugin) => (
+            <div
+              key={`${plugin.id}:${plugin.version}`}
+              hidden={currentPage !== 'pluginView' || activePluginId !== plugin.id}
+              className="cbx-page-instance"
+            >
+              <Suspense fallback={<PageLoading />}>
+                <PageErrorBoundary pageName={PAGE_NAMES.pluginView}>
+                  <PluginWorkspace pluginId={plugin.id} />
+                </PageErrorBoundary>
+              </Suspense>
             </div>
-          ) : (
-            <PageErrorBoundary pageName={PAGE_NAMES[currentPage]}>
-              <CurrentPage />
-            </PageErrorBoundary>
-          )}
-        </Suspense>
+          ))}
       </MainLayout>
       <Suspense fallback={null}>
         <StartupUpdatePrompt />

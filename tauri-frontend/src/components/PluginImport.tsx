@@ -31,72 +31,41 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
     message.error(detail ? `插件导入失败：${detail}` : '插件导入失败，请检查包内容后重试')
   }
 
-  const installZipPath = async (path: string): Promise<boolean> => {
-    if (!path.toLowerCase().endsWith('.zip')) {
-      message.warning('请选择 .zip 插件包')
-      return false
-    }
+  const handleSelect = async (source: 'zip' | 'directory') => {
+    setImporting(true)
     try {
-      setImporting(true)
-      return await installPlugin('zip', path)
-    } catch (err) {
-      message.error(`导入失败: ${errorText(err)}`)
-      return false
+      const path =
+        source === 'zip' ? await tauriApi.dialog.openFile() : await tauriApi.dialog.openDirectory()
+      if (!path) return
+      if (source === 'zip' && !path.toLowerCase().endsWith('.zip')) {
+        message.warning('请选择 .zip 插件包')
+        return
+      }
+      if (await installPlugin(source, path)) onClose()
+      else showInstallError()
+    } catch (error) {
+      message.error(`导入失败：${errorText(error)}`)
     } finally {
       setImporting(false)
     }
   }
 
-  const handleSelectZip = async (): Promise<boolean> => {
-    try {
-      const path = await tauriApi.dialog.openFile()
-      if (!path) return false
-      return await installZipPath(path)
-    } catch (err) {
-      message.error(`导入失败: ${errorText(err)}`)
-      return false
-    }
-  }
-
-  const handleSelectDirectory = async (): Promise<boolean> => {
-    try {
-      const path = await tauriApi.dialog.openDirectory()
-      if (!path) return false
-      try {
-        setImporting(true)
-        return await installPlugin('directory', path)
-      } finally {
-        setImporting(false)
-      }
-    } catch (err) {
-      message.error(`导入失败: ${errorText(err)}`)
-      return false
-    }
-  }
-
-  /** 批量导入：多选 .zip → 入队 → 全局确认弹窗逐个预览 */
-  const handleSelectBatch = async (): Promise<boolean> => {
+  const handleSelectBatch = async () => {
+    setImporting(true)
     try {
       const paths = await tauriApi.dialog.openFiles()
-      const zips = paths.filter((p) => p.toLowerCase().endsWith('.zip'))
+      const zips = paths.filter((path) => path.toLowerCase().endsWith('.zip'))
       if (zips.length === 0) {
         if (paths.length > 0) message.warning('请选择 .zip 插件包')
-        return false
+        return
       }
       enqueueInstalls(zips.map((path) => ({ source: 'zip' as const, path })))
       onClose()
-      return true
-    } catch (err) {
-      message.error(`批量导入失败: ${errorText(err)}`)
-      return false
+    } catch (error) {
+      message.error(`批量导入失败：${errorText(error)}`)
+    } finally {
+      setImporting(false)
     }
-  }
-
-  // 单个导入成功（installPreview 就绪）时关闭本弹窗，交由全局确认弹窗接管
-  const runAndCloseIfReady = async (action: () => Promise<boolean>) => {
-    const ok = await action()
-    if (ok) onClose()
-    else if (!usePluginStore.getState().installPreview) showInstallError()
   }
 
   return (
@@ -108,7 +77,7 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
           icon={<UploadOutlined />}
           loading={importing}
           style={{ height: 48, borderRadius: 8 }}
-          onClick={() => void runAndCloseIfReady(handleSelectZip)}
+          onClick={() => void handleSelect('zip')}
         >
           选择 .zip 插件包
         </Button>
@@ -118,7 +87,7 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
           icon={<FolderOpenOutlined />}
           loading={importing}
           style={{ height: 48, borderRadius: 8 }}
-          onClick={() => void runAndCloseIfReady(handleSelectDirectory)}
+          onClick={() => void handleSelect('directory')}
         >
           选择插件目录
         </Button>
@@ -126,6 +95,7 @@ export default function PluginImport({ open, onClose }: PluginImportProps) {
           block
           size="large"
           icon={<AppstoreAddOutlined />}
+          loading={importing}
           style={{ height: 48, borderRadius: 8 }}
           onClick={() => void handleSelectBatch()}
         >

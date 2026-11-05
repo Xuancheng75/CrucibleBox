@@ -4,7 +4,7 @@ export const contract = {
   versions: {
     manifestVersion: 6,
     sdkApiVersion: 6,
-    sdkPackageVersion: '6.0.0-alpha.1',
+    sdkPackageVersion: '6.1.0',
     wireVersion: 4,
     dataSchemaVersion: 1,
     resourceManifestVersion: 1,
@@ -753,187 +753,7 @@ export const contract = {
     ThemeListResult: {},
     ThemePreviewParams: {
       type: 'object',
-      properties: {
-        theme: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', minLength: 1, maxLength: 64 },
-            name: { type: 'string', minLength: 1, maxLength: 80 },
-            mode: { enum: ['light', 'dark'] },
-            tokens: {
-              type: 'object',
-              properties: {
-                colorBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBgLayout: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBgContainer: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBgElevated: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorPrimary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorPrimaryHover: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorPrimaryBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorText: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorTextSecondary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorTextTertiary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBorder: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBorderSecondary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorSuccess: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorSuccessBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorWarning: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorWarningBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorError: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorErrorBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorLink: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                borderRadius: { type: 'number', minimum: 0, maximum: 32 },
-                fontFamily: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 512,
-                  pattern: '^[^;<>\\\\]+$'
-                }
-              },
-              required: [
-                'colorBg',
-                'colorBgLayout',
-                'colorBgContainer',
-                'colorBgElevated',
-                'colorPrimary',
-                'colorPrimaryHover',
-                'colorPrimaryBg',
-                'colorText',
-                'colorTextSecondary',
-                'colorTextTertiary',
-                'colorBorder',
-                'colorBorderSecondary',
-                'colorSuccess',
-                'colorSuccessBg',
-                'colorWarning',
-                'colorWarningBg',
-                'colorError',
-                'colorErrorBg',
-                'colorLink',
-                'borderRadius',
-                'fontFamily'
-              ],
-              additionalProperties: false
-            }
-          },
-          required: ['id', 'name', 'mode', 'tokens'],
-          additionalProperties: false
-        }
-      },
+      properties: { theme: { $ref: '#/$defs/ThemeDefinition' } },
       required: ['theme'],
       additionalProperties: false
     },
@@ -954,187 +774,7 @@ export const contract = {
     ThemeRollbackResult: {},
     ThemeSetParams: {
       type: 'object',
-      properties: {
-        theme: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', minLength: 1, maxLength: 64 },
-            name: { type: 'string', minLength: 1, maxLength: 80 },
-            mode: { enum: ['light', 'dark'] },
-            tokens: {
-              type: 'object',
-              properties: {
-                colorBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBgLayout: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBgContainer: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBgElevated: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorPrimary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorPrimaryHover: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorPrimaryBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorText: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorTextSecondary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorTextTertiary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBorder: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorBorderSecondary: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorSuccess: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorSuccessBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorWarning: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorWarningBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorError: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorErrorBg: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                colorLink: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 128,
-                  pattern:
-                    '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
-                },
-                borderRadius: { type: 'number', minimum: 0, maximum: 32 },
-                fontFamily: {
-                  type: 'string',
-                  minLength: 1,
-                  maxLength: 512,
-                  pattern: '^[^;<>\\\\]+$'
-                }
-              },
-              required: [
-                'colorBg',
-                'colorBgLayout',
-                'colorBgContainer',
-                'colorBgElevated',
-                'colorPrimary',
-                'colorPrimaryHover',
-                'colorPrimaryBg',
-                'colorText',
-                'colorTextSecondary',
-                'colorTextTertiary',
-                'colorBorder',
-                'colorBorderSecondary',
-                'colorSuccess',
-                'colorSuccessBg',
-                'colorWarning',
-                'colorWarningBg',
-                'colorError',
-                'colorErrorBg',
-                'colorLink',
-                'borderRadius',
-                'fontFamily'
-              ],
-              additionalProperties: false
-            }
-          },
-          required: ['id', 'name', 'mode', 'tokens'],
-          additionalProperties: false
-        }
-      },
+      properties: { theme: { $ref: '#/$defs/ThemeDefinition' } },
       required: ['theme'],
       additionalProperties: false
     },
@@ -1225,6 +865,7 @@ export const contract = {
               'tasks:control',
               'theme:read',
               'theme:write',
+              'theme:assets',
               'dialog',
               'notification',
               'clipboard',
@@ -1478,6 +1119,403 @@ export const contract = {
           items: { type: 'string', minLength: 1, maxLength: 20, pattern: '^[a-z0-9]+$' }
         }
       }
+    },
+    ThemeLayout: {
+      type: 'object',
+      properties: {
+        navigation: { enum: ['rail', 'top', 'menu'] },
+        density: { enum: ['comfortable', 'compact'] },
+        sidebarWidth: { type: 'integer', minimum: 144, maximum: 360 },
+        contentPadding: { type: 'integer', minimum: 0, maximum: 48 },
+        contentMaxWidth: { type: 'integer', minimum: 640, maximum: 2560 },
+        cardGap: { type: 'integer', minimum: 4, maximum: 40 }
+      },
+      required: [],
+      additionalProperties: false
+    },
+    ThemeComponents: {
+      type: 'object',
+      properties: {
+        buttonRadius: { type: 'integer', minimum: 0, maximum: 32 },
+        cardRadius: { type: 'integer', minimum: 0, maximum: 40 },
+        inputRadius: { type: 'integer', minimum: 0, maximum: 24 },
+        borderWidth: { type: 'integer', minimum: 0, maximum: 6 },
+        surfaceShadow: { enum: ['none', 'soft', 'hard'] },
+        buttonSkew: { type: 'number', minimum: -12, maximum: 12 },
+        headingWeight: { type: 'integer', minimum: 400, maximum: 900 }
+      },
+      required: [],
+      additionalProperties: false
+    },
+    ThemeMotion: {
+      type: 'object',
+      properties: {
+        level: { enum: ['full', 'reduced', 'off'] },
+        transition: { enum: ['none', 'fade', 'slide'] },
+        durationMs: { type: 'integer', minimum: 0, maximum: 600 }
+      },
+      required: [],
+      additionalProperties: false
+    },
+    ThemePoint: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', minimum: 0, maximum: 100 },
+        y: { type: 'number', minimum: 0, maximum: 100 }
+      },
+      required: ['x', 'y'],
+      additionalProperties: false
+    },
+    ThemeLayer: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-zA-Z][a-zA-Z0-9_-]*$' },
+        type: { enum: ['shape', 'image', 'text'] },
+        scope: { enum: ['shell', 'home', 'workspace'] },
+        x: { type: 'number', minimum: -100, maximum: 100 },
+        y: { type: 'number', minimum: -100, maximum: 100 },
+        width: { type: 'number', minimum: 1, maximum: 200 },
+        height: { type: 'number', minimum: 1, maximum: 200 },
+        rotation: { type: 'number', minimum: -180, maximum: 180 },
+        opacity: { type: 'number', minimum: 0, maximum: 1 },
+        order: { type: 'integer', minimum: 0, maximum: 31 },
+        color: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 128,
+          pattern:
+            '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+        },
+        shape: { enum: ['rectangle', 'ellipse', 'polygon'] },
+        points: { type: 'array', items: { $ref: '#/$defs/ThemePoint' }, minItems: 3, maxItems: 12 },
+        text: { type: 'string', minLength: 0, maxLength: 160 },
+        assetId: { type: 'string', pattern: '^[a-f0-9]{64}$', minLength: 64, maxLength: 64 },
+        motion: { enum: ['none', 'float', 'tilt'] },
+        durationMs: { type: 'integer', minimum: 200, maximum: 10000 }
+      },
+      required: [
+        'id',
+        'type',
+        'scope',
+        'x',
+        'y',
+        'width',
+        'height',
+        'rotation',
+        'opacity',
+        'order'
+      ],
+      additionalProperties: false
+    },
+    ThemeFont: {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', pattern: '^[a-f0-9]{64}$', minLength: 64, maxLength: 64 },
+        family: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          pattern: '^[A-Za-z][A-Za-z0-9 _-]*$'
+        }
+      },
+      required: ['assetId', 'family'],
+      additionalProperties: false
+    },
+    ThemeDesign: {
+      type: 'object',
+      properties: {
+        version: { const: 2 },
+        layout: { $ref: '#/$defs/ThemeLayout' },
+        components: { $ref: '#/$defs/ThemeComponents' },
+        motion: { $ref: '#/$defs/ThemeMotion' },
+        layers: { type: 'array', items: { $ref: '#/$defs/ThemeLayer' }, minItems: 0, maxItems: 32 },
+        assets: {
+          type: 'array',
+          items: { type: 'string', pattern: '^[a-f0-9]{64}$', minLength: 64, maxLength: 64 },
+          minItems: 0,
+          maxItems: 32,
+          uniqueItems: true
+        },
+        fonts: { type: 'array', items: { $ref: '#/$defs/ThemeFont' }, minItems: 0, maxItems: 8 },
+        css: { type: 'string', minLength: 0, maxLength: 8192 }
+      },
+      required: ['version'],
+      additionalProperties: false
+    },
+    ThemeDefinition: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1, maxLength: 64 },
+        name: { type: 'string', minLength: 1, maxLength: 80 },
+        mode: { enum: ['light', 'dark'] },
+        tokens: {
+          type: 'object',
+          properties: {
+            colorBg: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorBgLayout: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorBgContainer: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorBgElevated: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorPrimary: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorPrimaryHover: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorPrimaryBg: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorText: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorTextSecondary: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorTextTertiary: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorBorder: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorBorderSecondary: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorSuccess: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorSuccessBg: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorWarning: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorWarningBg: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorError: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorErrorBg: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            colorLink: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 128,
+              pattern:
+                '^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\\([0-9.,\\s]+\\))$'
+            },
+            borderRadius: { type: 'number', minimum: 0, maximum: 32 },
+            fontFamily: { type: 'string', minLength: 1, maxLength: 512, pattern: '^[^;<>\\\\]+$' }
+          },
+          required: [
+            'colorBg',
+            'colorBgLayout',
+            'colorBgContainer',
+            'colorBgElevated',
+            'colorPrimary',
+            'colorPrimaryHover',
+            'colorPrimaryBg',
+            'colorText',
+            'colorTextSecondary',
+            'colorTextTertiary',
+            'colorBorder',
+            'colorBorderSecondary',
+            'colorSuccess',
+            'colorSuccessBg',
+            'colorWarning',
+            'colorWarningBg',
+            'colorError',
+            'colorErrorBg',
+            'colorLink',
+            'borderRadius',
+            'fontFamily'
+          ],
+          additionalProperties: false
+        },
+        design: { $ref: '#/$defs/ThemeDesign' }
+      },
+      required: ['id', 'name', 'mode', 'tokens'],
+      additionalProperties: false
+    },
+    ThemeAsset: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', pattern: '^[a-f0-9]{64}$', minLength: 64, maxLength: 64 },
+        name: { type: 'string', minLength: 1, maxLength: 240 },
+        kind: { enum: ['image', 'font'] },
+        mime: {
+          enum: ['image/png', 'image/jpeg', 'image/webp', 'font/ttf', 'font/otf', 'font/woff2']
+        },
+        bytes: { type: 'integer', minimum: 1, maximum: 33554432 },
+        url: { type: 'string', minLength: 1, maxLength: 2048 },
+        license: { type: 'string', minLength: 1, maxLength: 120 },
+        source: { type: 'string', minLength: 0, maxLength: 2048 },
+        notice: { type: 'string', maxLength: 16384 }
+      },
+      required: ['id', 'name', 'kind', 'mime', 'bytes', 'url', 'license'],
+      additionalProperties: false
+    },
+    ThemeAssetImportParams: {
+      type: 'object',
+      properties: {
+        fileRef: { type: 'string', minLength: 1, maxLength: 128 },
+        license: { type: 'string', minLength: 1, maxLength: 120 },
+        notice: { type: 'string', minLength: 0, maxLength: 16384 },
+        source: { type: 'string', minLength: 0, maxLength: 2048 }
+      },
+      required: ['fileRef', 'license'],
+      additionalProperties: false
+    },
+    ThemeBundledAssetImportParams: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', minLength: 1, maxLength: 512 },
+        license: { type: 'string', minLength: 1, maxLength: 120 },
+        notice: { type: 'string', minLength: 0, maxLength: 16384 },
+        source: { type: 'string', minLength: 0, maxLength: 2048 }
+      },
+      required: ['path', 'license'],
+      additionalProperties: false
+    },
+    ThemeAssetGetParams: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', pattern: '^[a-f0-9]{64}$', minLength: 64, maxLength: 64 }
+      },
+      required: ['id'],
+      additionalProperties: false
+    },
+    ThemeAssetListParams: {
+      type: 'object',
+      properties: {
+        after: { type: 'string', pattern: '^[a-f0-9]{64}$', minLength: 64, maxLength: 64 },
+        limit: { type: 'integer', minimum: 1, maximum: 16 }
+      },
+      required: [],
+      additionalProperties: false
+    },
+    ThemeAssetListResult: {
+      type: 'object',
+      properties: {
+        assets: { type: 'array', items: { $ref: '#/$defs/ThemeAsset' }, minItems: 0, maxItems: 16 },
+        next: {
+          oneOf: [
+            { type: 'string', pattern: '^[a-f0-9]{64}$', minLength: 64, maxLength: 64 },
+            { type: 'null' }
+          ]
+        }
+      },
+      required: ['assets', 'next'],
+      additionalProperties: false
+    },
+    RendererThemeStyle: {
+      type: 'object',
+      properties: {
+        version: { const: 2 },
+        css: { type: 'string', minLength: 0, maxLength: 49152 },
+        motion: { enum: ['full', 'reduced', 'off'] },
+        layers: {
+          type: 'array',
+          maxItems: 32,
+          items: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+                pattern: '^[a-zA-Z][a-zA-Z0-9_-]*$',
+                minLength: 1,
+                maxLength: 64
+              },
+              scope: { enum: ['shell', 'home', 'workspace'] },
+              text: { type: 'string', maxLength: 160 }
+            },
+            required: ['id', 'scope', 'text'],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ['version', 'css', 'motion', 'layers'],
+      additionalProperties: false
     }
   },
   methods: {
@@ -1800,6 +1838,30 @@ export const contract = {
         required: ['paused', 'cancelRequested'],
         additionalProperties: false
       }
+    },
+    'theme.assets.import': {
+      permission: 'theme:assets',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/ThemeAssetImportParams' },
+      result: { $ref: '#/$defs/ThemeAsset' }
+    },
+    'theme.assets.importBundled': {
+      permission: 'theme:assets',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/ThemeBundledAssetImportParams' },
+      result: { $ref: '#/$defs/ThemeAsset' }
+    },
+    'theme.assets.get': {
+      permission: 'theme:assets',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/ThemeAssetGetParams' },
+      result: { $ref: '#/$defs/ThemeAsset' }
+    },
+    'theme.assets.list': {
+      permission: 'theme:assets',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/ThemeAssetListParams' },
+      result: { $ref: '#/$defs/ThemeAssetListResult' }
     }
   },
   lifecycle: {
@@ -1828,6 +1890,10 @@ export const contract = {
     stderr: 'diagnostics',
     handshake: ['hello', 'initialize', 'ready'],
     session: 'host-generated-256-bit-token',
+    rendererLease: 'bounded-renewal-by-trusted-mounted-owner;dispose-revokes',
+    rendererReplay:
+      'host-frame-sequence;strictly-increasing-renderer-N;constant-memory;client-correlation-preserved',
+    sessionRequestsBudget: 'opaque-request-id-sessions;renderer-sequence-does-not-retain-history',
     backendInvocation: 'host-replaces-session-and-derives-callerId',
     taskCompletion: 'correlated-reply-after-executor-stops',
     cancellation: 'cancel-frame-then-stop-process-tree-at-deadline',

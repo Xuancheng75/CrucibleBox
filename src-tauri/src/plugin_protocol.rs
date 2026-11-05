@@ -44,13 +44,17 @@ fn escape_html_attr(value: &str) -> String {
 
 fn generated_index(session: &RendererSession) -> String {
     let interactive_timeout = cruciblebox_next2_protocol::BUDGET_INTERACTIVE_TIMEOUT_MS;
-    let renderer_script = "";
+    let renderer_script = "<link rel=\"modulepreload\" href=\"renderer.js\" crossorigin><link rel=\"modulepreload\" href=\"frame-validation.mjs\" crossorigin>";
     // Bug E：首帧关键 CSS 直接内联进 index.html。runtime.js 的深色兜底要等脚本
     // 下载+执行后才生效，WebView2 在此之前按默认白底渲染 → 深色主题闪白屏。
     let critical_style = format!(
         "html{{background:{};color-scheme:{}}}body{{margin:0;background:inherit;min-height:100%}}html,body{{width:100%;min-height:100%;overflow-x:hidden}}#root{{min-height:100%;background:inherit;overflow:hidden}}",
         escape_html_attr(&session.initial_background),
         escape_html_attr(&session.color_scheme)
+    );
+    let critical_style = format!(
+        "{critical_style}{}",
+        include_str!("../../shared/scrollbars.css")
     );
     format!(
         "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <style>{}</style>\n    <title></title>\n  </head>\n  <body>\n    <div id=\"root\" data-session-token=\"{}\" data-api-version=\"{}\" data-renderer-url=\"renderer.js\"></div>\n    <script src=\"runtime.js\"></script>{}\n  </body>\n</html>",
@@ -445,6 +449,7 @@ mod tests {
             color_scheme: "dark".into(),
             plugin_id: "x".into(),
             plugin_name: "x".into(),
+            plugin_version: "1.0.0".into(),
             plugin_directory: "C:/plugins/x".into(),
             renderer_entry: "dist/renderer.js".into(),
             renderer_path: "C:/plugins/x/dist/renderer.js".into(),

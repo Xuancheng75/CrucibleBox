@@ -328,11 +328,9 @@ impl InstallManager {
 
     /// discard：删除 token + rollback 事务（未 committed）+ 清理 stage 目录。
     pub fn discard(&self, token: String) -> Result<(), String> {
-        let mut install = {
-            let mut prepared = lock(&self.prepared);
-            prepared
-                .remove(&token)
-                .ok_or_else(|| String::from("install token not found"))?
+        // Commit consumes a preview even on failure; closing it afterwards is idempotent.
+        let Some(mut install) = lock(&self.prepared).remove(&token) else {
+            return Ok(());
         };
         let _ = install.transaction.rollback();
         let _ = std::fs::remove_dir_all(&install.stage_dir);
@@ -344,11 +342,19 @@ impl InstallManager {
     /// 供启动恢复器决定回滚或完成清理。
     pub fn uninstall(&self, id: &str) -> Result<serde_json::Value, String> {
         let _graph_change = self.next_backend.next2.graph_change()?;
-        self.next_backend.next2.assert_can_remove(id)?;
-        let mut row = lock(&self.db)
+        let record = lock(&self.db)
             .plugin_find_by_id(id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("plugin not found: {id}"))?;
+            .map_err(|e| e.to_string())?;
+        let Some(mut row) = record else {
+            let name = crate::journal::pending_uninstall(&self.plugins_dir, id)?
+                .ok_or_else(|| format!("plugin not found: {id}"))?;
+            self.block(&name);
+            self.recover_blocked_plugin(&name)?;
+            return Ok(
+                json!({"success": true, "data": {"id": id, "name": name, "cleanupResumed": true}}),
+            );
+        };
+        self.next_backend.next2.assert_can_remove(id)?;
         if self.is_blocked(&row.name) {
             self.recover_blocked_plugin(&row.name)?;
             row = lock(&self.db)
@@ -377,6 +383,12 @@ impl InstallManager {
     fn perform_uninstall(&self, row: &PluginRow) -> Result<serde_json::Value, String> {
         let target = self.plugins_dir.join(&row.name);
         if !target.exists() {
+            crate::install_cleanup::cleanup(
+                &self.plugins_dir,
+                None,
+                &crate::marketplace_download::cache_root(),
+                &row.name,
+            )?;
             lock(&self.db).plugin_delete(&row.id)?;
             return Ok(json!({
                 "success": true,
@@ -398,6 +410,7 @@ impl InstallManager {
             previous_metadata: Some({
                 let mut metadata = plugin_row_to_metadata(row);
                 metadata["retainPreviousFiles"] = json!(true);
+                metadata["purgeManagedCode"] = json!(true);
                 metadata
             }),
             created_at: now_iso(),
@@ -444,10 +457,18 @@ impl InstallManager {
                 return Err(error);
             }
         };
-        let _ = clear_journal(&retained, &committed);
+        let retained_files = crate::install_cleanup::cleanup(
+            &self.plugins_dir,
+            Some(&retained),
+            &crate::marketplace_download::cache_root(),
+            &row.name,
+        )
+        .inspect_err(|_| self.block(&row.name))?;
+        clear_journal(&retained, &committed)?;
+        crate::install_cleanup::remove_empty_retained_directory(&retained)?;
         Ok(json!({
             "success": true,
-            "data": { "id": row.id, "name": row.name, "directoryMissing": false }
+            "data": { "id": row.id, "name": row.name, "directoryMissing": false, "retainedFiles": retained_files }
         }))
     }
 
@@ -641,6 +662,8 @@ impl InstallManager {
             "installToken": token,
             "data": {
                 "isUpgrade": is_upgrade,
+                "name": manifest.name,
+                "displayName": manifest.display_name,
                 "version": manifest.version,
                 "previousVersion": existing.as_ref().map(|r| r.version.clone()),
                 "permissions": new_permissions,
@@ -1389,7 +1412,7 @@ mod tests {
             .unwrap();
         mgr.next_backend.activate("acme-independent").unwrap();
         let session = next2_session(&mgr, &plugins);
-        let request = json!({"wireVersion":4,"requestId":"storage-1","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
+        let request = json!({"wireVersion":4,"requestId":"renderer-1","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
         assert_eq!(
             mgr.next_backend
                 .next2
@@ -1401,6 +1424,23 @@ mod tests {
             mgr.next_backend
                 .next2
                 .renderer(&request.to_string(), &session)
+                .unwrap()["error"]["code"],
+            "REPLAY_DENIED"
+        );
+        let mut renewed = session.clone();
+        renewed.expires_at_ms += crate::plugin_session::LEASE_MS;
+        let continued = json!({"wireVersion":4,"requestId":"renderer-2","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
+        assert_eq!(
+            mgr.next_backend
+                .next2
+                .renderer(&continued.to_string(), &renewed)
+                .unwrap()["result"]["text"],
+            "原始数据"
+        );
+        assert_eq!(
+            mgr.next_backend
+                .next2
+                .renderer(&request.to_string(), &renewed)
                 .unwrap()["error"]["code"],
             "REPLAY_DENIED"
         );
@@ -1431,7 +1471,7 @@ mod tests {
                 .as_deref(),
             Some(r#"{"text":"原始数据"}"#)
         );
-        let stale = json!({"wireVersion":4,"requestId":"storage-2","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
+        let stale = json!({"wireVersion":4,"requestId":"renderer-3","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
         assert_eq!(
             mgr.next_backend
                 .next2
@@ -1496,11 +1536,15 @@ mod tests {
             .unwrap();
         mgr.next_backend.activate("acme-independent").unwrap();
         let session = next2_session(&mgr, &plugins);
+        let sequence = std::cell::Cell::new(0u64);
         let call = |id: &str,
                     target: serde_json::Value,
                     method: &str,
                     params: serde_json::Value| {
-            mgr.next_backend.next2.renderer(&json!({"wireVersion":4,"requestId":id,"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap()
+            sequence.set(sequence.get() + 1);
+            let mut response = mgr.next_backend.next2.renderer(&json!({"wireVersion":4,"requestId":format!("renderer-{}",sequence.get()),"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap();
+            response["requestId"] = json!(id);
+            response
         };
         assert_eq!(
             call(

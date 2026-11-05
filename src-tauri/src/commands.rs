@@ -64,6 +64,7 @@ pub fn window_apply_theme(
 const ALLOWED_SETTINGS_KEYS: &[&str] = &[
     "theme",
     "updateChannel",
+    "marketplaceChannel",
     "downloadProxyMode",
     "downloadProxyUrl",
 ];
@@ -497,7 +498,7 @@ pub fn plugin_tags_assign(
 // getLogs/clearLogs/uninstall + PluginManager 等价）
 // ---------------------------------------------------------------------------
 
-/// 启用插件：持久化 enabled + 惰性激活 backend（对等 activatePlugin）
+/// 启用插件：启动成功后持久化 enabled。
 #[tauri::command(async)]
 pub fn plugin_enable(
     window: WebviewWindow,
@@ -510,46 +511,30 @@ pub fn plugin_enable(
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    let record = lock(&db)
+    let mut record = lock(&db)
         .plugin_backend_record(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("plugin not found: {id}"))?;
     if install.is_blocked(&record.name) {
         install.recover_if_blocked(&record.name)?;
+        record = lock(&db)
+            .plugin_backend_record(&id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("plugin not found after recovery: {id}"))?;
     }
     let _graph_change = next_backend.next2.graph_change()?;
     let _lifecycle = backend.begin_lifecycle_operation(&id)?;
-    lock(&db)
-        .set_plugin_enabled(&id, true)
-        .map_err(|e| e.to_string())?;
-    // 惰性激活 backend（若插件有 backend）
-    let activation_record = lock(&db)
-        .plugin_backend_record(&id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("plugin not found: {id}"))?;
-    let manifest =
-        crate::manifest::read_manifest(std::path::Path::new(&activation_record.installed_path));
-    let next = manifest
-        .as_ref()
-        .ok()
-        .filter(|manifest| manifest.manifest_version == Some(6));
-    let result = match next {
-        Some(manifest)
-            if manifest.backend == Some(false) && manifest.manifest_version == Some(5) =>
-        {
-            Ok(())
-        }
-        Some(_) => next_backend.activate(&id),
-        None => Err(match manifest {
-            Err(error) => format!("插件包读取失败：{error}"),
-            Ok(_) => "此插件是旧架构版本，请在插件市场升级到 Next 版本。原插件包和用户数据已保留。"
-                .into(),
-        }),
-    };
-    if let Err(error) = result {
-        let _ = lock(&db).set_plugin_enabled(&id, false);
-        return Err(format!("failed to activate plugin: {error}"));
+    let manifest = crate::manifest::read_manifest(std::path::Path::new(&record.installed_path))
+        .map_err(|error| format!("插件包读取失败：{error}"))?;
+    if manifest.manifest_version != Some(6) {
+        return Err(
+            "此插件是旧架构版本，请在插件市场升级到 Next 版本。原插件包和用户数据已保留。".into(),
+        );
     }
+    next_backend
+        .next2
+        .enable(&id)
+        .map_err(|error| format!("failed to activate plugin: {error}"))?;
     backend.emit(
         "plugin:status-change",
         serde_json::json!({ "pluginId": id, "status": "active" }),
@@ -565,6 +550,7 @@ pub fn plugin_disable(
     install: State<'_, Arc<crate::install::InstallManager>>,
     db: State<'_, Arc<Mutex<Db>>>,
     next_backend: State<'_, Arc<crate::next_backend::Manager>>,
+    protocol: State<'_, Arc<crate::plugin_protocol::ProtocolContext>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
@@ -587,6 +573,12 @@ pub fn plugin_disable(
     lock(&db)
         .set_plugin_enabled(&id, false)
         .map_err(|e| e.to_string())?;
+    protocol
+        .registry
+        .lock()
+        .map_err(|_| "INTERNAL_ERROR")?
+        .dispose_plugin(&id);
+    next_backend.next2.dispose_plugin_renderers(&id)?;
     backend.emit(
         "plugin:status-change",
         serde_json::json!({ "pluginId": id, "status": "inactive" }),
@@ -678,12 +670,14 @@ pub fn plugin_uninstall(
     window: WebviewWindow,
     install: State<'_, Arc<crate::install::InstallManager>>,
     protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
+    next_backend: State<'_, Arc<crate::next_backend::Manager>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
     let removed_sessions = protocol.registry.lock().unwrap().dispose_plugin(&id);
+    next_backend.next2.dispose_plugin_renderers(&id)?;
     let mut result = install.uninstall(&id)?;
     if let Some(object) = result
         .get_mut("data")
@@ -1449,7 +1443,7 @@ fn marketplace_download_execute(
         return Err("目录中的插件 SHA-256 无效".into());
     }
     let agent = marketplace_agent(&plugin.url, 15, 90, &policy)?;
-    let root = std::env::temp_dir().join("cruciblebox-marketplace").join(
+    let root = crate::marketplace_download::cache_root().join(
         source_id
             .map(|id| format!("source-{id}"))
             .unwrap_or_else(|| "official".into()),
@@ -1973,12 +1967,14 @@ pub fn plugin_register_import_path(
 pub fn dispose_renderer_session(
     window: WebviewWindow,
     protocol: State<'_, std::sync::Arc<crate::plugin_protocol::ProtocolContext>>,
+    backend: State<'_, Arc<crate::next_backend::Manager>>,
     token: String,
 ) -> Result<bool, String> {
     if window.label() != "main" {
         return Err("unauthorized".into());
     }
     let removed = protocol.registry.lock().unwrap().dispose(&token);
+    backend.next2.dispose_renderer_session(&token)?;
     Ok(removed)
 }
 

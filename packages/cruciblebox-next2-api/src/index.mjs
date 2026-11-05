@@ -3,6 +3,24 @@ import { parse, matches, unique, validRange, validateInventory } from './schema.
 export { contract } from './generated.mjs'
 export { compatible } from './schema.mjs'
 
+export function validateThemeDesign(raw) {
+  const design = parse(raw, 'ThemeDesign')
+  const assets = new Set(design.assets ?? [])
+  unique(design.layers ?? [], (layer) => layer.id)
+  unique(design.fonts ?? [], (font) => font.family.toLowerCase())
+  for (const layer of design.layers ?? []) {
+    if (layer.type === 'image' && (!layer.assetId || !assets.has(layer.assetId)))
+      throw Error('THEME_ASSET_UNDECLARED')
+    if (layer.type === 'text' && typeof layer.text !== 'string')
+      throw Error('THEME_LAYER_TEXT_REQUIRED')
+    if (layer.type === 'shape' && layer.shape === 'polygon' && !layer.points)
+      throw Error('THEME_POLYGON_POINTS_REQUIRED')
+  }
+  for (const font of design.fonts ?? [])
+    if (!assets.has(font.assetId)) throw Error('THEME_ASSET_UNDECLARED')
+  return design
+}
+
 export function validateManifest(raw) {
   const manifest = parse(raw, 'Manifest', contract.budget.manifestBytes)
   validateInventory(manifest.files)

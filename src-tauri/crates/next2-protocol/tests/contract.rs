@@ -49,6 +49,224 @@ fn session(manifest: Manifest) -> Session {
     )
 }
 #[test]
+fn ordered_renderer_requests_exceed_opaque_budget_without_forgetting_replay_or_expiry() {
+    let manifest = native("acme-independent");
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let mut session = Session::renderer(manifest, "a".repeat(64), "main:frame-1".into(), 1000);
+    let call = |index| {
+        json!({"wireVersion":4,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":"backend"},"method":"call","params":{}}).to_string()
+    };
+    for index in 1..=BUDGET_SESSION_REQUESTS + 4 {
+        let admitted = session
+            .admit(&registry, &call(index), "main:frame-1", 1)
+            .unwrap();
+        session.finish(&admitted.request.request_id);
+    }
+    session.renew(2000);
+    assert_eq!(
+        session
+            .admit(&registry, &call(1), "main:frame-1", 1500)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+    assert_eq!(
+        session
+            .admit(&registry, &call(BUDGET_SESSION_REQUESTS + 5), "other", 1500)
+            .err()
+            .unwrap(),
+        "SESSION_DENIED"
+    );
+    assert_eq!(
+        session
+            .admit(
+                &registry,
+                &call(BUDGET_SESSION_REQUESTS + 5),
+                "main:frame-1",
+                2000
+            )
+            .err()
+            .unwrap(),
+        "SESSION_EXPIRED"
+    );
+    session.renew(4000);
+    assert!(session
+        .admit(
+            &registry,
+            &call(BUDGET_SESSION_REQUESTS + 5),
+            "main:frame-1",
+            3000
+        )
+        .is_ok());
+}
+#[test]
+fn ordered_backend_capabilities_outlive_the_opaque_budget_and_keep_replay_protection() {
+    let manifest = native("acme-independent");
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let mut session = Session::new(
+        manifest,
+        "a".repeat(64),
+        "native".into(),
+        "backend".into(),
+        1000,
+    );
+    let call = |index| {
+        json!({"wireVersion":4,"requestId":format!("backend-seq-{index}"),"session":"a".repeat(64),"target":{"kind":"platform"},"method":"storage.get","params":{"key":"identity"}}).to_string()
+    };
+    let completed = BUDGET_SESSION_REQUESTS + 8;
+    for index in 1..=completed {
+        let admitted = session.admit(&registry, &call(index), "native", 1).unwrap();
+        session.finish(&admitted.request.request_id);
+    }
+    session.renew(2000);
+    assert_eq!(
+        session
+            .admit(&registry, &call(1), "native", 1500)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+    assert_eq!(
+        session
+            .admit(&registry, &call(completed + 1), "other", 1500)
+            .err()
+            .unwrap(),
+        "SESSION_DENIED"
+    );
+    assert_eq!(
+        session
+            .admit(&registry, &call(completed + 1), "native", 2000)
+            .err()
+            .unwrap(),
+        "SESSION_EXPIRED"
+    );
+    for index in completed + 1..=completed + BUDGET_INFLIGHT {
+        session
+            .admit(&registry, &call(index), "native", 1500)
+            .unwrap();
+    }
+    let next = completed + BUDGET_INFLIGHT + 1;
+    assert_eq!(
+        session
+            .admit(&registry, &call(next), "native", 1500)
+            .err()
+            .unwrap(),
+        "BUSY"
+    );
+    session.finish(&format!("backend-seq-{}", completed + 1));
+    // A rejected request must not consume the sequence high-water mark.
+    session
+        .admit(&registry, &call(next), "native", 1500)
+        .unwrap();
+    assert_eq!(
+        session
+            .admit(&registry, &call(next), "native", 1500)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+}
+
+#[test]
+fn opaque_backend_cannot_reset_its_ledger_by_switching_to_ordered_ids() {
+    let manifest = native("acme-independent");
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let mut session = Session::new(
+        manifest,
+        "a".repeat(64),
+        "native".into(),
+        "backend".into(),
+        1000,
+    );
+    for index in 0..BUDGET_SESSION_REQUESTS {
+        let mut raw: Value = serde_json::from_str(&request(
+            index,
+            json!({"kind":"platform"}),
+            "storage.get",
+            json!({"key":"identity"}),
+        ))
+        .unwrap();
+        if index == 1 {
+            raw["requestId"] = json!("backend-seq-1");
+        }
+        let admitted = session
+            .admit(&registry, &raw.to_string(), "native", 1)
+            .unwrap();
+        session.finish(&admitted.request.request_id);
+    }
+    session.renew(2000);
+    let mut raw: Value = serde_json::from_str(&request(
+        0,
+        json!({"kind":"platform"}),
+        "storage.get",
+        json!({"key":"identity"}),
+    ))
+    .unwrap();
+    assert_eq!(
+        session
+            .admit(&registry, &raw.to_string(), "native", 1500)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+    raw["requestId"] = json!("backend-seq-9000");
+    assert_eq!(
+        session
+            .admit(&registry, &raw.to_string(), "native", 1500)
+            .err()
+            .unwrap(),
+        "SESSION_EXHAUSTED"
+    );
+}
+
+#[test]
+fn opaque_sessions_keep_their_existing_request_budget_after_renewal() {
+    let manifest = native("acme-independent");
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let mut session = session(manifest);
+    for index in 0..BUDGET_SESSION_REQUESTS {
+        let admitted = session
+            .admit(
+                &registry,
+                &request(index, json!({"kind":"backend"}), "call", json!({})),
+                "main:frame-1",
+                1,
+            )
+            .unwrap();
+        session.finish(&admitted.request.request_id);
+    }
+    session.renew(4000);
+    assert_eq!(
+        session
+            .admit(
+                &registry,
+                &request(
+                    BUDGET_SESSION_REQUESTS,
+                    json!({"kind":"backend"}),
+                    "call",
+                    json!({})
+                ),
+                "main:frame-1",
+                2000
+            )
+            .err()
+            .unwrap(),
+        "SESSION_EXHAUSTED"
+    );
+    assert_eq!(
+        session
+            .admit(
+                &registry,
+                &request(0, json!({"kind":"backend"}), "call", json!({})),
+                "main:frame-1",
+                2000
+            )
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+}
+#[test]
 fn owner_is_derived_from_host_and_business_methods_are_opaque() {
     let manifest = native("acme-independent");
     let registry = Registry::new([installed(manifest.clone())]).unwrap();

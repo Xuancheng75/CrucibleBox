@@ -7,7 +7,7 @@ use std::{
     io,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -120,14 +120,21 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
         super::install_cjs_host_functions(&ctx, &directory).map_err(|e| e.to_string())?;
         ctx.eval::<(), _>(super::loader::LOADER_JS).map_err(|e| e.to_string())?;
         let input = input.clone(); let output = output.clone(); let token = token.clone();
+        let sequence = AtomicU64::new(1);
         ctx.globals().set("__nextExchange", Function::new(ctx.clone(), move |raw: String| -> Result<String, rquickjs::Error> {
             let result = (|| -> Result<String, String> {
-                let request = protocol::validate_request(&raw)?;
+                let mut request = protocol::validate_request(&raw)?;
                 if request.session != token { return Err("SESSION_DENIED".into()); }
-                transport::write_frame(&mut *output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?, &json!({"kind":"capability","request":request})).map_err(|e| e.to_string())?;
-                let frame = input.lock().map_err(|_| "INPUT_UNAVAILABLE")?.recv().map_err(|e| e.to_string())??;
+                let original_id = request.request_id.clone();
+                {
+                    let mut output = output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?;
+                    request.request_id = format!("backend-seq-{}", sequence.fetch_add(1, Ordering::Relaxed));
+                    transport::write_frame(&mut *output, &json!({"kind":"capability","request":request})).map_err(|e| e.to_string())?;
+                }
+                let mut frame = input.lock().map_err(|_| "INPUT_UNAVAILABLE")?.recv().map_err(|e| e.to_string())??;
                 if frame["kind"] != "capability-result" { return Err("UNEXPECTED_CAPABILITY_FRAME".into()); }
                 protocol::validate_response(&frame["response"].to_string(), &request.request_id)?;
+                frame["response"]["requestId"] = json!(original_id);
                 Ok(frame["response"].to_string())
             })();
             result.map_err(|e| rquickjs::Error::new_from_js_message("host", "response", e))

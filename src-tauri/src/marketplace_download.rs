@@ -153,3 +153,6 @@ pub fn download_with_bits(
 ) -> Result<(), String> {
     Err("BITS 仅支持 Windows".into())
 }
+pub(crate) fn cache_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("cruciblebox-marketplace")
+}

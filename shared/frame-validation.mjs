@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Xuancheng75
 const contract = {
-  budget: {
-    bytes: 65536,
-    depth: 16,
-    nodes: 4096,
-    inflight: 32,
-    storageValueBytes: 4194304,
-    storageTransactionBytes: 8388608,
-    storageChunkBytes: 24576,
-    storageTransactionOps: 32
-  },
+  budget: { bytes: 65536, depth: 16, nodes: 4096 },
   rendererAppearance: {
     type: 'object',
     properties: {
@@ -130,6 +121,35 @@ const contract = {
       maxItems: 256,
       items: { type: 'string', minLength: 1, maxLength: 2048 }
     }
+  },
+  rendererThemeStyle: {
+    type: 'object',
+    properties: {
+      version: { const: 2 },
+      css: { type: 'string', minLength: 0, maxLength: 49152 },
+      motion: { enum: ['full', 'reduced', 'off'] },
+      layers: {
+        type: 'array',
+        maxItems: 32,
+        items: {
+          type: 'object',
+          properties: {
+            id: {
+              type: 'string',
+              pattern: '^[a-zA-Z][a-zA-Z0-9_-]*$',
+              minLength: 1,
+              maxLength: 64
+            },
+            scope: { enum: ['shell', 'home', 'workspace'] },
+            text: { type: 'string', maxLength: 160 }
+          },
+          required: ['id', 'scope', 'text'],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ['version', 'css', 'motion', 'layers'],
+    additionalProperties: false
   }
 }
 function canonicalNumeric(value) {
@@ -238,5 +258,11 @@ export function validateAppearance(raw) {
 export function validateFilesDropped(raw) {
   const value = validatePayload(raw)
   if (!shape(contract.rendererEvents.filesDropped, value)) throw new Error('INVALID_EVENT')
+  return value
+}
+
+export function validateThemeStyle(raw) {
+  const value = validatePayload(raw)
+  if (!shape(contract.rendererThemeStyle, value)) throw new Error('INVALID_THEME_STYLE')
   return value
 }

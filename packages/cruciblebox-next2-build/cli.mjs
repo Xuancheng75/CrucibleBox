@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import AdmZip from 'adm-zip'
 import { createHash, createPrivateKey, sign } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { validateManifest, validateResourceManifest } from '@cruciblebox/next2-api'
+import { contract, validateManifest, validateResourceManifest } from '@cruciblebox/next2-api'
 
 const VERSION = JSON.parse(
   await readFile(new URL('./package.json', import.meta.url), 'utf8')
@@ -41,7 +41,7 @@ if (command === 'init') {
     displayName: id,
     description: 'Independent plugin example',
     publisher: { id: 'local-developer', displayName: 'Local developer' },
-    minHostVersion: '2.1.0-beta.4',
+    minHostVersion: '2.1.0',
     sdk: { min: 6, maxExclusive: 7 },
     renderer: 'dist/renderer.js',
     permissions: ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
@@ -78,7 +78,7 @@ if (command === 'init') {
           build: 'cruciblebox-next2 build .',
           pack: 'cruciblebox-next2 pack . ' + id + '-1.0.0.zip'
         },
-        dependencies: { '@cruciblebox/next2-api': '6.0.0-alpha.2' },
+        dependencies: { '@cruciblebox/next2-api': contract.versions.sdkPackageVersion },
         devDependencies: { '@cruciblebox/next2-build': VERSION }
       },
       null,

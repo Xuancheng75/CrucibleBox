@@ -6,7 +6,7 @@ vi.mock('../tauri-frontend/node_modules/@tauri-apps/plugin-dialog/dist-js/index.
 }))
 vi.mock('antd', () => ({ notification: { info: mock.notice } }))
 vi.mock('../tauri-frontend/src/features/plugins/runtime/NextThemeController', () => ({
-  createNextThemeController: () => ({ execute: vi.fn(), dispose: vi.fn() })
+  createNextThemeController: () => ({ execute: vi.fn(), dispose: vi.fn(), setVisible: vi.fn() })
 }))
 import { createNextUiController } from '../tauri-frontend/src/features/plugins/runtime/NextUiController'
 beforeEach(() => {

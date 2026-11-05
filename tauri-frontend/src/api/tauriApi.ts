@@ -185,6 +185,8 @@ export interface InstallSource {
 
 /** plugin_install_preview 的预览信息（后端 lane 并行实现，按契约调用） */
 export interface PluginInstallPreview {
+  name?: string
+  displayName?: string
   isUpgrade: boolean
   version: string
   previousVersion: string | null

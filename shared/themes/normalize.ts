@@ -1,5 +1,6 @@
 import type { ThemeMode, ThemeTokens, ToolboxTheme } from '../types/theme.types'
 import { createDarkTokens, createLightTokens } from './presets'
+import { validateThemeDesign } from '../../packages/cruciblebox-next2-api/src/index.mjs'
 
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/
 const RGB_COLOR = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*[\d.]+\s*)?\)$/
@@ -67,5 +68,13 @@ export function normalizeTheme(value: unknown): ToolboxTheme | null {
     tokens.fontFamily = font
   }
 
+  if (value.design !== undefined) {
+    try {
+      const design = validateThemeDesign(JSON.stringify(value.design))
+      return { id: value.id, name: value.name, mode: value.mode, tokens, design }
+    } catch {
+      return null
+    }
+  }
   return { id: value.id, name: value.name, mode: value.mode, tokens }
 }

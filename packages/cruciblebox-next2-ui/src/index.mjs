@@ -25,6 +25,7 @@ function bytes(value, maximum = maxValue) {
   return result
 }
 export function createClient(context) {
+  context.enableThemeStyle?.(2)
   const api = connect(context)
   const call = api.platform
   async function readLarge(key) {
@@ -143,12 +144,20 @@ export function createClient(context) {
       get: () => call('config.get', {}),
       patch: (values) => call('config.patch', { values })
     },
-    theme: Object.fromEntries(
-      ['get', 'list', 'preview', 'commit', 'rollback', 'set'].map((method) => [
-        method,
-        (theme) => call('theme.' + method, ['preview', 'set'].includes(method) ? { theme } : {})
-      ])
-    ),
+    theme: {
+      ...Object.fromEntries(
+        ['get', 'list', 'preview', 'commit', 'rollback', 'set'].map((method) => [
+          method,
+          (theme) => call('theme.' + method, ['preview', 'set'].includes(method) ? { theme } : {})
+        ])
+      ),
+      assets: {
+        import: (options) => call('theme.assets.import', options),
+        importBundled: (options) => call('theme.assets.importBundled', options),
+        get: (id) => call('theme.assets.get', { id }),
+        list: (options = {}) => call('theme.assets.list', options)
+      }
+    },
     dialog: {
       open: (options) => call('dialog.open', options),
       confirm: (options) => call('dialog.confirm', options)

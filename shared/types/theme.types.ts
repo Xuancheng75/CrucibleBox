@@ -1,4 +1,10 @@
 export type ThemeMode = 'light' | 'dark'
+export type {
+  ThemeDesign,
+  ThemeLayer,
+  ThemeAsset,
+  RendererThemeStyle
+} from '../../packages/cruciblebox-next2-api/src/generated.mjs'
 
 export interface ThemeTokens {
   colorBg: string
@@ -29,4 +35,5 @@ export interface ToolboxTheme {
   name: string
   mode: ThemeMode
   tokens: ThemeTokens
+  design?: import('../../packages/cruciblebox-next2-api/src/generated.mjs').ThemeDesign
 }

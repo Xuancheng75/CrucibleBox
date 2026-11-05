@@ -18,23 +18,25 @@ const STATUS_TEXT: Record<string, { text: string; tone: StatusTone }> = {
   [PluginLifecycleStatus.Inactive]: { text: '已停止', tone: 'neutral' }
 }
 
-export default function PluginView() {
+export default function PluginView({ pluginId }: { pluginId?: string } = {}) {
   const { token } = theme.useToken()
-  const { activePluginId, setActivePluginId, setCurrentPage } = useAppStore()
+  const activePluginId = useAppStore((s) => s.activePluginId)
+  const setActivePluginId = useAppStore((s) => s.setActivePluginId)
+  const setCurrentPage = useAppStore((s) => s.setCurrentPage)
   const plugins = usePluginStore((s) => s.plugins)
   const activePlugins = usePluginStore((s) => s.activePlugins)
   const updatePluginConfig = usePluginStore((s) => s.updatePluginConfig)
 
-  const plugin = plugins.find((p) => p.id === activePluginId)
+  const plugin = plugins.find((p) => p.id === (pluginId ?? activePluginId))
 
   // 卸载当前插件后列表刷新是异步的；立即离开详情页，避免短暂显示空白或
   // 让旧 renderer session 继续接收消息。
   useEffect(() => {
-    if (activePluginId && !plugin) {
+    if (activePluginId && (!pluginId || activePluginId === pluginId) && !plugin) {
       setActivePluginId(null)
       setCurrentPage('home')
     }
-  }, [activePluginId, plugin, setActivePluginId, setCurrentPage])
+  }, [activePluginId, pluginId, plugin, setActivePluginId, setCurrentPage])
 
   const handleBack = () => {
     setActivePluginId(null)

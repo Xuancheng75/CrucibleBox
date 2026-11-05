@@ -40,7 +40,10 @@ struct Slot {
     stop: StopHandle,
     admission: Mutex<Session>,
 }
-type SessionEntry = (u64, Arc<Mutex<Session>>);
+struct SessionEntry {
+    plugin_id: String,
+    session: Arc<Mutex<Session>>,
+}
 pub struct Manager {
     runner: PathBuf,
     db: Arc<Mutex<Db>>,
@@ -107,6 +110,9 @@ impl Manager {
         Ok(plugin)
     }
     fn registry(&self) -> Result<Registry, String> {
+        self.registry_with(None)
+    }
+    fn registry_with(&self, enabling: Option<&crate::db::PluginRow>) -> Result<Registry, String> {
         let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
         let records = db
             .enabled_plugin_backend_records()
@@ -123,7 +129,27 @@ impl Manager {
                 });
             }
         }
+        if let Some(row) = enabling.filter(|row| !row.enabled) {
+            installed.push(Installed {
+                manifest: self.installed(row)?.manifest().clone(),
+                enabled: true,
+            });
+        }
         Registry::new(installed)
+    }
+    pub fn dispose_renderer_session(&self, token: &str) -> Result<(), String> {
+        self.sessions
+            .lock()
+            .map_err(|_| "INTERNAL_ERROR")?
+            .remove(token);
+        Ok(())
+    }
+    pub fn dispose_plugin_renderers(&self, plugin_id: &str) -> Result<(), String> {
+        self.sessions
+            .lock()
+            .map_err(|_| "INTERNAL_ERROR")?
+            .retain(|_, entry| entry.plugin_id != plugin_id);
+        Ok(())
     }
     pub fn graph_change(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
         self.graph_changes
@@ -180,9 +206,38 @@ impl Manager {
         }
         Ok(())
     }
+    /// Start under the lifecycle lock, then persist the user's enabled choice.
+    pub fn enable(&self, owner: &str) -> Result<(), String> {
+        let row = self
+            .db
+            .lock()
+            .map_err(|_| "STORAGE_UNAVAILABLE")?
+            .plugin_find_by_id(owner)?
+            .ok_or("PLUGIN_NOT_FOUND")?;
+        let plugin = self.installed(&row)?;
+        self.registry_with(Some(&row))?;
+        if plugin.manifest().backend.is_some() {
+            self.slot_for_record(&row, false)?;
+        }
+        let saved = self
+            .db
+            .lock()
+            .map_err(|_| "STORAGE_UNAVAILABLE")?
+            .set_plugin_enabled(owner, true)
+            .map_err(|error| error.to_string());
+        if let Err(error) = saved {
+            self.stop(owner)
+                .map_err(|stop| format!("{error}; stop failed: {stop}"))?;
+            return Err(error);
+        }
+        Ok(())
+    }
     fn slot(&self, provider: &str, task: bool) -> Result<Arc<Slot>, String> {
         let row = self.record(provider)?;
-        self.check(&row)?;
+        self.slot_for_record(&row, task)
+    }
+    fn slot_for_record(&self, row: &crate::db::PluginRow, task: bool) -> Result<Arc<Slot>, String> {
+        self.check(row)?;
         let mut workers = self.workers.lock().map_err(|_| "INTERNAL_ERROR")?;
         let key = (row.id.clone(), task);
         if let Some(slot) = workers.get(&key) {
@@ -191,14 +246,14 @@ impl Manager {
         if workers.len() >= 16 {
             return Err("BUSY".into());
         }
-        let plugin = self.installed(&row)?;
-        let resources = self.mounts(&row, &plugin)?;
+        let plugin = self.installed(row)?;
+        let resources = self.mounts(row, &plugin)?;
         let worker = match plugin.manifest().backend {
             Some(Backend::NativeBackend(_)) => {
-                Worker::start(&plugin, &Self::data(&row)?, &resources)?
+                Worker::start(&plugin, &Self::data(row)?, &resources)?
             }
             Some(Backend::JsBackend(_)) => {
-                Worker::start_js(&plugin, &Self::data(&row)?, &resources, &self.runner)?
+                Worker::start_js(&plugin, &Self::data(row)?, &resources, &self.runner)?
             }
             None => return Err("BACKEND_UNAVAILABLE".into()),
         };
@@ -215,7 +270,7 @@ impl Manager {
         });
         // Maintenance marks the owner before taking this pool lock; a racing
         // startup must finish and be stopped before the installer can swap files.
-        self.check(&row)?;
+        self.check(row)?;
         workers.insert(key, slot.clone());
         Ok(slot)
     }
@@ -389,38 +444,50 @@ impl Manager {
             {
                 return Err(error("SESSION_REPLACED".into()));
             }
-            let registry = self.registry().map_err(error)?;
+            // Platform calls with no service dependencies need only their verified owner.
+            // Keep full caller payload/approval checks above; avoid rehashing unrelated packages.
+            let registry = if matches!(request.target, protocol::Target::PlatformTarget(_))
+                && plugin.manifest().dependencies.is_empty()
+            {
+                Registry::new([Installed {
+                    manifest: plugin.manifest().clone(),
+                    enabled: true,
+                }])
+            } else {
+                self.registry()
+            }
+            .map_err(error)?;
             let session = {
                 let mut sessions = self
                     .sessions
                     .lock()
                     .map_err(|_| error("INTERNAL_ERROR".into()))?;
-                sessions.retain(|_, (expires, _)| *expires > now());
-                if !sessions.contains_key(&metadata.token) && sessions.len() >= 32 {
+                if !sessions.contains_key(&metadata.token)
+                    && sessions.len() >= crate::plugin_session::MAX_RENDERER_SESSIONS
+                {
                     return Err(error("BUSY".into()));
                 }
                 sessions
                     .entry(metadata.token.clone())
-                    .or_insert_with(|| {
-                        (
+                    .or_insert_with(|| SessionEntry {
+                        plugin_id: metadata.plugin_id.clone(),
+                        session: Arc::new(Mutex::new(Session::renderer(
+                            plugin.manifest().clone(),
+                            metadata.token.clone(),
+                            "main".into(),
                             metadata.expires_at_ms,
-                            Arc::new(Mutex::new(Session::new(
-                                plugin.manifest().clone(),
-                                metadata.token.clone(),
-                                "main".into(),
-                                "renderer".into(),
-                                metadata.expires_at_ms,
-                            ))),
-                        )
+                        ))),
                     })
-                    .1
+                    .session
                     .clone()
             };
-            let admitted = session
-                .lock()
-                .map_err(|_| error("INTERNAL_ERROR".into()))?
-                .admit(&registry, raw, "main", now())
-                .map_err(error)?;
+            let admitted = {
+                let mut admission = session.lock().map_err(|_| error("INTERNAL_ERROR".into()))?;
+                admission.renew(metadata.expires_at_ms);
+                admission
+                    .admit(&registry, raw, "main", now())
+                    .map_err(error)?
+            };
             let result = self.execute(&admitted.owner, &request, admitted.route, None, None);
             session
                 .lock()
@@ -607,6 +674,7 @@ impl Manager {
                     crate::host_task::executor_observer(self.db.clone(), emitter, &row.id),
                 );
                 let task_provider = provider.clone();
+                let execution_owner = row.id.clone();
                 let manager = self.clone();
                 let owner = owner.to_owned();
                 let mut request = request.clone();
@@ -621,9 +689,23 @@ impl Manager {
                         &resource,
                         Box::new(move |ctx| {
                             ctx.check_cancelled()?;
-                            manager
+                            let result = manager
                                 .execute(&owner, &request, route, Some((ctx, &task_provider)), None)
-                                .map_err(|error| format!("{}: {}", error.code, error.message))
+                                .map_err(|error| format!("{}: {}", error.code, error.message));
+                            let created = manager
+                                .services
+                                .runtime
+                                .get(&execution_owner, &ctx.task_id())
+                                .and_then(|value| value["createdAt"].as_u64())
+                                .ok_or("TASK_METADATA_UNAVAILABLE")?;
+                            save_task_outcome(
+                                &*manager.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?,
+                                &execution_owner,
+                                &ctx.task_id(),
+                                created,
+                                &result,
+                            )?;
+                            result
                         }),
                     )
                     .map_err(error)?;
@@ -642,7 +724,7 @@ impl Manager {
             }
             "tasks.pause" | "tasks.resume" => {
                 let id = params["taskId"].as_str().unwrap();
-                if self.task(owner, &row.id, id).is_none() {
+                if self.task(owner, &row.id, id, false).map_err(error)?.is_none() {
                     return Err(error("TASK_AUTHORITY_DENIED".into()));
                 }
                 Ok(json!(if request.method == "tasks.pause" {
@@ -651,25 +733,24 @@ impl Manager {
                     self.services.runtime.resume(&row.id, id)
                 }))
             }
-            "tasks.get" => Ok(self
-                .task(owner, &row.id, params["taskId"].as_str().unwrap())
-                .unwrap_or(Value::Null)),
+            "tasks.get" => self
+                .task(owner, &row.id, params["taskId"].as_str().unwrap(), true)
+                .map(|value| value.unwrap_or(Value::Null)),
             "tasks.list" => {
                 let limit = params["limit"].as_u64().unwrap() as usize;
                 let after = params["after"].as_str();
-                let mut values: Vec<_> = self
-                    .services
-                    .runtime
-                    .list(&row.id)
-                    .into_iter()
-                    .filter_map(|value| {
-                        let id = value["taskId"].as_str()?;
-                        if after.is_some_and(|after| id <= after) {
-                            return None;
-                        }
-                        self.task(owner, &row.id, id)
-                    })
-                    .collect();
+                let mut values = Vec::new();
+                for value in self.services.runtime.list(&row.id) {
+                    let id = value["taskId"]
+                        .as_str()
+                        .ok_or_else(|| error("INVALID_TASK_RECORD".into()))?;
+                    if after.is_some_and(|after| id <= after) {
+                        continue;
+                    }
+                    if let Some(task) = self.task(owner, &row.id, id, false).map_err(error)? {
+                        values.push(task);
+                    }
+                }
                 values.sort_by(|a, b| a["taskId"].as_str().cmp(&b["taskId"].as_str()));
                 let next = if values.len() > limit {
                     values.truncate(limit);
@@ -681,11 +762,11 @@ impl Manager {
             }
             "tasks.cancel" => {
                 let id = params["taskId"].as_str().unwrap();
-                if self.task(owner, &row.id, id).is_none() {
+                if self.task(owner, &row.id, id, false).map_err(error)?.is_none() {
                     return Err(error("TASK_AUTHORITY_DENIED".into()));
                 }
                 let accepted = self.services.runtime.cancel(&row.id, id);
-                Ok(json!({"accepted":accepted,"task":self.task(owner, &row.id, id)}))
+                Ok(json!({"accepted":accepted,"task":self.task(owner, &row.id, id, false).map_err(error)?}))
             }
             "data.directory" => Self::data(&row).map(|path| json!(path)),
             "resources.list" => self
@@ -713,6 +794,43 @@ impl Manager {
                     None => json!({"kind":"direct"}),
                 }),
             "network.fetch" => crate::next2_files::fetch(params),
+            "theme.assets.import" | "theme.assets.importBundled" => {
+                let path = if request.method == "theme.assets.importBundled" {
+                    let plugin = self.installed(&row).map_err(error)?;
+                    crate::theme_assets::bundled_path(plugin.root(), plugin.manifest(), params["path"].as_str().unwrap()).map_err(error)?
+                } else { self
+                    .files
+                    .resolve(&row.id, file_caller, params["fileRef"].as_str().unwrap())
+                    .map_err(error)? };
+                let app = self
+                    .services
+                    .platform
+                    .app_handle
+                    .as_ref()
+                    .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
+                crate::theme_assets::from_app(app).import(&path, params)
+            }
+            "theme.assets.get" => {
+                let app = self
+                    .services
+                    .platform
+                    .app_handle
+                    .as_ref()
+                    .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
+                crate::theme_assets::from_app(app).get(params["id"].as_str().unwrap())
+            }
+            "theme.assets.list" => {
+                let app = self
+                    .services
+                    .platform
+                    .app_handle
+                    .as_ref()
+                    .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
+                crate::theme_assets::from_app(app).list(
+                    params["after"].as_str(),
+                    params["limit"].as_u64().unwrap_or(16) as usize,
+                )
+            }
             "clipboard.read" => arboard::Clipboard::new()
                 .map_err(|e| format!("clipboard init failed: {e}"))
                 .and_then(|mut clipboard| {
@@ -744,6 +862,21 @@ impl Manager {
                         "dialog.open" | "dialog.confirm" | "notification.show"
                     )
                 {
+                    if matches!(method, "theme.preview" | "theme.set")
+                        && params["theme"]["design"]["assets"]
+                            .as_array()
+                            .is_some_and(|assets| !assets.is_empty())
+                    {
+                        let app = self
+                            .services
+                            .platform
+                            .app_handle
+                            .as_ref()
+                            .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
+                        crate::theme_assets::from_app(app)
+                            .validate_theme(&params["theme"])
+                            .map_err(error)?;
+                    }
                     Ok(json!({"operation":method,"params":params}))
                 } else {
                     crate::platform_storage::dispatch(
@@ -762,7 +895,7 @@ impl Manager {
         }
         .map_err(error)?;
         // UI grants are checked and executed by the main renderer controller.
-        if request.method.starts_with("theme.")
+        if (request.method.starts_with("theme.") && !request.method.starts_with("theme.assets."))
             || matches!(
                 request.method.as_str(),
                 "dialog.open" | "dialog.confirm" | "notification.show"
@@ -912,20 +1045,169 @@ impl Manager {
             .map_err(|e| e.to_string())?;
         serde_json::to_value(reference).map_err(|e| e.to_string())
     }
-    fn task(&self, initiator: &str, owner: &str, id: &str) -> Option<Value> {
-        let mut value = self.services.runtime.get(owner, id)?;
+    fn task(
+        &self,
+        initiator: &str,
+        owner: &str,
+        id: &str,
+        require_result: bool,
+    ) -> Result<Option<Value>, String> {
+        let Some(mut value) = self.services.runtime.get(owner, id) else {
+            return Ok(None);
+        };
+        if terminal(&value) && value["completedAt"].as_u64().unwrap_or(0) == 0 {
+            restore_task_outcome(
+                &*self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?,
+                owner,
+                id,
+                &mut value,
+                require_result,
+            )?;
+        }
+        if require_result {
+            if let Some(message) = value["executionError"].as_str() {
+                return Err(format!("任务输出已提交，但执行收尾失败：{message}"));
+            }
+        }
         let provider = value["resourceKey"]
-            .as_str()?
-            .strip_prefix("next2:")?
+            .as_str()
+            .and_then(|value| value.strip_prefix("next2:"))
+            .ok_or("INVALID_TASK_RECORD")?
             .to_owned();
         value["initiatorId"] = json!(initiator);
         value["providerId"] = json!(provider);
-        Some(value)
+        Ok(Some(value))
     }
+}
+// Persist only executor outcomes, never the task request or credentials. Core task
+// status remains authoritative; a saved outcome cannot promote an interrupted task.
+fn save_task_outcome(
+    db: &Db,
+    owner: &str,
+    id: &str,
+    created: u64,
+    result: &Result<Value, String>,
+) -> Result<(), String> {
+    let mut value = json!({"owner":owner,"createdAt":created,"completedAt":now()});
+    match result {
+        Ok(result) => value["result"] = result.clone(),
+        Err(error) => value["error"] = json!(error),
+    }
+    cruciblebox_repository::task_projection::save_outcome(db, id, &value)
+}
+fn restore_task_outcome(
+    db: &Db,
+    owner: &str,
+    id: &str,
+    value: &mut Value,
+    require_result: bool,
+) -> Result<(), String> {
+    let stored = db
+        .setting_get(&format!("next2.task-result.{id}"))
+        .map_err(|e| e.to_string())?;
+    let Some(raw) = stored else {
+        value["resultUnavailable"] = json!(true);
+        if let Some(previous) = cruciblebox_repository::task_projection::get(db, id)? {
+            if previous.owner != owner {
+                return Err("TASK_AUTHORITY_DENIED".into());
+            }
+            value["createdAt"] = json!(previous.created_at);
+            value["completedAt"] = json!(previous.updated_at);
+        }
+        if require_result
+            && (value["status"] == "succeeded" || value["completedAt"].as_u64().unwrap_or(0) == 0)
+        {
+            return Err(
+                "历史任务未保存完整结果，请在任务中心核对已有输出；任务没有重新执行".into(),
+            );
+        }
+        return Ok(());
+    };
+    let saved: Value = serde_json::from_str(&raw).map_err(|_| "INVALID_TASK_RESULT_RECORD")?;
+    if saved["owner"] != owner {
+        return Err("TASK_AUTHORITY_DENIED".into());
+    }
+    if saved["createdAt"].as_u64().filter(|n| *n > 0).is_none()
+        || saved["completedAt"].as_u64().filter(|n| *n > 0).is_none()
+    {
+        return Err("INVALID_TASK_RESULT_RECORD".into());
+    }
+    value["createdAt"] = saved["createdAt"].clone();
+    value["completedAt"] = saved["completedAt"].clone();
+    if value["status"] == "succeeded" {
+        if let Some(result) = saved.get("result") {
+            value["result"] = result.clone();
+        } else {
+            value["executionError"] = saved["error"].clone();
+            if require_result {
+                return Err("任务输出已提交，但执行收尾失败；请核对任务中心已有输出".into());
+            }
+        }
+    }
+    Ok(())
 }
 fn terminal(value: &Value) -> bool {
     matches!(
         value["status"].as_str(),
         Some("succeeded" | "failed" | "cancelled" | "interrupted")
     )
+}
+
+#[cfg(test)]
+mod task_outcome_tests {
+    use super::*;
+    fn directory() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "cb-task-outcome-{}",
+            crate::rand_token::random_token_hex().unwrap()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root
+    }
+    #[test]
+    fn full_outcome_survives_database_reopen_and_keeps_owner() {
+        let root = directory();
+        let path = root.join("data.db");
+        let result = json!({"outputPath":"C:/synthetic/output.pdf","files":[{"path":"C:/synthetic/output.pdf"}],"quality":{"mode":"synthetic"}});
+        {
+            let db = Db::open(&path).unwrap();
+            save_task_outcome(&db, "sample-alpha", "task-1", 123, &Ok(result.clone())).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let mut recovered = json!({"status":"succeeded","completedAt":0});
+        restore_task_outcome(&db, "sample-alpha", "task-1", &mut recovered, true).unwrap();
+        assert_eq!(recovered["createdAt"], 123);
+        assert!(recovered["completedAt"].as_u64().unwrap() > 0);
+        assert_eq!(recovered["result"], result);
+        assert_eq!(
+            restore_task_outcome(
+                &db,
+                "sample-beta",
+                "task-1",
+                &mut json!({"status":"succeeded"}),
+                true
+            )
+            .unwrap_err(),
+            "TASK_AUTHORITY_DENIED"
+        );
+        let mut interrupted = json!({"status":"interrupted"});
+        restore_task_outcome(&db, "sample-alpha", "task-1", &mut interrupted, true).unwrap();
+        assert_eq!(interrupted["status"], "interrupted");
+        assert!(interrupted.get("result").is_none());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn legacy_result_is_explicitly_unavailable_without_changing_status_or_outputs() {
+        let root = directory();
+        let db = Db::open(&root.join("data.db")).unwrap();
+        let mut old = json!({"status":"succeeded","resultRefs":["preserved.pdf"]});
+        assert!(restore_task_outcome(&db, "sample-alpha", "old-task", &mut old, true).is_err());
+        assert_eq!(old["resultUnavailable"], true);
+        assert_eq!(old["status"], "succeeded");
+        assert_eq!(old["resultRefs"], json!(["preserved.pdf"]));
+        restore_task_outcome(&db, "sample-alpha", "old-task", &mut old, false).unwrap();
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

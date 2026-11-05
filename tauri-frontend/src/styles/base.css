@@ -1,3 +1,5 @@
+@import '../../../shared/scrollbars.css';
+
 * {
   margin: 0;
   padding: 0;
@@ -28,22 +30,8 @@ body {
   overflow: hidden;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--ob-color-border-secondary, #c0c0c0);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--ob-color-text-tertiary, #a0a0a0);
+.ob-task-center .ant-tabs-nav::before {
+  border-bottom: 0;
 }
 
 .ob-upload-drag-icon {
@@ -93,10 +81,135 @@ body {
   margin-bottom: 22px;
 }
 
+.cbx-page-instance {
+  height: 100%;
+  min-height: 0;
+}
+
+:root,
+.cbx-page-stage {
+  --ob-page-direction-x: 0;
+  --ob-page-direction-y: 0;
+}
+
+.cbx-page-stage {
+  container-type: size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  isolation: isolate;
+}
+
+:root[data-ob-page-direction='up'],
+.cbx-page-stage[data-page-direction='up'] {
+  --ob-page-direction-y: 1;
+}
+:root[data-ob-page-direction='down'],
+.cbx-page-stage[data-page-direction='down'] {
+  --ob-page-direction-y: -1;
+}
+:root[data-ob-page-direction='left'],
+.cbx-page-stage[data-page-direction='left'] {
+  --ob-page-direction-x: 1;
+}
+:root[data-ob-page-direction='right'],
+.cbx-page-stage[data-page-direction='right'] {
+  --ob-page-direction-x: -1;
+}
+
+.cbx-page-transition {
+  display: none;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.cbx-page-instance[hidden] {
+  display: none;
+}
+
+.cbx-page-instance:not([hidden]),
+iframe[data-plugin-ready='true'] {
+  animation: cbx-default-page-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes cbx-default-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root::view-transition-group(cbx-page),
+  :root::view-transition-old(cbx-page),
+  :root::view-transition-new(cbx-page) {
+    animation: none !important;
+  }
+  .cbx-page-instance:not([hidden]),
+  iframe[data-plugin-ready='true'] {
+    animation: none;
+  }
+}
+
+.cbx-plugin-loading {
+  position: absolute;
+  inset: 76px 0 0;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  pointer-events: none;
+  color: var(--ob-color-text-secondary);
+  font-size: 13px;
+}
+
+.cbx-page-instance > .ob-plugin-view {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.cbx-page-instance > .ob-plugin-view > :first-child {
+  flex-shrink: 0;
+}
+
 .ob-market-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.cbx-market-actions,
+.cbx-market-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cbx-market-selection {
+  margin-bottom: 16px;
+}
+
+.cbx-market-actions > *,
+.cbx-market-selection > * {
+  flex-shrink: 0;
+}
+
+.cbx-market-selection .ant-checkbox-wrapper {
+  white-space: nowrap;
 }
 
 .ob-market-card {

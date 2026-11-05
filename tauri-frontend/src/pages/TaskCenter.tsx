@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { App, Button, Empty, Progress, Space, Tabs, Tag, Typography, theme } from 'antd'
 import { CheckCircleOutlined, ClearOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import { useTaskStore, type HostTaskStatus } from '../store/task.store'
 import { useAppStore } from '../store/app.store'
 import { usePluginStore } from '../store/plugin.store'
-import PluginLogs from './PluginLogs'
+import PluginLogs, { type PluginLogsHandle } from './PluginLogs'
 import { tauriApi } from '../api/tauriApi'
+import { cardVariants } from '../theme/card-variant'
 
-const { Title, Text } = Typography
+const { Title } = Typography
 
 const STATUS_META: Record<HostTaskStatus, { label: string; color: string }> = {
   queued: { label: '等待中', color: 'default' },
@@ -24,10 +25,12 @@ export default function TaskCenter() {
   const { message } = App.useApp()
   const [cancelling, setCancelling] = useState<Set<string>>(new Set())
   const tasks = useTaskStore((state) => state.tasks)
+  const variants = useMemo(() => cardVariants(tasks.map((task) => task.id)), [tasks])
   const clearCompleted = useTaskStore((state) => state.clearCompleted)
   const removeTask = useTaskStore((state) => state.removeTask)
   const activityTab = useAppStore((state) => state.activityTab)
   const setActivityTab = useAppStore((state) => state.setActivityTab)
+  const logsRef = useRef<PluginLogsHandle>(null)
   const plugins = usePluginStore((state) => state.plugins)
   const goToTaskOwner = (owner?: string, source?: string) => {
     if (source === 'marketplace') {
@@ -89,6 +92,7 @@ export default function TaskCenter() {
             <article
               key={task.id}
               className="ob-task-card ob-surface-card"
+              data-card-variant={variants.get(task.id)}
               style={{
                 padding: 16,
                 border: `1px solid ${token.colorBorder}`,
@@ -103,7 +107,9 @@ export default function TaskCenter() {
                   <ClockCircleOutlined style={{ color: token.colorPrimary }} />
                 )}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600 }}>{task.title}</div>
+                  <div className="ob-card-heading" style={{ fontWeight: 600 }}>
+                    {task.title}
+                  </div>
                   {task.detail && (
                     <div style={{ color: token.colorTextSecondary, fontSize: 12, marginTop: 3 }}>
                       {task.detail}
@@ -179,22 +185,22 @@ export default function TaskCenter() {
     )
 
   return (
-    <div>
+    <div className="ob-task-center">
       <div className="ob-page-heading">
         <div>
           <Title level={3} style={{ margin: 0 }}>
             任务中心
           </Title>
-          <Text type="secondary">安装、更新和插件长任务集中在这里</Text>
         </div>
         <Button
           icon={<ClearOutlined />}
-          onClick={clearCompleted}
+          onClick={() => (activityTab === 'logs' ? logsRef.current?.clear() : clearCompleted())}
           disabled={
+            activityTab === 'tasks' &&
             !tasks.some((task) => ['completed', 'failed', 'cancelled'].includes(task.status))
           }
         >
-          清理已结束
+          清理
         </Button>
       </div>
 
@@ -207,7 +213,7 @@ export default function TaskCenter() {
             label: `任务${tasks.length > 0 ? ` (${tasks.length})` : ''}`,
             children: taskList
           },
-          { key: 'logs', label: '运行日志', children: <PluginLogs embedded /> }
+          { key: 'logs', label: '运行日志', children: <PluginLogs embedded ref={logsRef} /> }
         ]}
       />
     </div>

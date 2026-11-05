@@ -151,71 +151,13 @@ export type ThemeGetParams = Record<string, never>
 export type ThemeGetResult = Json
 export type ThemeListParams = Record<string, never>
 export type ThemeListResult = Json
-export type ThemePreviewParams = {
-  theme: {
-    id: string
-    name: string
-    mode: 'light' | 'dark'
-    tokens: {
-      colorBg: string
-      colorBgLayout: string
-      colorBgContainer: string
-      colorBgElevated: string
-      colorPrimary: string
-      colorPrimaryHover: string
-      colorPrimaryBg: string
-      colorText: string
-      colorTextSecondary: string
-      colorTextTertiary: string
-      colorBorder: string
-      colorBorderSecondary: string
-      colorSuccess: string
-      colorSuccessBg: string
-      colorWarning: string
-      colorWarningBg: string
-      colorError: string
-      colorErrorBg: string
-      colorLink: string
-      borderRadius: number
-      fontFamily: string
-    }
-  }
-}
+export type ThemePreviewParams = { theme: ThemeDefinition }
 export type ThemePreviewResult = Json
 export type ThemeCommitParams = Record<string, never>
 export type ThemeCommitResult = Json
 export type ThemeRollbackParams = Record<string, never>
 export type ThemeRollbackResult = Json
-export type ThemeSetParams = {
-  theme: {
-    id: string
-    name: string
-    mode: 'light' | 'dark'
-    tokens: {
-      colorBg: string
-      colorBgLayout: string
-      colorBgContainer: string
-      colorBgElevated: string
-      colorPrimary: string
-      colorPrimaryHover: string
-      colorPrimaryBg: string
-      colorText: string
-      colorTextSecondary: string
-      colorTextTertiary: string
-      colorBorder: string
-      colorBorderSecondary: string
-      colorSuccess: string
-      colorSuccessBg: string
-      colorWarning: string
-      colorWarningBg: string
-      colorError: string
-      colorErrorBg: string
-      colorLink: string
-      borderRadius: number
-      fontFamily: string
-    }
-  }
-}
+export type ThemeSetParams = { theme: ThemeDefinition }
 export type ThemeSetResult = Json
 export type DialogOpenParams = {
   type: 'file' | 'folder'
@@ -251,6 +193,7 @@ export type Manifest = {
     | 'tasks:control'
     | 'theme:read'
     | 'theme:write'
+    | 'theme:assets'
     | 'dialog'
     | 'notification'
     | 'clipboard'
@@ -364,3 +307,117 @@ export type NetworkFetchParams = {
 }
 export type NetworkFetchResult = { status: number; body: string; headers: Record<string, Json> }
 export type FileHandler = { extensions: string[] }
+export type ThemeLayout = {
+  navigation?: 'rail' | 'top' | 'menu'
+  density?: 'comfortable' | 'compact'
+  sidebarWidth?: number
+  contentPadding?: number
+  contentMaxWidth?: number
+  cardGap?: number
+}
+export type ThemeComponents = {
+  buttonRadius?: number
+  cardRadius?: number
+  inputRadius?: number
+  borderWidth?: number
+  surfaceShadow?: 'none' | 'soft' | 'hard'
+  buttonSkew?: number
+  headingWeight?: number
+}
+export type ThemeMotion = {
+  level?: 'full' | 'reduced' | 'off'
+  transition?: 'none' | 'fade' | 'slide'
+  durationMs?: number
+}
+export type ThemePoint = { x: number; y: number }
+export type ThemeLayer = {
+  id: string
+  type: 'shape' | 'image' | 'text'
+  scope: 'shell' | 'home' | 'workspace'
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number
+  opacity: number
+  order: number
+  color?: string
+  shape?: 'rectangle' | 'ellipse' | 'polygon'
+  points?: ThemePoint[]
+  text?: string
+  assetId?: string
+  motion?: 'none' | 'float' | 'tilt'
+  durationMs?: number
+}
+export type ThemeFont = { assetId: string; family: string }
+export type ThemeDesign = {
+  version: 2
+  layout?: ThemeLayout
+  components?: ThemeComponents
+  motion?: ThemeMotion
+  layers?: ThemeLayer[]
+  assets?: string[]
+  fonts?: ThemeFont[]
+  css?: string
+}
+export type ThemeDefinition = {
+  id: string
+  name: string
+  mode: 'light' | 'dark'
+  tokens: {
+    colorBg: string
+    colorBgLayout: string
+    colorBgContainer: string
+    colorBgElevated: string
+    colorPrimary: string
+    colorPrimaryHover: string
+    colorPrimaryBg: string
+    colorText: string
+    colorTextSecondary: string
+    colorTextTertiary: string
+    colorBorder: string
+    colorBorderSecondary: string
+    colorSuccess: string
+    colorSuccessBg: string
+    colorWarning: string
+    colorWarningBg: string
+    colorError: string
+    colorErrorBg: string
+    colorLink: string
+    borderRadius: number
+    fontFamily: string
+  }
+  design?: ThemeDesign
+}
+export type ThemeAsset = {
+  id: string
+  name: string
+  kind: 'image' | 'font'
+  mime: 'image/png' | 'image/jpeg' | 'image/webp' | 'font/ttf' | 'font/otf' | 'font/woff2'
+  bytes: number
+  url: string
+  license: string
+  source?: string
+  notice?: string
+}
+export type ThemeAssetImportParams = {
+  fileRef: string
+  license: string
+  notice?: string
+  source?: string
+}
+export type ThemeBundledAssetImportParams = {
+  path: string
+  license: string
+  notice?: string
+  source?: string
+}
+export type ThemeAssetGetParams = { id: string }
+export type ThemeAssetListParams = { after?: string; limit?: number }
+export type ThemeAssetListResult = { assets: ThemeAsset[]; next: string | null }
+export type RendererThemeStyle = {
+  version: 2
+  css: string
+  motion: 'full' | 'reduced' | 'off'
+  layers: { id: string; scope: 'shell' | 'home' | 'workspace'; text: string }[]
+}

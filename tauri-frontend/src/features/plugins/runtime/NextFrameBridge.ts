@@ -40,7 +40,8 @@ export function isNextReady(
 export function createNextDispatcher(
   session: NextSession,
   invoke: (raw: string) => Promise<unknown>,
-  send: (response: Response) => void
+  send: (response: Response) => void,
+  ensureLease?: () => Promise<void>
 ) {
   const wireVersion = 4
   const checkRequest = validateRequest
@@ -77,7 +78,7 @@ export function createNextDispatcher(
       return
     }
     const id = request.requestId
-    if (request.session !== session.token || Date.now() >= session.expiresAt) {
+    if (request.session !== session.token || (!ensureLease && Date.now() >= session.expiresAt)) {
       send(failure(id, 'SESSION_DENIED'))
       return
     }
@@ -101,7 +102,17 @@ export function createNextDispatcher(
       .then(() => {
         queued -= 1
         if (disposed || !pending.has(id)) return
-        return invoke(JSON.stringify(request))
+        const execute = () => {
+          if (disposed || !pending.has(id)) return
+          if (Date.now() >= session.expiresAt) {
+            finish(id, failure(id, 'SESSION_DENIED'))
+            return
+          }
+          return invoke(JSON.stringify(request))
+        }
+        return ensureLease
+          ? ensureLease().then(execute, () => finish(id, failure(id, 'SESSION_DENIED')))
+          : execute()
       })
       .then((response) => {
         if (disposed || !pending.has(id)) return
@@ -129,7 +140,64 @@ export function nextSandbox(session: NextSession): string {
     : 'allow-scripts'
 }
 
-export function scheduleNextLease(session: NextSession, dispose: () => void): () => void {
-  const timer = setTimeout(dispose, Math.max(0, session.expiresAt - Date.now()))
-  return () => clearTimeout(timer)
+export function createNextLease(
+  session: NextSession,
+  renew: () => Promise<{ expiresAt: number }>,
+  failed: (reason: unknown) => void,
+  restored: () => void
+) {
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout>
+  let pending: Promise<void> | undefined
+  let rejectRenewal: ((reason: Error) => void) | undefined
+  let due = Date.now() + Math.max(0, (session.expiresAt - Date.now()) / 2)
+  const schedule = () => {
+    clearTimeout(timer)
+    timer = setTimeout(
+      () => {
+        void ensure().catch(() => {})
+      },
+      Math.max(0, due - Date.now())
+    )
+  }
+  function ensure(force = false): Promise<void> {
+    if (stopped) return Promise.reject(Error('SESSION_DENIED'))
+    if (pending) return pending
+    if (!force && Date.now() < due) return Promise.resolve()
+    clearTimeout(timer)
+    let deadline: ReturnType<typeof setTimeout>
+    pending = new Promise<{ expiresAt: number }>((resolve, reject) => {
+      rejectRenewal = reject
+      deadline = setTimeout(() => reject(Error('TIMEOUT')), transport.requestTimeoutMs)
+      void Promise.resolve().then(renew).then(resolve, reject)
+    })
+      .then(({ expiresAt }) => {
+        if (stopped) return
+        if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now())
+          throw Error('INVALID_LEASE')
+        session.expiresAt = expiresAt
+        due = Date.now() + (expiresAt - Date.now()) / 2
+        restored()
+        schedule()
+      })
+      .catch((reason) => {
+        if (!stopped) failed(reason)
+        throw reason
+      })
+      .finally(() => {
+        clearTimeout(deadline)
+        rejectRenewal = undefined
+        pending = undefined
+      })
+    return pending
+  }
+  schedule()
+  return {
+    ensure,
+    dispose() {
+      stopped = true
+      clearTimeout(timer)
+      rejectRenewal?.(Error('SESSION_DENIED'))
+    }
+  }
 }

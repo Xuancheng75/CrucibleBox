@@ -126,6 +126,26 @@ const outputs = {
   ),
   'packages/cruciblebox-next2-api/src/generated.d.ts': declarations,
   'packages/cruciblebox-next2-api/src/generated.d.mts': declarations,
+  'shared/frame-validation.mjs': pretty(
+    readFileSync(resolve(root, 'shared/frame-validation.mjs'), 'utf8').replace(
+      /const contract = [\s\S]*?(?=\nfunction canonicalNumeric)/,
+      'const contract = ' +
+        JSON.stringify({
+          budget: { bytes: contract.budget.bytes, depth: 16, nodes: 4096 },
+          rendererAppearance: defs.RendererAppearance,
+          rendererEvents: {
+            filesDropped: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 256,
+              items: { type: 'string', minLength: 1, maxLength: 2048 }
+            }
+          },
+          rendererThemeStyle: defs.RendererThemeStyle
+        })
+    ),
+    'frame-validation.mjs'
+  ),
   'src-tauri/crates/next2-protocol/src/generated.rs': formattedRust.stdout.replaceAll('\r\n', '\n')
 }
 for (const [name, content] of Object.entries(outputs)) {
