@@ -1,4 +1,4 @@
-//! API 6 native renderer gate.
+//! Next 3.0 native renderer gate.
 use crate::db::Db;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -45,7 +45,7 @@ pub fn create_next_renderer_session(
     };
     let root = std::path::Path::new(&directory);
     let manifest = crate::manifest::read_manifest(root)?;
-    if manifest.manifest_version != Some(6)
+    if manifest.manifest_version != Some(cruciblebox_next2_protocol::MANIFEST_VERSION)
         || manifest.name != name
         || entry.is_empty()
         || manifest.renderer != entry
@@ -53,9 +53,7 @@ pub fn create_next_renderer_session(
         return Err("SESSION_DENIED".into());
     }
     crate::manifest::validate_entrypoints(root, &manifest)?;
-    if manifest.manifest_version == Some(6) {
-        crate::next2_install::load(&*db.try_lock().map_err(|_| "BUSY")?, root)?;
-    }
+    crate::next2_install::load(&*db.try_lock().map_err(|_| "BUSY")?, root)?;
     let permissions: Vec<String> =
         serde_json::from_str(&permissions).map_err(|_| "SESSION_DENIED")?;
     let raw = std::fs::read_to_string(root.join("plugin.json")).map_err(|_| "INVALID_MANIFEST")?;
@@ -150,7 +148,7 @@ mod tests {
                 plugin_directory: "E:/approved/code/1.0.0".into(),
                 renderer_entry: "dist/renderer.js".into(),
                 runtime_path: String::new(),
-                renderer_api_version: 6,
+                renderer_api_version: cruciblebox_next2_protocol::SDK_API_VERSION,
                 permissions: vec![],
                 owner_webview_label: "main".into(),
             })

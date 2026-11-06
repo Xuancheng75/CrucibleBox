@@ -583,7 +583,7 @@ impl Manager {
             .iter()
             .find(|command| command.id == command_id)
             .ok_or("COMMAND_NOT_DECLARED")?;
-        let raw = json!({"wireVersion":4,"requestId":crate::rand_token::random_token_hex()?,"session":crate::rand_token::random_token_hex()?,"target":{"kind":"backend"},"method":command.method,"params":{}}).to_string();
+        let raw = json!({"wireVersion":protocol::WIRE_VERSION,"requestId":crate::rand_token::random_token_hex()?,"session":crate::rand_token::random_token_hex()?,"target":{"kind":"backend"},"method":command.method,"params":{}}).to_string();
         let request = protocol::validate_request(&raw)?;
         let route = self.registry()?.resolve(owner, &request, "host")?;
         self.execute(owner, &request, route, Execution::default())
@@ -596,7 +596,7 @@ impl Manager {
     ) -> Result<Value, String> {
         let request = protocol::validate_request(raw)?;
         let result = (|| -> Result<Value, RpcError> {
-            if metadata.renderer_api_version != 6
+            if metadata.renderer_api_version != protocol::SDK_API_VERSION
                 || metadata.state != "active"
                 || metadata.owner_webview_label != "main"
                 || metadata.token != request.session
@@ -674,16 +674,16 @@ impl Manager {
         })();
         let response = match result {
             Ok(result) => {
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":true,"result":result})
+                json!({"wireVersion":protocol::WIRE_VERSION,"requestId":request.request_id,"ok":true,"result":result})
             }
             Err(error) => {
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":error})
+                json!({"wireVersion":protocol::WIRE_VERSION,"requestId":request.request_id,"ok":false,"error":error})
             }
         };
         match protocol::validate_response(&response.to_string(), &request.request_id) {
             Ok(_) => Ok(response),
             Err(_) => Ok(
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":{"code":"BUDGET_EXCEEDED","message":"Response exceeds wire budget; use a task or file result"}}),
+                json!({"wireVersion":protocol::WIRE_VERSION,"requestId":request.request_id,"ok":false,"error":{"code":"BUDGET_EXCEEDED","message":"Response exceeds wire budget; use a task or file result"}}),
             ),
         }
     }

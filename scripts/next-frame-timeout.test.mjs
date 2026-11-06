@@ -11,7 +11,8 @@ function frame() {
   const wireMessages = []
   const root = {
     dataset: {
-      apiVersion: '6',
+      apiVersion: String(contract.versions.sdkApiVersion),
+      wireVersion: String(contract.versions.wireVersion),
       maxInflight: String(contract.budget.inflight),
       requestTimeout: String(contract.budget.requestTimeoutMs),
       interactiveTimeout: String(contract.budget.interactiveTimeoutMs),
@@ -99,7 +100,7 @@ test('the actual frame runtime maps client IDs onto ordered wire IDs beyond 4096
     const message = page.wireMessages.at(-1)
     assert.equal(message.request.requestId, `renderer-${index}`)
     page.receiveResponse({
-      wireVersion: 4,
+      wireVersion: contract.versions.wireVersion,
       requestId: message.request.requestId,
       ok: true,
       result: index
@@ -124,11 +125,21 @@ test('late replies cannot resolve a later call reusing a client correlation ID',
   next.then(() => {
     settled = true
   })
-  page.receiveResponse({ wireVersion: 4, requestId: oldId, ok: true, result: 'stale' })
+  page.receiveResponse({
+    wireVersion: contract.versions.wireVersion,
+    requestId: oldId,
+    ok: true,
+    result: 'stale'
+  })
   await Promise.resolve()
   assert.equal(settled, false)
   await assert.rejects(page.exchange(request('storage.get')), /REPLAY_DENIED/)
-  page.receiveResponse({ wireVersion: 4, requestId: id, ok: true, result: 'current' })
+  page.receiveResponse({
+    wireVersion: contract.versions.wireVersion,
+    requestId: id,
+    ok: true,
+    result: 'current'
+  })
   assert.equal((await next).result, 'current')
   assert.equal(page.pendingTimers(), 0)
 })
@@ -136,7 +147,11 @@ test('late replies cannot resolve a later call reusing a client correlation ID',
 test('aborting a service call cancels its host wire ID and releases the local request', async () => {
   const page = frame()
   const controller = new AbortController()
-  const call = { ...request('perform', 'service'), session: 'a'.repeat(64), wireVersion: 4 }
+  const call = {
+    ...request('perform', 'service'),
+    session: 'a'.repeat(64),
+    wireVersion: contract.versions.wireVersion
+  }
   const response = page.exchange(call, controller.signal)
   controller.abort()
   await assert.rejects(response, { code: 'CANCELLED' })

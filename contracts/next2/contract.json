@@ -1,10 +1,11 @@
 {
   "status": "candidate",
   "versions": {
-    "manifestVersion": 6,
-    "sdkApiVersion": 6,
-    "sdkPackageVersion": "6.1.0",
-    "wireVersion": 4,
+    "manifestVersion": 7,
+    "sdkApiVersion": 7,
+    "sdkPackageVersion": "7.0.0-beta.1",
+    "minHostVersion": "2.2.0-beta.1",
+    "wireVersion": 5,
     "dataSchemaVersion": 1,
     "resourceManifestVersion": 1,
     "catalogVersion": 1
@@ -75,11 +76,11 @@
       "properties": {
         "min": {
           "type": "integer",
-          "const": 6
+          "const": 7
         },
         "maxExclusive": {
           "type": "integer",
-          "const": 7
+          "const": 8
         }
       }
     },
@@ -865,7 +866,7 @@
       "required": ["wireVersion", "requestId", "session", "target", "method", "params"],
       "properties": {
         "wireVersion": {
-          "const": 4
+          "const": 5
         },
         "requestId": {
           "type": "string",
@@ -912,7 +913,7 @@
       "required": ["wireVersion", "requestId", "ok", "result"],
       "properties": {
         "wireVersion": {
-          "const": 4
+          "const": 5
         },
         "requestId": {
           "type": "string",
@@ -931,7 +932,7 @@
       "required": ["wireVersion", "requestId", "ok", "error"],
       "properties": {
         "wireVersion": {
-          "const": 4
+          "const": 5
         },
         "requestId": {
           "type": "string",
@@ -1092,10 +1093,10 @@
           "const": "hello"
         },
         "wireVersion": {
-          "const": 4
+          "const": 5
         },
         "sdkApiVersion": {
-          "const": 6
+          "const": 7
         }
       }
     },
@@ -1108,7 +1109,7 @@
           "const": "initialize"
         },
         "wireVersion": {
-          "const": 4
+          "const": 5
         },
         "session": {
           "type": "string",
@@ -1169,7 +1170,7 @@
           "const": "ready"
         },
         "wireVersion": {
-          "const": 4
+          "const": 5
         }
       }
     },
@@ -1245,7 +1246,7 @@
           "const": "cancel"
         },
         "wireVersion": {
-          "const": 4
+          "const": 5
         },
         "taskId": {
           "type": "string",
@@ -1268,7 +1269,7 @@
           "const": "stop"
         },
         "wireVersion": {
-          "const": 4
+          "const": 5
         }
       }
     },
@@ -1933,6 +1934,15 @@
       "additionalProperties": false
     },
     "NotificationShowResult": {},
+    "PluginDataMigration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fromPluginVersion", "summary"],
+      "properties": {
+        "fromPluginVersion": { "$ref": "#/$defs/VersionRange" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
     "Manifest": {
       "type": "object",
       "additionalProperties": false,
@@ -1956,10 +1966,10 @@
       ],
       "properties": {
         "manifestVersion": {
-          "const": 6
+          "const": 7
         },
         "sdkApiVersion": {
-          "const": 6
+          "const": 7
         },
         "id": {
           "type": "string",
@@ -1990,6 +2000,9 @@
           "minLength": 1,
           "maxLength": 100,
           "format": "semver-without-build"
+        },
+        "dataMigration": {
+          "$ref": "#/$defs/PluginDataMigration"
         },
         "sdk": {
           "$ref": "#/$defs/ApiRange"

@@ -1,4 +1,4 @@
-//! API 6 backend lifecycle coordinator.
+//! Next 3.0 backend lifecycle coordinator.
 use crate::db::Db;
 use std::{
     collections::HashSet,
@@ -23,35 +23,30 @@ impl Manager {
         db: Arc<Mutex<Db>>,
         services: Arc<crate::host_services::Services>,
     ) -> Self {
-        let exe = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("cruciblebox-plugin-host.exe")));
-        let root = std::env::current_dir().unwrap_or_default();
-        let development = [
-            Some(root.join(
-                "src-tauri/cruciblebox-plugin-host/target/debug/cruciblebox-plugin-host.exe",
-            )),
-            Some(root.join("cruciblebox-plugin-host/target/debug/cruciblebox-plugin-host.exe")),
-        ];
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(std::path::PathBuf::from)
-            .map(|path| path.join("debug/cruciblebox-plugin-host.exe"));
-        let candidates = if cfg!(debug_assertions) {
-            vec![
-                target,
-                development[0].clone(),
-                development[1].clone(),
-                Some(root.join("target/debug/cruciblebox-plugin-host.exe")),
-                exe,
-            ]
-        } else {
-            vec![exe, development[0].clone(), development[1].clone()]
-        };
+        let mut directory = std::env::current_exe().expect("host executable location");
+        directory.pop();
+        let name = "cruciblebox-plugin-host.exe";
+        let adjacent = directory.join(name);
+        let mut candidates = vec![adjacent.clone(), directory.join("resources").join(name)];
+        if cfg!(debug_assertions) {
+            if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
+                // An explicit development target selects its own runner.
+                candidates = vec![std::path::PathBuf::from(target).join("debug").join(name)];
+            } else {
+                let root = std::env::current_dir().unwrap_or_default();
+                candidates.extend([
+                    root.join("src-tauri/cruciblebox-plugin-host/target/debug")
+                        .join(name),
+                    root.join("cruciblebox-plugin-host/target/debug").join(name),
+                    root.join("target/debug").join(name),
+                ]);
+            }
+        }
         let executable = candidates
-            .into_iter()
-            .flatten()
-            .find(|p| p.is_file())
-            .unwrap_or_else(|| root.join("cruciblebox-plugin-host.exe"));
+            .iter()
+            .find(|path| path.is_file())
+            .unwrap_or(&candidates[0])
+            .clone();
         let maintenance = Arc::new(Mutex::new(HashSet::new()));
         let next2 = Arc::new(crate::next2_host::Manager::new(
             db.clone(),

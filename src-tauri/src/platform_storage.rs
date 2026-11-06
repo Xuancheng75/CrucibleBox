@@ -1,4 +1,4 @@
-//! API 6 storage dispatch. Envelope validation and permissions are enforced by admission.
+//! Next 3.0 storage dispatch. Envelope validation and permissions are enforced by admission.
 use crate::db::Db;
 use serde_json::Value;
 

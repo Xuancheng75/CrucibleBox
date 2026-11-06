@@ -3,11 +3,13 @@
 // 约束：零 unwrap/expect（panic=abort），错误一律 Result<_, String>。
 #![allow(dead_code)] // 1.9.3 安装链后续步骤接入后消除
 
+use cruciblebox_next2_protocol::MANIFEST_VERSION;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
 const MAX_RETAINED_PERMISSIONS: usize = 64;
+const LEGACY_VERSIONED_MANIFEST: u8 = 6;
 
 /// plugin.json 最大字节数（对等 MAX_PLUGIN_MANIFEST_BYTES）
 pub const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
@@ -60,7 +62,7 @@ const CONFIG_FIELD_TYPES: &[&str] = &["string", "number", "boolean", "select", "
 /// 插件 manifest（对等 PluginManifest 类型）
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Manifest {
-    pub manifest_version: Option<u8>, // 1 | 2 | 3 | 4
+    pub manifest_version: Option<u8>,
     pub name: String,
     pub version: String,
     pub display_name: String,
@@ -83,6 +85,16 @@ pub struct Manifest {
     pub config: serde_json::Map<String, serde_json::Value>,
 }
 
+fn versioned_code(version: Option<u8>) -> bool {
+    matches!(version, Some(LEGACY_VERSIONED_MANIFEST | MANIFEST_VERSION))
+}
+
+impl Manifest {
+    pub(crate) fn has_versioned_code(&self) -> bool {
+        versioned_code(self.manifest_version)
+    }
+}
+
 /// 全量校验并解析 manifest 文本（对等 parsePluginManifest）
 pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let value: serde_json::Value = serde_json::from_str(text)
@@ -91,12 +103,23 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         .as_object()
         .ok_or_else(|| "manifest: must be a plain object".to_string())?;
 
-    if object
+    let declared_version = object
         .get("manifestVersion")
         .and_then(serde_json::Value::as_u64)
-        == Some(6)
-    {
-        let next = cruciblebox_next2_protocol::validate_manifest(text)?;
+        .and_then(|version| u8::try_from(version).ok());
+    if versioned_code(declared_version) {
+        let next = if declared_version == Some(MANIFEST_VERSION) {
+            cruciblebox_next2_protocol::validate_manifest(text)?
+        } else {
+            // Manifest 6 is readable for retained installations and recovery.
+            // The installation and execution gates accept only MANIFEST_VERSION.
+            let manifest: cruciblebox_next2_protocol::Manifest =
+                serde_json::from_value(value).map_err(|_| "INVALID_RETAINED_MANIFEST")?;
+            if !is_valid_plugin_name(&manifest.id) || parse_semver(&manifest.version).is_err() {
+                return Err("INVALID_RETAINED_MANIFEST".into());
+            }
+            manifest
+        };
         let main = match &next.backend {
             Some(cruciblebox_next2_protocol::Backend::JsBackend(backend)) => backend.entry.clone(),
             Some(cruciblebox_next2_protocol::Backend::NativeBackend(backend)) => {
@@ -106,8 +129,9 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         };
         let has_backend = next.backend.is_some();
         let has_renderer = next.renderer.is_some();
+        let api_version = u8::try_from(next.sdk_api_version).map_err(|_| "INVALID_MANIFEST")?;
         return Ok(Manifest {
-            manifest_version: Some(6),
+            manifest_version: declared_version,
             name: next.id,
             version: next.version,
             display_name: next.display_name,
@@ -121,8 +145,8 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
             main,
             renderer: next.renderer.unwrap_or_default(),
             backend: Some(has_backend),
-            backend_api_version: has_backend.then_some(6),
-            renderer_api_version: has_renderer.then_some(6),
+            backend_api_version: has_backend.then_some(api_version),
+            renderer_api_version: has_renderer.then_some(api_version),
             min_host_version: Some(next.min_host_version),
             trust_level: "standard".into(),
             capabilities: serde_json::json!({}),
@@ -365,11 +389,15 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
     if bytes.len() as u64 > maximum {
         return Err(format!("manifest: plugin.json exceeds {maximum} bytes"));
     }
-    // Only v6 inventories use the larger manifest budget. Keep the frozen
-    // legacy size rejection before parsing the rest of the manifest.
+    // Only versioned inventories use the larger manifest budget.
     if bytes.len() as u64 > MAX_MANIFEST_BYTES
-        && !serde_json::from_slice::<serde_json::Value>(&bytes)
-            .is_ok_and(|value| value["manifestVersion"] == 6)
+        && !serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|value| {
+            versioned_code(
+                value["manifestVersion"]
+                    .as_u64()
+                    .and_then(|v| u8::try_from(v).ok()),
+            )
+        })
     {
         return Err(format!(
             "manifest: plugin.json exceeds {MAX_MANIFEST_BYTES} bytes"
@@ -378,7 +406,7 @@ pub fn read_manifest(root: &Path) -> Result<Manifest, String> {
     // 对等 Buffer.toString('utf8')：非法序列替换为 U+FFFD，随后 JSON 解析失败
     let text = String::from_utf8_lossy(&bytes);
     let manifest = parse_manifest(&text)?;
-    if manifest.manifest_version == Some(6) {
+    if manifest.has_versioned_code() {
         std::str::from_utf8(&bytes).map_err(|_| "manifest: invalid UTF-8")?;
     }
     Ok(manifest)
@@ -389,16 +417,16 @@ pub fn assert_manifest_installable(
     manifest: &Manifest,
     allow_legacy_full_trust: bool,
 ) -> Result<(), String> {
-    if manifest.manifest_version == Some(6) {
+    if manifest.manifest_version == Some(MANIFEST_VERSION) {
         return Ok(());
     }
     // Explicit historical installation fixtures exercise old journal/data recovery; production cannot opt in.
     #[cfg(test)]
-    if allow_legacy_full_trust {
+    if allow_legacy_full_trust && !manifest.has_versioned_code() {
         return Ok(());
     }
     let _ = allow_legacy_full_trust;
-    Err("LEGACY_RUNTIME_RETIRED: only Next Manifest v6 packages can be installed; existing packages and data are retained".into())
+    Err(format!("LEGACY_RUNTIME_RETIRED: requires Manifest {MANIFEST_VERSION}; existing packages and data are retained"))
 }
 
 /// Reject a plugin whose declared minimum host version is newer than this
@@ -430,7 +458,7 @@ pub fn validate_entrypoints(root: &Path, manifest: &Manifest) -> Result<(), Stri
     }
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|error| format!("manifest.entry: failed to canonicalize plugin root: {error}"))?;
-    if manifest.manifest_version == Some(6) {
+    if manifest.has_versioned_code() {
         // Package inventory, native architecture and signatures are checked by the
         // installer. The renderer still uses the existing contained JS resolver.
         if !manifest.renderer.is_empty() {

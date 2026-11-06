@@ -16,7 +16,7 @@ pub(crate) fn cleanup(
     if !is_plugin_name(name) {
         return Err("INVALID_PLUGIN_ID".into());
     }
-    // API 6 resources are stored in an exclusive owner namespace, outside user data.
+    // Managed resources are stored in an exclusive owner namespace, outside user data.
     let resources = plugins
         .parent()
         .ok_or("INVALID_PLUGIN_DIRECTORY")?
@@ -53,7 +53,7 @@ pub(crate) fn cleanup(
             if manifest.name != name {
                 return Err("UNINSTALL_IDENTITY_MISMATCH".into());
             }
-            if manifest.manifest_version == Some(6) {
+            if manifest.has_versioned_code() {
                 let code = cruciblebox_next2_protocol::CODE_DIRECTORY;
                 remove_internal_directory(&root, &root.join(code), code)?;
                 fs::remove_file(root.join("plugin.json")).map_err(|error| error.to_string())?;

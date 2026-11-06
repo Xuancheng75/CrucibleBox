@@ -1,4 +1,4 @@
-//! Explicit composition of API 6 platform ports and task runtime.
+//! Explicit composition of Next 3.0 platform ports and task runtime.
 use crate::next2_host::platform_service::Platform;
 use std::sync::Arc;
 pub struct Services {

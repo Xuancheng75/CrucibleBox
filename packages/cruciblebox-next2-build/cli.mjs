@@ -38,15 +38,18 @@ if (command === 'init') {
     throw Error('Native init requires --native-sdk=<unpacked public Rust SDK>')
   const provider = kind === 'provider'
   const manifest = {
-    manifestVersion: 6,
-    sdkApiVersion: 6,
+    manifestVersion: contract.versions.manifestVersion,
+    sdkApiVersion: contract.versions.sdkApiVersion,
     id,
     version: '1.0.0',
     displayName: id,
     description: 'Independent plugin example',
     publisher: { id: 'local-developer', displayName: 'Local developer' },
-    minHostVersion: provider ? '2.2.0' : '2.1.0',
-    sdk: { min: 6, maxExclusive: 7 },
+    minHostVersion: contract.versions.minHostVersion,
+    sdk: {
+      min: contract.versions.sdkApiVersion,
+      maxExclusive: contract.versions.sdkApiVersion + 1
+    },
     ...(provider ? {} : { renderer: 'dist/renderer.js' }),
     permissions: provider
       ? []

@@ -23,7 +23,7 @@ const validators = {
 }
 test('executor pause confirmation is optional and strictly boolean', () => {
   const request = {
-    wireVersion: 4,
+    wireVersion: 5,
     requestId: 'pause-1',
     session: 'a'.repeat(64),
     target: { kind: 'platform' },
@@ -49,7 +49,7 @@ test('client correlates responses and preserves domain errors', async () => {
     session: 'a'.repeat(64),
     exchange: async (request) => {
       requests.push(request)
-      return { wireVersion: 4, requestId: request.requestId, ok: true, result: request.params }
+      return { wireVersion: 5, requestId: request.requestId, ok: true, result: request.params }
     }
   })
   assert.deepEqual(await client.backend('new-method', { value: 42 }), { value: 42 })
@@ -58,7 +58,7 @@ test('client correlates responses and preserves domain errors', async () => {
   const failed = createClient({
     session: 'a'.repeat(64),
     exchange: async (request) => ({
-      wireVersion: 4,
+      wireVersion: 5,
       requestId: request.requestId,
       ok: false,
       error: { code: 'MODEL_MISSING', message: 'No model' }
@@ -69,7 +69,7 @@ test('client correlates responses and preserves domain errors', async () => {
 test('client rejects wrong correlation and oversized frames', async () => {
   const client = createClient({
     session: 'a'.repeat(64),
-    exchange: async () => ({ wireVersion: 4, requestId: 'other', ok: true, result: null })
+    exchange: async () => ({ wireVersion: 5, requestId: 'other', ok: true, result: null })
   })
   await assert.rejects(client.backend('hello'), /INVALID_RESPONSE/)
   assert.throws(
@@ -90,7 +90,7 @@ test('capability discovery uses a declared binding response', async () => {
       assert.deepEqual(request.target, { kind: 'platform' })
       assert.equal(request.method, 'capabilities.resolve')
       assert.deepEqual(request.params, { id: 'transform' })
-      return { wireVersion: 4, requestId: request.requestId, ok: true, result: binding }
+      return { wireVersion: 5, requestId: request.requestId, ok: true, result: binding }
     }
   })
   assert.deepEqual(await client.resolveCapability('transform'), binding)
@@ -98,7 +98,7 @@ test('capability discovery uses a declared binding response', async () => {
 })
 
 test('wire cancellation addresses exactly one request or task', () => {
-  const base = { kind: 'cancel', wireVersion: 4 }
+  const base = { kind: 'cancel', wireVersion: 5 }
   assert.doesNotThrow(() => validateBackendFrame(JSON.stringify({ ...base, taskId: 'task' })))
   assert.doesNotThrow(() => validateBackendFrame(JSON.stringify({ ...base, requestId: 'request' })))
   assert.throws(() => validateBackendFrame(JSON.stringify(base)), /INVALID_BACKEND_CANCEL/)
@@ -120,7 +120,7 @@ test('file chunk iteration closes the stream when the consumer exits early', asy
         'files.stream.read': { data: 'YQ==', offset: 0, nextOffset: 1, eof: true },
         'files.stream.close': true
       }[request.method]
-      return { wireVersion: 4, requestId: request.requestId, ok: true, result }
+      return { wireVersion: 5, requestId: request.requestId, ok: true, result }
     }
   })
   for await (const chunk of client.readFileChunks('owned-file')) {

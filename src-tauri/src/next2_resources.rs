@@ -166,7 +166,7 @@ impl Manager {
         let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
         let row = db.plugin_find_by_id(id)?.ok_or("PLUGIN_NOT_FOUND")?;
         if crate::manifest::read_manifest(Path::new(&row.installed_path))?.manifest_version
-            != Some(6)
+            != Some(cruciblebox_next2_protocol::MANIFEST_VERSION)
         {
             return Ok(json!([]));
         }

@@ -4,7 +4,10 @@ import { useAppStore } from '../store/app.store'
 import { themeToCssVars } from '../../../shared/themes/css-vars'
 import { validateAppearance, validateFilesDropped } from '../../../shared/frame-validation.mjs'
 import { useEffect, useRef, useState } from 'react'
-import { validateResponse as validateNext2Response } from '../../../packages/cruciblebox-next2-api/src/index.mjs'
+import {
+  contract,
+  validateResponse as validateNext2Response
+} from '../../../packages/cruciblebox-next2-api/src/index.mjs'
 import { Alert, Button, Spin } from 'antd'
 import { invoke } from '@tauri-apps/api/core'
 import {
@@ -204,7 +207,7 @@ export function NextPluginFrame({
       frame.contentWindow?.postMessage(
         {
           kind: 'next-connect',
-          wireVersion: 4,
+          wireVersion: contract.versions.wireVersion,
           nonce: session.handshakeToken,
           session: session.token,
           appearance: getAppearance()

@@ -1,6 +1,6 @@
 # @cruciblebox/next2-api 6.0.0-alpha.2
 
-Next 2.0 candidate SDK: Manifest/API 6, wire 4, storage data schema 1. This package does not make existing Manifest 5 hosts accept Manifest 6. Production host integration and fixed-host acceptance are separate work.
+Next 3.0 candidate SDK for Manifest 7, API 7, wire 5 and storage data schema 1. The minimum host is CrucibleBox 2.2.0-beta.1.
 
 Optional `contributes.fileHandlers: [{extensions: ['zip', 'mrpack']}]` routes OS file drops to the active plugin's `context.onFilesDropped` callback. Extensions are unique lowercase alphanumeric strings without dots. This declaration requires the P6 candidate 2 host or newer; it is independent of plugin identity. OS drop paths are input paths, never commands to execute.
 

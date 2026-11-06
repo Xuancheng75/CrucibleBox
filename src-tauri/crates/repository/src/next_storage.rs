@@ -4,7 +4,7 @@ use rusqlite::params;
 use serde_json::{json, Value};
 
 pub fn validate_params(method: &str, params: Value) -> Result<(), String> {
-    let request = json!({"wireVersion":4,"target":{"kind":"platform"},"requestId":"native-storage-validation","session":"a".repeat(64),"method":method,"params":params});
+    let request = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"target":{"kind":"platform"},"requestId":"native-storage-validation","session":"a".repeat(64),"method":method,"params":params});
     cruciblebox_next2_protocol::validate_request(&request.to_string()).map(|_| ())
 }
 impl Db {

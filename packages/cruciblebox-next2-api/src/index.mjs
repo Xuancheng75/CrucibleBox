@@ -1,3 +1,4 @@
+import semver from 'semver'
 import { contract } from './generated.mjs'
 import { parse, matches, unique, validRange, validateInventory, validateBudget } from './schema.mjs'
 export { contract } from './generated.mjs'
@@ -39,6 +40,9 @@ function validateCapabilitySchema(rule) {
 
 export function validateManifest(raw) {
   const manifest = parse(raw, 'Manifest', contract.budget.manifestBytes)
+  if (semver.lt(manifest.minHostVersion, contract.versions.minHostVersion))
+    throw Error('HOST_VERSION_UNDERSTATED')
+  if (manifest.dataMigration) validRange(manifest.dataMigration.fromPluginVersion)
   if (
     manifest.backgroundIntervalMs !== undefined &&
     (!manifest.background || manifest.backend?.kind !== 'js')

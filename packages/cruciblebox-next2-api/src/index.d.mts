@@ -28,7 +28,9 @@ export interface RendererContext {
   onVisibilityChanged?(listener: (visible: boolean) => void): () => void
   enableThemeStyle?(version: 2): boolean
 }
-export declare const contract: Readonly<Record<string, unknown>>
+export declare const contract: Readonly<Record<string, unknown>> & {
+  readonly versions: import('./generated.mjs').ContractVersions
+}
 export declare function validateManifest(raw: string): Manifest
 export declare function validateThemeDesign(raw: string): import('./generated.mjs').ThemeDesign
 export declare function validateResourceManifest(raw: string): ResourceManifest

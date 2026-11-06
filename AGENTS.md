@@ -7,7 +7,7 @@
 - 用户于 2026-10-27 明确授权发布宿主 2.1.0 正式版、将当前配套插件改为正式版本，并附 Release 插件清单与分发包；本次允许必要的宿主公开仓库推送、PR、合并、标签和 Release 发布。插件私有仓库源码、私密构建输入及其他限制不随之公开。
 
 - 用户要求当前工作树只保存底座、公共 SDK/契约及必要资料；业务代码、worker、资源、官方插件目录/名称映射和业务验收归档归独立插件仓库。
-- 用户明确选择当前宿主仅支持 Manifest/API 6、wire 4。API 5 及更旧执行链归档，原始插件记录、配置、KV、迁移标记和用户文件继续保留，不把数据保留误写成旧执行兼容。
+- 用户于 2026-11-06 同意 Next 3.0 切换契约并复核 P0–P3。开发候选只执行 Manifest 7、API 7、wire 5，保留长度前缀传输。旧执行链归档，保留原始插件记录、配置、KV、迁移标记和用户文件。版本策略与实测范围见 docs/2.2.0-p0-p3-recheck.md。
 - 宿主源码位于 E:\CrucibleBox_Sourses；插件在 E:\CrucibleBox_Plugins 的独立源码目录开发。新插件应通过公开 SDK 和声明式贡献扩展，不能增加宿主名称白名单或业务专用接口。
 - E:\CrucibleBox_Portable 是唯一正式程序目录，仅放验证后的分发文件，不作为开发测试目录，不注册第二套系统安装。宿主目录可临时隔离测试，新交付时清理被替代副本，保留用户数据。
 - 禁止对 E:\OCR 任何写入。禁止子代理和 Computer Use。可使用自身程序的公开 IPC/无界面协议测试；原生界面验收由用户手动进行。
@@ -17,7 +17,7 @@
 
 ## 当前代码与契约
 
-宿主 2.1.1，Tauri/Rust + React + SQLite。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
+宿主开发候选 2.2.0-beta.1，Tauri/Rust + React + SQLite。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
 
 原生插件是可信本地代码；进程隔离不等于 OS 安全沙箱。安装文件清单、签名/确认、路径边界、owner/session 归属、取消确认及数据保留不能删减。
 

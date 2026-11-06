@@ -2,10 +2,11 @@
 export const contract = {
   status: 'candidate',
   versions: {
-    manifestVersion: 6,
-    sdkApiVersion: 6,
-    sdkPackageVersion: '6.1.0',
-    wireVersion: 4,
+    manifestVersion: 7,
+    sdkApiVersion: 7,
+    sdkPackageVersion: '7.0.0-beta.1',
+    minHostVersion: '2.2.0-beta.1',
+    wireVersion: 5,
     dataSchemaVersion: 1,
     resourceManifestVersion: 1,
     catalogVersion: 1
@@ -64,8 +65,8 @@ export const contract = {
       additionalProperties: false,
       required: ['min', 'maxExclusive'],
       properties: {
-        min: { type: 'integer', const: 6 },
-        maxExclusive: { type: 'integer', const: 7 }
+        min: { type: 'integer', const: 7 },
+        maxExclusive: { type: 'integer', const: 8 }
       }
     },
     Publisher: {
@@ -467,7 +468,7 @@ export const contract = {
       additionalProperties: false,
       required: ['wireVersion', 'requestId', 'session', 'target', 'method', 'params'],
       properties: {
-        wireVersion: { const: 4 },
+        wireVersion: { const: 5 },
         requestId: { type: 'string', minLength: 1, maxLength: 128 },
         session: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-f0-9]{64}$' },
         target: { $ref: '#/$defs/Target' },
@@ -489,7 +490,7 @@ export const contract = {
       additionalProperties: false,
       required: ['wireVersion', 'requestId', 'ok', 'result'],
       properties: {
-        wireVersion: { const: 4 },
+        wireVersion: { const: 5 },
         requestId: { type: 'string', minLength: 1, maxLength: 128 },
         ok: { const: true },
         result: {}
@@ -500,7 +501,7 @@ export const contract = {
       additionalProperties: false,
       required: ['wireVersion', 'requestId', 'ok', 'error'],
       properties: {
-        wireVersion: { const: 4 },
+        wireVersion: { const: 5 },
         requestId: { type: 'string', minLength: 1, maxLength: 128 },
         ok: { const: false },
         error: { $ref: '#/$defs/RpcError' }
@@ -572,8 +573,8 @@ export const contract = {
       required: ['kind', 'wireVersion', 'sdkApiVersion'],
       properties: {
         kind: { const: 'hello' },
-        wireVersion: { const: 4 },
-        sdkApiVersion: { const: 6 }
+        wireVersion: { const: 5 },
+        sdkApiVersion: { const: 7 }
       }
     },
     BackendInit: {
@@ -582,7 +583,7 @@ export const contract = {
       required: ['kind', 'wireVersion', 'session', 'pluginId', 'dataDirectory', 'resources'],
       properties: {
         kind: { const: 'initialize' },
-        wireVersion: { const: 4 },
+        wireVersion: { const: 5 },
         session: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-f0-9]{64}$' },
         pluginId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
         dataDirectory: { type: 'string', minLength: 1, maxLength: 32767 },
@@ -603,7 +604,7 @@ export const contract = {
       type: 'object',
       additionalProperties: false,
       required: ['kind', 'wireVersion'],
-      properties: { kind: { const: 'ready' }, wireVersion: { const: 4 } }
+      properties: { kind: { const: 'ready' }, wireVersion: { const: 5 } }
     },
     BackendExecute: {
       type: 'object',
@@ -640,7 +641,7 @@ export const contract = {
       required: ['kind', 'wireVersion'],
       properties: {
         kind: { const: 'cancel' },
-        wireVersion: { const: 4 },
+        wireVersion: { const: 5 },
         taskId: { type: 'string', minLength: 1, maxLength: 128 },
         requestId: { type: 'string', minLength: 1, maxLength: 128 }
       }
@@ -649,7 +650,7 @@ export const contract = {
       type: 'object',
       additionalProperties: false,
       required: ['kind', 'wireVersion'],
-      properties: { kind: { const: 'stop' }, wireVersion: { const: 4 } }
+      properties: { kind: { const: 'stop' }, wireVersion: { const: 5 } }
     },
     BackendFrame: {
       oneOf: [
@@ -1052,6 +1053,15 @@ export const contract = {
       additionalProperties: false
     },
     NotificationShowResult: {},
+    PluginDataMigration: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['fromPluginVersion', 'summary'],
+      properties: {
+        fromPluginVersion: { $ref: '#/$defs/VersionRange' },
+        summary: { type: 'string', minLength: 1, maxLength: 1000 }
+      }
+    },
     Manifest: {
       type: 'object',
       additionalProperties: false,
@@ -1074,8 +1084,8 @@ export const contract = {
         'files'
       ],
       properties: {
-        manifestVersion: { const: 6 },
-        sdkApiVersion: { const: 6 },
+        manifestVersion: { const: 7 },
+        sdkApiVersion: { const: 7 },
         id: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
         version: { type: 'string', minLength: 1, maxLength: 100, format: 'semver-without-build' },
         displayName: { type: 'string', minLength: 1, maxLength: 100 },
@@ -1087,6 +1097,7 @@ export const contract = {
           maxLength: 100,
           format: 'semver-without-build'
         },
+        dataMigration: { $ref: '#/$defs/PluginDataMigration' },
         sdk: { $ref: '#/$defs/ApiRange' },
         renderer: { type: 'string', minLength: 1, maxLength: 240, format: 'package-path' },
         backend: { $ref: '#/$defs/Backend' },

@@ -1,4 +1,4 @@
-//! Generic API 6 JS execution. Stdout contains only bounded wire 4 frames.
+//! Next 3.0 JavaScript execution. Stdout contains only bounded protocol frames.
 use cruciblebox_next2_protocol as protocol;
 use cruciblebox_next2_runtime::transport;
 use rquickjs::{CatchResultExt, Context, Function, Runtime, Value};
@@ -48,7 +48,7 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
     let output = Arc::new(Mutex::new(io::stdout()));
     transport::write_frame(
         &mut *output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?,
-        &json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}),
+        &json!({"kind":"hello","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION}),
     )
     .map_err(|e| e.to_string())?;
     let mut input = io::stdin();
@@ -166,7 +166,7 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
     }
     transport::write_frame(
         &mut *output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?,
-        &json!({"kind":"ready","wireVersion":4}),
+        &json!({"kind":"ready","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION}),
     )
     .map_err(|e| e.to_string())?;
     loop {
@@ -199,12 +199,12 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
         let response = match result {
             Ok(value) => {
                 let mut value = value;
-                value["wireVersion"] = json!(4);
+                value["wireVersion"] = json!(cruciblebox_next2_protocol::WIRE_VERSION);
                 value["requestId"] = request["requestId"].clone();
                 value
             }
             Err(message) => {
-                json!({"wireVersion":4,"requestId":request["requestId"],"ok":false,"error":{"code":if cancelled.load(Ordering::SeqCst) {"CANCELLED"} else {"JS_EXECUTION_FAILED"},"message":message}})
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request["requestId"],"ok":false,"error":{"code":if cancelled.load(Ordering::SeqCst) {"CANCELLED"} else {"JS_EXECUTION_FAILED"},"message":message}})
             }
         };
         protocol::validate_response(

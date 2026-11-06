@@ -58,7 +58,9 @@ impl BackendProcessManager {
         };
         for (id, record) in records {
             let next = crate::manifest::read_manifest(std::path::Path::new(&record.installed_path))
-                .is_ok_and(|manifest| manifest.manifest_version == Some(6));
+                .is_ok_and(|manifest| {
+                    manifest.manifest_version == Some(cruciblebox_next2_protocol::MANIFEST_VERSION)
+                });
             if !next {
                 if let Err(error) = lock(&self.db).set_plugin_enabled(&id, false) {
                     eprintln!("[next-preflight] disable {id}: {error}");
@@ -177,10 +179,10 @@ mod tests {
         let plugin = root.path().join("candidate");
         std::fs::create_dir(&plugin).unwrap();
         let manifest = serde_json::json!({
-            "manifestVersion":6,"sdkApiVersion":6,
+            "manifestVersion":cruciblebox_next2_protocol::MANIFEST_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION,
             "id":"candidate","version":"1.0.0","displayName":"Candidate","description":"Test",
-            "publisher":{"id":"local","displayName":"Local"},"minHostVersion":"2.1.0-beta.4",
-            "sdk":{"min":6,"maxExclusive":7},"renderer":"dist/renderer.js","permissions":[],
+            "publisher":{"id":"local","displayName":"Local"},"minHostVersion":cruciblebox_next2_protocol::MIN_HOST_VERSION,
+            "sdk":{"min":cruciblebox_next2_protocol::SDK_API_VERSION,"maxExclusive":cruciblebox_next2_protocol::SDK_API_VERSION+1},"renderer":"dist/renderer.js","permissions":[],
             "background":false,"contributes":{"commands":[]},"exports":[],"dependencies":[],"resources":[],
             "files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)}]
         });
@@ -201,11 +203,28 @@ mod tests {
     }
     #[test]
     fn startup_disables_legacy_execution_preserving_raw_data_and_package() {
-        for version in [2, 5] {
+        for version in [2, 5, 6] {
             let root = tempfile::tempdir().unwrap();
             let plugin = root.path().join("old");
             std::fs::create_dir(&plugin).unwrap();
-            let manifest = if version == 5 {
+            let manifest = if version == 6 {
+                let fixtures: Value =
+                    serde_json::from_str(include_str!("../../contracts/next2/fixtures.json"))
+                        .unwrap();
+                let mut manifest = fixtures["manifest"].clone();
+                manifest["id"] = serde_json::json!("old");
+                manifest["manifestVersion"] = serde_json::json!(6);
+                manifest["sdkApiVersion"] = serde_json::json!(6);
+                manifest["sdk"] = serde_json::json!({"min":6,"maxExclusive":7});
+                manifest["minHostVersion"] = serde_json::json!("2.1.1");
+                let metadata = crate::manifest::parse_manifest(&manifest.to_string()).unwrap();
+                assert!(crate::manifest::assert_manifest_installable(&metadata, false).is_err());
+                let code = crate::next2_install::code_directory(&plugin, &metadata);
+                assert_eq!(code, plugin.join(".cruciblebox-code").join("1.0.0"));
+                std::fs::create_dir_all(&code).unwrap();
+                std::fs::write(code.join("plugin.json"), manifest.to_string()).unwrap();
+                manifest
+            } else if version == 5 {
                 serde_json::json!({"id":"old","version":"1.0.0","displayName":"Old","manifestVersion":5,"sdkApiVersion":5,"wireVersion":3,"dataSchemaVersion":1,"renderer":"dist/renderer.js","permissions":["storage:read"]})
             } else {
                 serde_json::json!({"name":"old","version":"1.0.0","displayName":"Old","main":"dist/main.js","renderer":"dist/renderer.js","manifestVersion":2,"rendererApiVersion":2,"backend":false,"permissions":[]})
@@ -228,6 +247,9 @@ mod tests {
                 Some("unmodified notes")
             );
             assert!(plugin.join("plugin.json").is_file());
+            if version == 6 {
+                assert!(plugin.join(".cruciblebox-code/1.0.0/plugin.json").is_file());
+            }
             assert!(manager
                 .ensure_activated(
                     "old-id",

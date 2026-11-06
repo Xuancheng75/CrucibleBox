@@ -6,6 +6,27 @@ import { spawnSync } from 'node:child_process'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const contract = JSON.parse(readFileSync(resolve(root, 'contracts/next2/contract.json'), 'utf8'))
 const defs = contract.$defs
+const { manifestVersion, sdkApiVersion, wireVersion, minHostVersion, sdkPackageVersion } =
+  contract.versions
+const manifest = defs.Manifest.properties
+const apiRange = defs.ApiRange.properties
+if (
+  manifest.manifestVersion.const !== manifestVersion ||
+  manifest.sdkApiVersion.const !== sdkApiVersion ||
+  apiRange.min.const !== sdkApiVersion ||
+  apiRange.maxExclusive.const !== sdkApiVersion + 1 ||
+  Object.values(defs).some(
+    (rule) => rule.properties?.wireVersion && rule.properties.wireVersion.const !== wireVersion
+  )
+)
+  throw Error('Protocol version constants disagree with the schema')
+for (const name of ['api', 'ui', 'build']) {
+  const pkg = JSON.parse(
+    readFileSync(resolve(root, `packages/cruciblebox-next2-${name}/package.json`), 'utf8')
+  )
+  const version = name === 'api' ? pkg.version : pkg.dependencies['@cruciblebox/next2-api']
+  if (version !== sdkPackageVersion) throw Error(`SDK version drift in ${pkg.name}`)
+}
 const reference = (rule) => rule.$ref?.split('/').at(-1)
 function ts(rule) {
   if (rule.$ref) return reference(rule)
@@ -96,6 +117,10 @@ function rustDefinition([name, rule]) {
 const rustTypes = Object.entries(defs).map(rustDefinition).join('\n')
 const rustSource =
   `// Generated from contracts/next2/contract.json.\npub const CONTRACT_JSON: &str = r###"${JSON.stringify(contract)}"###;\n` +
+  `pub const MANIFEST_VERSION: u8 = ${manifestVersion};\n` +
+  `pub const SDK_API_VERSION: u8 = ${sdkApiVersion};\n` +
+  `pub const WIRE_VERSION: u64 = ${wireVersion};\n` +
+  `pub const MIN_HOST_VERSION: &str = ${JSON.stringify(minHostVersion)};\n` +
   `pub const CODE_DIRECTORY: &str = ${JSON.stringify(contract.install.codeDirectory)};\n` +
   `pub const BACKGROUND_METHOD: &str = ${JSON.stringify(contract.transport.backgroundMethod)};\n` +
   Object.entries(contract.budget)
@@ -138,7 +163,14 @@ function pretty(source, filename) {
   return result.stdout.replaceAll('\r\n', '\n')
 }
 const declarations = pretty(
-  '// Generated from contracts/next2/contract.json.\n' + typescript + '\n',
+  '// Generated from contracts/next2/contract.json.\n' +
+    'export type ContractVersions = { ' +
+    Object.entries(contract.versions)
+      .map(([name, version]) => `readonly ${name}: ${JSON.stringify(version)};`)
+      .join(' ') +
+    ' }\n' +
+    typescript +
+    '\n',
   'generated.d.ts'
 )
 const outputs = {

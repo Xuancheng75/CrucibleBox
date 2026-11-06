@@ -1,7 +1,7 @@
 // Generated from contracts/next2/contract.json.
 pub const MAX_FRAME_BYTES: usize = 65536;
-pub(crate) const WIRE_VERSION: u64 = 4;
-pub(crate) const SDK_API_VERSION: u64 = 6;
+pub(crate) const WIRE_VERSION: u64 = 5;
+pub(crate) const SDK_API_VERSION: u64 = 7;
 pub(crate) const REQUEST_TIMEOUT_MS: u64 = 30000;
 pub type CapabilitySchema = serde_json::Value;
 pub type LegacyServiceMethod = String;

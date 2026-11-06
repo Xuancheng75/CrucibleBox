@@ -25,7 +25,7 @@ let request = 0;
 module.exports.activate = ctx => {
   let stream;
   const call = async (method, params) => {
-    const reply = await ctx.exchange({wireVersion:4,requestId:'ipc-'+(++request),session:ctx.session,target:{kind:'platform'},method,params});
+    const reply = await ctx.exchange({wireVersion:ctx.wireVersion,requestId:'ipc-'+(++request),session:ctx.session,target:{kind:'platform'},method,params});
     if (!reply.ok) throw Object.assign(Error(reply.error.message), {code:reply.error.code});
     return reply.result;
   };
@@ -83,7 +83,7 @@ module.exports.activate = ctx => {
                    target,
                    method: &str,
                    params| {
-        json!({"wireVersion":4,"requestId":format!("renderer-{index}"),"session":session.token,"target":target,"method":method,"params":params}).to_string()
+        json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("renderer-{index}"),"session":session.token,"target":target,"method":method,"params":params}).to_string()
     };
     let sequence = std::cell::Cell::new(0u64);
     let next = || {
@@ -340,7 +340,7 @@ module.exports.activate = () => ({ ping: () => 'restored' });
 module.exports.background = async ctx => {
   const call = async (method, params) => {
     const requestId = 'heartbeat-' + (++sequence);
-    const reply = await ctx.exchange({wireVersion:4,requestId,session:ctx.session,target:{kind:'platform'},method,params});
+    const reply = await ctx.exchange({wireVersion:ctx.wireVersion,requestId,session:ctx.session,target:{kind:'platform'},method,params});
     if (!reply.ok) throw Error(reply.error.code);
     return reply.result;
   };
@@ -474,7 +474,7 @@ fn background_service_survives_two_headless_host_process_starts() {
         Some(
             r#"module.exports.activate = ctx => ({ increment: async () => {
   const call = async (requestId, method, params) => {
-    const reply = await ctx.exchange({wireVersion:4,requestId,session:ctx.session,target:{kind:'platform'},method,params});
+    const reply = await ctx.exchange({wireVersion:ctx.wireVersion,requestId,session:ctx.session,target:{kind:'platform'},method,params});
     if (!reply.ok) throw Error(reply.error.code);
     return reply.result;
   };
@@ -666,6 +666,69 @@ fn next2_uninstall_retries_cleanup_from_committed_journal_after_record_deletion(
     );
     assert!(!manager.is_blocked(owner));
     assert!(!retained.exists());
+}
+
+#[test]
+fn next3_upgrades_a_retained_manifest6_record_and_preserves_data() {
+    let (manager, plugins, root) = setup("next3-compatibility-upgrade");
+    let target = plugins.join("acme-independent");
+    let old_code = target
+        .join(cruciblebox_next2_protocol::CODE_DIRECTORY)
+        .join("1.0.0");
+    write_next2(&old_code, "1.0.0", None);
+    let mut old: Value =
+        serde_json::from_slice(&fs::read(old_code.join("plugin.json")).unwrap()).unwrap();
+    old["manifestVersion"] = json!(6);
+    old["sdkApiVersion"] = json!(6);
+    old["sdk"] = json!({"min":6,"maxExclusive":7});
+    old["minHostVersion"] = json!("2.1.1");
+    fs::write(old_code.join("plugin.json"), old.to_string()).unwrap();
+    fs::write(target.join("plugin.json"), old.to_string()).unwrap();
+    let id = "retained-record-id";
+    lock(&manager.db).conn().lock().unwrap().execute(
+        "INSERT INTO plugins(id,name,version,display_name,entry_main,entry_renderer,installed_path,enabled,config_data) VALUES (?1,'acme-independent','1.0.0','Previous plugin','','dist/renderer.js',?2,0,?3)",
+        (id, old_code.to_string_lossy().as_ref(), r#"{"retained":7}"#),
+    ).unwrap();
+    lock(&manager.db)
+        .storage_set(id, "preserved", "原始数据")
+        .unwrap();
+    let data = root.join("plugin-data/acme-independent");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("user-note.txt"), "保留文件").unwrap();
+    manager.remember_trusted_path(old_code.clone());
+    let rejection = manager.preview(directory(&old_code)).unwrap_err();
+    assert!(rejection.contains("LEGACY_RUNTIME_RETIRED"), "{rejection}");
+
+    let source = root.join("source");
+    write_next2(&source, "1.1.0", None);
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(source.join("plugin.json")).unwrap()).unwrap();
+    let migration = json!({"fromPluginVersion":{"min":"1.0.0","maxExclusive":"1.1.0"},"summary":"Preserve existing settings and files."});
+    manifest["dataMigration"] = migration.clone();
+    fs::write(source.join("plugin.json"), manifest.to_string()).unwrap();
+    manager.remember_trusted_path(source.clone());
+    let preview = manager.preview(directory(&source)).unwrap();
+    assert_eq!(preview["data"]["previousVersion"], "1.0.0");
+    assert_eq!(preview["data"]["next2"]["dataMigration"], migration);
+    manager
+        .commit_approved(
+            preview["installToken"].as_str().unwrap().into(),
+            Some(next2_approval(&preview)),
+        )
+        .unwrap();
+    let db = lock(&manager.db);
+    let upgraded = db.plugin_find_by_id(id).unwrap().unwrap();
+    assert_eq!(upgraded.version, "1.1.0");
+    assert_eq!(upgraded.config_data, r#"{"retained":7}"#);
+    assert_eq!(
+        db.storage_get(id, "preserved").unwrap().as_deref(),
+        Some("原始数据")
+    );
+    assert_eq!(
+        fs::read_to_string(data.join("user-note.txt")).unwrap(),
+        "保留文件"
+    );
+    assert!(crate::next2_install::load(&db, Path::new(&upgraded.installed_path)).is_ok());
 }
 
 #[test]
@@ -875,10 +938,10 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
   let response;
   for (let i = 0; i < (params.burst ? 4104 : 1); i++) {
     const requestId = 'provider-value-' + (++requests);
-    response = await ctx.exchange({wireVersion:4,requestId,session:ctx.session,target:{kind:'platform'},method:'storage.get',params:{key:'identity'}});
+    response = await ctx.exchange({wireVersion:ctx.wireVersion,requestId,session:ctx.session,target:{kind:'platform'},method:'storage.get',params:{key:'identity'}});
     if (!response.ok || response.requestId !== requestId) throw Error('Capability or correlation failed');
   }
-  const logged = await ctx.exchange({wireVersion:4,requestId:'provider-log-' + (++requests),session:ctx.session,target:{kind:'platform'},method:'logging.write',params:{level:'info',message:'Sample capability executed'}});
+  const logged = await ctx.exchange({wireVersion:ctx.wireVersion,requestId:'provider-log-' + (++requests),session:ctx.session,target:{kind:'platform'},method:'logging.write',params:{level:'info',message:'Sample capability executed'}});
   if (!logged.ok || logged.result !== true) throw Error('Logging failed');
   return {caller:execution.callerId, value:response.result};
 } });"#,
@@ -996,7 +1059,7 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
     .unwrap();
 
     let session = next2_session(&manager, &plugins);
-    let discovery = json!({"wireVersion":4,"requestId":"renderer-1","session":session.token,"target":{"kind":"platform"},"method":"capabilities.resolve","params":{"id":"sample-service"}});
+    let discovery = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"renderer-1","session":session.token,"target":{"kind":"platform"},"method":"capabilities.resolve","params":{"id":"sample-service"}});
     let binding = manager
         .next_backend
         .next2
@@ -1006,7 +1069,7 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         binding["result"],
         json!({"providerId":"service-provider","providerVersion":"1.0.0","lifecycle":"on-demand","export":manifest["exports"][0]})
     );
-    let request = json!({"wireVersion":4,"requestId":"renderer-2","session":session.token,"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"owner":"forged"}});
+    let request = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"renderer-2","session":session.token,"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"owner":"forged"}});
     let result = manager
         .next_backend
         .next2
@@ -1016,7 +1079,7 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
         result["result"],
         json!({"caller":"acme-independent","value":"provider data"})
     );
-    let start = json!({"wireVersion":4,"requestId":"renderer-3","session":session.token,"target":{"kind":"platform"},"method":"tasks.start","params":{"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"burst":true}}});
+    let start = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"renderer-3","session":session.token,"target":{"kind":"platform"},"method":"tasks.start","params":{"target":{"kind":"service","id":"sample-service"},"method":"identity","params":{"burst":true}}});
     let started = manager
         .next_backend
         .next2
@@ -1189,7 +1252,7 @@ fn next2_native_installed_backend_runs_cancels_crashes_and_upgrades() {
     let sequence = std::cell::Cell::new(0u64);
     let call = |id: &str, target, method, params| {
         sequence.set(sequence.get() + 1);
-        let mut response=manager.next_backend.next2.renderer(&json!({"wireVersion":4,"requestId":format!("renderer-{}",sequence.get()),"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap();
+        let mut response=manager.next_backend.next2.renderer(&json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("renderer-{}",sequence.get()),"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap();
         response["requestId"] = json!(id);
         response
     };
@@ -1205,7 +1268,7 @@ fn next2_native_installed_backend_runs_cancels_crashes_and_upgrades() {
     sequence.set(sequence.get() + 1);
     let request_id = format!("renderer-{}", sequence.get());
     let raw = json!({
-        "wireVersion":4, "requestId":request_id, "session":session.token,
+        "wireVersion":cruciblebox_next2_protocol::WIRE_VERSION, "requestId":request_id, "session":session.token,
         "target":{"kind":"backend"}, "method":"wait", "params":{}
     })
     .to_string();

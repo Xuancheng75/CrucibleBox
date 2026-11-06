@@ -13,6 +13,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import type { PluginDataMigration } from '../../../packages/cruciblebox-next2-api/src/index.mjs'
 import type {
   PluginMeta,
   PluginConfig,
@@ -200,6 +201,7 @@ export interface PluginInstallPreview {
   next2?: {
     manifestSha256: number[]
     publisher: { id: string; displayName: string }
+    dataMigration?: PluginDataMigration | null
     nativeCode: boolean
     unsignedLocal: boolean
   } | null

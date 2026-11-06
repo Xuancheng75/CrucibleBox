@@ -1,6 +1,6 @@
 # Native backend SDK (candidate)
 
-This standalone Rust crate implements the Manifest 6 / wire 4 backend loop. It has registry dependencies only and does not import host sources or Tauri. Native backends are trusted local programs running as the current user; the SDK is not an OS sandbox.
+This standalone Rust crate implements the Next 3.0 API 7 and wire 5 backend loop. It depends only on public registry crates. Native backends run as trusted local programs with the current user's system permissions.
 
 Use `serve(factory, handler)` from the executable's main function. The factory initializes plugin state on its first request. The handler receives the host-authenticated caller, parameters, optional task ID and cancellation flag. `Client::platform` and `Client::service` exchange correlated capability calls. `Call::progress` reports only the current host task. Return a domain `Error` to preserve its code. Protocol stdout is reserved; use stderr for diagnostics. A panic terminates the backend after reporting an error; the host retains responsibility for its process tree.
 

@@ -2,7 +2,7 @@
 ;(() => {
   const root = document.getElementById('root')
   const nonce = root.dataset.sessionToken
-  const wireVersion = 4
+  const wireVersion = Number(root.dataset.wireVersion)
   let connected = false
   let disposed = false
   let port

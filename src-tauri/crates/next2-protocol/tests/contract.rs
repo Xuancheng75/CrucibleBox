@@ -31,7 +31,7 @@ fn shared_contract_fixtures() {
     }
 }
 fn request(id: usize, target: Value, method: &str, params: Value) -> String {
-    json!({"wireVersion":4,"requestId":format!("r-{id}"),"session":"a".repeat(64),"target":target,"method":method,"params":params}).to_string()
+    json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("r-{id}"),"session":"a".repeat(64),"target":target,"method":method,"params":params}).to_string()
 }
 fn installed(manifest: Manifest) -> Installed {
     Installed {
@@ -54,7 +54,7 @@ fn ordered_renderer_requests_exceed_opaque_budget_without_forgetting_replay_or_e
     let registry = Registry::new([installed(manifest.clone())]).unwrap();
     let mut session = Session::renderer(manifest, "a".repeat(64), "main:frame-1".into(), 1000);
     let call = |index| {
-        json!({"wireVersion":4,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":"backend"},"method":"call","params":{}}).to_string()
+        json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":"backend"},"method":"call","params":{}}).to_string()
     };
     for index in 1..=BUDGET_SESSION_REQUESTS + 4 {
         let admitted = session
@@ -106,7 +106,7 @@ fn renderer_window_accepts_reordering_and_prevents_a_cancelled_late_call() {
     let registry = Registry::new([installed(manifest.clone())]).unwrap();
     let mut session = Session::renderer(manifest, "a".repeat(64), "main".into(), 1000);
     let frame = |index, target, method, params| {
-        json!({"wireVersion":4,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":target},"method":method,"params":params}).to_string()
+        json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":target},"method":method,"params":params}).to_string()
     };
     let cancel = frame(
         4,
@@ -152,7 +152,7 @@ fn ordered_backend_capabilities_outlive_the_opaque_budget_and_keep_replay_protec
         1000,
     );
     let call = |index| {
-        json!({"wireVersion":4,"requestId":format!("backend-seq-{index}"),"session":"a".repeat(64),"target":{"kind":"platform"},"method":"storage.get","params":{"key":"identity"}}).to_string()
+        json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("backend-seq-{index}"),"session":"a".repeat(64),"target":{"kind":"platform"},"method":"storage.get","params":{"key":"identity"}}).to_string()
     };
     let completed = BUDGET_SESSION_REQUESTS + 8;
     for index in 1..=completed {

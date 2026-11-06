@@ -1,4 +1,4 @@
-# Next 2.0 independent build CLI (candidate)
+# Next 3.0 independent build CLI (candidate)
 
 Install the published-shape `@cruciblebox/next2-api` and `@cruciblebox/next2-build` packages with npm. No host checkout is required.
 
@@ -15,4 +15,4 @@ Inside the new project, install npm dependencies and run `npm run build`, then `
 
 Source aliases and workspace dependency reuse are build conveniences only. The packed renderer is bundled; no host-relative source import or runtime node_modules lookup is supported. Native plugins need explicit local-code trust at installation. The examples exercise platform transport and do not count as official-plugin, OCR, translation or fixed-host P6 acceptance.
 
-The `provider` template targets CrucibleBox 2.2.0. It has a QuickJS backend and no renderer. It exports `sum` under a capability with the same ID as the project. A consumer declares that ID and interface version range in `dependencies`, then calls `resolveCapability(id)` and `service(id, 'sum', { numbers: [7, 19] })`. A pinned `providerId` is appropriate when the consumer depends on a specific provider's identity or private state.
+The templates require CrucibleBox 2.2.0-beta.1 or newer. The `provider` template runs a headless QuickJS backend and exports `sum` under the project ID. A consumer declares that ID and interface version range in `dependencies`, then calls `resolveCapability(id)` and `service(id, 'sum', { numbers: [7, 19] })`. Pin `providerId` when the consumer depends on a specific provider's identity or private state.

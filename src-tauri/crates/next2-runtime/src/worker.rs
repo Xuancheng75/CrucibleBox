@@ -152,14 +152,13 @@ impl Worker {
         };
         let deadline = Instant::now()
             + Duration::from_millis(cruciblebox_next2_protocol::BUDGET_HANDSHAKE_TIMEOUT_MS as u64);
-        if worker.receive(deadline)? != json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}) {
-            return Err("NATIVE_HANDSHAKE_MISMATCH".into());
-        }
-        worker.send(json!({"kind":"initialize","wireVersion":4,"session":worker.session,"pluginId":plugin.manifest.id,
+        worker.expect_handshake(deadline, json!({"kind":"hello","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION}))?;
+        worker.send(json!({"kind":"initialize","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"session":worker.session,"pluginId":plugin.manifest.id,
             "dataDirectory":data,"resources":resources}))?;
-        if worker.receive(deadline)? != json!({"kind":"ready","wireVersion":4}) {
-            return Err("NATIVE_HANDSHAKE_MISMATCH".into());
-        }
+        worker.expect_handshake(
+            deadline,
+            json!({"kind":"ready","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION}),
+        )?;
         Ok(worker)
     }
     fn send(&self, frame: Value) -> Result<(), String> {
@@ -170,7 +169,7 @@ impl Worker {
             .try_send(frame)
             .map_err(|e| format!("NATIVE_QUEUE_UNAVAILABLE: {e}"))
     }
-    fn receive(&self, deadline: Instant) -> Result<Value, String> {
+    fn expect_handshake(&self, deadline: Instant, expected: Value) -> Result<(), String> {
         match self
             .output
             .as_ref()
@@ -178,7 +177,11 @@ impl Worker {
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| "NATIVE_TIMEOUT")?
         {
-            Output::Frame(frame) => Ok(frame),
+            Output::Frame(frame) if frame == expected => Ok(()),
+            Output::Frame(_) => Err("NATIVE_HANDSHAKE_MISMATCH".into()),
+            Output::Failure(error) if error == "INVALID_BACKENDFRAME" => {
+                Err("NATIVE_HANDSHAKE_MISMATCH".into())
+            }
             Output::Failure(error) => Err(error),
         }
     }
@@ -222,10 +225,10 @@ impl Worker {
         }
         let response = match capability(&request) {
             Ok(result) => {
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":true,"result":result})
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request.request_id,"ok":true,"result":result})
             }
             Err(error) => {
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":error})
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request.request_id,"ok":false,"error":error})
             }
         };
         self.send(json!({"kind":"capability-result","response":response}))
@@ -314,7 +317,7 @@ impl Worker {
         }
         self.sequence += 1;
         let id = format!("native-{}", self.sequence);
-        let mut frame = json!({"kind":"execute","callerId":caller_id,"request":{"wireVersion":4,"requestId":id,
+        let mut frame = json!({"kind":"execute","callerId":caller_id,"request":{"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":id,
             "session":self.session,"target":{"kind":"backend"},"method":method,"params":params}});
         if let Some(task_id) = task_id {
             frame["taskId"] = json!(task_id);
@@ -324,8 +327,12 @@ impl Worker {
         loop {
             if cancel.load(Ordering::SeqCst) && cancel_deadline.is_none() {
                 let cancel = match task_id {
-                    Some(task_id) => json!({"kind":"cancel","wireVersion":4,"taskId":task_id}),
-                    None => json!({"kind":"cancel","wireVersion":4,"requestId":id}),
+                    Some(task_id) => {
+                        json!({"kind":"cancel","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"taskId":task_id})
+                    }
+                    None => {
+                        json!({"kind":"cancel","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":id})
+                    }
                 };
                 self.send(cancel).map_err(|_| "CANCELLED")?;
                 cancel_deadline = Some(
@@ -393,7 +400,9 @@ impl Worker {
             .try_wait()
             .map_err(|e| e.to_string())?
             .is_some()
-            || self.send(json!({"kind":"stop","wireVersion":4})).is_err()
+            || self
+                .send(json!({"kind":"stop","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION}))
+                .is_err()
         {
             return self.process.force_stop();
         }

@@ -1,4 +1,4 @@
-//! Manifest/API 6 and generic wire 4. Frozen Manifest/API 5 remains a separate crate.
+//! Next 3.0 manifest, versioned wire frames and platform request validation.
 pub mod gateway;
 mod generated;
 mod schema;
@@ -25,7 +25,7 @@ pub fn validate_payload(raw: &str) -> Result<Value, String> {
 pub fn contract() -> &'static Value {
     static CONTRACT: OnceLock<Value> = OnceLock::new();
     CONTRACT
-        .get_or_init(|| serde_json::from_str(CONTRACT_JSON).expect("generated Next 2.0 contract"))
+        .get_or_init(|| serde_json::from_str(CONTRACT_JSON).expect("generated Next 3.0 contract"))
 }
 pub fn compatible(version: &str, range: &VersionRange) -> Result<bool, String> {
     let version = semver::Version::parse(version).map_err(|e| e.to_string())?;
@@ -117,6 +117,13 @@ fn validate_capability_schema(rule: &Value) -> Result<(), String> {
 
 pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     let manifest: Manifest = schema::parse(raw, "Manifest", BUDGET_MANIFEST_BYTES)?;
+    let minimum = semver::Version::parse(&manifest.min_host_version).map_err(|e| e.to_string())?;
+    if minimum < semver::Version::parse(MIN_HOST_VERSION).expect("contract minimum host version") {
+        return Err("HOST_VERSION_UNDERSTATED".into());
+    }
+    if let Some(migration) = &manifest.data_migration {
+        compatible(&manifest.version, &migration.from_plugin_version)?;
+    }
     if manifest.background_interval_ms.is_some()
         && (!manifest.background || !matches!(manifest.backend, Some(Backend::JsBackend(_))))
     {

@@ -1,8 +1,18 @@
 // Generated from contracts/next2/contract.json.
+export type ContractVersions = {
+  readonly manifestVersion: 7
+  readonly sdkApiVersion: 7
+  readonly sdkPackageVersion: '7.0.0-beta.1'
+  readonly minHostVersion: '2.2.0-beta.1'
+  readonly wireVersion: 5
+  readonly dataSchemaVersion: 1
+  readonly resourceManifestVersion: 1
+  readonly catalogVersion: 1
+}
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export type Empty = Record<string, never>
 export type VersionRange = { min: string; maxExclusive: string }
-export type ApiRange = { min: 6; maxExclusive: 7 }
+export type ApiRange = { min: 7; maxExclusive: 8 }
 export type Publisher = { id: string; displayName: string }
 export type FileEntry = { path: string; bytes: number; sha256: string }
 export type JsBackend = { kind: 'js'; entry: string }
@@ -100,7 +110,7 @@ export type BackendTarget = { kind: 'backend' }
 export type ServiceTarget = { kind: 'service'; id: string }
 export type Target = PlatformTarget | BackendTarget | ServiceTarget
 export type Request = {
-  wireVersion: 4
+  wireVersion: 5
   requestId: string
   session: string
   target: Target
@@ -108,8 +118,8 @@ export type Request = {
   params: Json
 }
 export type RpcError = { code: string; message: string }
-export type Success = { wireVersion: 4; requestId: string; ok: true; result: Json }
-export type Failure = { wireVersion: 4; requestId: string; ok: false; error: RpcError }
+export type Success = { wireVersion: 5; requestId: string; ok: true; result: Json }
+export type Failure = { wireVersion: 5; requestId: string; ok: false; error: RpcError }
 export type Response = Success | Failure
 export type FileReference = { ref: string; name: string; bytes: number }
 export type FileReadParams = { ref: string; offset: number; length: number }
@@ -123,17 +133,17 @@ export type TaskProgressParams = {
   percent: number
   message: string
 }
-export type BackendHello = { kind: 'hello'; wireVersion: 4; sdkApiVersion: 6 }
+export type BackendHello = { kind: 'hello'; wireVersion: 5; sdkApiVersion: 7 }
 export type BackendInit = {
   kind: 'initialize'
-  wireVersion: 4
+  wireVersion: 5
   session: string
   pluginId: string
   dataDirectory: string
   resources: ResourceMount[]
 }
 export type ResourceMount = { id: string; version: string; directory: string }
-export type BackendReady = { kind: 'ready'; wireVersion: 4 }
+export type BackendReady = { kind: 'ready'; wireVersion: 5 }
 export type BackendExecute = {
   kind: 'execute'
   request: Request
@@ -143,8 +153,8 @@ export type BackendExecute = {
 export type BackendReply = { kind: 'reply'; response: Response }
 export type BackendCapability = { kind: 'capability'; request: Request }
 export type BackendCapabilityReply = { kind: 'capability-result'; response: Response }
-export type BackendCancel = { kind: 'cancel'; wireVersion: 4; taskId?: string; requestId?: string }
-export type BackendStop = { kind: 'stop'; wireVersion: 4 }
+export type BackendCancel = { kind: 'cancel'; wireVersion: 5; taskId?: string; requestId?: string }
+export type BackendStop = { kind: 'stop'; wireVersion: 5 }
 export type BackendFrame =
   | BackendHello
   | BackendInit
@@ -231,15 +241,17 @@ export type DialogConfirmParams = {
 export type DialogConfirmResult = Json
 export type NotificationShowParams = { title: string; body: string }
 export type NotificationShowResult = Json
+export type PluginDataMigration = { fromPluginVersion: VersionRange; summary: string }
 export type Manifest = {
-  manifestVersion: 6
-  sdkApiVersion: 6
+  manifestVersion: 7
+  sdkApiVersion: 7
   id: string
   version: string
   displayName: string
   description: string
   publisher: Publisher
   minHostVersion: string
+  dataMigration?: PluginDataMigration
   sdk: ApiRange
   renderer?: string
   backend?: Backend

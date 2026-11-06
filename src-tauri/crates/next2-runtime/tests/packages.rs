@@ -45,21 +45,21 @@ fn detached_signature_is_bound_to_real_key_publisher_and_raw_manifest() {
         key_id: "test-key".into(),
         public_key: key.public_key().as_ref().try_into().unwrap(),
     }];
-    let inspected = inspect_plugin(root.path(), &keys, "2.2.0-alpha.1").unwrap();
+    let inspected = inspect_plugin(root.path(), &keys, "2.2.0-beta.1").unwrap();
     assert!(matches!(
         inspected.provenance(),
         Provenance::Verified { .. }
     ));
-    assert!(inspect_plugin(root.path(), &[], "2.2.0-alpha.1").is_err());
+    assert!(inspect_plugin(root.path(), &[], "2.2.0-beta.1").is_err());
     let mut changed: Value = serde_json::from_slice(&raw).unwrap();
     changed["description"] = json!("changed after signing");
     fs::write(root.path().join("plugin.json"), changed.to_string()).unwrap();
-    assert!(inspect_plugin(root.path(), &keys, "2.2.0-alpha.1")
+    assert!(inspect_plugin(root.path(), &keys, "2.2.0-beta.1")
         .err()
         .unwrap()
         .contains("SIGNATURE_INVALID"));
     // A bad signature is never downgraded to unsigned local trust.
-    let result = inspect_plugin(root.path(), &keys, "2.2.0-alpha.1");
+    let result = inspect_plugin(root.path(), &keys, "2.2.0-beta.1");
     assert!(result.is_err());
 }
 fn resource(root: &Path, version: &str) -> Value {
@@ -78,7 +78,7 @@ fn resource(root: &Path, version: &str) -> Value {
 fn offline_versions_are_published_atomically_and_failed_updates_preserve_previous() {
     let code = tempfile::tempdir().unwrap();
     manifest(code.path());
-    let inspected = inspect_plugin(code.path(), &[], "2.2.0-alpha.1").unwrap();
+    let inspected = inspect_plugin(code.path(), &[], "2.2.0-beta.1").unwrap();
     let digest = inspected.manifest_sha256();
     let approved = inspected.approve(decision(digest)).unwrap();
     let source = tempfile::tempdir().unwrap();
@@ -162,7 +162,7 @@ fn optional_resources_do_not_block_a_lightweight_plugin_before_user_download() {
     let mut value = manifest(code.path());
     value["resources"][0]["optional"] = json!(true);
     fs::write(code.path().join("plugin.json"), value.to_string()).unwrap();
-    let inspected = inspect_plugin(code.path(), &[], "2.2.0-alpha.1").unwrap();
+    let inspected = inspect_plugin(code.path(), &[], "2.2.0-beta.1").unwrap();
     let digest = inspected.manifest_sha256();
     let approved = inspected.approve(decision(digest)).unwrap();
     assert!(resolve(
@@ -178,9 +178,9 @@ fn optional_resources_do_not_block_a_lightweight_plugin_before_user_download() {
 fn code_change_after_approval_and_stale_approval_are_rejected() {
     let code = tempfile::tempdir().unwrap();
     manifest(code.path());
-    let inspected = inspect_plugin(code.path(), &[], "2.2.0-alpha.1").unwrap();
+    let inspected = inspect_plugin(code.path(), &[], "2.2.0-beta.1").unwrap();
     assert!(inspected.approve(decision([0u8; 32])).is_err());
-    let inspected = inspect_plugin(code.path(), &[], "2.2.0-alpha.1").unwrap();
+    let inspected = inspect_plugin(code.path(), &[], "2.2.0-beta.1").unwrap();
     let digest = inspected.manifest_sha256();
     let approved = inspected.approve(decision(digest)).unwrap();
     fs::write(code.path().join("dist/renderer.js"), b"changed").unwrap();

@@ -2,7 +2,7 @@
 // Tauri 自定义协议：http://cruciblebox-plugin.localhost/<token>/index.html（path 型）
 // 资源路由：
 //   /<token>/index.html   → 校验 session（一次性消费 issued→active）→ 生成 index
-//   /<token>/runtime.js   → 宿主内嵌的 API 6 frame runtime
+//   /<token>/runtime.js   → 宿主内嵌的 Next 3.0 frame runtime
 //   /<token>/renderer.js  → 插件 dist/renderer.js（防穿越 + 白名单 MIME）
 
 use crate::plugin_session::{RendererSession, RendererSessionRegistry, SessionAccess};
@@ -62,7 +62,7 @@ fn generated_index(session: &RendererSession) -> String {
         escape_html_attr(&session.handshake_token),
         session.renderer_api_version,
         renderer_script
-    ).replace("data-api-version=", &format!("data-max-inflight=\"{}\" data-handshake-timeout=\"{}\" data-request-timeout=\"{}\" data-interactive-timeout=\"{}\" data-backend-timeout=\"{}\" data-api-version=", cruciblebox_next2_protocol::BUDGET_INFLIGHT, cruciblebox_next2_protocol::BUDGET_HANDSHAKE_TIMEOUT_MS, cruciblebox_next2_protocol::BUDGET_REQUEST_TIMEOUT_MS, interactive_timeout, cruciblebox_next2_protocol::BUDGET_REQUEST_TIMEOUT_MS))
+    ).replace("data-api-version=", &format!("data-wire-version=\"{}\" data-max-inflight=\"{}\" data-handshake-timeout=\"{}\" data-request-timeout=\"{}\" data-interactive-timeout=\"{}\" data-backend-timeout=\"{}\" data-api-version=", cruciblebox_next2_protocol::WIRE_VERSION, cruciblebox_next2_protocol::BUDGET_INFLIGHT, cruciblebox_next2_protocol::BUDGET_HANDSHAKE_TIMEOUT_MS, cruciblebox_next2_protocol::BUDGET_REQUEST_TIMEOUT_MS, interactive_timeout, cruciblebox_next2_protocol::BUDGET_REQUEST_TIMEOUT_MS))
 }
 
 /// 从 URL path 提取 session token（path 型 /<token>/<resource>）。
@@ -214,8 +214,8 @@ fn handle_inner(ctx: &ProtocolContext, uri: &str) -> HandlerResult {
             let reg = ctx.registry.lock().unwrap();
             let access = reg.get(&token, &ctx.owner_label);
             let session = access.session.ok_or((403, "session denied".into()))?;
-            if session.renderer_api_version != 6 {
-                return Err((403, "API 6 required".into()));
+            if session.renderer_api_version != cruciblebox_next2_protocol::SDK_API_VERSION {
+                return Err((403, "API_VERSION_UNSUPPORTED".into()));
             }
             Ok((
                 200,
@@ -290,7 +290,7 @@ mod tests {
                 plugin_directory: "C:/plugins/sample-delta".into(),
                 renderer_entry: "dist/renderer.js".into(),
                 runtime_path: "C:/unused/runtime.js".into(),
-                renderer_api_version: 6,
+                renderer_api_version: cruciblebox_next2_protocol::SDK_API_VERSION,
                 permissions: vec![],
                 owner_webview_label: "main".into(),
             })
@@ -366,7 +366,7 @@ mod tests {
                 plugin_directory: dir.to_string_lossy().into_owned(),
                 renderer_entry: "dist/renderer.js".into(),
                 runtime_path: runtime_path.to_string_lossy().into_owned(),
-                renderer_api_version: 6,
+                renderer_api_version: cruciblebox_next2_protocol::SDK_API_VERSION,
                 permissions: vec![],
                 owner_webview_label: "main".into(),
             })
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(resp.0, 200);
         assert!(String::from_utf8(resp.2)
             .unwrap()
-            .contains("const wireVersion = 4"));
+            .contains("Number(root.dataset.wireVersion)"));
 
         // renderer.js 从 session.renderer_path（pluginDirectory/renderer_entry）读取，
         // 而非 pluginDirectory 根目录（修复前 resolve_safe_asset 会 404）
@@ -454,7 +454,7 @@ mod tests {
             renderer_entry: "dist/renderer.js".into(),
             renderer_path: "C:/plugins/x/dist/renderer.js".into(),
             runtime_path: "C:/app/runtime.js".into(),
-            renderer_api_version: 6,
+            renderer_api_version: cruciblebox_next2_protocol::SDK_API_VERSION,
             permissions: vec![],
             owner_webview_label: "main".into(),
             created_at_ms: 0,

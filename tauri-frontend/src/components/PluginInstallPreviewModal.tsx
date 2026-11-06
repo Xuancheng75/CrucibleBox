@@ -228,6 +228,23 @@ export function InstallPreviewDetail({ preview }: { preview: PluginInstallPrevie
         />
       )}
 
+      {preview.isUpgrade && preview.next2?.dataMigration && (
+        <Alert
+          type="info"
+          showIcon
+          message="插件数据迁移说明"
+          description={
+            <>
+              <div>{preview.next2.dataMigration.summary}</div>
+              <div>
+                适用旧版本 {preview.next2.dataMigration.fromPluginVersion.min} 至低于{' '}
+                {preview.next2.dataMigration.fromPluginVersion.maxExclusive}
+              </div>
+            </>
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
       {preview.legacyFullTrust && (
         <Alert
           type="warning"

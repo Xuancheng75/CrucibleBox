@@ -121,6 +121,6 @@ fn main() {
         }
         return;
     }
-    eprintln!("API_VERSION_UNSUPPORTED: expected --next2 <directory> <session> (wire 4)");
+    eprintln!("API_VERSION_UNSUPPORTED: expected --next2 <directory> <session>");
     std::process::exit(1);
 }

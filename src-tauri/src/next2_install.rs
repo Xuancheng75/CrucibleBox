@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// The outer directory remains the existing journal transaction root.
 /// The active, fully verified code has its own version directory.
 pub fn code_directory(root: &Path, manifest: &crate::manifest::Manifest) -> PathBuf {
-    if manifest.manifest_version == Some(6) {
+    if manifest.has_versioned_code() {
         root.join(cruciblebox_next2_protocol::CODE_DIRECTORY)
             .join(&manifest.version)
     } else {

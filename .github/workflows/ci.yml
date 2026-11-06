@@ -81,7 +81,7 @@ jobs:
         working-directory: tauri-frontend
         run: npm run build
 
-      - name: Verify API 6 task core and journal
+      - name: Verify task core and journal
         shell: bash
         run: |
           set -euo pipefail
