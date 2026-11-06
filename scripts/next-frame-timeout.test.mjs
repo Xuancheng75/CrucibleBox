@@ -132,3 +132,19 @@ test('late replies cannot resolve a later call reusing a client correlation ID',
   assert.equal((await next).result, 'current')
   assert.equal(page.pendingTimers(), 0)
 })
+
+test('aborting a service call cancels its host wire ID and releases the local request', async () => {
+  const page = frame()
+  const controller = new AbortController()
+  const call = { ...request('perform', 'service'), session: 'a'.repeat(64), wireVersion: 4 }
+  const response = page.exchange(call, controller.signal)
+  controller.abort()
+  await assert.rejects(response, { code: 'CANCELLED' })
+  assert.equal(page.pendingTimers(), 0)
+  const [execution, cancellation] = page.wireMessages.map((message) => message.request)
+  assert.equal(execution.requestId, 'renderer-1')
+  assert.equal(cancellation.method, 'rpc.cancel')
+  assert.equal(cancellation.session, call.session)
+  assert.equal(cancellation.params.requestId, execution.requestId)
+  assert.equal(cancellation.requestId, 'renderer-2')
+})

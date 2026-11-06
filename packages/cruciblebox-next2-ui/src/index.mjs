@@ -164,7 +164,13 @@ export function createClient(context) {
     },
     notify: (title, body = '') => call('notification.show', { title, body }),
     tasks: {
-      start: (target, method, params = {}) => call('tasks.start', { target, method, params }),
+      start: (target, method, params = {}, options) =>
+        call('tasks.start', {
+          target,
+          method,
+          params,
+          ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })
+        }),
       get: (taskId) => call('tasks.get', { taskId }),
       cancel: (taskId) => call('tasks.cancel', { taskId }),
       list: (options = {}) =>

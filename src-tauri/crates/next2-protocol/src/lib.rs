@@ -131,6 +131,14 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     unique(manifest.resources.iter().map(|v| v.id.as_str()))?;
     unique(manifest.contributes.commands.iter().map(|v| v.id.as_str()))?;
     for export in &manifest.exports {
+        let events = export.events.as_deref().unwrap_or_default();
+        if export.methods.is_empty() && events.is_empty() {
+            return Err("EMPTY_CAPABILITY".into());
+        }
+        unique(events.iter().map(|event| event.name.as_str()))?;
+        for event in events {
+            validate_capability_schema(&event.payload)?;
+        }
         let descriptor = serde_json::to_value(export).map_err(|error| error.to_string())?;
         if descriptor.to_string().len() > BUDGET_CAPABILITY_DESCRIPTOR_BYTES {
             return Err("CAPABILITY_DESCRIPTOR_BUDGET_EXCEEDED".into());
@@ -247,7 +255,7 @@ pub fn validate_resource_catalog(raw: &str) -> Result<ResourceCatalog, String> {
     Ok(catalog)
 }
 pub fn validate_request(raw: &str) -> Result<Request, String> {
-    let request: Request = schema::parse(raw, "Request", MAX_FRAME_BYTES)?;
+    let mut request: Request = schema::parse(raw, "Request", MAX_FRAME_BYTES)?;
     if matches!(request.target, Target::PlatformTarget(_)) {
         let method = contract()["methods"]
             .get(&request.method)
@@ -255,6 +263,7 @@ pub fn validate_request(raw: &str) -> Result<Request, String> {
         if !schema::matches(&method["params"], &request.params) {
             return Err("INVALID_PLATFORM_CALL".into());
         }
+        schema::normalize(&method["params"], &mut request.params);
         if request.method == "tasks.start" && request.params["target"]["kind"] == "platform" {
             return Err("INVALID_TASK_TARGET".into());
         }
@@ -274,6 +283,10 @@ pub fn validate_response(raw: &str, id: &str) -> Result<Response, String> {
 }
 pub fn validate_backend_frame(raw: &str) -> Result<BackendFrame, String> {
     let frame: BackendFrame = schema::parse(raw, "BackendFrame", MAX_FRAME_BYTES)?;
+    if matches!(&frame, BackendFrame::BackendCancel(cancel) if cancel.task_id.is_some() == cancel.request_id.is_some())
+    {
+        return Err("INVALID_BACKEND_CANCEL".into());
+    }
     let value = serde_json::to_value(&frame).map_err(|e| e.to_string())?;
     if let Some(request) = value.get("request") {
         validate_request(&request.to_string())?;
@@ -285,6 +298,28 @@ pub fn validate_backend_frame(raw: &str) -> Result<BackendFrame, String> {
         )?;
     }
     Ok(frame)
+}
+
+pub fn capability_event<'a>(
+    export: &'a ServiceExport,
+    name: &str,
+) -> Result<&'a CapabilityEvent, String> {
+    export
+        .events
+        .iter()
+        .flatten()
+        .find(|event| event.name == name)
+        .ok_or_else(|| "EVENT_UNDECLARED".into())
+}
+
+pub fn validate_event_payload(event: &CapabilityEvent, payload: &Value) -> Result<(), String> {
+    if payload.to_string().len() > BUDGET_EVENT_BYTES {
+        return Err("EVENT_BUDGET_EXCEEDED".into());
+    }
+    if !schema::matches(&event.payload, payload) {
+        return Err("INVALID_EVENT_PAYLOAD".into());
+    }
+    Ok(())
 }
 pub fn validate_method_result(method: &str, value: &Value) -> bool {
     contract()["methods"]

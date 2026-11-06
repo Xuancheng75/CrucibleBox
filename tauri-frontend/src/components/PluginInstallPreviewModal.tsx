@@ -306,6 +306,7 @@ const PERMISSION_SUMMARIES: Record<string, string> = {
   files: '读取选定文件或保存输出',
   storage: '保存插件数据',
   logging: '写入插件日志',
+  events: '发布或订阅插件事件',
   tasks: '执行和管理任务',
   network: '访问网络',
   browser: '下载文件',

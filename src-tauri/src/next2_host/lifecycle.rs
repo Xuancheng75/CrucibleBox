@@ -1,4 +1,4 @@
-use super::{BackendCall, Instance, InstanceKind, Manager, Session, Slot, Worker};
+use super::{BackendCall, Execution, Instance, InstanceKind, Manager, Session, Slot, Worker};
 use crate::db::PluginRow;
 use cruciblebox_next2_protocol::BACKGROUND_METHOD;
 use serde_json::json;
@@ -63,6 +63,7 @@ impl Manager {
         let manifest = plugin.manifest();
         Ok(Arc::new(Slot {
             version: row.version.clone(),
+            token: worker.session().into(),
             background_interval: if kind == InstanceKind::Service {
                 manifest.background_interval_ms.map(Duration::from_millis)
             } else {
@@ -138,8 +139,7 @@ impl Manager {
                 request,
                 BackendCall {
                     provider,
-                    caller: None,
-                    task: None,
+                    execution: Execution::default(),
                     sequence: &mut sequence,
                 },
             )
@@ -184,6 +184,8 @@ impl Manager {
         if matches!(workers.get(&key), Some(Instance::Ready(current)) if Arc::ptr_eq(current, slot))
         {
             workers.remove(&key);
+            drop(workers);
+            self.clear_session_resources(&slot.token)?;
             Ok(true)
         } else {
             Ok(false)

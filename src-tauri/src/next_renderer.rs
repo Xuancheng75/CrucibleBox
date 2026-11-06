@@ -194,7 +194,7 @@ mod tests {
 }
 
 #[tauri::command(async)]
-pub fn next_renderer_request(
+pub async fn next_renderer_request(
     window: WebviewWindow,
     caller: tauri::ipc::Request<'_>,
     protocol: State<'_, Arc<crate::plugin_protocol::ProtocolContext>>,
@@ -225,5 +225,8 @@ pub fn next_renderer_request(
         .session
         .filter(|_| access.ok)
         .ok_or("SESSION_DENIED")?;
-    backend.next2.renderer(&raw, &metadata)
+    let manager = backend.next2.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.renderer(&raw, &metadata))
+        .await
+        .map_err(|error| format!("IPC_EXECUTION_UNAVAILABLE: {error}"))?
 }

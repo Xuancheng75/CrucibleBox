@@ -1,8 +1,7 @@
 export * from '@cruciblebox/next2-api'
 import type {
   Json,
-  CapabilityBinding,
-  LogWriteParams,
+  createClient as createApiClient,
   RendererContext,
   TaskSnapshot,
   Target,
@@ -18,12 +17,7 @@ export type StorageOperation = Operations[number]
 type Page = { limit?: number; after?: string }
 export declare function createClient(
   context: Pick<RendererContext, 'session' | 'exchange' | 'enableThemeStyle'>
-): {
-  platform(method: string, params?: Json): Promise<Json>
-  resolveCapability(id: string): Promise<CapabilityBinding>
-  writeLog(entry: LogWriteParams): Promise<boolean>
-  backend(method: string, params?: Json): Promise<Json>
-  service(id: string, method: string, params?: Json): Promise<Json>
+): ReturnType<typeof createApiClient> & {
   ping(): Promise<Json>
   config: { get(): Promise<Json>; patch(values: Record<string, Json>): Promise<Json> }
   storage: {
@@ -55,7 +49,12 @@ export declare function createClient(
   }
   notify(title: string, body?: string): Promise<boolean>
   tasks: {
-    start(target: Target, method: string, params?: Json): Promise<{ taskId: string }>
+    start(
+      target: Target,
+      method: string,
+      params?: Json,
+      options?: { timeoutMs?: number }
+    ): Promise<{ taskId: string }>
     get(taskId: string): Promise<TaskSnapshot | null>
     cancel(taskId: string): Promise<{ accepted: boolean; task: TaskSnapshot | null }>
     list(page?: Page): Promise<{ items: TaskSnapshot[]; nextCursor: string | null }>

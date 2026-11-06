@@ -1,16 +1,19 @@
 //! Built-in capability providers registered by the trusted host composition.
-use super::{error, save_task_outcome, Manager};
-use crate::{db::PluginRow, task_runtime::Context};
+use super::{error, save_task_outcome, Execution, Manager};
+use crate::db::PluginRow;
 use cruciblebox_next2_protocol::{self as protocol, gateway::Route, Request, RpcError};
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 struct Call<'a> {
     owner: &'a str,
     row: &'a PluginRow,
     request: &'a Request,
-    task: Option<(&'a Context, &'a str)>,
-    file_caller: Option<&'a str>,
+    execution: Execution<'a>,
 }
 type Handler = fn(&Arc<Manager>, &Call<'_>) -> Result<Value, RpcError>;
 
@@ -20,7 +23,7 @@ pub struct Platform {
 }
 impl Platform {
     pub fn new(app_handle: Option<tauri::AppHandle>) -> Self {
-        let providers: [(&str, Handler); 14] = [
+        let providers: [(&str, Handler); 16] = [
             ("capabilities", Manager::capability_service),
             ("tasks", Manager::task_service),
             ("data", Manager::data_service),
@@ -35,6 +38,8 @@ impl Platform {
             ("dialog", Manager::desktop_service),
             ("notification", Manager::desktop_service),
             ("logging", Manager::logging_service),
+            ("events", Manager::events_dispatch),
+            ("rpc", Manager::rpc_service),
         ];
         Self {
             app_handle,
@@ -48,8 +53,7 @@ impl Platform {
         manager: &Arc<Manager>,
         owner: &str,
         request: &Request,
-        task: Option<(&Context, &str)>,
-        file_caller: Option<&str>,
+        execution: Execution<'_>,
     ) -> Result<Value, RpcError> {
         let row = manager.record(owner).map_err(error)?;
         let namespace = request
@@ -65,8 +69,7 @@ impl Platform {
                 owner,
                 row: &row,
                 request,
-                task,
-                file_caller,
+                execution,
             },
         )?;
 
@@ -86,6 +89,26 @@ impl Platform {
 }
 
 impl Manager {
+    fn events_dispatch(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
+        self.event_service(call.row, call.request)
+    }
+
+    fn rpc_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
+        let session = self
+            .sessions
+            .lock()
+            .map_err(|_| error("INTERNAL_ERROR".into()))?
+            .get(&call.request.session)
+            .map(|entry| entry.session.clone());
+        let accepted = match session {
+            Some(session) => session
+                .lock()
+                .map_err(|_| error("INTERNAL_ERROR".into()))?
+                .cancel(call.request.params["requestId"].as_str().unwrap()),
+            None => false,
+        };
+        Ok(json!(accepted))
+    }
     fn capability_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
         let registry = self.registry().map_err(error)?;
         let binding = registry
@@ -99,13 +122,12 @@ impl Manager {
             owner,
             row,
             request,
-            task,
-            file_caller,
+            execution: execution_context,
         } = *call;
         let params = &request.params;
         let result: Result<Value, String> = match request.method.as_str() {
             "tasks.start" => {
-                if task.is_some() {
+                if execution_context.task.is_some() {
                     return Err(error("NESTED_TASK_DENIED".into()));
                 }
                 let mut execution = request.clone();
@@ -113,7 +135,7 @@ impl Manager {
                     .map_err(|e| error(e.to_string()))?;
                 execution.method = params["method"].as_str().unwrap().to_owned();
                 execution.params = params["params"].clone();
-                let context = if file_caller.is_some() {
+                let context = if execution_context.caller.is_some() {
                     "backend"
                 } else {
                     "renderer"
@@ -139,6 +161,7 @@ impl Manager {
                     crate::host_task::executor_observer(self.db.clone(), emitter, &row.id),
                 );
                 let task_provider = provider.clone();
+                let timeout = params["timeoutMs"].as_u64().map(Duration::from_millis);
                 let execution_owner = row.id.clone();
                 let manager = self.clone();
                 let owner = owner.to_owned();
@@ -155,8 +178,11 @@ impl Manager {
                                     &owner,
                                     &execution,
                                     route,
-                                    Some((ctx, &task_provider)),
-                                    None,
+                                    Execution {
+                                        task: Some((ctx, &task_provider)),
+                                        deadline: timeout.map(|duration| Instant::now() + duration),
+                                        ..Execution::default()
+                                    },
                                 )
                                 .map_err(|error| format!("{}: {}", error.code, error.message));
                             let created = manager
@@ -179,8 +205,9 @@ impl Manager {
                 Ok(json!({"taskId":id}))
             }
             "tasks.controlState" => {
-                let (ctx, expected_provider) =
-                    task.ok_or_else(|| error("TASK_EXECUTION_REQUIRED".into()))?;
+                let (ctx, expected_provider) = execution_context
+                    .task
+                    .ok_or_else(|| error("TASK_EXECUTION_REQUIRED".into()))?;
                 if params["taskId"] != ctx.task_id() || expected_provider != owner {
                     return Err(error("TASK_AUTHORITY_DENIED".into()));
                 }
@@ -264,14 +291,29 @@ impl Manager {
     fn file_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
         let Call {
             owner,
+            row,
             request,
-            file_caller,
-            task,
-            ..
+            execution,
         } = *call;
+        let file_caller = execution.caller;
         let params = &request.params;
         let result: Result<Value, String> = match request.method.as_str() {
-            "files.choose" => self.choose_files(owner, params),
+            "files.stream.open" => self
+                .resolve_file(owner, file_caller, params["ref"].as_str().unwrap())
+                .and_then(|path| {
+                    self.streams
+                        .open(owner, file_caller, &request.session, &path)
+                }),
+            "files.stream.read" => self.streams.read(
+                &request.session,
+                params["streamId"].as_str().unwrap(),
+                params["offset"].as_u64().unwrap(),
+                params["length"].as_u64().unwrap(),
+            ),
+            "files.stream.close" => self
+                .streams
+                .close(&request.session, params["streamId"].as_str().unwrap()),
+            "files.choose" => self.choose_files(row, params, execution),
             "files.resolve" => self
                 .resolve_file(owner, file_caller, params["ref"].as_str().unwrap())
                 .map(|path| json!(path)),
@@ -284,7 +326,7 @@ impl Manager {
                         params["length"].as_u64().unwrap(),
                     )
                 }),
-            "files.publish" => self.publish_file(owner, file_caller, params, task),
+            "files.publish" => self.publish_file(owner, params, execution),
             _ => Err("PLATFORM_METHOD_NOT_CONNECTED".into()),
         };
         result.map_err(error)
@@ -310,9 +352,10 @@ impl Manager {
         let Call {
             row,
             request,
-            file_caller,
+            execution,
             ..
         } = *call;
+        let file_caller = execution.caller;
         let params = &request.params;
         let result: Result<Value, String> = match request.method.as_str() {
             "theme.assets.import" | "theme.assets.importBundled" => {
@@ -430,9 +473,9 @@ impl Manager {
     fn logging_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
         let params = &call.request.params;
         let message = json!({
-            "runtime": if call.file_caller.is_some() { "backend" } else { "renderer" },
+            "runtime": if call.execution.caller.is_some() { "backend" } else { "renderer" },
             "requestId": call.request.request_id,
-            "taskId": call.task.map(|(context, _)| context.task_id()),
+            "taskId": call.execution.task.map(|(context, _)| context.task_id()),
             "message": params["message"],
         })
         .to_string();

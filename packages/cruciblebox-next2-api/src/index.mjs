@@ -55,6 +55,10 @@ export function validateManifest(raw) {
     unique(list, (item) => item.id)
     for (const item of list) {
       if (name === 'exports') {
+        const events = item.events ?? []
+        if (!item.methods.length && !events.length) throw Error('EMPTY_CAPABILITY')
+        unique(events, (event) => event.name)
+        for (const event of events) validateCapabilitySchema(event.payload)
         if (
           new TextEncoder().encode(JSON.stringify(item)).length >
           contract.budget.capabilityDescriptorBytes
@@ -141,13 +145,16 @@ export function validateResponse(raw, requestId) {
 }
 export function validateBackendFrame(raw) {
   const frame = parse(raw, 'BackendFrame')
+  if (frame.kind === 'cancel' && (frame.taskId === undefined) === (frame.requestId === undefined))
+    throw Error('INVALID_BACKEND_CANCEL')
   if (frame.request) validateRequest(JSON.stringify(frame.request))
   if (frame.response) validateResponse(JSON.stringify(frame.response), frame.response.requestId)
   return frame
 }
 export function createClient({ session, exchange }) {
   let sequence = 0
-  const call = async (target, method, params = {}) => {
+  const call = async (target, method, params = {}, signal) => {
+    if (signal?.aborted) throw Object.assign(Error('CANCELLED'), { code: 'CANCELLED' })
     const request = validateRequest(
       JSON.stringify({
         wireVersion: contract.versions.wireVersion,
@@ -158,18 +165,58 @@ export function createClient({ session, exchange }) {
         params
       })
     )
-    const response = validateResponse(JSON.stringify(await exchange(request)), request.requestId)
+    const response = validateResponse(
+      JSON.stringify(await exchange(request, signal)),
+      request.requestId
+    )
     if (!response.ok)
       throw Object.assign(new Error(response.error.message), { code: response.error.code })
     if (target.kind === 'platform' && !matches(contract.methods[method].result, response.result))
       throw Error('INVALID_RESPONSE')
     return response.result
   }
+  const platform = (method, params) => call({ kind: 'platform' }, method, params)
   return {
-    platform: (method, params) => call({ kind: 'platform' }, method, params),
-    resolveCapability: (id) => call({ kind: 'platform' }, 'capabilities.resolve', { id }),
-    writeLog: (entry) => call({ kind: 'platform' }, 'logging.write', entry),
-    backend: (method, params) => call({ kind: 'backend' }, method, params),
-    service: (id, method, params) => call({ kind: 'service', id }, method, params)
+    platform,
+    resolveCapability: (id) => platform('capabilities.resolve', { id }),
+    writeLog: (entry) => platform('logging.write', entry),
+    backend: (method, params, options) =>
+      call({ kind: 'backend' }, method, params, options?.signal),
+    service: (id, method, params, options) =>
+      call({ kind: 'service', id }, method, params, options?.signal),
+    events: {
+      subscribe: (topic) => platform('events.subscribe', topic),
+      publish: (event) => platform('events.publish', event),
+      poll: (subscriptionId) => platform('events.poll', { subscriptionId }),
+      unsubscribe: (subscriptionId) => platform('events.unsubscribe', { subscriptionId })
+    },
+    async *readFileChunks(ref, options) {
+      const checkCancelled = () => {
+        if (options?.signal?.aborted) throw Object.assign(Error('CANCELLED'), { code: 'CANCELLED' })
+      }
+      checkCancelled()
+      const { streamId, bytes } = await platform('files.stream.open', { ref })
+      try {
+        let offset = 0
+        for (;;) {
+          checkCancelled()
+          const length = contract.budget.fileStreamChunkBytes
+          const chunk = await platform('files.stream.read', { streamId, offset, length })
+          const next = Math.min(offset + length, bytes)
+          if (
+            chunk.offset !== offset ||
+            chunk.nextOffset !== next ||
+            chunk.eof !== (next === bytes)
+          )
+            throw Error('INVALID_RESPONSE')
+          checkCancelled()
+          yield chunk
+          if (chunk.eof) return
+          offset = chunk.nextOffset
+        }
+      } finally {
+        await platform('files.stream.close', { streamId })
+      }
+    }
   }
 }

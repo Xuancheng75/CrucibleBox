@@ -1,4 +1,5 @@
 use super::{lock, tests::*, InstallSource};
+use base64::Engine;
 use cruciblebox_next2_runtime::package::Approval;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -9,6 +10,264 @@ fn directory(path: &Path) -> InstallSource {
         source_type: "directory".into(),
         path: path.to_string_lossy().into(),
     }
+}
+
+#[test]
+fn next3_ipc_events_streaming_and_request_cancellation_cross_process() {
+    let (manager, plugins, root) = setup("next3-ipc-integration");
+    let provider = root.join("provider");
+    write_next2(
+        &provider,
+        "1.0.0",
+        Some(
+            r#"
+let request = 0;
+module.exports.activate = ctx => {
+  let stream;
+  const call = async (method, params) => {
+    const reply = await ctx.exchange({wireVersion:4,requestId:'ipc-'+(++request),session:ctx.session,target:{kind:'platform'},method,params});
+    if (!reply.ok) throw Object.assign(Error(reply.error.message), {code:reply.error.code});
+    return reply.result;
+  };
+  const emit = payload => call('events.publish',{capabilityId:'sample-ipc',event:'progress',payload});
+  return {
+    open: async ({ref}) => {stream = await call('files.stream.open',{ref});return stream;},
+    chunk: ({offset,length}) => call('files.stream.read',{streamId:stream.streamId,offset,length}),
+    close: () => call('files.stream.close',{streamId:stream.streamId}),
+    emit: async ({count}) => {for(let index=1;index<=count;index++) await emit({index});return count;},
+    invalid: () => emit({index:'invalid'}),
+    hang: async () => {await call('storage.set',{key:'rpc-started',value:true});while(true){}},
+    ping: () => 'alive'
+  };
+};"#,
+        ),
+    );
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(provider.join("plugin.json")).unwrap()).unwrap();
+    manifest["id"] = json!("ipc-provider");
+    manifest["permissions"]
+        .as_array_mut()
+        .unwrap()
+        .extend([json!("files:read"), json!("events:publish")]);
+    manifest["exports"] = json!([{"id":"sample-ipc","version":"1.0.0","methods":["open","chunk","close","emit","invalid","hang","ping"],"events":[{
+        "name":"progress","payload":{"type":"object","properties":{"index":{"type":"integer"}},"required":["index"],"additionalProperties":false}
+    }]}]);
+    fs::write(provider.join("plugin.json"), manifest.to_string()).unwrap();
+    let client = root.join("client");
+    write_next2(&client, "1.0.0", None);
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(client.join("plugin.json")).unwrap()).unwrap();
+    manifest["permissions"]
+        .as_array_mut()
+        .unwrap()
+        .extend([json!("files:read"), json!("events:subscribe")]);
+    manifest["dependencies"] = json!([{"id":"sample-ipc","providerId":"ipc-provider","version":{"min":"1.0.0","maxExclusive":"2.0.0"}}]);
+    fs::write(client.join("plugin.json"), manifest.to_string()).unwrap();
+    for (source, id) in [(provider, "ipc-provider"), (client, "acme-independent")] {
+        manager.remember_trusted_path(source.clone());
+        let preview = manager.preview(directory(&source)).unwrap();
+        manager
+            .commit_approved(
+                preview["installToken"].as_str().unwrap().into(),
+                Some(next2_approval(&preview)),
+            )
+            .unwrap();
+        manager.next_backend.next2.enable(id).unwrap();
+    }
+
+    let host = &manager.next_backend.next2;
+    let session = next2_session(&manager, &plugins);
+    let foreign = next2_session(&manager, &plugins);
+    let request = |session: &crate::plugin_session::RendererSession,
+                   index,
+                   target,
+                   method: &str,
+                   params| {
+        json!({"wireVersion":4,"requestId":format!("renderer-{index}"),"session":session.token,"target":target,"method":method,"params":params}).to_string()
+    };
+    let sequence = std::cell::Cell::new(0u64);
+    let next = || {
+        sequence.set(sequence.get() + 1);
+        sequence.get()
+    };
+    let platform = |method: &str, params| {
+        host.renderer(
+            &request(&session, next(), json!({"kind":"platform"}), method, params),
+            &session,
+        )
+        .unwrap()
+    };
+    let service = |method: &str, params| {
+        host.renderer(
+            &request(
+                &session,
+                next(),
+                json!({"kind":"service","id":"sample-ipc"}),
+                method,
+                params,
+            ),
+            &session,
+        )
+        .unwrap()
+    };
+
+    let subscription = platform(
+        "events.subscribe",
+        json!({"capabilityId":"sample-ipc","event":"progress"}),
+    );
+    let subscription_id = subscription["result"]["subscriptionId"].as_str().unwrap();
+    let topic = json!({"subscriptionId":subscription_id});
+    let event_count = cruciblebox_next2_protocol::BUDGET_EVENT_QUEUE + 2;
+    assert_eq!(
+        service("emit", json!({"count":event_count}))["result"],
+        event_count
+    );
+    let rejected = host
+        .renderer(
+            &request(
+                &foreign,
+                1,
+                json!({"kind":"platform"}),
+                "events.poll",
+                topic.clone(),
+            ),
+            &foreign,
+        )
+        .unwrap();
+    assert_eq!(rejected["error"]["code"], "EVENT_SUBSCRIPTION_UNAVAILABLE");
+    let event = platform("events.poll", topic.clone());
+    assert_eq!(
+        event["result"],
+        json!({"event":{"sequence":3,"publisherId":"ipc-provider","capabilityId":"sample-ipc","event":"progress","payload":{"index":3}},"dropped":2})
+    );
+    assert_eq!(
+        service("invalid", json!({}))["error"]["code"],
+        "INVALID_EVENT_PAYLOAD"
+    );
+    assert_eq!(
+        platform("events.unsubscribe", topic.clone())["result"],
+        true
+    );
+    assert_eq!(
+        platform("events.poll", topic)["error"]["code"],
+        "EVENT_SUBSCRIPTION_UNAVAILABLE"
+    );
+
+    let path = root.join("payload.bin");
+    let original: Vec<_> = (0..180_000).map(|index| (index % 251) as u8).collect();
+    fs::write(&path, &original).unwrap();
+    let grant = host.grant_fixture_file("acme-independent", &path);
+    let opened = service("open", json!({"ref":grant.r#ref}));
+    assert_eq!(opened["result"]["bytes"], original.len(), "{opened}");
+    let stream_id = opened["result"]["streamId"].as_str().unwrap();
+    let rejected = platform(
+        "files.stream.read",
+        json!({"streamId":stream_id,"offset":0,"length":1}),
+    );
+    assert_eq!(rejected["error"]["code"], "FILE_STREAM_UNAVAILABLE");
+    let mut received = Vec::new();
+    while received.len() < original.len() {
+        let result = service(
+            "chunk",
+            json!({"offset":received.len(),"length":cruciblebox_next2_protocol::BUDGET_FILE_STREAM_CHUNK_BYTES}),
+        );
+        let chunk = &result["result"];
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(chunk["data"].as_str().unwrap())
+            .unwrap();
+        assert!(!data.is_empty());
+        received.extend(data);
+        assert_eq!(chunk["nextOffset"], received.len());
+        assert_eq!(chunk["eof"], received.len() == original.len());
+    }
+    assert_eq!(received, original);
+    assert_eq!(service("close", json!({}))["result"], true);
+    assert_eq!(service("open", json!({"ref":grant.r#ref}))["ok"], true);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(1)
+        .unwrap();
+    assert_eq!(
+        service("chunk", json!({"offset":0,"length":1}))["error"]["code"],
+        "FILE_STREAM_CHANGED"
+    );
+    assert_eq!(service("close", json!({}))["result"], false);
+    fs::remove_file(&path).unwrap();
+    let outside = root.join("outside-grant.bin");
+    fs::write(&outside, b"unauthorized").unwrap();
+    std::os::windows::fs::symlink_file(&outside, &path).unwrap();
+    assert_eq!(
+        service("open", json!({"ref":grant.r#ref}))["error"]["code"],
+        "FILE_AUTHORITY_DENIED"
+    );
+
+    let request_index = next();
+    let raw = request(
+        &session,
+        request_index,
+        json!({"kind":"service","id":"sample-ipc"}),
+        "hang",
+        json!({}),
+    );
+    std::thread::scope(|scope| {
+        let pending = scope.spawn(|| host.renderer(&raw, &session).unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while lock(&manager.db)
+            .storage_get("ipc-provider", "rpc-started")
+            .unwrap()
+            .is_none()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "provider never started request"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let target = json!({"requestId":format!("renderer-{request_index}")});
+        let refused = host
+            .renderer(
+                &request(
+                    &foreign,
+                    2,
+                    json!({"kind":"platform"}),
+                    "rpc.cancel",
+                    target.clone(),
+                ),
+                &foreign,
+            )
+            .unwrap();
+        assert_eq!(refused["result"], false);
+        assert_eq!(platform("rpc.cancel", target)["result"], true);
+        assert_eq!(pending.join().unwrap()["error"]["code"], "CANCELLED");
+    });
+    assert_eq!(service("ping", json!({}))["result"], "alive");
+    let started = platform(
+        "tasks.start",
+        json!({"target":{"kind":"service","id":"sample-ipc"},"method":"hang","params":{},"timeoutMs":250}),
+    );
+    let task_id = started["result"]["taskId"].as_str().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let task = platform("tasks.get", json!({"taskId":task_id}));
+        if task["result"]["status"] == "failed" {
+            assert!(
+                task["result"]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("TASK_TIMEOUT"),
+                "{task}"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "task did not time out: {task}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    manager.next_backend.shutdown().unwrap();
 }
 
 #[test]
@@ -943,6 +1202,39 @@ fn next2_native_installed_backend_runs_cancels_crashes_and_upgrades() {
         )["result"],
         15
     );
+    sequence.set(sequence.get() + 1);
+    let request_id = format!("renderer-{}", sequence.get());
+    let raw = json!({
+        "wireVersion":4, "requestId":request_id, "session":session.token,
+        "target":{"kind":"backend"}, "method":"wait", "params":{}
+    })
+    .to_string();
+    std::thread::scope(|scope| {
+        let host = &manager.next_backend.next2;
+        let pending = scope.spawn(|| host.renderer(&raw, &session).unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while lock(&manager.db)
+            .storage_get("acme-independent", "native-rpc-started")
+            .unwrap()
+            .is_none()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native request never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            call(
+                "abort",
+                json!({"kind":"platform"}),
+                "rpc.cancel",
+                json!({"requestId":request_id})
+            )["result"],
+            true
+        );
+        assert_eq!(pending.join().unwrap()["error"]["code"], "CANCELLED");
+    });
     let burst = call(
         "burst",
         json!({"kind":"platform"}),
@@ -951,8 +1243,6 @@ fn next2_native_installed_backend_runs_cancels_crashes_and_upgrades() {
     );
     let burst_id = burst["result"]["taskId"].as_str().unwrap();
     let runtime = manager.task_runtime();
-    // The debug host rehashes the installed executable on each capability;
-    // the optimized fixture reached 74% at 120s. Keep a bounded total wait.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     while std::time::Instant::now() < deadline {
         if matches!(

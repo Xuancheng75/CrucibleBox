@@ -40,10 +40,30 @@ export type CapabilityMethod = {
   contexts?: ('renderer' | 'backend')[]
 }
 export type ServiceMethod = LegacyServiceMethod | CapabilityMethod
+export type CapabilityEvent = { name: string; payload: CapabilitySchema }
+export type EventTopicParams = { capabilityId: string; event: string }
+export type EventPublishParams = { capabilityId: string; event: string; payload: Json }
+export type EventSubscriptionParams = { subscriptionId: string }
+export type EventSubscription = { subscriptionId: string; providerId: string }
+export type EventMessage = {
+  sequence: number
+  publisherId: string
+  capabilityId: string
+  event: string
+  payload: Json
+}
+export type EventPollResult = { event: EventMessage | null; dropped: number }
+export type EventPublishResult = { delivered: number }
+export type RequestCancelParams = { requestId: string }
+export type FileStream = { streamId: string; bytes: number }
+export type FileStreamCloseParams = { streamId: string }
+export type FileStreamReadParams = { streamId: string; offset: number; length: number }
+export type FileStreamChunk = { data: string; offset: number; nextOffset: number; eof: boolean }
 export type ServiceExport = {
   id: string
   version: string
   methods: ServiceMethod[]
+  events?: CapabilityEvent[]
   interchangeable?: boolean
 }
 export type ServiceDependency = {
@@ -95,7 +115,7 @@ export type FileReference = { ref: string; name: string; bytes: number }
 export type FileReadParams = { ref: string; offset: number; length: number }
 export type FileResolveParams = { ref: string }
 export type FilePublishParams = { taskId: string; path: string; name: string }
-export type TaskStartParams = { target: Target; method: string; params: Json }
+export type TaskStartParams = { target: Target; method: string; params: Json; timeoutMs?: number }
 export type TaskProgressParams = {
   taskId: string
   sequence: number
@@ -123,7 +143,7 @@ export type BackendExecute = {
 export type BackendReply = { kind: 'reply'; response: Response }
 export type BackendCapability = { kind: 'capability'; request: Request }
 export type BackendCapabilityReply = { kind: 'capability-result'; response: Response }
-export type BackendCancel = { kind: 'cancel'; wireVersion: 4; taskId: string }
+export type BackendCancel = { kind: 'cancel'; wireVersion: 4; taskId?: string; requestId?: string }
 export type BackendStop = { kind: 'stop'; wireVersion: 4 }
 export type BackendFrame =
   | BackendHello
@@ -226,6 +246,8 @@ export type Manifest = {
   permissions: (
     | 'storage:read'
     | 'logging:write'
+    | 'events:publish'
+    | 'events:subscribe'
     | 'storage:write'
     | 'tasks:read'
     | 'tasks:control'

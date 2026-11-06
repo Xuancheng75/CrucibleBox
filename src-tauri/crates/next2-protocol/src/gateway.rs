@@ -6,6 +6,10 @@ use crate::{
 use semver::Version;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 #[derive(Clone)]
 pub struct Installed {
@@ -279,12 +283,14 @@ pub struct Session {
     expires_at_ms: u64,
     seen: HashSet<String>,
     sequence: Option<u64>,
-    inflight: HashSet<String>,
+    recent_renderer_ids: u64,
+    inflight: HashMap<String, Option<Arc<AtomicBool>>>,
 }
 pub struct Admitted {
     pub owner: String,
     pub request: Request,
     pub route: Route,
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 impl Session {
     /// The installation, token, context and WebView/process binding are host-owned inputs.
@@ -303,11 +309,12 @@ impl Session {
             expires_at_ms,
             seen: HashSet::new(),
             sequence: None,
-            inflight: HashSet::new(),
+            recent_renderer_ids: 0,
+            inflight: HashMap::new(),
         }
     }
-    /// The host-owned frame runtime assigns ordered wire IDs. A high-water mark
-    /// rejects replay without retaining every request made by a long-lived page.
+    /// The frame assigns ordered wire IDs. A fixed replay window admits delivery
+    /// reordering without retaining every request made by a long-lived page.
     pub fn renderer(
         manifest: Manifest,
         token: String,
@@ -372,36 +379,95 @@ impl Session {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|v| *v > 0)
                 .ok_or("INVALID_REQUEST")?;
-            if next <= self.sequence.unwrap_or(0) {
+            let high = self.sequence.unwrap_or(0);
+            if self.context == "renderer" {
+                Some(self.mark_renderer_id(next, high).ok_or("REPLAY_DENIED")?)
+            } else if next > high {
+                Some((next, 0))
+            } else {
                 return Err("REPLAY_DENIED".into());
             }
-            Some(next)
         } else {
             if self.seen.contains(&request.request_id) {
                 return Err("REPLAY_DENIED".into());
             }
             None
         };
-        if self.inflight.len() >= crate::BUDGET_INFLIGHT {
+        let control = route == Route::Platform && request.method == "rpc.cancel";
+        if self.inflight.len() >= crate::BUDGET_INFLIGHT + usize::from(control) {
             return Err("BUSY".into());
         }
         if sequence.is_none() && self.seen.len() >= crate::BUDGET_SESSION_REQUESTS {
             return Err("SESSION_EXHAUSTED".into());
         }
-        if let Some(next) = sequence {
-            self.sequence = Some(next);
+        if let Some((high, recent)) = sequence {
+            self.sequence = Some(high);
+            self.recent_renderer_ids = recent;
         } else {
             self.seen.insert(request.request_id.clone());
         }
-        self.inflight.insert(request.request_id.clone());
+        let cancellable = matches!(route, Route::Backend { .. })
+            || (route == Route::Platform && request.method == "files.choose");
+        let cancel = cancellable.then(|| Arc::new(AtomicBool::new(false)));
+        self.inflight
+            .insert(request.request_id.clone(), cancel.clone());
         Ok(Admitted {
             owner: self.manifest.id.clone(),
             request,
             route,
+            cancel,
         })
     }
     pub fn finish(&mut self, id: &str) {
         self.inflight.remove(id);
+    }
+    fn mark_renderer_id(&self, next: u64, high: u64) -> Option<(u64, u64)> {
+        if next > high {
+            let advance = next - high;
+            return Some((
+                next,
+                if advance < u64::BITS.into() {
+                    self.recent_renderer_ids << advance | 1
+                } else {
+                    1
+                },
+            ));
+        }
+        let age = high - next;
+        if age >= u64::BITS.into() || self.recent_renderer_ids & (1 << age) != 0 {
+            return None;
+        }
+        Some((high, self.recent_renderer_ids | (1 << age)))
+    }
+
+    pub fn cancel(&mut self, id: &str) -> bool {
+        if let Some(Some(flag)) = self.inflight.get(id) {
+            flag.store(true, Ordering::SeqCst);
+            return true;
+        }
+        // The cancellation can reach the dispatcher before the earlier call.
+        // Consume only an unseen ID inside this same session's replay window.
+        if self.context == "renderer" {
+            if let Some((next, high)) = id
+                .strip_prefix("renderer-")
+                .and_then(|id| id.parse::<u64>().ok())
+                .zip(self.sequence)
+            {
+                if next > 0 && next < high {
+                    if let Some((_, recent)) = self.mark_renderer_id(next, high) {
+                        self.recent_renderer_ids = recent;
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn cancel_all(&self) {
+        for flag in self.inflight.values().flatten() {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
 
     /// The host has reauthorized the existing owner. Keep both replay and inflight

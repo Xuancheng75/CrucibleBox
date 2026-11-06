@@ -1,6 +1,6 @@
 # 插件能力与开发边界
 
-2.2.0 开发分支的 Capability Descriptor、授权和 SDK 使用见 [P0/P1 验收](2.2.0-p0-p1.md)。
+Next 3.0 开发分支的 Capability Descriptor、授权和 SDK 使用见 [P0/P1 验收](2.2.0-p0-p1.md)。事件订阅、请求取消、任务超时与文件分块见 [P3 IPC、事件与任务](2.2.0-p3.md)。
 
 仅支持 Manifest/API 6、wire 4。2.1.1 开发候选的公共 JS API/UI 为 6.1.0，CLI 为 2.0.0-alpha.3，Rust SDK 为 0.1.0-alpha.1；这些源码版本尚未对外发布。契约来源是 contracts/next2/contract.json，公共包位于 packages/cruciblebox-next2-*。
 

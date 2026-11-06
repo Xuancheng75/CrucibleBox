@@ -48,7 +48,14 @@ fn main() {
             })
         }
         "wait" | "wait-cancel" => {
-            call.progress("work", 25, "Waiting for explicit cancellation")?;
+            if call.task_id.is_some() {
+                call.progress("work", 25, "Waiting for explicit cancellation")?;
+            } else {
+                client.platform(
+                    "storage.set",
+                    json!({"key":"native-rpc-started","value":true}),
+                )?;
+            }
             loop {
                 call.check_cancelled()?;
                 std::thread::sleep(std::time::Duration::from_millis(10));

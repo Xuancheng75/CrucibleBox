@@ -99,6 +99,47 @@ fn ordered_renderer_requests_exceed_opaque_budget_without_forgetting_replay_or_e
         )
         .is_ok());
 }
+
+#[test]
+fn renderer_window_accepts_reordering_and_prevents_a_cancelled_late_call() {
+    let manifest = native("acme-independent");
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let mut session = Session::renderer(manifest, "a".repeat(64), "main".into(), 1000);
+    let frame = |index, target, method, params| {
+        json!({"wireVersion":4,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":target},"method":method,"params":params}).to_string()
+    };
+    let cancel = frame(
+        4,
+        "platform",
+        "rpc.cancel",
+        json!({"requestId":"renderer-3"}),
+    );
+    session.admit(&registry, &cancel, "main", 1).unwrap();
+    assert!(session.cancel("renderer-3"));
+    let backend = |id| frame(id, "backend", "work", json!({}));
+    assert_eq!(
+        session
+            .admit(&registry, &backend(3), "main", 1)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+    let admitted = session.admit(&registry, &backend(2), "main", 1).unwrap();
+    assert!(session.cancel("renderer-2"));
+    assert!(admitted
+        .cancel
+        .unwrap()
+        .load(std::sync::atomic::Ordering::SeqCst));
+    session.finish("renderer-2");
+    assert!(!session.cancel("renderer-2"));
+    assert_eq!(
+        session
+            .admit(&registry, &backend(2), "main", 1)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+}
 #[test]
 fn ordered_backend_capabilities_outlive_the_opaque_budget_and_keep_replay_protection() {
     let manifest = native("acme-independent");
@@ -324,6 +365,7 @@ fn declared_service_version_identity_and_dependency_failures() {
         id: "transform".into(),
         version: "1.2.0".into(),
         methods: vec![ServiceMethod::LegacyServiceMethod("recognize".into())],
+        events: None,
         interchangeable: None,
     }];
     let mut caller = native("translate-client");
@@ -399,6 +441,7 @@ fn declared_service_version_identity_and_dependency_failures() {
         id: "translation".into(),
         version: "1.0.0".into(),
         methods: vec![ServiceMethod::LegacyServiceMethod("translate".into())],
+        events: None,
         interchangeable: None,
     }];
     assert_eq!(
@@ -428,6 +471,7 @@ fn interchangeable_capabilities_select_by_interface_version_then_identity() {
             id: "transform".into(),
             version: version.into(),
             methods: vec![ServiceMethod::LegacyServiceMethod("recognize".into())],
+            events: None,
             interchangeable,
         });
         installed(manifest)

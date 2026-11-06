@@ -1,6 +1,8 @@
 //! Manifest 6 admission and generic backend routing. Domain methods stay in plugins.
+mod event_service;
 mod lifecycle;
 pub(crate) mod platform_service;
+mod stream_service;
 use crate::{db::Db, plugin_session::RendererSession};
 use cruciblebox_next2_protocol::{
     self as protocol,
@@ -9,7 +11,7 @@ use cruciblebox_next2_protocol::{
 };
 use cruciblebox_next2_runtime::{
     package::ApprovedPlugin,
-    worker::{InstanceKind, StopHandle, Worker},
+    worker::{CallLimits, InstanceKind, StopHandle, Worker},
 };
 use serde_json::{json, Value};
 use std::{
@@ -28,9 +30,17 @@ fn now() -> u64 {
         .map_or(0, |time| time.as_millis() as u64)
 }
 fn error(message: String) -> RpcError {
+    let code = message
+        .split_once(": ")
+        .map_or(message.as_str(), |(code, _)| code);
     RpcError {
-        code: if message.len() <= 100 && !message.contains(' ') {
-            message.clone()
+        code: if !code.is_empty()
+            && code.len() <= 100
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            code.into()
         } else {
             "PLATFORM_ERROR".into()
         },
@@ -39,6 +49,7 @@ fn error(message: String) -> RpcError {
 }
 struct Slot {
     version: String,
+    token: String,
     background_interval: Option<Duration>,
     worker: Mutex<Option<Worker>>,
     stop: StopHandle,
@@ -55,9 +66,36 @@ struct SessionEntry {
 }
 struct BackendCall<'a> {
     provider: &'a str,
+    execution: Execution<'a>,
+    sequence: &'a mut u64,
+}
+#[derive(Clone, Copy, Default)]
+struct Execution<'a> {
     caller: Option<&'a str>,
     task: Option<(&'a crate::task_runtime::Context, &'a str)>,
-    sequence: &'a mut u64,
+    cancel: Option<&'a AtomicBool>,
+    deadline: Option<Instant>,
+}
+impl Execution<'_> {
+    fn check(self) -> Result<(), String> {
+        if self.cancel.is_some_and(|flag| flag.load(Ordering::SeqCst))
+            || self.task.is_some_and(|(context, _)| context.is_cancelled())
+        {
+            return Err("CANCELLED".into());
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(if self.task.is_some() {
+                "TASK_TIMEOUT"
+            } else {
+                "RPC_TIMEOUT"
+            }
+            .into());
+        }
+        Ok(())
+    }
 }
 pub struct Manager {
     runner: PathBuf,
@@ -69,6 +107,8 @@ pub struct Manager {
     sessions: Mutex<HashMap<String, SessionEntry>>,
     closing: AtomicBool,
     files: crate::next2_files::Files,
+    events: event_service::Events,
+    streams: stream_service::Streams,
     graph_changes: Mutex<()>,
 }
 impl Manager {
@@ -88,6 +128,8 @@ impl Manager {
             sessions: Mutex::new(HashMap::new()),
             closing: AtomicBool::new(false),
             files: crate::next2_files::Files::default(),
+            events: event_service::Events::default(),
+            streams: stream_service::Streams::default(),
             graph_changes: Mutex::new(()),
         }
     }
@@ -170,17 +212,37 @@ impl Manager {
         Registry::new(installed)
     }
     pub fn dispose_renderer_session(&self, token: &str) -> Result<(), String> {
-        self.sessions
+        let entry = self
+            .sessions
             .lock()
             .map_err(|_| "INTERNAL_ERROR")?
             .remove(token);
+        if let Some(entry) = entry {
+            entry
+                .session
+                .lock()
+                .map_err(|_| "INTERNAL_ERROR")?
+                .cancel_all();
+        }
+        self.clear_session_resources(token)
+    }
+    fn clear_session_resources(&self, token: &str) -> Result<(), String> {
+        self.events.clear_session(token)?;
+        self.streams.clear_session(token)?;
         Ok(())
     }
     pub fn dispose_plugin_renderers(&self, plugin_id: &str) -> Result<(), String> {
-        self.sessions
+        let tokens: Vec<_> = self
+            .sessions
             .lock()
             .map_err(|_| "INTERNAL_ERROR")?
-            .retain(|_, entry| entry.plugin_id != plugin_id);
+            .iter()
+            .filter(|(_, entry)| entry.plugin_id == plugin_id)
+            .map(|(token, _)| token.clone())
+            .collect();
+        for token in tokens {
+            self.dispose_renderer_session(&token)?;
+        }
         Ok(())
     }
     pub fn graph_change(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
@@ -412,6 +474,7 @@ impl Manager {
                 }
             }
             slot.stop.wait_empty()?;
+            self.clear_session_resources(&slot.token)?;
         }
         let deadline =
             Instant::now() + Duration::from_millis((protocol::BUDGET_STOP_TIMEOUT_MS * 2) as u64);
@@ -425,6 +488,8 @@ impl Manager {
             std::thread::sleep(Duration::from_millis(10));
         }
         self.files.clear(&provider)?;
+        self.events.clear_plugin(&provider)?;
+        self.streams.clear_plugin(&provider)?;
         crate::diagnostics::record("backend-stop-complete", Some(owner));
         Ok(())
     }
@@ -492,6 +557,10 @@ impl Manager {
             .get(&(owner.to_owned(), InstanceKind::Service))
             .is_some_and(|instance| matches!(instance, Instance::Ready(_)))
     }
+    #[cfg(test)]
+    pub(crate) fn grant_fixture_file(&self, owner: &str, path: &Path) -> protocol::FileReference {
+        self.files.grant(owner, path).unwrap()
+    }
     /// Host command palette invokes only the method declared by this installation.
     pub fn execute_command(
         self: &Arc<Self>,
@@ -517,7 +586,7 @@ impl Manager {
         let raw = json!({"wireVersion":4,"requestId":crate::rand_token::random_token_hex()?,"session":crate::rand_token::random_token_hex()?,"target":{"kind":"backend"},"method":command.method,"params":{}}).to_string();
         let request = protocol::validate_request(&raw)?;
         let route = self.registry()?.resolve(owner, &request, "host")?;
-        self.execute(owner, &request, route, None, None)
+        self.execute(owner, &request, route, Execution::default())
             .map_err(|failure| format!("{}: {}", failure.code, failure.message))
     }
     pub fn renderer(
@@ -588,7 +657,15 @@ impl Manager {
                     .admit(&registry, raw, "main", now())
                     .map_err(error)?
             };
-            let result = self.execute(&admitted.owner, &request, admitted.route, None, None);
+            let result = self.execute(
+                &admitted.owner,
+                &request,
+                admitted.route,
+                Execution {
+                    cancel: admitted.cancel.as_deref(),
+                    ..Execution::default()
+                },
+            );
             session
                 .lock()
                 .map_err(|_| error("INTERNAL_ERROR".into()))?
@@ -655,8 +732,10 @@ impl Manager {
                 &admitted.owner,
                 request,
                 admitted.route,
-                call.task,
-                Some(call.caller.unwrap_or(call.provider)),
+                Execution {
+                    caller: Some(call.execution.caller.unwrap_or(call.provider)),
+                    ..call.execution
+                },
             )
         };
         session.finish(&request.request_id);
@@ -668,15 +747,14 @@ impl Manager {
         owner: &str,
         request: &Request,
         route: Route,
-        task: Option<(&crate::task_runtime::Context, &str)>,
-        file_caller: Option<&str>,
+        mut execution: Execution<'_>,
     ) -> Result<Value, RpcError> {
+        execution.check().map_err(error)?;
         match route {
-            Route::Platform => {
-                self.services
-                    .platform
-                    .dispatch(self, owner, request, task, file_caller)
-            }
+            Route::Platform => self
+                .services
+                .platform
+                .dispatch(self, owner, request, execution),
             Route::Backend {
                 initiator,
                 provider,
@@ -687,6 +765,7 @@ impl Manager {
                 if row.version != provider_version {
                     return Err(error("PROVIDER_CHANGED".into()));
                 }
+                let task = execution.task;
                 let kind = if task.is_some() {
                     InstanceKind::Task
                 } else {
@@ -703,20 +782,34 @@ impl Manager {
                     .map_err(|_| error("INTERNAL_ERROR".into()))?;
                 let cancelled = AtomicBool::new(false);
                 let mut sequence = 0;
-                let result = worker.call(
+                if execution.deadline.is_none() && task.is_none() {
+                    execution.deadline = Some(
+                        Instant::now()
+                            + Duration::from_millis(protocol::BUDGET_REQUEST_TIMEOUT_MS as u64),
+                    );
+                }
+                let result = worker.call_with_limits(
                     &initiator,
                     &request.method,
                     request.params.clone(),
-                    task.map(|(ctx, _)| ctx.task_id()).as_deref(),
-                    task.map_or(&cancelled, |(ctx, _)| ctx.cancel_flag()),
+                    CallLimits {
+                        task_id: task.map(|(ctx, _)| ctx.task_id()).as_deref(),
+                        cancel: task
+                            .map(|(ctx, _)| ctx.cancel_flag())
+                            .or(execution.cancel)
+                            .unwrap_or(&cancelled),
+                        deadline: execution.deadline,
+                    },
                     |capability| {
                         self.backend_capability(
                             &mut session,
                             capability,
                             BackendCall {
                                 provider: &provider,
-                                caller: Some(&initiator),
-                                task,
+                                execution: Execution {
+                                    caller: Some(&initiator),
+                                    ..execution
+                                },
                                 sequence: &mut sequence,
                             },
                         )
@@ -738,6 +831,8 @@ impl Manager {
                                 | "NATIVE_STOP_FAILED"
                                 | "BACKEND_STOPPED"
                                 | "CANCELLED"
+                                | "TASK_TIMEOUT"
+                                | "RPC_TIMEOUT"
                         ) {
                             format!("EXECUTION_OUTCOME_UNKNOWN: {}", failure.message)
                         } else {
@@ -749,7 +844,11 @@ impl Manager {
                 if result.as_ref().is_err_and(|error| {
                     matches!(
                         error.code.as_str(),
-                        "CANCELLED" | "NATIVE_TRANSPORT" | "NATIVE_STOP_FAILED"
+                        "CANCELLED"
+                            | "NATIVE_TRANSPORT"
+                            | "NATIVE_STOP_FAILED"
+                            | "TASK_TIMEOUT"
+                            | "RPC_TIMEOUT"
                     )
                 }) {
                     self.retire(&row.id, kind, &slot).map_err(error)?;
@@ -758,7 +857,12 @@ impl Manager {
             }
         }
     }
-    fn choose_files(&self, owner: &str, params: &Value) -> Result<Value, String> {
+    fn choose_files(
+        &self,
+        row: &crate::db::PluginRow,
+        params: &Value,
+        mut execution: Execution<'_>,
+    ) -> Result<Value, String> {
         use tauri_plugin_dialog::DialogExt;
         let app = self
             .services
@@ -777,12 +881,37 @@ impl Manager {
             dialog = dialog.add_filter("文件", &extensions);
         }
         let multiple = params["multiple"].as_bool() == Some(true);
-        let paths = match (params["type"].as_str().unwrap(), multiple) {
-            ("file", true) => dialog.blocking_pick_files(),
-            ("folder", true) => dialog.blocking_pick_folders(),
-            ("file", false) => dialog.blocking_pick_file().map(|path| vec![path]),
-            _ => dialog.blocking_pick_folder().map(|path| vec![path]),
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        match (params["type"].as_str().unwrap(), multiple) {
+            ("file", true) => dialog.pick_files(move |paths| {
+                let _ = send.send(paths);
+            }),
+            ("folder", true) => dialog.pick_folders(move |paths| {
+                let _ = send.send(paths);
+            }),
+            ("file", false) => dialog.pick_file(move |path| {
+                let _ = send.send(path.map(|path| vec![path]));
+            }),
+            _ => dialog.pick_folder(move |path| {
+                let _ = send.send(path.map(|path| vec![path]));
+            }),
+        }
+        execution.deadline.get_or_insert_with(|| {
+            Instant::now() + Duration::from_millis(protocol::BUDGET_INTERACTIVE_TIMEOUT_MS as u64)
+        });
+        let paths = loop {
+            execution.check()?;
+            self.check(row)?;
+            match receive.recv_timeout(Duration::from_millis(100)) {
+                Ok(paths) => break paths,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("FILE_DIALOG_DISCONNECTED".into())
+                }
+            }
         };
+        execution.check()?;
+        self.check(row)?;
         let Some(paths) = paths else {
             return Ok(Value::Null);
         };
@@ -793,7 +922,7 @@ impl Manager {
             .into_iter()
             .map(|path| {
                 let path = path.into_path().map_err(|e| e.to_string())?;
-                self.files.grant(owner, &path)
+                self.files.grant(&row.name, &path)
             })
             .collect();
         serde_json::to_value(references?).map_err(|e| e.to_string())
@@ -826,12 +955,11 @@ impl Manager {
     fn publish_file(
         &self,
         owner: &str,
-        caller: Option<&str>,
         params: &Value,
-        task: Option<(&crate::task_runtime::Context, &str)>,
+        execution: Execution<'_>,
     ) -> Result<Value, String> {
         use std::io::{Read, Write};
-        let (ctx, provider) = task.ok_or("TASK_EXECUTION_REQUIRED")?;
+        let (ctx, provider) = execution.task.ok_or("TASK_EXECUTION_REQUIRED")?;
         if provider != owner || params["taskId"] != ctx.task_id() {
             return Err("TASK_AUTHORITY_DENIED".into());
         }
@@ -849,7 +977,7 @@ impl Manager {
         if !source.starts_with(&source_root) || !source.is_file() {
             return Err("RESULT_MUST_BE_IN_PLUGIN_DATA".into());
         }
-        let recipient = caller.unwrap_or(owner);
+        let recipient = execution.caller.unwrap_or(owner);
         let output = Self::data(&self.record(recipient)?)?
             .join("results")
             .join(ctx.task_id())
@@ -865,7 +993,7 @@ impl Manager {
         let mut bytes = 0;
         let mut buffer = [0u8; 65536];
         loop {
-            ctx.check_cancelled()?;
+            execution.check()?;
             let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
             if count == 0 {
                 break;
@@ -883,6 +1011,7 @@ impl Manager {
         }
         output.sync_all().map_err(|e| e.to_string())?;
         drop(output);
+        execution.check()?;
         let published = transaction.publish_durable(ctx, false, |_| Ok(()))?;
         let reference = self.files.grant(recipient, &published)?;
         self.db
@@ -932,6 +1061,7 @@ impl Manager {
 
 fn task_notification(request: &Request, call: &mut BackendCall<'_>) -> Result<Value, RpcError> {
     let (ctx, expected_provider) = call
+        .execution
         .task
         .ok_or_else(|| error("TASK_EXECUTION_REQUIRED".into()))?;
     if request.params["taskId"] != ctx.task_id() || expected_provider != call.provider {

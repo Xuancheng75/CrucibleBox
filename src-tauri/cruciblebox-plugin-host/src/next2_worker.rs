@@ -61,10 +61,10 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
         .ok_or("INVALID_SESSION")?
         .to_owned();
     let cancelled = Arc::new(AtomicBool::new(false));
-    let task = Arc::new(Mutex::new(None::<String>));
+    let active = Arc::new(Mutex::new(None::<(String, Option<String>)>));
     let (tx, rx) = mpsc::sync_channel(32);
     let reader_cancelled = cancelled.clone();
-    let reader_task = task.clone();
+    let reader_active = active.clone();
     // A separate reader receives cancellation while QuickJS is evaluating a task.
     // Process shutdown closes the pipe; the OS reclaims this reader at exit.
     std::thread::Builder::new()
@@ -74,19 +74,22 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
                 .and_then(|frame| frame.ok_or("HOST_DISCONNECTED".into()));
             if let Ok(frame) = &frame {
                 if frame["kind"] == "execute" {
-                    if let Ok(mut task) = reader_task.lock() {
-                        *task = frame["taskId"].as_str().map(str::to_owned);
+                    if let Ok(mut active) = reader_active.lock() {
+                        *active = frame["request"]["requestId"]
+                            .as_str()
+                            .map(|id| (id.into(), frame["taskId"].as_str().map(str::to_owned)));
                     }
                     reader_cancelled.store(false, Ordering::SeqCst);
                 }
                 if frame["kind"] == "cancel" {
-                    if reader_task
-                        .lock()
-                        .ok()
-                        .and_then(|task| task.clone())
-                        .as_deref()
-                        == frame["taskId"].as_str()
-                    {
+                    if reader_active.lock().is_ok_and(|active| {
+                        active.as_ref().is_some_and(|(request, task)| {
+                            frame["requestId"].as_str() == Some(request.as_str())
+                                || frame["taskId"]
+                                    .as_str()
+                                    .is_some_and(|id| task.as_deref() == Some(id))
+                        })
+                    }) {
                         reader_cancelled.store(true, Ordering::SeqCst);
                     }
                     continue;

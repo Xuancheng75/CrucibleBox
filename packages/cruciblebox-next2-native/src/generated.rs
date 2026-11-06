@@ -22,10 +22,18 @@ pub enum ServiceMethod {
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityEvent {
+    pub name: String,
+    pub payload: CapabilitySchema,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceExport {
     pub id: String,
     pub version: String,
     pub methods: Vec<ServiceMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<Vec<CapabilityEvent>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interchangeable: Option<bool>,
 }

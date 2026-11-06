@@ -116,6 +116,7 @@ const nativeDefinitions = [
   'LegacyServiceMethod',
   'CapabilityMethod',
   'ServiceMethod',
+  'CapabilityEvent',
   'ServiceExport',
   'CapabilityBinding',
   'RpcError'
@@ -180,5 +181,5 @@ for (const [name, content] of Object.entries(outputs)) {
   }
 }
 console.log(
-  `Next 2.0 contract: Manifest ${contract.versions.manifestVersion}, API ${contract.versions.sdkApiVersion}, wire ${contract.versions.wireVersion}, data ${contract.versions.dataSchemaVersion}`
+  `Next 3.0 contract: Manifest ${contract.versions.manifestVersion}, API ${contract.versions.sdkApiVersion}, wire ${contract.versions.wireVersion}, data ${contract.versions.dataSchemaVersion}`
 )

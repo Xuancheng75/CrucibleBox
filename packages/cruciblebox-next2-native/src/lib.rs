@@ -1,8 +1,8 @@
 //! Wire 4 backend helpers. Native plugins execute as trusted local code.
 mod generated;
 pub use generated::{
-    CapabilityBinding, CapabilityMethod, CapabilitySchema, RpcError as Error, ServiceExport,
-    ServiceMethod, MAX_FRAME_BYTES,
+    CapabilityBinding, CapabilityEvent, CapabilityMethod, CapabilitySchema, RpcError as Error,
+    ServiceExport, ServiceMethod, MAX_FRAME_BYTES,
 };
 use generated::{REQUEST_TIMEOUT_MS, SDK_API_VERSION, WIRE_VERSION};
 use serde_json::{json, Value};
@@ -204,7 +204,11 @@ impl Call {
         Ok(())
     }
 }
-type Active = Arc<Mutex<Option<(Option<String>, Arc<AtomicBool>)>>>;
+struct ActiveCall {
+    request_id: String,
+    task_id: Option<String>,
+    cancelled: Arc<AtomicBool>,
+}
 
 /// Factory and handler run serially on the execution thread. The stdin thread
 /// continues receiving cancellation and correlated capability responses.
@@ -237,7 +241,7 @@ pub fn serve<S: Send + 'static>(
         sequence: AtomicU64::new(1),
         init,
     }));
-    let active: Active = Arc::new(Mutex::new(None));
+    let active = Arc::new(Mutex::new(None::<ActiveCall>));
     let worker_active = active.clone();
     let worker_client = client.clone();
     let (tx, rx) = mpsc::sync_channel::<Value>(1);
@@ -245,7 +249,7 @@ pub fn serve<S: Send + 'static>(
         let mut factory = Some(factory);
         let mut state = None;
         while let Ok(frame) = rx.recv() {
-            let cancelled = worker_active.lock().map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))?.as_ref().expect("execute registered before queueing").1.clone();
+            let cancelled = worker_active.lock().map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))?.as_ref().expect("execute registered before queueing").cancelled.clone();
             let request = &frame["request"];
             let call = Call { client:worker_client.clone(), method:request["method"].as_str().ok_or_else(|| Error::new("INVALID_EXECUTE", "Missing method"))?.into(), params:request["params"].clone(), caller_id:frame["callerId"].as_str().ok_or_else(|| Error::new("INVALID_EXECUTE", "Missing caller"))?.into(), task_id:frame["taskId"].as_str().map(str::to_owned), cancelled, sequence:AtomicU64::new(0) };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -283,10 +287,14 @@ pub fn serve<S: Send + 'static>(
                     if active.is_some() {
                         return Err(Error::new("BUSY", "Execution already active"));
                     }
-                    *active = Some((
-                        frame["taskId"].as_str().map(str::to_owned),
-                        Arc::new(AtomicBool::new(false)),
-                    ));
+                    let request_id = frame["request"]["requestId"]
+                        .as_str()
+                        .ok_or_else(|| Error::new("INVALID_EXECUTE", "Missing request ID"))?;
+                    *active = Some(ActiveCall {
+                        request_id: request_id.into(),
+                        task_id: frame["taskId"].as_str().map(str::to_owned),
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                    });
                     tx.try_send(frame)
                         .map_err(|error| Error::new("EXECUTION_UNAVAILABLE", error.to_string()))?;
                 }
@@ -308,15 +316,19 @@ pub fn serve<S: Send + 'static>(
                     }
                 }
                 Some("cancel") => {
-                    if let Some((task, cancelled)) = active
+                    if let Some(active) = active
                         .lock()
                         .map_err(|_| {
                             Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable")
                         })?
                         .as_ref()
                     {
-                        if task.as_deref() == frame["taskId"].as_str() {
-                            cancelled.store(true, Ordering::SeqCst);
+                        if frame["requestId"].as_str() == Some(active.request_id.as_str())
+                            || frame["taskId"]
+                                .as_str()
+                                .is_some_and(|id| active.task_id.as_deref() == Some(id))
+                        {
+                            active.cancelled.store(true, Ordering::SeqCst);
                         }
                     }
                 }
@@ -331,12 +343,12 @@ pub fn serve<S: Send + 'static>(
         }
         Ok(())
     })();
-    if let Some((_, cancelled)) = active
+    if let Some(active) = active
         .lock()
         .map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))?
         .as_ref()
     {
-        cancelled.store(true, Ordering::SeqCst);
+        active.cancelled.store(true, Ordering::SeqCst);
     }
     client
         .0

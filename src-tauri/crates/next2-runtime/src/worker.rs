@@ -31,6 +31,12 @@ pub enum InstanceKind {
     Task,
 }
 
+pub struct CallLimits<'a> {
+    pub task_id: Option<&'a str>,
+    pub cancel: &'a AtomicBool,
+    pub deadline: Option<Instant>,
+}
+
 pub struct Worker {
     process: Process,
     input: Option<mpsc::SyncSender<Value>>,
@@ -232,17 +238,37 @@ impl Worker {
         params: Value,
         task_id: Option<&str>,
         cancel: &AtomicBool,
+        capability: impl FnMut(&Request) -> Result<Value, RpcError>,
+    ) -> Result<Value, RpcError> {
+        self.call_with_limits(
+            caller_id,
+            method,
+            params,
+            CallLimits {
+                task_id,
+                cancel,
+                deadline: None,
+            },
+            capability,
+        )
+    }
+
+    pub fn call_with_limits(
+        &mut self,
+        caller_id: &str,
+        method: &str,
+        params: Value,
+        limits: CallLimits<'_>,
         mut capability: impl FnMut(&Request) -> Result<Value, RpcError>,
     ) -> Result<Value, RpcError> {
-        let result = self.call_inner(caller_id, method, params, task_id, cancel, &mut capability);
+        let result = self.call_inner(caller_id, method, params, limits, &mut capability);
         match result {
             Ok(Outcome::Value(value)) => Ok(value),
             Ok(Outcome::DomainError(error)) => Err(error),
             Err(message) => {
-                let code = if message == "CANCELLED" {
-                    "CANCELLED"
-                } else {
-                    "NATIVE_TRANSPORT"
+                let code = match message.as_str() {
+                    "CANCELLED" | "RPC_TIMEOUT" | "TASK_TIMEOUT" => message.as_str(),
+                    _ => "NATIVE_TRANSPORT",
                 };
                 if let Err(stop) = self.process.force_stop() {
                     return Err(RpcError {
@@ -262,10 +288,30 @@ impl Worker {
         caller_id: &str,
         method: &str,
         params: Value,
-        task_id: Option<&str>,
-        cancel: &AtomicBool,
+        limits: CallLimits<'_>,
         capability: &mut impl FnMut(&Request) -> Result<Value, RpcError>,
     ) -> Result<Outcome, String> {
+        let CallLimits {
+            task_id,
+            cancel,
+            deadline,
+        } = limits;
+        let deadline = deadline.or_else(|| {
+            task_id
+                .is_none()
+                .then(|| Instant::now() + Duration::from_millis(BUDGET_REQUEST_TIMEOUT_MS as u64))
+        });
+        let timeout = if task_id.is_some() {
+            "TASK_TIMEOUT"
+        } else {
+            "RPC_TIMEOUT"
+        };
+        if cancel.load(Ordering::SeqCst) {
+            return Err("CANCELLED".into());
+        }
+        if deadline.is_some_and(|end| Instant::now() >= end) {
+            return Err(timeout.into());
+        }
         self.sequence += 1;
         let id = format!("native-{}", self.sequence);
         let mut frame = json!({"kind":"execute","callerId":caller_id,"request":{"wireVersion":4,"requestId":id,
@@ -274,15 +320,14 @@ impl Worker {
             frame["taskId"] = json!(task_id);
         }
         self.send(frame)?;
-        let deadline = task_id
-            .is_none()
-            .then(|| Instant::now() + Duration::from_millis(BUDGET_REQUEST_TIMEOUT_MS as u64));
         let mut cancel_deadline = None;
         loop {
             if cancel.load(Ordering::SeqCst) && cancel_deadline.is_none() {
-                if let Some(task_id) = task_id {
-                    self.send(json!({"kind":"cancel","wireVersion":4,"taskId":task_id}))?;
-                }
+                let cancel = match task_id {
+                    Some(task_id) => json!({"kind":"cancel","wireVersion":4,"taskId":task_id}),
+                    None => json!({"kind":"cancel","wireVersion":4,"requestId":id}),
+                };
+                self.send(cancel).map_err(|_| "CANCELLED")?;
                 cancel_deadline = Some(
                     Instant::now()
                         + Duration::from_millis(
@@ -292,11 +337,10 @@ impl Worker {
             }
             let now = Instant::now();
             if cancel_deadline.is_some_and(|end| now >= end) {
-                self.process.force_stop()?;
                 return Err("CANCELLED".into());
             }
-            if deadline.is_some_and(|deadline| now >= deadline) {
-                return Err("NATIVE_TIMEOUT".into());
+            if cancel_deadline.is_none() && deadline.is_some_and(|deadline| now >= deadline) {
+                return Err(timeout.into());
             }
             let frame = match self
                 .output
@@ -305,6 +349,11 @@ impl Worker {
                 .recv_timeout(Duration::from_millis(25))
             {
                 Ok(Output::Frame(frame)) => frame,
+                Ok(Output::Failure(_)) | Err(mpsc::RecvTimeoutError::Disconnected)
+                    if cancel_deadline.is_some() =>
+                {
+                    return Err("CANCELLED".into())
+                }
                 Ok(Output::Failure(error)) => return Err(error),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(error) => return Err(format!("NATIVE_DISCONNECTED: {error}")),
@@ -315,8 +364,11 @@ impl Worker {
                         &frame["response"].to_string(),
                         &id,
                     )?;
-                    if cancel_deadline.is_some() {
+                    if cancel.load(Ordering::SeqCst) {
                         return Err("CANCELLED".into());
+                    }
+                    if deadline.is_some_and(|end| Instant::now() >= end) {
+                        return Err(timeout.into());
                     }
                     return match response {
                         cruciblebox_next2_protocol::Response::Success(success) => {

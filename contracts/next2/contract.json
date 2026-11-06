@@ -10,6 +10,13 @@
     "catalogVersion": 1
   },
   "budget": {
+    "eventBytes": 8192,
+    "eventSubscriptions": 128,
+    "eventSubscriptionsPerSession": 16,
+    "eventQueue": 32,
+    "fileStreams": 64,
+    "fileStreamsPerSession": 8,
+    "fileStreamChunkBytes": 24576,
     "capabilityDescriptorBytes": 32768,
     "capabilityDescriptorNodes": 8192,
     "bytes": 65536,
@@ -375,6 +382,248 @@
         }
       ]
     },
+    "CapabilityEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "payload"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "payload": {
+          "$ref": "#/$defs/CapabilitySchema"
+        }
+      }
+    },
+    "EventTopicParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityId", "event"],
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        }
+      }
+    },
+    "EventPublishParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityId", "event", "payload"],
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "payload": {}
+      }
+    },
+    "EventSubscriptionParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subscriptionId"],
+      "properties": {
+        "subscriptionId": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "EventSubscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subscriptionId", "providerId"],
+      "properties": {
+        "subscriptionId": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        }
+      }
+    },
+    "EventMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "publisherId", "capabilityId", "event", "payload"],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "publisherId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "capabilityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "payload": {}
+      }
+    },
+    "EventPollResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "dropped"],
+      "properties": {
+        "event": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/EventMessage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "EventPublishResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["delivered"],
+      "properties": {
+        "delivered": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        }
+      }
+    },
+    "RequestCancelParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestId"],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "FileStream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streamId", "bytes"],
+      "properties": {
+        "streamId": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        }
+      }
+    },
+    "FileStreamCloseParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streamId"],
+      "properties": {
+        "streamId": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "FileStreamReadParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streamId", "offset", "length"],
+      "properties": {
+        "streamId": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24576
+        }
+      }
+    },
+    "FileStreamChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data", "offset", "nextOffset", "eof"],
+      "properties": {
+        "data": {
+          "type": "string",
+          "maxLength": 32768
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        },
+        "nextOffset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        },
+        "eof": {
+          "type": "boolean"
+        }
+      }
+    },
     "ServiceExport": {
       "type": "object",
       "additionalProperties": false,
@@ -397,8 +646,12 @@
           "items": {
             "$ref": "#/$defs/ServiceMethod"
           },
-          "maxItems": 128,
-          "minItems": 1
+          "maxItems": 128
+        },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CapabilityEvent" },
+          "maxItems": 64
         },
         "interchangeable": {
           "type": "boolean"
@@ -794,7 +1047,8 @@
           "minLength": 1,
           "maxLength": 128
         },
-        "params": {}
+        "params": {},
+        "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 86400000 }
       }
     },
     "TaskProgressParams": {
@@ -985,7 +1239,7 @@
     "BackendCancel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "wireVersion", "taskId"],
+      "required": ["kind", "wireVersion"],
       "properties": {
         "kind": {
           "const": "cancel"
@@ -994,6 +1248,11 @@
           "const": 4
         },
         "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "requestId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128
@@ -1750,6 +2009,8 @@
             "enum": [
               "storage:read",
               "logging:write",
+              "events:publish",
+              "events:subscribe",
               "storage:write",
               "tasks:read",
               "tasks:control",
@@ -2946,6 +3207,86 @@
     }
   },
   "methods": {
+    "events.subscribe": {
+      "permission": "events:subscribe",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/EventTopicParams"
+      },
+      "result": {
+        "$ref": "#/$defs/EventSubscription"
+      }
+    },
+    "events.publish": {
+      "permission": "events:publish",
+      "contexts": ["backend"],
+      "params": {
+        "$ref": "#/$defs/EventPublishParams"
+      },
+      "result": {
+        "$ref": "#/$defs/EventPublishResult"
+      }
+    },
+    "events.poll": {
+      "permission": "events:subscribe",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/EventSubscriptionParams"
+      },
+      "result": {
+        "$ref": "#/$defs/EventPollResult"
+      }
+    },
+    "events.unsubscribe": {
+      "permission": "events:subscribe",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/EventSubscriptionParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
+    "rpc.cancel": {
+      "permission": null,
+      "contexts": ["renderer"],
+      "params": {
+        "$ref": "#/$defs/RequestCancelParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
+    "files.stream.open": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileResolveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileStream"
+      }
+    },
+    "files.stream.read": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileStreamReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileStreamChunk"
+      }
+    },
+    "files.stream.close": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileStreamCloseParams"
+      },
+      "result": {
+        "type": "boolean"
+      }
+    },
     "logging.write": {
       "permission": "logging:write",
       "contexts": ["renderer", "backend"],
@@ -3567,7 +3908,7 @@
     "handshake": ["hello", "initialize", "ready"],
     "session": "host-generated-256-bit-token",
     "rendererLease": "bounded-renewal-by-trusted-mounted-owner;dispose-revokes",
-    "rendererReplay": "host-frame-sequence;strictly-increasing-renderer-N;constant-memory;client-correlation-preserved",
+    "rendererReplay": "host-frame-sequence;64-id-replay-window;bounded-delivery-reordering;client-correlation-preserved",
     "sessionRequestsBudget": "opaque-request-id-sessions;renderer-sequence-does-not-retain-history",
     "backendInvocation": "host-replaces-session-and-derives-callerId",
     "taskCompletion": "correlated-reply-after-executor-stops",

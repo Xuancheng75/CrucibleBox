@@ -108,7 +108,12 @@ pub fn normalize(rule: &Value, value: &mut Value) {
             normalize(choice, value);
         }
     } else if rule["type"] == "integer" || rule["const"].is_number() {
-        *value = Value::from(value.as_f64().expect("validated integer") as u64);
+        let number = value.as_f64().expect("validated integer");
+        *value = if number < 0.0 {
+            Value::from(number as i64)
+        } else {
+            Value::from(number as u64)
+        };
     } else if let Some(items) = value.as_array_mut() {
         for item in items {
             normalize(&rule["items"], item);
