@@ -13,6 +13,14 @@ import type {
   EventSubscription,
   EventTopicParams,
   FileStreamChunk,
+  FileInfo,
+  FileReference,
+  FileWriteResultParams,
+  NetworkDownloadParams,
+  ProcessRunParams,
+  ProcessResult,
+  ResourceMount,
+  RuntimeStatus,
   LogWriteParams,
   Json,
   VersionRange,
@@ -47,6 +55,14 @@ export declare function createClient(options: {
   platform(method: string, params?: Json): Promise<Json>
   resolveCapability(id: string): Promise<CapabilityBinding>
   writeLog(entry: LogWriteParams): Promise<boolean>
+  files: {
+    info(ref: string): Promise<FileInfo>
+    list(ref: string): Promise<FileInfo[]>
+    writeResult(options: FileWriteResultParams): Promise<FileReference>
+  }
+  network: { download(options: NetworkDownloadParams): Promise<FileReference> }
+  process: { run(options: ProcessRunParams): Promise<ProcessResult> }
+  runtime: { list(): Promise<RuntimeStatus[]> }
   backend(method: string, params?: Json, options?: RpcOptions): Promise<Json>
   service(id: string, method: string, params?: Json, options?: RpcOptions): Promise<Json>
   events: {
@@ -57,3 +73,28 @@ export declare function createClient(options: {
   }
   readFileChunks(ref: string, options?: RpcOptions): AsyncGenerator<FileStreamChunk, void, unknown>
 }
+
+export interface BackendContext {
+  session: string
+  pluginId: string
+  dataDirectory: string
+  resources: ResourceMount[]
+  exchange(request: Request): Promise<Response>
+  isCancelled(): boolean
+}
+
+export interface ProviderExecution {
+  callerId: string
+  taskId?: string | null
+  isCancelled(): boolean
+}
+
+type ProviderMethods = Record<
+  string,
+  (params: Json, execution: ProviderExecution) => Json | Promise<Json>
+>
+export declare function defineProvider(
+  activate: (
+    context: BackendContext & { api: ReturnType<typeof createClient> }
+  ) => ProviderMethods | Promise<ProviderMethods>
+): (context: BackendContext) => ProviderMethods | Promise<ProviderMethods>

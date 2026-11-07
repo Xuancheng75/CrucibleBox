@@ -108,7 +108,7 @@ export default function CommandPalette() {
           (plugin) =>
             plugin.entryRenderer &&
             (!needle ||
-              `${plugin.displayName} ${plugin.name} ${plugin.description} ${userTags
+              `${plugin.navigationTitle ?? ''} ${plugin.displayName} ${plugin.name} ${plugin.description} ${userTags
                 .filter((tag) => tag.pluginIds.includes(plugin.id))
                 .map((tag) => tag.name)
                 .join(' ')}`
@@ -117,7 +117,7 @@ export default function CommandPalette() {
         )
         .map((plugin) => ({
           key: `plugin-${plugin.id}`,
-          label: plugin.displayName,
+          label: plugin.navigationTitle ?? plugin.displayName,
           icon: <AppstoreOutlined />,
           kind: '插件',
           run: () => {

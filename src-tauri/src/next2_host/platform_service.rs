@@ -1,6 +1,7 @@
 //! Built-in capability providers registered by the trusted host composition.
-use super::{error, save_task_outcome, Execution, Manager};
+use super::{error, network_service, save_task_outcome, Execution, Manager};
 use crate::db::PluginRow;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use cruciblebox_next2_protocol::{self as protocol, gateway::Route, Request, RpcError};
 use serde_json::{json, Value};
 use std::{
@@ -23,18 +24,19 @@ pub struct Platform {
 }
 impl Platform {
     pub fn new(app_handle: Option<tauri::AppHandle>) -> Self {
-        let providers: [(&str, Handler); 16] = [
+        let providers: [(&str, Handler); 17] = [
             ("capabilities", Manager::capability_service),
             ("tasks", Manager::task_service),
             ("data", Manager::data_service),
             ("resources", Manager::resource_service),
             ("files", Manager::file_service),
             ("network", Manager::network_service),
+            ("process", Manager::process_service),
             ("theme", Manager::theme_service),
             ("clipboard", Manager::clipboard_service),
             ("storage", Manager::storage_service),
             ("config", Manager::storage_service),
-            ("runtime", Manager::storage_service),
+            ("runtime", Manager::runtime_service),
             ("dialog", Manager::desktop_service),
             ("notification", Manager::desktop_service),
             ("logging", Manager::logging_service),
@@ -314,6 +316,12 @@ impl Manager {
                 .streams
                 .close(&request.session, params["streamId"].as_str().unwrap()),
             "files.choose" => self.choose_files(row, params, execution),
+            "files.info" => self
+                .resolve_file(owner, file_caller, params["ref"].as_str().unwrap())
+                .and_then(|path| crate::next2_files::info(&path)),
+            "files.list" => self
+                .resolve_file(owner, file_caller, params["ref"].as_str().unwrap())
+                .and_then(|path| crate::next2_files::list(&path)),
             "files.resolve" => self
                 .resolve_file(owner, file_caller, params["ref"].as_str().unwrap())
                 .map(|path| json!(path)),
@@ -327,13 +335,34 @@ impl Manager {
                     )
                 }),
             "files.publish" => self.publish_file(owner, params, execution),
+            "files.writeResult" => self.write_output(
+                owner,
+                params["name"].as_str().unwrap(),
+                execution,
+                |stage, _| {
+                    use std::io::Write;
+                    let bytes = STANDARD
+                        .decode(params["data"].as_str().unwrap())
+                        .map_err(|_| "INVALID_FILE_DATA")?;
+                    let mut file =
+                        std::fs::File::create(stage).map_err(|error| error.to_string())?;
+                    file.write_all(&bytes)
+                        .and_then(|()| file.sync_all())
+                        .map_err(|error| error.to_string())
+                },
+            ),
             _ => Err("PLATFORM_METHOD_NOT_CONNECTED".into()),
         };
         result.map_err(error)
     }
 
-    fn network_service(_: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
-        let Call { request, .. } = *call;
+    fn network_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
+        let Call {
+            owner,
+            request,
+            execution,
+            ..
+        } = *call;
         let params = &request.params;
         let result: Result<Value, String> = match request.method.as_str() {
             "network.route" => crate::network_policy::current()
@@ -342,10 +371,28 @@ impl Manager {
                     Some(url) => json!({"kind":"proxy","url":url}),
                     None => json!({"kind":"direct"}),
                 }),
-            "network.fetch" => crate::next2_files::fetch(params),
+            "network.fetch" => network_service::fetch(params),
+            "network.download" => self.write_output(
+                owner,
+                params["name"].as_str().unwrap(),
+                execution,
+                |stage, context| network_service::download(stage, params, execution, context),
+            ),
             _ => Err("PLATFORM_METHOD_NOT_CONNECTED".into()),
         };
         result.map_err(error)
+    }
+
+    fn process_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
+        self.run_process(call.row, &call.request.params, call.execution)
+            .map_err(error)
+    }
+
+    fn runtime_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
+        match call.request.method.as_str() {
+            "runtime.list" => self.runtime_status(call.row).map_err(error),
+            _ => self.storage_service(call),
+        }
     }
 
     fn theme_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
@@ -472,18 +519,35 @@ impl Manager {
 
     fn logging_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
         let params = &call.request.params;
+        let runtime = if call.execution.caller.is_none() {
+            "renderer"
+        } else if call.row.entry_main.ends_with(".exe") {
+            "native"
+        } else {
+            "quickjs"
+        };
+        let level = params["level"].as_str().unwrap();
         let message = json!({
-            "runtime": if call.execution.caller.is_some() { "backend" } else { "renderer" },
+            "runtime": runtime,
             "requestId": call.request.request_id,
             "taskId": call.execution.task.map(|(context, _)| context.task_id()),
+            "code": params["code"],
+            "context": params["context"],
             "message": params["message"],
         })
         .to_string();
         self.db
             .lock()
             .map_err(|_| error("STORAGE_UNAVAILABLE".into()))?
-            .log_write(&call.row.id, params["level"].as_str().unwrap(), &message)
+            .log_write(&call.row.id, level, &message)
             .map_err(|failure| error(failure.to_string()))?;
+        if let Some(app) = &self.services.platform.app_handle {
+            use tauri::Emitter;
+            let _ = app.emit(
+                "plugin:log",
+                json!({"pluginId":call.row.id,"level":level,"message":message}),
+            );
+        }
         Ok(json!(true))
     }
 }

@@ -39,11 +39,8 @@ impl Streams {
         session: &str,
         path: &Path,
     ) -> Result<Value, String> {
-        let file = open_authorized(path)?;
+        let file = crate::next2_files::open_authorized(path)?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
-        if metadata.file_type().is_symlink() {
-            return Err("FILE_AUTHORITY_DENIED".into());
-        }
         if !metadata.is_file() {
             return Err("FILE_REQUIRED".into());
         }
@@ -172,38 +169,4 @@ impl Reader {
             json!({"data":base64::engine::general_purpose::STANDARD.encode(chunk),"offset":offset,"nextOffset":next,"eof":next==self.bytes}),
         )
     }
-}
-
-fn open_authorized(path: &Path) -> Result<File, String> {
-    use std::{
-        ffi::OsString,
-        os::windows::{ffi::OsStringExt, fs::OpenOptionsExt, io::AsRawHandle},
-    };
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFinalPathNameByHandleW, FILE_FLAG_OPEN_REPARSE_POINT,
-    };
-
-    // Both selection grants and persisted publication receipts store the
-    // canonical path from the time access was granted.
-    let file = File::options()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-        .map_err(|error| error.to_string())?;
-    let mut buffer = vec![0; 32768];
-    let size = unsafe {
-        GetFinalPathNameByHandleW(
-            file.as_raw_handle() as _,
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-            0,
-        )
-    } as usize;
-    if size == 0 {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    if size >= buffer.len() || Path::new(&OsString::from_wide(&buffer[..size])) != path {
-        return Err("FILE_AUTHORITY_DENIED".into());
-    }
-    Ok(file)
 }

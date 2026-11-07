@@ -8,7 +8,9 @@ import {
   validateResourceManifest,
   validateResourceCatalog,
   validateBackendFrame,
-  createClient
+  createClient,
+  defineProvider,
+  contract
 } from '../src/index.mjs'
 const fixtures = JSON.parse(
   readFileSync(new URL('../../../contracts/next2/fixtures.json', import.meta.url), 'utf8')
@@ -21,6 +23,51 @@ const validators = {
   response: (raw) => validateResponse(raw, 'r-1'),
   frame: validateBackendFrame
 }
+test('process tool declarations require approval, a resource dependency and the feature host', () => {
+  const manifest = {
+    ...fixtures.native,
+    minHostVersion: contract.versions.featuresHostVersion,
+    tools: [{ id: 'python', resourceId: 'runtime-python', entry: 'python.exe' }],
+    resources: [{ id: 'runtime-python', version: { min: '3.14.0', maxExclusive: '3.15.0' } }],
+    permissions: [...fixtures.native.permissions, 'process:run']
+  }
+  assert.equal(validateManifest(JSON.stringify(manifest)).tools[0].id, 'python')
+  assert.throws(
+    () =>
+      validateManifest(
+        JSON.stringify({ ...manifest, minHostVersion: contract.versions.minHostVersion })
+      ),
+    /HOST_VERSION_UNDERSTATED/
+  )
+  assert.throws(
+    () => validateManifest(JSON.stringify({ ...manifest, resources: [] })),
+    /INVALID_PROCESS_TOOL_DECLARATION/
+  )
+  assert.throws(
+    () =>
+      validateManifest(JSON.stringify({ ...manifest, permissions: fixtures.native.permissions })),
+    /INVALID_PROCESS_TOOL_DECLARATION/
+  )
+})
+
+test('provider setup receives a scoped public client and validates runtime results', async () => {
+  const activate = defineProvider(({ api }) => ({ probe: () => api.runtime.list() }))
+  const session = 'b'.repeat(64)
+  const methods = activate({
+    session,
+    exchange(request) {
+      assert.equal(request.session, session)
+      assert.equal(request.method, 'runtime.list')
+      return {
+        wireVersion: contract.versions.wireVersion,
+        requestId: request.requestId,
+        ok: true,
+        result: []
+      }
+    }
+  })
+  assert.deepEqual(await methods.probe(), [])
+})
 test('executor pause confirmation is optional and strictly boolean', () => {
   const request = {
     wireVersion: 5,

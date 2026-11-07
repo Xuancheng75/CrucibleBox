@@ -6,8 +6,14 @@ import { spawnSync } from 'node:child_process'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const contract = JSON.parse(readFileSync(resolve(root, 'contracts/next2/contract.json'), 'utf8'))
 const defs = contract.$defs
-const { manifestVersion, sdkApiVersion, wireVersion, minHostVersion, sdkPackageVersion } =
-  contract.versions
+const {
+  manifestVersion,
+  sdkApiVersion,
+  wireVersion,
+  minHostVersion,
+  sdkPackageVersion,
+  featuresHostVersion
+} = contract.versions
 const manifest = defs.Manifest.properties
 const apiRange = defs.ApiRange.properties
 if (
@@ -121,6 +127,7 @@ const rustSource =
   `pub const SDK_API_VERSION: u8 = ${sdkApiVersion};\n` +
   `pub const WIRE_VERSION: u64 = ${wireVersion};\n` +
   `pub const MIN_HOST_VERSION: &str = ${JSON.stringify(minHostVersion)};\n` +
+  `pub const FEATURES_HOST_VERSION: &str = ${JSON.stringify(featuresHostVersion)};\n` +
   `pub const CODE_DIRECTORY: &str = ${JSON.stringify(contract.install.codeDirectory)};\n` +
   `pub const BACKGROUND_METHOD: &str = ${JSON.stringify(contract.transport.backgroundMethod)};\n` +
   Object.entries(contract.budget)

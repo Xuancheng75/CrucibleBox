@@ -30,6 +30,9 @@ const TRUSTED_PATHS_CAPACITY: usize = 50;
 #[cfg(test)]
 #[path = "install_next2_tests.rs"]
 mod next2_tests;
+#[cfg(test)]
+#[path = "install_next3_services_tests.rs"]
+mod next3_services_tests;
 
 /// 安装来源（"zip" | "directory"）
 pub struct InstallSource {

@@ -266,6 +266,7 @@ pub fn write_chunk(
 pub fn write_commit(db: &Db, owner: &str, session: &str, id: &str) -> Result<()> {
     let mut conn = db.conn().lock().map_err(|_| "STORAGE_UNAVAILABLE")?;
     let tx = sql(conn.transaction())?;
+    let before = crate::next_storage::usage(&tx, owner)?;
     check(
         &tx,
         "next_storage_write_transactions",
@@ -312,6 +313,7 @@ pub fn write_commit(db: &Db, owner: &str, session: &str, id: &str) -> Result<()>
             params![owner, key],
         ))?;
     }
+    crate::next_storage::check_quota(&tx, owner, before)?;
     sql(tx.execute(
         "DELETE FROM next_storage_write_transactions WHERE transaction_id=?1",
         [id],

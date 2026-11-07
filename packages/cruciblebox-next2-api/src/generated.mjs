@@ -4,7 +4,8 @@ export const contract = {
   versions: {
     manifestVersion: 7,
     sdkApiVersion: 7,
-    sdkPackageVersion: '7.0.0-beta.1',
+    sdkPackageVersion: '7.0.0-beta.2',
+    featuresHostVersion: '2.2.0-beta.2',
     minHostVersion: '2.2.0-beta.1',
     wireVersion: 5,
     dataSchemaVersion: 1,
@@ -41,7 +42,8 @@ export const contract = {
     storageValueBytes: 4194304,
     storageTransactionBytes: 8388608,
     storageChunkBytes: 24576,
-    storageTransactionOps: 32
+    storageTransactionOps: 32,
+    storageNamespaceBytes: 33554432
   },
   $defs: {
     Json: {},
@@ -126,7 +128,19 @@ export const contract = {
       properties: {
         id: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
         title: { type: 'string', minLength: 1, maxLength: 100 },
-        method: { type: 'string', minLength: 1, maxLength: 128 }
+        method: { type: 'string', minLength: 1, maxLength: 128 },
+        placements: {
+          type: 'array',
+          items: { $ref: '#/$defs/CommandPlacement' },
+          maxItems: 4,
+          uniqueItems: true
+        },
+        keywords: {
+          type: 'array',
+          items: { type: 'string', minLength: 1, maxLength: 40 },
+          maxItems: 8,
+          uniqueItems: true
+        }
       }
     },
     Contributions: {
@@ -386,7 +400,17 @@ export const contract = {
       required: ['level', 'message'],
       properties: {
         level: { enum: ['debug', 'info', 'warn', 'error'] },
-        message: { type: 'string', minLength: 1, maxLength: 2048 }
+        message: { type: 'string', minLength: 1, maxLength: 2048 },
+        code: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Z][A-Z0-9_]*$' },
+        context: {
+          type: 'object',
+          additionalProperties: false,
+          required: [],
+          properties: {
+            stage: { type: 'string', minLength: 1, maxLength: 100 },
+            detail: { type: 'string', minLength: 1, maxLength: 500 }
+          }
+        }
       }
     },
     ResourceDependency: {
@@ -1122,7 +1146,9 @@ export const contract = {
               'files:publish',
               'tasks:execute',
               'browser:downloads',
-              'network:fetch'
+              'network:fetch',
+              'process:run',
+              'network:download'
             ]
           },
           maxItems: 128,
@@ -1135,7 +1161,8 @@ export const contract = {
         dependencies: { type: 'array', items: { $ref: '#/$defs/ServiceDependency' }, maxItems: 64 },
         resources: { type: 'array', items: { $ref: '#/$defs/ResourceDependency' }, maxItems: 64 },
         files: { type: 'array', items: { $ref: '#/$defs/FileEntry' }, maxItems: 5000, minItems: 1 },
-        config: { type: 'object', additionalProperties: true }
+        config: { type: 'object', additionalProperties: true },
+        tools: { type: 'array', items: { $ref: '#/$defs/ToolDeclaration' }, maxItems: 16 }
       }
     },
     ResourceManifest: {
@@ -1766,7 +1793,93 @@ export const contract = {
       },
       required: ['version', 'css', 'motion', 'layers'],
       additionalProperties: false
-    }
+    },
+    ToolDeclaration: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'resourceId', 'entry'],
+      properties: {
+        id: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        resourceId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        entry: { type: 'string', minLength: 1, maxLength: 240, format: 'package-path' }
+      }
+    },
+    ProcessRunParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['toolId', 'args'],
+      properties: {
+        toolId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        args: {
+          type: 'array',
+          items: { type: 'string', minLength: 0, maxLength: 1024 },
+          maxItems: 32
+        },
+        stdin: { type: 'string', minLength: 0, maxLength: 5464 },
+        timeoutMs: { type: 'integer', minimum: 100, maximum: 60000 }
+      }
+    },
+    ProcessResult: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['exitCode', 'stdout', 'stderr'],
+      properties: {
+        exitCode: { type: 'integer', minimum: 0, maximum: 4294967295 },
+        stdout: { type: 'string', minLength: 0, maxLength: 10924 },
+        stderr: { type: 'string', minLength: 0, maxLength: 10924 }
+      }
+    },
+    RuntimeStatus: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'resourceId', 'state'],
+      properties: {
+        id: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        resourceId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        state: { enum: ['ready', 'missing'] },
+        version: { type: 'string', minLength: 1, maxLength: 100, format: 'semver-without-build' }
+      }
+    },
+    FileInfo: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'kind', 'bytes'],
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 240 },
+        kind: { enum: ['file', 'directory'] },
+        bytes: { type: 'integer', minimum: 0, maximum: 17179869184 }
+      }
+    },
+    FileWriteResultParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'data'],
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 240, format: 'package-path' },
+        data: { type: 'string', minLength: 0, maxLength: 32768 }
+      }
+    },
+    NetworkDownloadParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url', 'name', 'bytes', 'sha256'],
+      properties: {
+        url: { type: 'string', minLength: 1, maxLength: 8192 },
+        name: { type: 'string', minLength: 1, maxLength: 240, format: 'package-path' },
+        bytes: { type: 'integer', minimum: 0, maximum: 1073741824 },
+        sha256: { type: 'string', minLength: 64, maxLength: 64, pattern: '^[a-f0-9]{64}$' }
+      }
+    },
+    StorageUsage: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['usedBytes', 'quotaBytes'],
+      properties: {
+        usedBytes: { type: 'integer', minimum: 0, maximum: 9007199254740991 },
+        quotaBytes: { type: 'integer', minimum: 1, maximum: 9007199254740991 }
+      }
+    },
+    CommandPlacement: { enum: ['toolbar', 'sidebar', 'contextMenu', 'status'] }
   },
   methods: {
     'events.subscribe': {
@@ -2172,6 +2285,48 @@ export const contract = {
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/ThemeAssetListParams' },
       result: { $ref: '#/$defs/ThemeAssetListResult' }
+    },
+    'process.run': {
+      permission: 'process:run',
+      contexts: ['backend'],
+      params: { $ref: '#/$defs/ProcessRunParams' },
+      result: { $ref: '#/$defs/ProcessResult' }
+    },
+    'runtime.list': {
+      permission: null,
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/Empty' },
+      result: { type: 'array', items: { $ref: '#/$defs/RuntimeStatus' }, maxItems: 16 }
+    },
+    'network.download': {
+      permission: 'network:download',
+      contexts: ['backend'],
+      params: { $ref: '#/$defs/NetworkDownloadParams' },
+      result: { $ref: '#/$defs/FileReference' }
+    },
+    'files.info': {
+      permission: 'files:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileResolveParams' },
+      result: { $ref: '#/$defs/FileInfo' }
+    },
+    'files.list': {
+      permission: 'files:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileResolveParams' },
+      result: { type: 'array', items: { $ref: '#/$defs/FileInfo' }, maxItems: 128 }
+    },
+    'files.writeResult': {
+      permission: 'files:publish',
+      contexts: ['backend'],
+      params: { $ref: '#/$defs/FileWriteResultParams' },
+      result: { $ref: '#/$defs/FileReference' }
+    },
+    'storage.usage': {
+      permission: 'storage:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/Empty' },
+      result: { $ref: '#/$defs/StorageUsage' }
     }
   },
   lifecycle: {

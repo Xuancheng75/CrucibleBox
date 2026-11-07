@@ -3,11 +3,41 @@ use crate::Db;
 use rusqlite::params;
 use serde_json::{json, Value};
 
+pub(crate) fn usage(conn: &rusqlite::Connection, owner: &str) -> Result<u64, String> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(length(CAST(key AS BLOB)) + length(CAST(value AS BLOB))), 0)
+         FROM plugin_storage WHERE plugin_id = ?1",
+        [owner],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|bytes| bytes as u64)
+    .map_err(|_| "STORAGE_UNAVAILABLE".into())
+}
+
+pub(crate) fn check_quota(
+    tx: &rusqlite::Transaction<'_>,
+    owner: &str,
+    before: u64,
+) -> Result<(), String> {
+    let after = usage(tx, owner)?;
+    if after > before.max(cruciblebox_next2_protocol::BUDGET_STORAGE_NAMESPACE_BYTES as u64) {
+        return Err("STORAGE_QUOTA_EXCEEDED".into());
+    }
+    Ok(())
+}
+
 pub fn validate_params(method: &str, params: Value) -> Result<(), String> {
     let request = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"target":{"kind":"platform"},"requestId":"native-storage-validation","session":"a".repeat(64),"method":method,"params":params});
     cruciblebox_next2_protocol::validate_request(&request.to_string()).map(|_| ())
 }
 impl Db {
+    pub fn usage(&self, owner: &str) -> Result<Value, String> {
+        let conn = self.conn().lock().map_err(|_| "STORAGE_UNAVAILABLE")?;
+        Ok(json!({
+            "usedBytes": usage(&conn, owner)?,
+            "quotaBytes": cruciblebox_next2_protocol::BUDGET_STORAGE_NAMESPACE_BYTES,
+        }))
+    }
     pub fn config_get(&self, owner: &str) -> Result<Value, String> {
         self.plugin_config_get(owner)
     }
@@ -81,6 +111,7 @@ impl Db {
         validate_params("storage.batch", json!({"operations":operations}))?;
         let mut conn = self.conn().lock().map_err(|_| "STORAGE_UNAVAILABLE")?;
         let tx = conn.transaction().map_err(|_| "STORAGE_UNAVAILABLE")?;
+        let before = usage(&tx, owner)?;
         for op in operations {
             let key = op["key"].as_str().ok_or("INVALID_REQUEST")?;
             match op["type"].as_str() {
@@ -99,6 +130,7 @@ impl Db {
                 _ => return Err("INVALID_REQUEST".into()),
             }
         }
+        check_quota(&tx, owner, before)?;
         tx.commit().map_err(|_| "STORAGE_UNAVAILABLE".into())
     }
     pub fn list(
@@ -172,14 +204,62 @@ impl Db {
     }
     pub fn set(&self, owner: &str, key: &str, value: &Value) -> Result<(), String> {
         let raw = serde_json::to_string(value).map_err(|_| "INVALID_REQUEST")?;
-        self.storage_set(owner, key, &raw)
-            .map_err(|_| "STORAGE_UNAVAILABLE".to_string())
+        let mut conn = self.conn().lock().map_err(|_| "STORAGE_UNAVAILABLE")?;
+        let tx = conn.transaction().map_err(|_| "STORAGE_UNAVAILABLE")?;
+        let before = usage(&tx, owner)?;
+        tx.execute(
+            "INSERT INTO plugin_storage(plugin_id,key,value) VALUES(?1,?2,?3)
+             ON CONFLICT(plugin_id,key) DO UPDATE SET value=excluded.value,updated_at=datetime('now','localtime')",
+            params![owner, key, raw],
+        ).map_err(|_| "STORAGE_UNAVAILABLE")?;
+        check_quota(&tx, owner, before)?;
+        tx.commit().map_err(|_| "STORAGE_UNAVAILABLE".into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quota_rolls_back_growth_and_allows_cleaning_retained_data() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Db::open(&root.path().join("quota.db")).unwrap();
+        let limit = cruciblebox_next2_protocol::BUDGET_STORAGE_NAMESPACE_BYTES;
+        {
+            let conn = db.conn().lock().unwrap();
+            conn.execute(
+                "INSERT INTO plugins(id,name,version,display_name,entry_main,installed_path)
+                 VALUES('quota','quota','1.0.0','Quota','','C:/quota')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO plugin_storage(plugin_id,key,value) VALUES('quota','retained',zeroblob(?1))",
+                [limit as i64],
+            ).unwrap();
+        }
+        assert_eq!(
+            db.usage("quota").unwrap()["usedBytes"],
+            limit + "retained".len()
+        );
+        assert_eq!(
+            db.set("quota", "new", &json!(1)).unwrap_err(),
+            "STORAGE_QUOTA_EXCEEDED"
+        );
+        assert!(db.storage_get("quota", "new").unwrap().is_none());
+        db.batch(
+            "quota",
+            &[
+                json!({"type":"delete","key":"retained"}),
+                json!({"type":"set","key":"new","value":1}),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            db.usage("quota").unwrap(),
+            json!({"usedBytes":4,"quotaBytes":limit})
+        );
+    }
     #[test]
     fn real_database_namespace_survives_restart_and_keeps_corrupt_legacy_row() {
         let scratch = tempfile::Builder::new()

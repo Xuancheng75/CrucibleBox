@@ -209,6 +209,16 @@ pub fn resolve(
     keys: &[PublisherKey],
     approvals: &[Approval],
 ) -> Result<Vec<ResourceMount>, String> {
+    resolve_verified(store, plugin, keys, approvals)
+        .map(|verified| verified.into_iter().map(|(mount, _)| mount).collect())
+}
+
+pub fn resolve_verified(
+    store: &Path,
+    plugin: &ApprovedPlugin,
+    keys: &[PublisherKey],
+    approvals: &[Approval],
+) -> Result<Vec<(ResourceMount, ResourceManifest)>, String> {
     let manifest = plugin.manifest();
     let mut mounts = Vec::new();
     'dependency: for dependency in &manifest.resources {
@@ -268,14 +278,15 @@ pub fn resolve(
             .find(|approval| approval.manifest_sha256 == resource.manifest_sha256)
             .ok_or("RESOURCE_APPROVAL_REQUIRED")?;
         resource.check_approval(approval)?;
-        mounts.push(ResourceMount {
+        let mount = ResourceMount {
             id: dependency.id.clone(),
-            version: resource.manifest.version,
+            version: resource.manifest.version.clone(),
             directory: fs::canonicalize(directory)
                 .map_err(|e| e.to_string())?
                 .to_string_lossy()
                 .into(),
-        });
+        };
+        mounts.push((mount, resource.manifest));
     }
     Ok(mounts)
 }

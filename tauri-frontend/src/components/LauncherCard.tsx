@@ -167,7 +167,7 @@ export default function LauncherCard({
         aria-label={
           selectable
             ? `${selected ? '取消选择' : '选择'} ${plugin.displayName}`
-            : `打开 ${plugin.displayName}，${statusMeta.text}`
+            : `打开 ${plugin.navigationTitle ?? plugin.displayName}，${statusMeta.text}`
         }
         aria-pressed={selectable ? selected : undefined}
         onClick={handleOpen}
@@ -313,7 +313,7 @@ export default function LauncherCard({
                 whiteSpace: 'nowrap'
               }}
             >
-              {plugin.displayName}
+              {plugin.navigationTitle ?? plugin.displayName}
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
               <span

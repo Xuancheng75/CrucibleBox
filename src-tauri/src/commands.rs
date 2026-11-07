@@ -293,6 +293,9 @@ fn verified_plugin_metadata(db: &Db, meta: PluginMetaDto) -> Result<serde_json::
     if let Ok(plugin) =
         crate::next2_install::inspect(db, std::path::Path::new(&meta.installed_path))
     {
+        if let Some(navigation) = &plugin.manifest().contributes.navigation {
+            value["navigationTitle"] = serde_json::json!(navigation.title);
+        }
         if let cruciblebox_next2_runtime::package::Provenance::Verified {
             publisher_id,
             key_id,
@@ -317,6 +320,7 @@ pub struct PluginCommandContributionDto {
     id: String,
     title: String,
     keywords: Vec<String>,
+    placements: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -379,16 +383,23 @@ pub fn plugin_file_handlers_list(
 pub fn plugin_command_contributions_list(
     window: WebviewWindow,
     db: State<'_, Arc<Mutex<Db>>>,
+    plugin_id: Option<String>,
 ) -> Result<Vec<PluginCommandContributionDto>, String> {
     if !is_main_window(&window) {
         return Err("unauthorized".into());
     }
-    command_contributions(&lock(&db))
+    command_contributions(&lock(&db), plugin_id.as_deref())
 }
 
-fn command_contributions(db: &Db) -> Result<Vec<PluginCommandContributionDto>, String> {
+fn command_contributions(
+    db: &Db,
+    owner: Option<&str>,
+) -> Result<Vec<PluginCommandContributionDto>, String> {
     let mut commands = Vec::new();
     for (plugin_id, installed_path) in db.enabled_plugin_installations()? {
+        if owner.is_some_and(|owner| owner != plugin_id) {
+            continue;
+        }
         let Ok(manifest) = crate::manifest::read_manifest(std::path::Path::new(&installed_path))
         else {
             continue;
@@ -408,7 +419,8 @@ fn command_contributions(db: &Db) -> Result<Vec<PluginCommandContributionDto>, S
                 plugin_id: plugin_id.clone(),
                 id: item["id"].as_str().unwrap().to_owned(),
                 title: item["title"].as_str().unwrap().to_owned(),
-                keywords: Vec::new(),
+                keywords: serde_json::from_value(item["keywords"].clone()).unwrap_or_default(),
+                placements: serde_json::from_value(item["placements"].clone()).unwrap_or_default(),
             });
         }
     }
@@ -2015,16 +2027,21 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let plugin = root.path().join("plugin");
         std::fs::create_dir(&plugin).unwrap();
-        let manifest = serde_json::json!({"manifestVersion":cruciblebox_next2_protocol::MANIFEST_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION,"id":"third-party-command","version":"1.0.0","displayName":"Sample","description":"Fixture","publisher":{"id":"local","displayName":"Local"},"minHostVersion":cruciblebox_next2_protocol::MIN_HOST_VERSION,"sdk":{"min":cruciblebox_next2_protocol::SDK_API_VERSION,"maxExclusive":cruciblebox_next2_protocol::SDK_API_VERSION+1},"renderer":"dist/renderer.js","permissions":[],"background":false,"contributes":{"commands":[{"id":"sample-command","title":"Run sample","method":"sample.execute"}]},"exports":[],"dependencies":[],"resources":[],"files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)}]});
+        let manifest = serde_json::json!({"manifestVersion":cruciblebox_next2_protocol::MANIFEST_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION,"id":"third-party-command","version":"1.0.0","displayName":"Sample","description":"Fixture","publisher":{"id":"local","displayName":"Local"},"minHostVersion":cruciblebox_next2_protocol::FEATURES_HOST_VERSION,"sdk":{"min":cruciblebox_next2_protocol::SDK_API_VERSION,"maxExclusive":cruciblebox_next2_protocol::SDK_API_VERSION+1},"renderer":"dist/renderer.js","permissions":[],"background":false,"contributes":{"commands":[{"id":"sample-command","title":"Run sample","method":"sample.execute","placements":["toolbar","status"],"keywords":["sample"]}]},"exports":[],"dependencies":[],"resources":[],"backend":{"kind":"js","entry":"dist/main.js"},"files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)},{"path":"dist/main.js","bytes":0,"sha256":"0".repeat(64)}]});
         std::fs::write(plugin.join("plugin.json"), manifest.to_string()).unwrap();
         let db = crate::db::Db::open(&root.path().join("data.db")).unwrap();
         db.conn().lock().unwrap().execute("INSERT INTO plugins(id,name,version,display_name,entry_main,installed_path,enabled) VALUES ('retained-guid','third-party-command','1.0.0','Sample','',?1,1)",[plugin.to_string_lossy().as_ref()]).unwrap();
-        let commands = super::command_contributions(&db).unwrap();
+        let commands = super::command_contributions(&db, None).unwrap();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].plugin_id, "retained-guid");
         assert_eq!(commands[0].id, "sample-command");
+        assert_eq!(commands[0].placements, ["toolbar", "status"]);
+        assert_eq!(commands[0].keywords, ["sample"]);
+        assert!(super::command_contributions(&db, Some("other"))
+            .unwrap()
+            .is_empty());
         db.set_plugin_enabled("retained-guid", false).unwrap();
-        assert!(super::command_contributions(&db).unwrap().is_empty());
+        assert!(super::command_contributions(&db, None).unwrap().is_empty());
     }
 
     use super::{

@@ -3,7 +3,7 @@ use base64::Engine;
 use cruciblebox_next2_protocol::FileReference;
 use std::{
     collections::HashMap,
-    fs,
+    fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
@@ -70,7 +70,7 @@ impl Files {
     }
 }
 pub fn read(path: &Path, offset: u64, length: u64) -> Result<serde_json::Value, String> {
-    let mut input = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut input = open_authorized(path)?;
     if !input.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("FILE_REQUIRED".into());
     }
@@ -90,46 +90,116 @@ pub fn read(path: &Path, offset: u64, length: u64) -> Result<serde_json::Value, 
     )
 }
 
-pub fn fetch(params: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let url = params["url"].as_str().unwrap();
-    let method = params["method"].as_str().unwrap();
-    let (agent, _) = crate::network_policy::current().agent_for_url(url, 10, 20)?;
-    let mut request = agent.request(method, url);
-    if let Some(headers) = params["headers"].as_object() {
-        for (name, value) in headers {
-            request = request.set(
-                name,
-                value.as_str().ok_or("HTTP_HEADER_VALUE_MUST_BE_STRING")?,
-            );
-        }
+fn metadata_value(path: &Path, metadata: &fs::Metadata) -> Result<serde_json::Value, String> {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("INVALID_FILE_NAME")?;
+    if name.chars().count() > 240
+        || (metadata.is_file() && metadata.len() > 16 * 1024 * 1024 * 1024)
+    {
+        return Err("FILE_BUDGET_EXCEEDED".into());
     }
-    let response = if let Some(body) = params["body"].as_str() {
-        request.send_string(body)
+    let (kind, bytes) = if metadata.is_dir() {
+        ("directory", 0)
     } else {
-        request.call()
+        ("file", metadata.len())
     };
-    let response = match response {
-        Ok(response) | Err(ureq::Error::Status(_, response)) => response,
-        Err(error) => return Err(error.to_string()),
-    };
-    let status = response.status();
-    let mut headers = serde_json::Map::new();
-    for name in response.headers_names() {
-        if let Some(value) = response.header(&name) {
-            headers.insert(name, value.into());
+    Ok(serde_json::json!({"name":name,"kind":kind,"bytes":bytes}))
+}
+
+pub fn info(path: &Path) -> Result<serde_json::Value, String> {
+    let file = open_authorized(path)?;
+    metadata_value(path, &file.metadata().map_err(|error| error.to_string())?)
+}
+
+pub fn list(path: &Path) -> Result<serde_json::Value, String> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let directory = open_authorized(path)?;
+    if !directory
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_dir()
+    {
+        return Err("DIRECTORY_REQUIRED".into());
+    }
+    let mut entries = Vec::new();
+    for (index, entry) in fs::read_dir(path)
+        .map_err(|error| error.to_string())?
+        .enumerate()
+    {
+        if index == 128 {
+            return Err("DIRECTORY_LIST_LIMIT".into());
+        }
+        let entry = entry.map_err(|error| error.to_string())?;
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+            entries.push(metadata_value(&entry.path(), &metadata)?);
         }
     }
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .take(32769)
-        .read_to_end(&mut body)
-        .map_err(|e| e.to_string())?;
-    if body.len() > 32768 {
-        return Err("HTTP_RESPONSE_TOO_LARGE: use the native backend for large transfers".into());
+    entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Ok(serde_json::json!(entries))
+}
+
+pub(super) fn open_authorized(path: &Path) -> Result<File, String> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    open_with_share(path, FILE_SHARE_READ | FILE_SHARE_WRITE)
+}
+
+pub(super) fn open_readonly(path: &Path) -> Result<File, String> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    open_with_share(path, FILE_SHARE_READ)
+}
+
+fn open_with_share(path: &Path, sharing: u32) -> Result<File, String> {
+    use std::{
+        ffi::OsString,
+        os::windows::{
+            ffi::OsStringExt,
+            fs::{MetadataExt, OpenOptionsExt},
+            io::AsRawHandle,
+        },
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    // Both selection grants and persisted publication receipts store the
+    // canonical path from the time access was granted.
+    let file = File::options()
+        .read(true)
+        .share_mode(sharing)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    if file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .file_attributes()
+        & FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
+        return Err("FILE_AUTHORITY_DENIED".into());
     }
-    let body = String::from_utf8(body).map_err(|_| "HTTP_RESPONSE_REQUIRES_UTF8")?;
-    Ok(serde_json::json!({"status":status,"headers":headers,"body":body}))
+    let mut buffer = vec![0; 32768];
+    let size = unsafe {
+        GetFinalPathNameByHandleW(
+            file.as_raw_handle() as _,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            0,
+        )
+    } as usize;
+    if size == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if size >= buffer.len() || Path::new(&OsString::from_wide(&buffer[..size])) != path {
+        return Err("FILE_AUTHORITY_DENIED".into());
+    }
+    Ok(file)
 }
 
 #[cfg(test)]

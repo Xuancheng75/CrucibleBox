@@ -81,6 +81,16 @@ export default function PluginLogs({
     return (id: string) => map.get(id) ?? id
   }, [plugins])
 
+  function exportLogs() {
+    const content = logs.map((entry) => JSON.stringify(entry)).join('\n') + '\n'
+    const url = URL.createObjectURL(new Blob([content], { type: 'application/x-ndjson' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'CrucibleBox-plugin-logs.jsonl'
+    anchor.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
   const handleClear = async (id?: string) => {
     try {
       const res = await tauriApi.plugin.clearLogs(id)
@@ -209,6 +219,9 @@ export default function PluginLogs({
             }))}
           />
           <Button onClick={fetchLogs}>刷新</Button>
+          <Button onClick={exportLogs} disabled={loading || logs.length === 0}>
+            导出当前日志
+          </Button>
           {!embedded && (
             <Popconfirm
               title={pluginId ? '清除当前插件日志？' : '清除全部日志？'}

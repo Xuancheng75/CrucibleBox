@@ -386,6 +386,53 @@ iframe[data-plugin-ready='true'] {
   min-width: 0;
 }
 
+.ob-plugin-contribution-strip {
+  flex-shrink: 0;
+  margin-block: 4px 12px;
+}
+
+.ob-plugin-contribution-layout {
+  display: flex;
+  flex: 1;
+  gap: 12px;
+  min-height: 0;
+}
+
+.ob-plugin-contribution-sidebar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 28%;
+}
+
+.ob-plugin-contribution-strip .ant-btn,
+.ob-plugin-contribution-sidebar .ant-btn {
+  height: auto;
+  min-height: 32px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ob-plugin-contribution-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .ob-plugin-contribution-layout {
+    flex-direction: column;
+  }
+
+  .ob-plugin-contribution-sidebar {
+    flex-flow: row wrap;
+    max-width: 100%;
+  }
+}
+
 .ob-plugin-back {
   position: relative;
   z-index: 4;

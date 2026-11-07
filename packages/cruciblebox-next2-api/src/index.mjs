@@ -40,9 +40,31 @@ function validateCapabilitySchema(rule) {
 
 export function validateManifest(raw) {
   const manifest = parse(raw, 'Manifest', contract.budget.manifestBytes)
-  if (semver.lt(manifest.minHostVersion, contract.versions.minHostVersion))
-    throw Error('HOST_VERSION_UNDERSTATED')
+  const features =
+    manifest.tools !== undefined ||
+    manifest.permissions.some((permission) =>
+      ['process:run', 'network:download'].includes(permission)
+    ) ||
+    manifest.contributes.commands.some(
+      (command) => command.placements !== undefined || command.keywords !== undefined
+    )
+  const minimum = features
+    ? contract.versions.featuresHostVersion
+    : contract.versions.minHostVersion
+  if (semver.lt(manifest.minHostVersion, minimum)) throw Error('HOST_VERSION_UNDERSTATED')
   if (manifest.dataMigration) validRange(manifest.dataMigration.fromPluginVersion)
+  const tools = manifest.tools ?? []
+  unique(tools, (tool) => tool.id)
+  if (
+    tools.length &&
+    (!manifest.permissions.includes('process:run') ||
+      tools.some(
+        (tool) =>
+          !tool.entry.toLowerCase().endsWith('.exe') ||
+          !manifest.resources.some((resource) => resource.id === tool.resourceId)
+      ))
+  )
+    throw Error('INVALID_PROCESS_TOOL_DECLARATION')
   if (
     manifest.backgroundIntervalMs !== undefined &&
     (!manifest.background || manifest.backend?.kind !== 'js')
@@ -103,7 +125,13 @@ export function validateManifest(raw) {
       manifest.contributes.fileHandlers?.length)
   )
     throw Error('RENDERER_REQUIRED')
-  if (!manifest.backend && (manifest.background || manifest.exports.length))
+  if (
+    !manifest.backend &&
+    (manifest.background ||
+      manifest.exports.length ||
+      manifest.contributes.commands.length ||
+      tools.length)
+  )
     throw Error('BACKEND_REQUIRED')
   if (manifest.dependencies.some((item) => item.providerId === manifest.id))
     throw Error('SELF_DEPENDENCY')
@@ -184,6 +212,14 @@ export function createClient({ session, exchange }) {
     platform,
     resolveCapability: (id) => platform('capabilities.resolve', { id }),
     writeLog: (entry) => platform('logging.write', entry),
+    files: {
+      info: (ref) => platform('files.info', { ref }),
+      list: (ref) => platform('files.list', { ref }),
+      writeResult: (options) => platform('files.writeResult', options)
+    },
+    network: { download: (options) => platform('network.download', options) },
+    process: { run: (options) => platform('process.run', options) },
+    runtime: { list: () => platform('runtime.list', {}) },
     backend: (method, params, options) =>
       call({ kind: 'backend' }, method, params, options?.signal),
     service: (id, method, params, options) =>
@@ -223,4 +259,8 @@ export function createClient({ session, exchange }) {
       }
     }
   }
+}
+
+export function defineProvider(activate) {
+  return (context) => activate({ ...context, api: createClient(context) })
 }

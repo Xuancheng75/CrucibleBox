@@ -3,6 +3,7 @@ use serde_json::json;
 
 fn main() {
     if let Err(error) = serve(Ok, |client, call| match call.method.as_str() {
+        "ping" => Ok(json!(true)),
         "sum" => {
             let numbers = call.params["numbers"]
                 .as_array()

@@ -2,7 +2,8 @@
 export type ContractVersions = {
   readonly manifestVersion: 7
   readonly sdkApiVersion: 7
-  readonly sdkPackageVersion: '7.0.0-beta.1'
+  readonly sdkPackageVersion: '7.0.0-beta.2'
+  readonly featuresHostVersion: '2.2.0-beta.2'
   readonly minHostVersion: '2.2.0-beta.1'
   readonly wireVersion: 5
   readonly dataSchemaVersion: 1
@@ -25,7 +26,13 @@ export type NativeBackend = {
 }
 export type Backend = JsBackend | NativeBackend
 export type Navigation = { title: string; icon?: string }
-export type Command = { id: string; title: string; method: string }
+export type Command = {
+  id: string
+  title: string
+  method: string
+  placements?: CommandPlacement[]
+  keywords?: string[]
+}
 export type Contributions = {
   navigation?: Navigation
   commands: Command[]
@@ -89,7 +96,12 @@ export type CapabilityBinding = {
   lifecycle: 'on-demand' | 'background'
   export: ServiceExport
 }
-export type LogWriteParams = { level: 'debug' | 'info' | 'warn' | 'error'; message: string }
+export type LogWriteParams = {
+  level: 'debug' | 'info' | 'warn' | 'error'
+  message: string
+  code?: string
+  context?: { stage?: string; detail?: string }
+}
 export type ResourceDependency = {
   id: string
   version: VersionRange
@@ -274,6 +286,8 @@ export type Manifest = {
     | 'tasks:execute'
     | 'browser:downloads'
     | 'network:fetch'
+    | 'process:run'
+    | 'network:download'
   )[]
   background: boolean
   backgroundIntervalMs?: number
@@ -283,6 +297,7 @@ export type Manifest = {
   resources: ResourceDependency[]
   files: FileEntry[]
   config?: Record<string, Json>
+  tools?: ToolDeclaration[]
 }
 export type ResourceManifest = {
   resourceManifestVersion: 1
@@ -494,3 +509,22 @@ export type RendererThemeStyle = {
   motion: 'full' | 'reduced' | 'off'
   layers: { id: string; scope: 'shell' | 'home' | 'workspace'; text: string }[]
 }
+export type ToolDeclaration = { id: string; resourceId: string; entry: string }
+export type ProcessRunParams = {
+  toolId: string
+  args: string[]
+  stdin?: string
+  timeoutMs?: number
+}
+export type ProcessResult = { exitCode: number; stdout: string; stderr: string }
+export type RuntimeStatus = {
+  id: string
+  resourceId: string
+  state: 'ready' | 'missing'
+  version?: string
+}
+export type FileInfo = { name: string; kind: 'file' | 'directory'; bytes: number }
+export type FileWriteResultParams = { name: string; data: string }
+export type NetworkDownloadParams = { url: string; name: string; bytes: number; sha256: string }
+export type StorageUsage = { usedBytes: number; quotaBytes: number }
+export type CommandPlacement = 'toolbar' | 'sidebar' | 'contextMenu' | 'status'

@@ -14,6 +14,7 @@ export interface PluginMeta {
   name: string
   version: string
   displayName: string
+  navigationTitle?: string
   description: string
   author: string
   icon?: string

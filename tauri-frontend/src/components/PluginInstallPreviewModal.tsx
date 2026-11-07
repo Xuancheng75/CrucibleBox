@@ -326,6 +326,7 @@ const PERMISSION_SUMMARIES: Record<string, string> = {
   events: '发布或订阅插件事件',
   tasks: '执行和管理任务',
   network: '访问网络',
+  process: '运行已批准资源包内的本地工具',
   browser: '下载文件',
   theme: '调整界面主题',
   dialog: '显示选择或确认窗口',

@@ -45,7 +45,7 @@ if (command === 'init') {
     displayName: id,
     description: 'Independent plugin example',
     publisher: { id: 'local-developer', displayName: 'Local developer' },
-    minHostVersion: contract.versions.minHostVersion,
+    minHostVersion: contract.versions.featuresHostVersion,
     sdk: {
       min: contract.versions.sdkApiVersion,
       maxExclusive: contract.versions.sdkApiVersion + 1
@@ -89,6 +89,14 @@ if (command === 'init') {
       arch: 'x86_64',
       trust: 'trusted-local-code'
     }
+  if (kind === 'js' || kind === 'native')
+    manifest.contributes.commands.push({
+      id: 'ping',
+      title: 'Check backend',
+      method: 'ping',
+      keywords: ['status'],
+      placements: ['toolbar', 'contextMenu']
+    })
   const config = { schemaVersion: 1, ...(provider ? {} : { renderer: 'src/renderer.mjs' }) }
   if (kind === 'js' || provider) config.backend = 'src/main.mjs'
   if (kind === 'native') config.native = { manifest: 'native/Cargo.toml', binary: 'plugin-backend' }
@@ -105,9 +113,13 @@ if (command === 'init') {
         type: 'module',
         scripts: {
           build: 'cruciblebox-next2 build .',
+          test: 'cruciblebox-next2 check .',
           pack: 'cruciblebox-next2 pack . ' + id + '-1.0.0.zip'
         },
-        dependencies: { '@cruciblebox/next2-api': contract.versions.sdkPackageVersion },
+        dependencies: {
+          '@cruciblebox/next2-api': contract.versions.sdkPackageVersion,
+          ...(provider ? {} : { '@cruciblebox/next2-ui': contract.versions.sdkPackageVersion })
+        },
         devDependencies: { '@cruciblebox/next2-build': VERSION }
       },
       null,
@@ -121,12 +133,12 @@ if (command === 'init') {
   if (!provider)
     await writeFile(
       join(root, 'src/renderer.mjs'),
-      `import {createClient} from '@cruciblebox/next2-api'\nexport function mount(context) {\n const api=createClient(context), button=document.createElement('button'), status=document.createElement('p'); button.textContent='Run example'; status.setAttribute('role','status'); context.root.replaceChildren(button,status);\n const run=async()=>{button.disabled=true;try{${operation};status.textContent=JSON.stringify(result)}catch(error){status.textContent=String(error)}finally{button.disabled=false}};button.addEventListener('click',run);return()=>{button.removeEventListener('click',run);context.root.replaceChildren()};\n}\n`
+      `import {createClient,renderStatus} from '@cruciblebox/next2-ui'\nexport function mount(context) {\n const api=createClient(context), button=document.createElement('button'), status=document.createElement('p'); button.textContent='Run example'; button.className='ob-button'; renderStatus(status,'empty','Ready to run'); context.root.replaceChildren(button,status);\n const run=async()=>{button.disabled=true;renderStatus(status,'loading','Running…');try{${operation};renderStatus(status,'success',JSON.stringify(result))}catch(error){renderStatus(status,'error',String(error))}finally{button.disabled=false}};button.addEventListener('click',run);return()=>{button.removeEventListener('click',run);context.root.replaceChildren()};\n}\n`
     )
   if (kind === 'js' || provider)
     await writeFile(
       join(root, 'src/main.mjs'),
-      "export function activate(){return {sum(params){if(!Array.isArray(params.numbers)||!params.numbers.every(Number.isSafeInteger))throw Object.assign(Error('Expected integers'),{code:'INVALID_NUMBERS'});const sum=params.numbers.reduce((a,b)=>a+b,0);if(!Number.isSafeInteger(sum))throw Object.assign(Error('Sum overflow'),{code:'OVERFLOW'});return sum}}}\n"
+      "import {defineProvider} from '@cruciblebox/next2-api'\nexport const activate=defineProvider(()=>({ping:()=>true,sum(params){if(!Array.isArray(params.numbers)||!params.numbers.every(Number.isSafeInteger))throw Object.assign(Error('Expected integers'),{code:'INVALID_NUMBERS'});const sum=params.numbers.reduce((a,b)=>a+b,0);if(!Number.isSafeInteger(sum))throw Object.assign(Error('Sum overflow'),{code:'OVERFLOW'});return sum}}))\n"
     )
   if (kind === 'native') {
     const sdk = await realpath(resolve(sdkFlag.slice('--native-sdk='.length)))
@@ -240,8 +252,8 @@ if (command === 'catalog') {
   })
   process.exit(0)
 }
-if (!['build', 'pack'].includes(command))
-  throw Error('Usage: cruciblebox-plugin-build <build|pack> [plugin-dir] [new-package.zip]')
+if (!['build', 'check', 'pack'].includes(command))
+  throw Error('Usage: cruciblebox-next2 <build|check|pack> [plugin-dir] [new-package.zip]')
 const root = await realpath(resolve(directory))
 const manifestFile = existsSync(join(root, 'plugin.source.json'))
   ? 'plugin.source.json'
@@ -590,10 +602,10 @@ if (command === 'build') {
     JSON.stringify([...targets].sort())
   )
     throw Error('Manifest inventory differs from build outputs')
-  if (!output) throw Error('Pack requires a new output zip path')
-  const target = resolve(output)
-  if (existsSync(target)) throw Error('Refusing to replace existing package')
-  const zip = new AdmZip()
+  if (command === 'pack' && !output) throw Error('Pack requires a new output zip path')
+  const target = command === 'pack' ? resolve(output) : null
+  if (target && existsSync(target)) throw Error('Refusing to replace existing package')
+  const zip = target ? new AdmZip() : null
   let size = 0
   for (const name of [
     'plugin.json',
@@ -612,10 +624,16 @@ if (command === 'build') {
         entry.sha256 !== createHash('sha256').update(data).digest('hex'))
     )
       throw Error('Payload changed after build: ' + name)
-    zip.addFile(name, data, '', 0o644)
-    zip.getEntry(name).header.time = new Date(2000, 0, 1)
+    if (zip) {
+      zip.addFile(name, data, '', 0o644)
+      zip.getEntry(name).header.time = new Date(2000, 0, 1)
+    }
   }
-  await mkdir(dirname(target), { recursive: true })
-  await writeFile(target, zip.toBuffer(), { flag: 'wx' })
-  console.log(`Packed ${manifest.id}: ${target}`)
+  if (zip) {
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, zip.toBuffer(), { flag: 'wx' })
+    console.log(`Packed ${manifest.id}: ${target}`)
+  } else {
+    console.log(`Checked ${manifest.id}: manifest and ${manifest.files.length} payload files`)
+  }
 }

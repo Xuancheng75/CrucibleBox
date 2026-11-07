@@ -1,7 +1,9 @@
-//! Manifest 6 admission and generic backend routing. Domain methods stay in plugins.
+//! Next 3.0 admission and generic backend routing.
 mod event_service;
 mod lifecycle;
+mod network_service;
 pub(crate) mod platform_service;
+mod process_service;
 mod stream_service;
 use crate::{db::Db, plugin_session::RendererSession};
 use cruciblebox_next2_protocol::{
@@ -46,6 +48,17 @@ fn error(message: String) -> RpcError {
         },
         message: message.chars().take(2048).collect(),
     }
+}
+
+fn managed_child(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    let directory = parent.join(name);
+    if let Err(error) = std::fs::create_dir(&directory) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(format!("MANAGED_DIRECTORY_UNAVAILABLE: {error}"));
+        }
+    }
+    crate::transaction::assert_plain_directory(&directory, "Managed plugin data")?;
+    Ok(directory)
 }
 struct Slot {
     version: String,
@@ -385,18 +398,33 @@ impl Manager {
                 .join(&row.name),
         )
     }
+
+    fn writable_data(row: &crate::db::PluginRow) -> Result<PathBuf, String> {
+        let root = crate::next2_install::data_root(Path::new(&row.installed_path))?;
+        let parent = managed_child(root, "plugin-data")?;
+        managed_child(&parent, &row.name)
+    }
     fn mounts(
         &self,
         row: &crate::db::PluginRow,
         plugin: &ApprovedPlugin,
     ) -> Result<Vec<protocol::ResourceMount>, String> {
+        self.verified_mounts(row, plugin)
+            .map(|verified| verified.into_iter().map(|(mount, _)| mount).collect())
+    }
+
+    fn verified_mounts(
+        &self,
+        row: &crate::db::PluginRow,
+        plugin: &ApprovedPlugin,
+    ) -> Result<Vec<(protocol::ResourceMount, protocol::ResourceManifest)>, String> {
         let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
         let store = Self::data(row)?
             .parent()
             .and_then(Path::parent)
             .ok_or("INVALID_DATA_PATH")?
             .join("plugin-resources");
-        cruciblebox_next2_runtime::resource::resolve(
+        cruciblebox_next2_runtime::resource::resolve_verified(
             &store,
             plugin,
             &crate::next2_install::keys(&db)?,
@@ -963,10 +991,6 @@ impl Manager {
         if provider != owner || params["taskId"] != ctx.task_id() {
             return Err("TASK_AUTHORITY_DENIED".into());
         }
-        let name = params["name"].as_str().unwrap();
-        if name == "." || name == ".." || name.contains(['/', '\\', ':']) {
-            return Err("INVALID_FILE_NAME".into());
-        }
         let row = self.record(owner)?;
         let source_root = Self::data(&row)?
             .canonicalize()
@@ -977,40 +1001,62 @@ impl Manager {
         if !source.starts_with(&source_root) || !source.is_file() {
             return Err("RESULT_MUST_BE_IN_PLUGIN_DATA".into());
         }
+        self.write_output(
+            owner,
+            params["name"].as_str().unwrap(),
+            execution,
+            |stage, _| {
+                let mut input = crate::next2_files::open_authorized(&source)?;
+                let mut output = std::fs::File::create(stage).map_err(|e| e.to_string())?;
+                let size = input.metadata().map_err(|e| e.to_string())?.len();
+                if size > 16 * 1024 * 1024 * 1024 {
+                    return Err("FILE_BUDGET_EXCEEDED".into());
+                }
+                let mut bytes = 0;
+                let mut buffer = [0u8; 65536];
+                loop {
+                    execution.check()?;
+                    let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
+                    if count == 0 {
+                        break;
+                    }
+                    bytes += count as u64;
+                    if bytes > size {
+                        return Err("RESULT_CHANGED_DURING_COPY".into());
+                    }
+                    output
+                        .write_all(&buffer[..count])
+                        .map_err(|e| e.to_string())?;
+                }
+                if bytes != size {
+                    return Err("RESULT_CHANGED_DURING_COPY".into());
+                }
+                output.sync_all().map_err(|e| e.to_string())?;
+                Ok(())
+            },
+        )
+    }
+
+    fn write_output(
+        &self,
+        owner: &str,
+        name: &str,
+        execution: Execution<'_>,
+        write: impl FnOnce(&Path, &crate::task_runtime::Context) -> Result<(), String>,
+    ) -> Result<Value, String> {
+        let (ctx, provider) = execution.task.ok_or("TASK_EXECUTION_REQUIRED")?;
+        if provider != owner {
+            return Err("TASK_AUTHORITY_DENIED".into());
+        }
+        if name.ends_with(['.', ' ']) || name.contains(['/', '\\', ':']) {
+            return Err("INVALID_FILE_NAME".into());
+        }
         let recipient = execution.caller.unwrap_or(owner);
-        let output = Self::data(&self.record(recipient)?)?
-            .join("results")
-            .join(ctx.task_id())
-            .join(name);
+        let data = Self::writable_data(&self.record(recipient)?)?;
+        let results = managed_child(&data, "results")?;
+        let output = managed_child(&results, &ctx.task_id())?.join(name);
         let transaction = crate::output_transaction::OutputTransaction::new(&output, false)?;
-        let mut input = std::fs::File::open(&source).map_err(|e| e.to_string())?;
-        let mut output =
-            std::fs::File::create(transaction.stage_path()).map_err(|e| e.to_string())?;
-        let size = input.metadata().map_err(|e| e.to_string())?.len();
-        if size > 16 * 1024 * 1024 * 1024 {
-            return Err("FILE_BUDGET_EXCEEDED".into());
-        }
-        let mut bytes = 0;
-        let mut buffer = [0u8; 65536];
-        loop {
-            execution.check()?;
-            let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
-            if count == 0 {
-                break;
-            }
-            bytes += count as u64;
-            if bytes > size {
-                return Err("RESULT_CHANGED_DURING_COPY".into());
-            }
-            output
-                .write_all(&buffer[..count])
-                .map_err(|e| e.to_string())?;
-        }
-        if bytes != size {
-            return Err("RESULT_CHANGED_DURING_COPY".into());
-        }
-        output.sync_all().map_err(|e| e.to_string())?;
-        drop(output);
+        write(transaction.stage_path(), ctx)?;
         execution.check()?;
         let published = transaction.publish_durable(ctx, false, |_| Ok(()))?;
         let reference = self.files.grant(recipient, &published)?;

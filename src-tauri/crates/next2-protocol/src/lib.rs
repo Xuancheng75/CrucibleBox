@@ -118,7 +118,22 @@ fn validate_capability_schema(rule: &Value) -> Result<(), String> {
 pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     let manifest: Manifest = schema::parse(raw, "Manifest", BUDGET_MANIFEST_BYTES)?;
     let minimum = semver::Version::parse(&manifest.min_host_version).map_err(|e| e.to_string())?;
-    if minimum < semver::Version::parse(MIN_HOST_VERSION).expect("contract minimum host version") {
+    let features = manifest.tools.is_some()
+        || manifest
+            .permissions
+            .iter()
+            .any(|permission| matches!(permission.as_str(), "process:run" | "network:download"))
+        || manifest
+            .contributes
+            .commands
+            .iter()
+            .any(|command| command.placements.is_some() || command.keywords.is_some());
+    let required = if features {
+        FEATURES_HOST_VERSION
+    } else {
+        MIN_HOST_VERSION
+    };
+    if minimum < semver::Version::parse(required).expect("contract minimum host version") {
         return Err("HOST_VERSION_UNDERSTATED".into());
     }
     if let Some(migration) = &manifest.data_migration {
@@ -136,6 +151,23 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     unique(manifest.exports.iter().map(|v| v.id.as_str()))?;
     unique(manifest.dependencies.iter().map(|v| v.id.as_str()))?;
     unique(manifest.resources.iter().map(|v| v.id.as_str()))?;
+    let tools = manifest.tools.as_deref().unwrap_or_default();
+    unique(tools.iter().map(|tool| tool.id.as_str()))?;
+    if !tools.is_empty()
+        && (!manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "process:run")
+            || tools.iter().any(|tool| {
+                !tool.entry.to_ascii_lowercase().ends_with(".exe")
+                    || !manifest
+                        .resources
+                        .iter()
+                        .any(|resource| resource.id == tool.resource_id)
+            }))
+    {
+        return Err("INVALID_PROCESS_TOOL_DECLARATION".into());
+    }
     unique(manifest.contributes.commands.iter().map(|v| v.id.as_str()))?;
     for export in &manifest.exports {
         let events = export.events.as_deref().unwrap_or_default();
@@ -204,7 +236,11 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
             }
             entries.push(&backend.entry);
         }
-        None if manifest.background || !manifest.exports.is_empty() => {
+        None if manifest.background
+            || !manifest.exports.is_empty()
+            || !manifest.contributes.commands.is_empty()
+            || !tools.is_empty() =>
+        {
             return Err("BACKEND_REQUIRED".into())
         }
         None => {}

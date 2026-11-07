@@ -1113,7 +1113,7 @@ module.exports.activate = ctx => ({ identity: async (params, execution) => {
     assert_eq!(logs.len(), 3);
     let log: Value = serde_json::from_str(&logs[0].message).unwrap();
     assert_eq!(log["taskId"], id);
-    assert_eq!(log["runtime"], "backend");
+    assert_eq!(log["runtime"], "quickjs");
     assert!(db
         .plugin_logs(Some("acme-independent"), None, 10)
         .unwrap()

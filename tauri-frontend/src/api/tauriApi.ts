@@ -13,7 +13,10 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import type { PluginDataMigration } from '../../../packages/cruciblebox-next2-api/src/index.mjs'
+import type {
+  CommandPlacement,
+  PluginDataMigration
+} from '../../../packages/cruciblebox-next2-api/src/index.mjs'
 import type {
   PluginMeta,
   PluginConfig,
@@ -33,6 +36,7 @@ export interface PluginMetaDto {
   name: string
   version: string
   displayName: string
+  navigationTitle?: string
   description: string
   author: string
   icon: string
@@ -62,6 +66,7 @@ export interface PluginCommandContribution {
   id: string
   title: string
   keywords: string[]
+  placements: CommandPlacement[]
 }
 
 export interface PluginFileHandler {
@@ -84,6 +89,7 @@ function toPluginMeta(dto: PluginMetaDto): PluginMeta {
     name: dto.name,
     version: dto.version,
     displayName: dto.displayName,
+    navigationTitle: dto.navigationTitle,
     description: dto.description,
     author: dto.author,
     icon: dto.icon || undefined,
@@ -333,8 +339,8 @@ export const tauriApi = {
   },
 
   plugin: {
-    commandContributions: (): Promise<PluginCommandContribution[]> =>
-      invoke('plugin_command_contributions_list'),
+    commandContributions: (pluginId?: string): Promise<PluginCommandContribution[]> =>
+      invoke('plugin_command_contributions_list', { pluginId }),
     fileHandlers: (): Promise<PluginFileHandler[]> => invoke('plugin_file_handlers_list'),
     tags: {
       list: (): Promise<UserPluginTag[]> => invoke<UserPluginTag[]>('plugin_tags_list'),

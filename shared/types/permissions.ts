@@ -16,7 +16,9 @@ export enum Permission {
   FilesPublish = 'files:publish',
   TasksExecute = 'tasks:execute',
   BrowserDownloads = 'browser:downloads',
-  NetworkFetch = 'network:fetch'
+  NetworkFetch = 'network:fetch',
+  NetworkDownload = 'network:download',
+  ProcessRun = 'process:run'
 }
 export const ALL_PERMISSIONS: Permission[] = Object.values(Permission)
 export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
@@ -37,5 +39,7 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   [Permission.FilesPublish]: 'files:publish',
   [Permission.TasksExecute]: 'tasks:execute',
   [Permission.BrowserDownloads]: 'browser:downloads',
-  [Permission.NetworkFetch]: 'network:fetch'
+  [Permission.NetworkFetch]: 'network:fetch',
+  [Permission.NetworkDownload]: '下载并校验任务文件',
+  [Permission.ProcessRun]: '运行已批准资源包内的本地工具'
 }
