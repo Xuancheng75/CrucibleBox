@@ -2,7 +2,7 @@
 
 CrucibleBox 2.2.0 的平台架构名称为 **Next 3.0**。架构名称与宿主版本、Manifest/API、wire 版本和 SDK 包名分别管理。开发分支沿用 `next2` 包名及契约目录，运行行为见 [2.2.0 开发记录](2.2.0-platform-progress.md)。
 
-当前开发候选 2.2.0-beta.3 执行 Manifest 7、API 7、wire 5，数据 schema 为 1。Tauri/Rust 管理安装、生命周期与持久数据，React 界面管理插件导航、市场、设置与任务。各版本的演进规则见 [P0–P3 复核](2.2.0-p0-p3-recheck.md)，新增能力见 [P4/P5 验证](2.2.0-p4-p5.md)，独立插件与固定宿主验证见 [P5/P6](2.2.0-p5-p6.md)。
+当前源码候选 2.2.0-beta.4 执行 Manifest 7、API 7、wire 5，数据 schema 为 1；固定宿主验收基线为 beta.3，beta.4 优化构建因安全告警中断。Tauri/Rust 管理安装、生命周期与持久数据，React 界面管理插件导航、市场、设置与任务。各版本的演进规则见 [P0–P3 复核](2.2.0-p0-p3-recheck.md)，新增能力见 [P4/P5 验证](2.2.0-p4-p5.md)，独立插件与固定宿主验证见 [P5/P6](2.2.0-p5-p6.md)，当前阻断见 [P7/P8](2.2.0-p7-p8.md)。
 
 宿主不编译任何插件业务，也不按插件名称选择分发路径。前端插件使用 opaque sandbox iframe 与 MessagePort；JS backend 由独立 QuickJS runner 执行；Windows x64 原生 backend 由通用进程监督器执行。服务由 manifest 的 exports/dependencies 声明；宿主只识别平台方法，业务方法按声明路由。
 
@@ -13,3 +13,5 @@ CrucibleBox 2.2.0 的平台架构名称为 **Next 3.0**。架构名称与宿主�
 API 6 及更旧插件停止执行，保留数据库记录、配置、KV、迁移标记与用户文件。升级到 Manifest 7 后按稳定插件身份访问原有命名空间。插件负责解释和迁移自己的业务数据。
 
 能力范围见 [plugin-sdk.md](plugin-sdk.md)，开发与验证见 [development.md](development.md)。
+
+beta.4 源码在 Tauri/数据库初始化前持有同一 APPDATA profile 的排他文件句柄，进程退出或崩溃后由 OS 释放，防止两套任务与安装状态并行写入。不同 profile 可分别持有各自锁；旧宿主不理解该锁，升级前仍必须关闭旧进程。Windows 不再创建“外观”菜单，主题恢复入口在设置页和独立原生快捷键；实际启动效果仍待新候选验收。

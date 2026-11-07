@@ -2,6 +2,8 @@
 
 Next 3.0 开发分支的 Capability Descriptor、授权和 SDK 使用见 [P0/P1 验收](2.2.0-p0-p1.md)。事件订阅、请求取消、任务超时与文件分块见 [P3 IPC、事件与任务](2.2.0-p3.md)。
 
+65 个公共方法的权限、上下文与参数/返回类型见自动生成的 [API 索引](plugin-api-reference.md)，Provider 实现与消费示例见 [Provider 指南](provider-guide.md)。
+
 Next 3.0 开发候选执行 Manifest 7、API 7、wire 5。JS API/UI 为 7.0.0-beta.2，CLI 为 3.0.0-beta.2，Rust SDK 为 0.2.0-beta.2。原有清单形态最低宿主为 2.2.0-beta.1；带工具、下载权限或命令位置/关键词的清单最低为 2.2.0-beta.2，新模板自动采用该版本。契约来源为 contracts/next2/contract.json，公共包位于 packages/cruciblebox-next2-*。候选版本和正式兼容规则见 [版本策略](2.2.0-p0-p3-recheck.md#版本与兼容策略)，新增 API、工具声明、Provider SDK 与独立构建流程见 [P4/P5](2.2.0-p4-p5.md)。
 
 | 插件形态 | 执行环境                     | 适用范围                                                       |

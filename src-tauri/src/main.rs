@@ -18,6 +18,8 @@ mod host_services;
 mod host_task;
 mod install;
 mod install_cleanup;
+#[cfg(windows)]
+mod instance_lock;
 mod journal;
 mod manifest;
 mod marketplace_download;
@@ -43,11 +45,35 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 static SHUTDOWN_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
 type AppEmitter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
 fn db_path_in(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join("data").join("openbox.db")
+}
+
+fn reset_default_theme(app: &tauri::AppHandle) {
+    let result = app
+        .state::<Arc<Mutex<db::Db>>>()
+        .lock()
+        .map_err(|_| "主题设置暂时无法访问".to_string())
+        .and_then(|db| {
+            db.setting_set("theme", "null")
+                .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(()) => {
+            let _ = app.emit("theme:reset", ());
+        }
+        Err(error) => {
+            use tauri_plugin_dialog::DialogExt;
+            app.dialog()
+                .message(format!("恢复默认主题失败：{error}"))
+                .title("恢复默认主题")
+                .show(|_| {});
+        }
+    }
 }
 
 /// Windows 错误对话框（对等 electron 的 dialog.showErrorBox）；
@@ -80,6 +106,20 @@ fn show_fatal_error(message: &str) -> ! {
 }
 
 fn main() {
+    #[cfg(windows)]
+    let _profile_owner = {
+        let (_, target) = data_dir::resolve_paths(None);
+        match instance_lock::acquire(target.parent().expect("profile parent")) {
+            Ok(owner) => owner,
+            Err(error) if error.raw_os_error() == Some(32) => {
+                eprintln!(
+                    "PROFILE_ALREADY_IN_USE: another CrucibleBox host owns this data profile"
+                );
+                std::process::exit(2);
+            }
+            Err(error) => show_fatal_error(&format!("无法锁定工具箱数据目录：{error}")),
+        }
+    };
     tauri::Builder::default()
         // tauri-plugin-updater（1.8.4：JSON 清单 + 强制签名；密钥走 CI secret）
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -89,6 +129,18 @@ fn main() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        if shortcut.matches(
+                            Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT,
+                            Code::KeyR,
+                        ) {
+                            if app
+                                .get_webview_window("main")
+                                .is_some_and(|window| window.is_focused().unwrap_or(false))
+                            {
+                                reset_default_theme(app);
+                            }
+                            return;
+                        }
                         let keys = shortcut.to_string();
                         let _ = app.emit(
                             "plugin:shortcut",
@@ -116,43 +168,6 @@ fn main() {
         })
         .register_uri_scheme_protocol(theme_assets::SCHEME, |ctx, request| {
             theme_assets::from_app(ctx.app_handle()).handle(&request.uri().to_string())
-        })
-        .menu(|app| {
-            use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
-            let reset = MenuItem::with_id(
-                app,
-                "theme-reset",
-                "恢复默认主题",
-                true,
-                Some("Ctrl+Alt+Shift+R"),
-            )?;
-            let appearance = SubmenuBuilder::new(app, "外观").item(&reset).build()?;
-            MenuBuilder::new(app).item(&appearance).build()
-        })
-        .on_menu_event(|app, event| {
-            if event.id().as_ref() != "theme-reset" {
-                return;
-            }
-            let result = app
-                .state::<Arc<Mutex<db::Db>>>()
-                .lock()
-                .map_err(|_| "主题设置暂时无法访问".to_string())
-                .and_then(|db| {
-                    db.setting_set("theme", "null")
-                        .map_err(|error| error.to_string())
-                });
-            match result {
-                Ok(()) => {
-                    let _ = app.emit("theme:reset", ());
-                }
-                Err(error) => {
-                    use tauri_plugin_dialog::DialogExt;
-                    app.dialog()
-                        .message(format!("恢复默认主题失败：{error}"))
-                        .title("外观")
-                        .show(|_| {});
-                }
-            }
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -185,9 +200,6 @@ fn main() {
             }
         })
         .setup(|app| {
-            // Keep the native recovery accelerator without a second Windows menu bar.
-            #[cfg(target_os = "windows")]
-            app.hide_menu()?;
             // 1) L3 数据路径迁移。
             //    策略：迁移失败是数据完整性风险（checkpoint 失败/IO 错误），中止启动并给
             //    用户可见错误框（源数据未动，可关闭旧实例重试）；无旧数据/已迁移则跳过。
@@ -252,6 +264,12 @@ fn main() {
             let backend =
                 backend_process::BackendProcessManager::with_services(db.clone(), services.clone());
             app.manage(db.clone());
+            if let Err(error) = app.global_shortcut().register(Shortcut::new(
+                Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+                Code::KeyR,
+            )) {
+                eprintln!("[theme] recovery shortcut unavailable: {error}");
+            }
             let next_backend = Arc::new(next_backend::Manager::with_services(
                 db.clone(),
                 services.clone(),

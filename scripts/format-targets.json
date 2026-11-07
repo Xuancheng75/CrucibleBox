@@ -15,7 +15,7 @@
   ".github/workflows/ci.yml",
   "README.md",
   "AGENTS.md",
-  "docs/{architecture,security-model,plugin-sdk,install-recovery,development,release-runbook}.md",
+  "docs/{architecture,security-model,plugin-sdk,plugin-api-reference,provider-guide,ai-maintenance,testing,next3-migration,install-recovery,development,release-runbook}.md",
   "shared/frame-validation.{mjs,mts}",
   "shared/types/permissions.ts",
   "LICENSE-SCOPE.md"
