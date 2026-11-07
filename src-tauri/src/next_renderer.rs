@@ -30,7 +30,7 @@ pub fn create_next_renderer_session(
         return Err("SESSION_DENIED".into());
     }
     let (name, entry, permissions, directory): (String, String, String, String) = {
-        let db = db.try_lock().map_err(|_| "BUSY")?;
+        let db = db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?;
         let record = db
             .plugin_find_by_id(&id)
             .map_err(|_| "STORAGE_UNAVAILABLE")?
@@ -53,7 +53,7 @@ pub fn create_next_renderer_session(
         return Err("SESSION_DENIED".into());
     }
     crate::manifest::validate_entrypoints(root, &manifest)?;
-    crate::next2_install::load(&*db.try_lock().map_err(|_| "BUSY")?, root)?;
+    crate::next2_install::load(&*db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?, root)?;
     let permissions: Vec<String> =
         serde_json::from_str(&permissions).map_err(|_| "SESSION_DENIED")?;
     let raw = std::fs::read_to_string(root.join("plugin.json")).map_err(|_| "INVALID_MANIFEST")?;

@@ -1,6 +1,6 @@
 # Next 3.0 Provider 开发指南
 
-公开 API/UI 为 7.0.0-beta.2，CLI 为 3.0.0-beta.2，Rust SDK 为 0.2.0-beta.2。Manifest/API 7、wire 5。已通过固定宿主验收的基线是 2.2.0-beta.3；beta.4 的新构建受安全告警阻断，见 [当前状态](2.2.0-security-incident-20261107.md)。
+公开 API/UI 为 7.0.0-beta.2，CLI 为 3.0.0-beta.3，Rust SDK 为 0.2.0-beta.2。Manifest/API 7、wire 5。P6 固定宿主基线是 2.2.0-beta.3；beta.5 已完成替代依赖构建并在复验，范围与当前状态见 [P7/P8](2.2.0-p7-p8.md)。
 
 ## 独立创建
 

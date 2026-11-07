@@ -2,7 +2,7 @@
 
 ## 当前范围与约束
 
-- 用户于 2026-11-07 要求执行 P7/P8，并追加彻底移除启动时闪现的“外观”菜单栏。当前源码候选 beta.4 的菜单移除、profile 排他锁与相关检查已完成，优化构建时 Kaspersky 两次删除同 MD5 的 cookie 构建脚本；用户确认尚未提交官方复核。保持拦截，相关重建、恢复、运行和分发暂缓，不加排除或换执行方式制造通过。只读核查和文档可继续。见 docs/2.2.0-security-incident-20261107.md、docs/2.2.0-p7-p8.md；P7/P8 不得标为完成。
+- 用户于 2026-11-07 要求执行 P7/P8，并追加彻底移除启动时闪现的“外观”菜单栏。beta.4 原优化构建时 Kaspersky 两次删除同 MD5 的 cookie 构建脚本；用户确认尚未提交官方复核，提供的 OpenTIP 截图仍报 Malware 且无复核入口。用户随后明确要求“调整工具箱实现，继续 P7/P8”。允许实施可审阅的依赖替代并验证：固定 cookie 0.18.2 原版运行库源码，移除仅服务 nightly 文档的构建探测程序。旧告警对象保持拦截，不恢复、不重建、不改名或添加排除项；防护保持开启。替代候选须重新完成构建、安全扫描和固定宿主验收，不能据此认定旧对象误报。见 docs/2.2.0-security-incident-20261107.md、docs/2.2.0-p7-p8.md；未完成项不得标为通过。
 
 - 用户于 2026-11-05 明确要求发布 2.1.1，并确认“公开 GitHub 正式版，并更新本机 Portable”。本轮允许宿主公开仓库所需推送、PR、合并、标签、Release 和稳定渠道更新，以及七个保留插件的分发制品发布；插件私有源码、私密构建输入不公开，已撤下的文档工作台不随本次发布恢复。未提供的 P7 人工结果继续标为未测，不补写验收通过。
 
@@ -19,7 +19,7 @@
 
 ## 当前代码与契约
 
-宿主源码候选 2.2.0-beta.4，已固定验收的基线为 beta.3，Tauri/Rust + React + SQLite。P4/P5 能力见 docs/2.2.0-p4-p5.md；P5/P6 固定宿主验收及完成时间修复见 docs/2.2.0-p5-p6.md。公共 API/UI、CLI、Rust SDK 继续使用 beta.2 包，最低宿主声明按所用能力管理。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
+宿主源码候选 2.2.0-beta.6，P6 已固定验收的基线为 beta.3，Tauri/Rust + React + SQLite。P4/P5 能力见 docs/2.2.0-p4-p5.md；P5/P6 固定宿主验收及完成时间修复见 docs/2.2.0-p5-p6.md。公共 API/UI 为 7.0.0-beta.2，CLI 为 3.0.0-beta.3，Rust SDK 为 0.2.0-beta.2，最低宿主声明按所用能力管理。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
 
 原生插件是可信本地代码；进程隔离不等于 OS 安全沙箱。安装文件清单、签名/确认、路径边界、owner/session 归属、取消确认及数据保留不能删减。
 

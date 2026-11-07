@@ -1,6 +1,6 @@
 [package]
 name = "cruciblebox"
-version = "2.2.0-beta.4"
+version = "2.2.0-beta.6"
 edition = "2021"
 description = "CrucibleBox - extensible Windows toolbox (Tauri 2)"
 authors = ["CrucibleBox"]
@@ -59,6 +59,10 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 cruciblebox-repository = { path = "crates/repository", features = ["test-fixtures"] }
 tempfile = "=3.27.0"
+
+[patch.crates-io]
+# Stable builds need the library, not its nightly documentation probe executable.
+cookie = { path = "vendor/cookie" }
 
 [profile.release]
 strip = true
