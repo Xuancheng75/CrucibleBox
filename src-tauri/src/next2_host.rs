@@ -1080,7 +1080,7 @@ impl Manager {
         let Some(mut value) = self.services.runtime.get(owner, id) else {
             return Ok(None);
         };
-        if terminal(&value) && value["completedAt"].as_u64().unwrap_or(0) == 0 {
+        if terminal(&value) {
             restore_task_outcome(
                 &*self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?,
                 owner,
@@ -1159,6 +1159,14 @@ fn restore_task_outcome(
         .setting_get(&format!("next2.task-result.{id}"))
         .map_err(|e| e.to_string())?;
     let Some(raw) = stored else {
+        // Publication can precede the durable executor outcome. Keep the
+        // existing pending-completion sentinel until that outcome is available.
+        if value["completedAt"].as_u64().is_some_and(|time| time > 0) {
+            if value["status"] == "succeeded" && value.get("executionError").is_none() {
+                value["completedAt"] = json!(0);
+            }
+            return Ok(());
+        }
         value["resultUnavailable"] = json!(true);
         if let Some(previous) = cruciblebox_repository::task_projection::get(db, id)? {
             if previous.owner != owner {
@@ -1216,6 +1224,88 @@ mod task_outcome_tests {
         ));
         std::fs::create_dir(&root).unwrap();
         root
+    }
+    #[test]
+    fn public_completion_time_is_identical_before_and_after_runtime_reopen() {
+        let root = directory();
+        let db = Arc::new(Mutex::new(Db::open(&root.join("data.db")).unwrap()));
+        let path = root.join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&path).unwrap();
+        let task_runtime = runtime.clone();
+        let task_db = db.clone();
+        let (published, publication) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let id = runtime
+            .start(
+                "sample-alpha",
+                "next2:sample-alpha",
+                Box::new(move |ctx| {
+                    let created = task_runtime.get("sample-alpha", &ctx.task_id()).unwrap()
+                        ["createdAt"]
+                        .as_u64()
+                        .unwrap();
+                    let result = Ok(json!({"answer":42}));
+                    ctx.begin_external_commit()?;
+                    ctx.finish_external_commit(&result)?;
+                    published.send(()).map_err(|error| error.to_string())?;
+                    resumed.recv().map_err(|error| error.to_string())?;
+                    save_task_outcome(
+                        &task_db.lock().unwrap(),
+                        "sample-alpha",
+                        &ctx.task_id(),
+                        created,
+                        &result,
+                    )?;
+                    // Executor cleanup occurs after its durable outcome is written.
+                    std::thread::sleep(Duration::from_millis(30));
+                    result
+                }),
+            )
+            .unwrap();
+        publication.recv_timeout(Duration::from_secs(10)).unwrap();
+        let manager = Manager::new(
+            db.clone(),
+            Arc::new(crate::host_services::Services::new(runtime.clone())),
+            Arc::default(),
+            PathBuf::new(),
+        );
+        let published_time = runtime.get("sample-alpha", &id).unwrap()["completedAt"].clone();
+        assert_eq!(
+            manager
+                .task("sample-alpha", "sample-alpha", &id, true)
+                .unwrap()
+                .unwrap()["completedAt"],
+            0
+        );
+        resume.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while runtime.get("sample-alpha", &id).unwrap()["completedAt"] == published_time {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let before = manager
+            .task("sample-alpha", "sample-alpha", &id, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before["result"], json!({"answer":42}));
+        drop(manager);
+        drop(runtime);
+        let reopened = crate::task_runtime::TaskRuntime::open(&path).unwrap();
+        let manager = Manager::new(
+            db,
+            Arc::new(crate::host_services::Services::new(reopened)),
+            Arc::default(),
+            PathBuf::new(),
+        );
+        let after = manager
+            .task("sample-alpha", "sample-alpha", &id, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before["completedAt"], after["completedAt"]);
+        assert_eq!(before["createdAt"], after["createdAt"]);
+        assert_eq!(before["result"], after["result"]);
+        drop(manager);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn full_outcome_survives_database_reopen_and_keeps_owner() {
