@@ -1,6 +1,6 @@
 # 本地交付与发布
 
-当前 2.2.0-beta.5 已完成用户授权的依赖替代、优化构建和隔离程序扫描，P7 长测与 P8 本地交付仍在进行，见 [执行记录](2.2.0-p7-p8.md)。原告警对象继续拦截，未取得专家误报复核结论。以下流程不构成恢复受检对象、对外上传或公开发布的授权；实际制品与未测边界以执行记录为准。
+当前 2.2.0-beta.6 已完成依赖替代、优化构建、程序及交付包扫描、完整小时、用户指定的原生操作回执和解压制品实际安装/调用；本地候选及清单见 [执行记录](2.2.0-p7-p8.md)。原告警对象继续拦截，未取得专家误报复核结论。以下流程不构成恢复受检对象、对外上传或公开发布的授权；实际制品与未测边界以执行记录为准。
 
 ## Next 3.0 冻结条件
 
@@ -15,6 +15,8 @@
 前端构建及九处版本对齐通过后，用正式资源配置构建宿主。隔离数据中执行固定宿主验收，不运行系统安装器或增加本机安装实例。SDK 独立 npm pack/Cargo 包、CLI 模板 init/build/check/pack、包安装及真实调用分别验证。业务源码、构建输入和逐项业务结果留在独立插件仓库。
 
 分发清单至少说明宿主/runner、支持的公开 SDK、独立插件包、必要资源、版本兼容、权限变化、旧执行链停止和数据保留。现有工作流生成 Rust SBOM 与来源证明；npm SBOM 使用 npm run generate:sbom 补齐，完整附件使用 node scripts/generate-release-checksums.mjs <最终制品目录> 生成 SHA256SUMS。最终清单生成后冻结附件。源包摘要通过不能代替二进制安全复核，构建成功也不能代替防护扫描。
+
+本地 Windows x64 SDK 包携带 API/UI/CLI、esbuild 及本机二进制、adm-zip、semver 的七个 tarball、原生 SDK crate、契约及 API 索引。离线锁文件保留 esbuild 所有平台的可选依赖元数据，只将本机依赖指定为随附文件；必须解压到新目录、用空 npm 缓存执行 npm ci --offline --ignore-scripts，再独立生成、构建、测试及打包插件。四份 SBOM 分别命名为 cruciblebox-rust、cruciblebox-plugin-host、cruciblebox-npm、cruciblebox-frontend-npm，避免同名覆盖。附制品 SHA256SUMS、程序身份、来源提交、许可、已知限制和真实验收状态。
 
 现有 Tauri 发布链见 [.github/workflows/tauri-release.yml](../.github/workflows/tauri-release.yml)：tauri-vX.Y.Z[-beta.N|-rc.N] 必须与配置版本一致，预发布与稳定渠道分开。工作流构建 NSIS、Portable、updater 清单及签名、SBOM 和证明并保存草稿 Release。updater 使用 minisign；当前零证书策略下 Authenticode 为 NotSigned，不写成 Windows 受信发行者签名。私钥仅使用受控机密配置，不写入源码、文档或交付包。
 

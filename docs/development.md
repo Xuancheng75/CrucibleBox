@@ -4,7 +4,7 @@
 
 固定宿主的 P5/P6 验收与 beta.3 完成时间修复见 [P5/P6](2.2.0-p5-p6.md)。独立插件仓库保存实际业务源码和验收工具；宿主只保留通用平台修复及其回归。固定程序后再构建插件，程序发生变化时重新固定并从新隔离数据开始。
 
-beta.5 使用 src-tauri/vendor/cookie 中的原版运行库，仅关闭 nightly 文档探测构建脚本，来源、许可与升级复查要求见该目录 ORIGIN.md。原告警对象继续保持拦截；替代候选的构建与扫描不能视为原对象误报结论。最新验收见 [P7/P8](2.2.0-p7-p8.md) 和 [安全记录](2.2.0-security-incident-20261107.md)。Provider 与维护入口见 [Provider 指南](provider-guide.md)、[维护指南](ai-maintenance.md)。
+beta.6 使用 src-tauri/vendor/cookie 中的原版运行库，仅关闭 nightly 文档探测构建脚本，来源、许可与升级复查要求见该目录 ORIGIN.md。原告警对象继续保持拦截；替代候选的构建与扫描不能视为原对象误报结论。最新验收见 [P7/P8](2.2.0-p7-p8.md) 和 [安全记录](2.2.0-security-incident-20261107.md)。Provider 与维护入口见 [Provider 指南](provider-guide.md)、[维护指南](ai-maintenance.md)。
 
 宿主目录只保存平台、公共 SDK/契约和必要开发资料。业务插件在独立仓库开发。所有本地构建/测试都把 TEMP、TMP、TMPDIR 指向本仓库 .workbench/temp，npm cache 指向 .workbench/npm-cache；不向系统临时目录生成测试树。
 
