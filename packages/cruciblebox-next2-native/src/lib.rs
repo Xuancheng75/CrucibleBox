@@ -1,4 +1,4 @@
-//! Wire 4 backend helpers. Native plugins execute as trusted local code.
+//! Wire 5 backend helpers. Native plugins execute as trusted local code.
 mod generated;
 pub use generated::{
     CapabilityBinding, CapabilityEvent, CapabilityMethod, CapabilitySchema, RpcError as Error,
@@ -186,6 +186,18 @@ pub struct Call {
     sequence: AtomicU64,
 }
 impl Call {
+    pub fn task_context(&self) -> Result<TaskContext<'_>> {
+        if self.task_id.is_none() {
+            return Err(Error::new(
+                "TASK_EXECUTION_REQUIRED",
+                "A host task is required",
+            ));
+        }
+        Ok(TaskContext {
+            call: self,
+            committing: std::cell::Cell::new(false),
+        })
+    }
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
@@ -202,6 +214,75 @@ impl Call {
         })?;
         self.client.platform("tasks.progress", json!({"taskId":task,"sequence":self.sequence.fetch_add(1, Ordering::Relaxed) + 1,"stage":stage,"percent":percent,"message":message}))?;
         Ok(())
+    }
+}
+/// One host task: progress, cancellation and durable publication stay in the host.
+pub struct TaskContext<'a> {
+    call: &'a Call,
+    committing: std::cell::Cell<bool>,
+}
+impl TaskContext<'_> {
+    pub fn is_cancelled(&self) -> bool {
+        self.call.is_cancelled()
+    }
+    pub fn check_cancelled(&self) -> std::result::Result<(), String> {
+        self.call
+            .check_cancelled()
+            .map_err(|error| error.to_string())
+    }
+    pub fn update_progress(
+        &self,
+        stage: &str,
+        percent: u32,
+        message: &str,
+    ) -> std::result::Result<(), String> {
+        self.call
+            .progress(stage, percent, message)
+            .map_err(|error| error.to_string())
+    }
+    pub fn begin_commit(&self) -> std::result::Result<(), String> {
+        if self.committing.get() {
+            return Ok(());
+        }
+        self.check_cancelled()?;
+        // Once sent, a lost reply can leave a durable host reservation. Retain
+        // staging on uncertain outcomes so host recovery can inspect it.
+        self.committing.set(true);
+        self.call
+            .client
+            .platform("tasks.beginCommit", json!({"taskId":self.call.task_id}))
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    pub fn publication_pending(&self) -> bool {
+        self.committing.get()
+    }
+    pub fn publish_file(
+        &self,
+        stage: &std::path::Path,
+        target: &std::path::Path,
+        replace: bool,
+        terminal: bool,
+    ) -> std::result::Result<Value, String> {
+        self.publish_object(stage, target, replace, terminal, None)
+    }
+    pub fn publish_object(
+        &self,
+        stage: &std::path::Path,
+        target: &std::path::Path,
+        replace: bool,
+        terminal: bool,
+        reference: Option<&std::path::Path>,
+    ) -> std::result::Result<Value, String> {
+        self.begin_commit()?;
+        let mut params = json!({"taskId":self.call.task_id,"stage":stage,"target":target,"replace":replace,"terminal":terminal});
+        if let Some(reference) = reference {
+            params["reference"] = json!(reference);
+        }
+        self.call
+            .client
+            .platform("tasks.publishNative", params)
+            .map_err(|error| error.to_string())
     }
 }
 struct ActiveCall {

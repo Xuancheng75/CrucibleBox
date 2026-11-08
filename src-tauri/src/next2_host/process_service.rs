@@ -102,9 +102,57 @@ impl Manager {
             .map_err(|error| format!("PROCESS_WORKSPACE_FAILED: {error}"))?;
         let deadline =
             Instant::now() + Duration::from_millis(params["timeoutMs"].as_u64().unwrap_or(30000));
+        let directory = params["workingDirectory"]
+            .as_str()
+            .map(|reference| self.resolve_file(&row.name, execution.caller, reference))
+            .transpose()?;
+        let directory = directory
+            .as_deref()
+            .unwrap_or(scratch.path())
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let authorized_directory = crate::next2_files::open_authorized(&directory)?;
+        if !authorized_directory
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            return Err("DIRECTORY_REQUIRED".into());
+        }
+        let environment: std::collections::HashMap<String, String> = params
+            .get("environment")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|_| "INVALID_PROCESS_ENVIRONMENT")?
+            .unwrap_or_default();
+        if environment.len() > 32 {
+            return Err("PROCESS_ENVIRONMENT_LIMIT".into());
+        }
+        let mut names = std::collections::HashSet::new();
+        for (name, value) in &environment {
+            if name.is_empty()
+                || name.len() > 128
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                || name.as_bytes()[0].is_ascii_digit()
+                || value.contains('\0')
+                || !names.insert(name.to_ascii_uppercase())
+            {
+                return Err("INVALID_PROCESS_ENVIRONMENT".into());
+            }
+            if matches!(
+                name.to_ascii_uppercase().as_str(),
+                "TEMP" | "TMP" | "TMPDIR" | "SYSTEMROOT"
+            ) {
+                return Err("PROCESS_ENVIRONMENT_RESERVED".into());
+            }
+        }
         let output = cruciblebox_next2_runtime::tool::run(
             &path,
+            &directory,
             scratch.path(),
+            &environment,
             &args,
             &input,
             deadline,

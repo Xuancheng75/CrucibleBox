@@ -688,11 +688,18 @@ impl Context {
                 drop(gate);
                 continue;
             }
-            self.runtime.apply(
-                &self.owner,
-                &self.id,
-                Action::PreparePublication(format!("external:{}", self.id)),
-            )?;
+            let journal = format!("external:{}", self.id);
+            if self
+                .runtime
+                .snapshot(&self.owner, &self.id)?
+                .publication
+                .as_deref()
+                == Some(&journal)
+            {
+                return Ok(());
+            }
+            self.runtime
+                .apply(&self.owner, &self.id, Action::PreparePublication(journal))?;
             return Ok(());
         }
     }
@@ -1343,6 +1350,33 @@ mod tests {
         );
         assert_eq!(
             reopened.get("sample-alpha", &document).unwrap()["status"],
+            "succeeded"
+        );
+    }
+
+    #[test]
+    fn repeated_native_commit_gate_keeps_one_reservation_and_rejects_late_cancel() {
+        let runtime = TaskRuntime::memory();
+        let control = runtime.clone();
+        let result = runtime
+            .run_sync(
+                "sample-alpha",
+                "native-output",
+                Some("one-host-task"),
+                move |context| {
+                    context.begin_external_commit()?;
+                    context.begin_external_commit()?;
+                    assert!(context.publication_pending());
+                    assert!(!control.cancel("sample-alpha", "one-host-task"));
+                    let outcome = Ok(json!({"complete":true}));
+                    context.finish_external_commit(&outcome)?;
+                    outcome
+                },
+            )
+            .unwrap();
+        assert_eq!(result, json!({"complete":true}));
+        assert_eq!(
+            runtime.get("sample-alpha", "one-host-task").unwrap()["status"],
             "succeeded"
         );
     }

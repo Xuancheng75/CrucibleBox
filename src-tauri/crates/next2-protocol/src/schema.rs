@@ -119,6 +119,15 @@ pub fn normalize(rule: &Value, value: &mut Value) {
             normalize(&rule["items"], item);
         }
     } else if let Some(object) = value.as_object_mut() {
+        if let Some(properties) = rule["properties"].as_object() {
+            for (name, child) in properties {
+                if !object.contains_key(name) {
+                    if let Some(default) = child.get("default") {
+                        object.insert(name.clone(), default.clone());
+                    }
+                }
+            }
+        }
         for (key, item) in object {
             if let Some(child) = rule["properties"].get(key) {
                 normalize(child, item);

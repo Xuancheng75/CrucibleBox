@@ -18,7 +18,10 @@ export enum Permission {
   BrowserDownloads = 'browser:downloads',
   NetworkFetch = 'network:fetch',
   NetworkDownload = 'network:download',
-  ProcessRun = 'process:run'
+  ProcessRun = 'process:run',
+  RuntimeExecute = 'runtime:execute',
+  NativePublish = 'native:publish',
+  FilesWrite = 'files:write'
 }
 export const ALL_PERMISSIONS: Permission[] = Object.values(Permission)
 export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
@@ -41,5 +44,8 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   [Permission.BrowserDownloads]: 'browser:downloads',
   [Permission.NetworkFetch]: 'network:fetch',
   [Permission.NetworkDownload]: '下载并校验任务文件',
-  [Permission.ProcessRun]: '运行已批准资源包内的本地工具'
+  [Permission.ProcessRun]: '运行已批准资源包内的本地工具',
+  [Permission.RuntimeExecute]: '执行本地运行环境任务，可访问当前用户文件和网络',
+  [Permission.NativePublish]: '由可信本地插件提交文件或目录输出',
+  [Permission.FilesWrite]: '在授权范围创建、改写、复制、移动或删除文件'
 }

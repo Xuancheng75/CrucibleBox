@@ -4,13 +4,14 @@ export const contract = {
   versions: {
     manifestVersion: 7,
     sdkApiVersion: 7,
-    sdkPackageVersion: '7.0.0-beta.2',
+    sdkPackageVersion: '7.0.0-beta.3',
     featuresHostVersion: '2.2.0-beta.2',
     minHostVersion: '2.2.0-beta.1',
     wireVersion: 5,
     dataSchemaVersion: 1,
     resourceManifestVersion: 1,
-    catalogVersion: 1
+    catalogVersion: 1,
+    completionHostVersion: '2.2.0-beta.7'
   },
   budget: {
     eventBytes: 8192,
@@ -1148,7 +1149,10 @@ export const contract = {
               'browser:downloads',
               'network:fetch',
               'process:run',
-              'network:download'
+              'network:download',
+              'runtime:execute',
+              'native:publish',
+              'files:write'
             ]
           },
           maxItems: 128,
@@ -1162,7 +1166,17 @@ export const contract = {
         resources: { type: 'array', items: { $ref: '#/$defs/ResourceDependency' }, maxItems: 64 },
         files: { type: 'array', items: { $ref: '#/$defs/FileEntry' }, maxItems: 5000, minItems: 1 },
         config: { type: 'object', additionalProperties: true },
-        tools: { type: 'array', items: { $ref: '#/$defs/ToolDeclaration' }, maxItems: 16 }
+        tools: { type: 'array', items: { $ref: '#/$defs/ToolDeclaration' }, maxItems: 16 },
+        runtimeCapabilities: {
+          type: 'array',
+          items: { $ref: '#/$defs/RuntimeCapability' },
+          maxItems: 16
+        },
+        runtimeRequirements: {
+          type: 'array',
+          items: { $ref: '#/$defs/RuntimeRequirement' },
+          maxItems: 16
+        }
       }
     },
     ResourceManifest: {
@@ -1201,7 +1215,8 @@ export const contract = {
           maxItems: 20000,
           minItems: 1
         },
-        publisher: { $ref: '#/$defs/Publisher' }
+        publisher: { $ref: '#/$defs/Publisher' },
+        runtimeIdentity: { $ref: '#/$defs/RuntimeIdentity' }
       }
     },
     RendererAppearance: {
@@ -1816,7 +1831,13 @@ export const contract = {
           maxItems: 32
         },
         stdin: { type: 'string', minLength: 0, maxLength: 5464 },
-        timeoutMs: { type: 'integer', minimum: 100, maximum: 60000 }
+        timeoutMs: { type: 'integer', minimum: 100, maximum: 60000 },
+        workingDirectory: { type: 'string', minLength: 1, maxLength: 64, since: '2.2.0-beta.7' },
+        environment: {
+          type: 'object',
+          additionalProperties: { type: 'string', maxLength: 4096 },
+          since: '2.2.0-beta.7'
+        }
       }
     },
     ProcessResult: {
@@ -1879,242 +1900,607 @@ export const contract = {
         quotaBytes: { type: 'integer', minimum: 1, maximum: 9007199254740991 }
       }
     },
-    CommandPlacement: { enum: ['toolbar', 'sidebar', 'contextMenu', 'status'] }
+    CommandPlacement: { enum: ['toolbar', 'sidebar', 'contextMenu', 'status'] },
+    CapabilityAvailability: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'state'],
+      properties: {
+        id: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        state: {
+          enum: ['registered', 'starting', 'ready', 'failed', 'stopping', 'stopped', 'unavailable']
+        },
+        providerId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        providerVersion: { type: 'string', maxLength: 100 },
+        version: { type: 'string', maxLength: 100 },
+        error: { $ref: '#/$defs/RpcError' }
+      }
+    },
+    PlatformMethodContract: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'permission', 'contexts', 'paramsSchema', 'resultSchema'],
+      properties: {
+        name: { type: 'string', maxLength: 128 },
+        permission: { oneOf: [{ type: 'null' }, { type: 'string', maxLength: 64 }] },
+        contexts: { type: 'array', items: { enum: ['renderer', 'backend'] }, maxItems: 2 },
+        paramsSchema: { type: 'string', maxLength: 200 },
+        resultSchema: { type: 'string', maxLength: 200 }
+      }
+    },
+    CapabilityDescription: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['availability'],
+      properties: {
+        availability: { $ref: '#/$defs/CapabilityAvailability' },
+        binding: { $ref: '#/$defs/CapabilityBinding' },
+        kind: { enum: ['host', 'plugin', 'runtime'] },
+        methodContracts: {
+          type: 'array',
+          items: { $ref: '#/$defs/PlatformMethodContract' },
+          maxItems: 128
+        },
+        environment: { $ref: '#/$defs/RuntimeEnvironment' }
+      }
+    },
+    CapabilityListParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: [],
+      properties: {
+        after: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        limit: { type: 'integer', minimum: 1, maximum: 16, default: 16 }
+      }
+    },
+    CapabilityPage: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['items'],
+      properties: {
+        items: { type: 'array', items: { $ref: '#/$defs/CapabilityAvailability' }, maxItems: 16 },
+        next: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' }
+      }
+    },
+    RuntimeCapability: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['capabilityId', 'toolId', 'engine'],
+      properties: {
+        capabilityId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        toolId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        engine: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' }
+      }
+    },
+    NativePublicationParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId', 'stage', 'target', 'replace', 'terminal'],
+      properties: {
+        taskId: { type: 'string', minLength: 1, maxLength: 128 },
+        stage: { type: 'string', minLength: 1, maxLength: 32760 },
+        target: { type: 'string', minLength: 1, maxLength: 32760 },
+        replace: { type: 'boolean' },
+        terminal: { type: 'boolean' },
+        reference: { type: 'string', minLength: 1, maxLength: 32760 }
+      }
+    },
+    NativePublicationResult: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path'],
+      properties: { path: { type: 'string', minLength: 1, maxLength: 32760 } }
+    },
+    FileChildParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref', 'path'],
+      properties: {
+        ref: { type: 'string', minLength: 1, maxLength: 64 },
+        path: { type: 'string', minLength: 1, maxLength: 1024 }
+      }
+    },
+    FileDirectoryCreateParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref', 'name'],
+      properties: {
+        ref: { type: 'string', minLength: 1, maxLength: 64 },
+        name: { type: 'string', minLength: 1, maxLength: 240 }
+      }
+    },
+    FileWalkParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref'],
+      properties: {
+        ref: { type: 'string', minLength: 1, maxLength: 64 },
+        recursive: { type: 'boolean', default: false },
+        after: { type: 'string', minLength: 1, maxLength: 1024 },
+        limit: { type: 'integer', minimum: 1, maximum: 16, default: 16 }
+      }
+    },
+    FileWalkEntry: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path', 'info'],
+      properties: {
+        path: { type: 'string', minLength: 1, maxLength: 1024 },
+        info: { $ref: '#/$defs/FileInfo' }
+      }
+    },
+    FileWalkPage: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['items'],
+      properties: {
+        items: { type: 'array', items: { $ref: '#/$defs/FileWalkEntry' }, maxItems: 16 },
+        next: { type: 'string', minLength: 1, maxLength: 1024 }
+      }
+    },
+    FileTransferParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref', 'directory', 'name'],
+      properties: {
+        ref: { type: 'string', minLength: 1, maxLength: 64 },
+        directory: { type: 'string', minLength: 1, maxLength: 64 },
+        name: { type: 'string', minLength: 1, maxLength: 240 },
+        replace: { type: 'boolean', default: false },
+        recursive: { type: 'boolean', default: false }
+      }
+    },
+    FileRemoveParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref'],
+      properties: {
+        ref: { type: 'string', minLength: 1, maxLength: 64 },
+        recursive: { type: 'boolean', default: false }
+      }
+    },
+    FileTemporaryParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'name'],
+      properties: {
+        kind: { enum: ['file', 'directory'] },
+        name: { type: 'string', minLength: 1, maxLength: 240 }
+      }
+    },
+    FileReferenceParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref'],
+      properties: { ref: { type: 'string', minLength: 1, maxLength: 64 } }
+    },
+    FileWriteManagedParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name'],
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 240 },
+        bytes: { type: 'integer', minimum: 0, maximum: 17179869184 }
+      }
+    },
+    FileWriteDirectoryParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['directory', 'name'],
+      properties: {
+        directory: { type: 'string', minLength: 1, maxLength: 64 },
+        name: { type: 'string', minLength: 1, maxLength: 240 },
+        bytes: { type: 'integer', minimum: 0, maximum: 17179869184 },
+        replace: { type: 'boolean', default: false }
+      }
+    },
+    FileWriteTargetParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref'],
+      properties: {
+        ref: { type: 'string', minLength: 1, maxLength: 64 },
+        bytes: { type: 'integer', minimum: 0, maximum: 17179869184 },
+        replace: { type: 'boolean', default: false }
+      }
+    },
+    FileWriteOpenParams: {
+      oneOf: [
+        { $ref: '#/$defs/FileWriteManagedParams' },
+        { $ref: '#/$defs/FileWriteDirectoryParams' },
+        { $ref: '#/$defs/FileWriteTargetParams' }
+      ]
+    },
+    FileWriteStream: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['streamId'],
+      properties: { streamId: { type: 'string', minLength: 1, maxLength: 64 } }
+    },
+    FileWriteChunkParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['streamId', 'data'],
+      properties: {
+        streamId: { type: 'string', minLength: 1, maxLength: 64 },
+        data: { type: 'string', maxLength: 32768 }
+      }
+    },
+    FileWriteChunkResult: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['bytes'],
+      properties: { bytes: { type: 'integer', minimum: 0, maximum: 17179869184 } }
+    },
+    FileWatchParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['ref'],
+      properties: {
+        ref: { type: 'string', minLength: 1, maxLength: 64 },
+        recursive: { type: 'boolean', default: false }
+      }
+    },
+    FileWatch: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['watchId'],
+      properties: { watchId: { type: 'string', minLength: 1, maxLength: 64 } }
+    },
+    FileWatchIdParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['watchId'],
+      properties: { watchId: { type: 'string', minLength: 1, maxLength: 64 } }
+    },
+    FileWatchEvent: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path', 'kind'],
+      properties: {
+        path: { type: 'string', minLength: 1, maxLength: 1024 },
+        kind: { enum: ['created', 'modified', 'removed'] }
+      }
+    },
+    FileWatchPoll: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['events', 'overflow'],
+      properties: {
+        events: { type: 'array', items: { $ref: '#/$defs/FileWatchEvent' }, maxItems: 16 },
+        overflow: { type: 'boolean' }
+      }
+    },
+    RuntimeRequirement: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['capabilityId', 'engine', 'version'],
+      properties: {
+        capabilityId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        engine: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        version: { $ref: '#/$defs/VersionRange' }
+      }
+    },
+    RuntimeEnvironment: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['engine', 'version', 'toolId', 'resourceId', 'resourceVersion'],
+      properties: {
+        engine: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        version: { type: 'string', minLength: 1, maxLength: 100, format: 'semver-without-build' },
+        toolId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        resourceId: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        resourceVersion: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 100,
+          format: 'semver-without-build'
+        }
+      }
+    },
+    RuntimeRunParams: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['args'],
+      properties: {
+        args: {
+          type: 'array',
+          items: { type: 'string', minLength: 0, maxLength: 1024 },
+          maxItems: 32
+        },
+        stdin: { type: 'string', minLength: 0, maxLength: 5464 },
+        timeoutMs: { type: 'integer', minimum: 100, maximum: 60000 },
+        workingDirectory: { type: 'string', minLength: 1, maxLength: 64, since: '2.2.0-beta.7' },
+        environment: {
+          type: 'object',
+          additionalProperties: { type: 'string', maxLength: 4096 },
+          since: '2.2.0-beta.7'
+        }
+      }
+    },
+    RuntimeIdentity: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['engine', 'version'],
+      properties: {
+        engine: { type: 'string', minLength: 1, maxLength: 64, format: 'plugin-id' },
+        version: { type: 'string', minLength: 1, maxLength: 100, format: 'semver-without-build' }
+      }
+    }
   },
   methods: {
     'events.subscribe': {
       permission: 'events:subscribe',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/EventTopicParams' },
-      result: { $ref: '#/$defs/EventSubscription' }
+      result: { $ref: '#/$defs/EventSubscription' },
+      since: '2.2.0-beta.1'
     },
     'events.publish': {
       permission: 'events:publish',
       contexts: ['backend'],
       params: { $ref: '#/$defs/EventPublishParams' },
-      result: { $ref: '#/$defs/EventPublishResult' }
+      result: { $ref: '#/$defs/EventPublishResult' },
+      since: '2.2.0-beta.1'
     },
     'events.poll': {
       permission: 'events:subscribe',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/EventSubscriptionParams' },
-      result: { $ref: '#/$defs/EventPollResult' }
+      result: { $ref: '#/$defs/EventPollResult' },
+      since: '2.2.0-beta.1'
     },
     'events.unsubscribe': {
       permission: 'events:subscribe',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/EventSubscriptionParams' },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'rpc.cancel': {
       permission: null,
       contexts: ['renderer'],
       params: { $ref: '#/$defs/RequestCancelParams' },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'files.stream.open': {
       permission: 'files:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/FileResolveParams' },
-      result: { $ref: '#/$defs/FileStream' }
+      result: { $ref: '#/$defs/FileStream' },
+      since: '2.2.0-beta.1'
     },
     'files.stream.read': {
       permission: 'files:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/FileStreamReadParams' },
-      result: { $ref: '#/$defs/FileStreamChunk' }
+      result: { $ref: '#/$defs/FileStreamChunk' },
+      since: '2.2.0-beta.1'
     },
     'files.stream.close': {
       permission: 'files:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/FileStreamCloseParams' },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'logging.write': {
       permission: 'logging:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/LogWriteParams' },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'capabilities.resolve': {
       permission: null,
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/CapabilityResolveParams' },
-      result: { $ref: '#/$defs/CapabilityBinding' }
+      result: { $ref: '#/$defs/CapabilityBinding' },
+      since: '2.2.0-beta.1'
     },
     'runtime.ping': {
       permission: null,
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/RuntimePingParams' },
-      result: { $ref: '#/$defs/RuntimePingResult' }
+      result: { $ref: '#/$defs/RuntimePingResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.get': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageGetParams' },
-      result: { $ref: '#/$defs/StorageGetResult' }
+      result: { $ref: '#/$defs/StorageGetResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.set': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageSetParams' },
-      result: { $ref: '#/$defs/StorageSetResult' }
+      result: { $ref: '#/$defs/StorageSetResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.delete': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageDeleteParams' },
-      result: { $ref: '#/$defs/StorageDeleteResult' }
+      result: { $ref: '#/$defs/StorageDeleteResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.batch': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageBatchParams' },
-      result: { $ref: '#/$defs/StorageBatchResult' }
+      result: { $ref: '#/$defs/StorageBatchResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.list': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageListParams' },
-      result: { $ref: '#/$defs/StorageListResult' }
+      result: { $ref: '#/$defs/StorageListResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.keys': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageKeysParams' },
-      result: { $ref: '#/$defs/StorageKeysResult' }
+      result: { $ref: '#/$defs/StorageKeysResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.read.begin': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageReadBeginParams' },
-      result: { $ref: '#/$defs/StorageReadBeginResult' }
+      result: { $ref: '#/$defs/StorageReadBeginResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.read.chunk': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageReadChunkParams' },
-      result: { $ref: '#/$defs/StorageReadChunkResult' }
+      result: { $ref: '#/$defs/StorageReadChunkResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.read.close': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageReadCloseParams' },
-      result: { $ref: '#/$defs/StorageReadCloseResult' }
+      result: { $ref: '#/$defs/StorageReadCloseResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.write.begin': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageWriteBeginParams' },
-      result: { $ref: '#/$defs/StorageWriteBeginResult' }
+      result: { $ref: '#/$defs/StorageWriteBeginResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.write.chunk': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageWriteChunkParams' },
-      result: { $ref: '#/$defs/StorageWriteChunkResult' }
+      result: { $ref: '#/$defs/StorageWriteChunkResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.write.commit': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageWriteCommitParams' },
-      result: { $ref: '#/$defs/StorageWriteCommitResult' }
+      result: { $ref: '#/$defs/StorageWriteCommitResult' },
+      since: '2.2.0-beta.1'
     },
     'storage.write.abort': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/StorageWriteAbortParams' },
-      result: { $ref: '#/$defs/StorageWriteAbortResult' }
+      result: { $ref: '#/$defs/StorageWriteAbortResult' },
+      since: '2.2.0-beta.1'
     },
     'config.get': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/ConfigGetParams' },
-      result: { $ref: '#/$defs/ConfigGetResult' }
+      result: { $ref: '#/$defs/ConfigGetResult' },
+      since: '2.2.0-beta.1'
     },
     'config.patch': {
       permission: 'storage:write',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/ConfigPatchParams' },
-      result: { $ref: '#/$defs/ConfigPatchResult' }
+      result: { $ref: '#/$defs/ConfigPatchResult' },
+      since: '2.2.0-beta.1'
     },
     'tasks.get': {
       permission: 'tasks:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/TasksGetParams' },
-      result: { $ref: '#/$defs/TasksGetResult' }
+      result: { $ref: '#/$defs/TasksGetResult' },
+      since: '2.2.0-beta.1'
     },
     'tasks.cancel': {
       permission: 'tasks:control',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/TasksCancelParams' },
-      result: { $ref: '#/$defs/TasksCancelResult' }
+      result: { $ref: '#/$defs/TasksCancelResult' },
+      since: '2.2.0-beta.1'
     },
     'tasks.list': {
       permission: 'tasks:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/TasksListParams' },
-      result: { $ref: '#/$defs/TasksListResult' }
+      result: { $ref: '#/$defs/TasksListResult' },
+      since: '2.2.0-beta.1'
     },
     'theme.get': {
       permission: 'theme:read',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeGetParams' },
-      result: { $ref: '#/$defs/ThemeGetResult' }
+      result: { $ref: '#/$defs/ThemeGetResult' },
+      since: '2.2.0-beta.1'
     },
     'theme.list': {
       permission: 'theme:read',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeListParams' },
-      result: { $ref: '#/$defs/ThemeListResult' }
+      result: { $ref: '#/$defs/ThemeListResult' },
+      since: '2.2.0-beta.1'
     },
     'theme.preview': {
       permission: 'theme:write',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemePreviewParams' },
-      result: { $ref: '#/$defs/ThemePreviewResult' }
+      result: { $ref: '#/$defs/ThemePreviewResult' },
+      since: '2.2.0-beta.1'
     },
     'theme.commit': {
       permission: 'theme:write',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeCommitParams' },
-      result: { $ref: '#/$defs/ThemeCommitResult' }
+      result: { $ref: '#/$defs/ThemeCommitResult' },
+      since: '2.2.0-beta.1'
     },
     'theme.rollback': {
       permission: 'theme:write',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeRollbackParams' },
-      result: { $ref: '#/$defs/ThemeRollbackResult' }
+      result: { $ref: '#/$defs/ThemeRollbackResult' },
+      since: '2.2.0-beta.1'
     },
     'theme.set': {
       permission: 'theme:write',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/ThemeSetParams' },
-      result: { $ref: '#/$defs/ThemeSetResult' }
+      result: { $ref: '#/$defs/ThemeSetResult' },
+      since: '2.2.0-beta.1'
     },
     'dialog.open': {
       permission: 'dialog',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/DialogOpenParams' },
-      result: { $ref: '#/$defs/DialogOpenResult' }
+      result: { $ref: '#/$defs/DialogOpenResult' },
+      since: '2.2.0-beta.1'
     },
     'dialog.confirm': {
       permission: 'dialog',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/DialogConfirmParams' },
-      result: { $ref: '#/$defs/DialogConfirmResult' }
+      result: { $ref: '#/$defs/DialogConfirmResult' },
+      since: '2.2.0-beta.1'
     },
     'notification.show': {
       permission: 'notification',
       contexts: ['renderer'],
       params: { $ref: '#/$defs/NotificationShowParams' },
-      result: { $ref: '#/$defs/NotificationShowResult' }
+      result: { $ref: '#/$defs/NotificationShowResult' },
+      since: '2.2.0-beta.1'
     },
     'clipboard.read': {
       permission: 'clipboard',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/Empty' },
-      result: { type: 'string' }
+      result: { type: 'string' },
+      since: '2.2.0-beta.1'
     },
     'clipboard.write': {
       permission: 'clipboard',
@@ -2125,19 +2511,22 @@ export const contract = {
         required: ['text'],
         properties: { text: { type: 'string', maxLength: 32768 } }
       },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'data.directory': {
       permission: null,
       contexts: ['backend'],
       params: { $ref: '#/$defs/Empty' },
-      result: { type: 'string', minLength: 1, maxLength: 32767 }
+      result: { type: 'string', minLength: 1, maxLength: 32767 },
+      since: '2.2.0-beta.1'
     },
     'resources.list': {
       permission: null,
       contexts: ['backend'],
       params: { $ref: '#/$defs/Empty' },
-      result: { type: 'array', items: { $ref: '#/$defs/ResourceMount' }, maxItems: 64 }
+      result: { type: 'array', items: { $ref: '#/$defs/ResourceMount' }, maxItems: 64 },
+      since: '2.2.0-beta.1'
     },
     'files.choose': {
       permission: 'dialog',
@@ -2161,7 +2550,8 @@ export const contract = {
           { type: 'null' },
           { type: 'array', items: { $ref: '#/$defs/FileReference' }, maxItems: 128 }
         ]
-      }
+      },
+      since: '2.2.0-beta.1'
     },
     'files.read': {
       permission: 'files:read',
@@ -2172,19 +2562,22 @@ export const contract = {
         additionalProperties: false,
         required: ['data', 'eof'],
         properties: { data: { type: 'string', maxLength: 32768 }, eof: { type: 'boolean' } }
-      }
+      },
+      since: '2.2.0-beta.1'
     },
     'files.resolve': {
       permission: 'files:read',
       contexts: ['backend'],
       params: { $ref: '#/$defs/FileResolveParams' },
-      result: { type: 'string', minLength: 1, maxLength: 32767 }
+      result: { type: 'string', minLength: 1, maxLength: 32767 },
+      since: '2.2.0-beta.1'
     },
     'files.publish': {
       permission: 'files:publish',
       contexts: ['backend'],
       params: { $ref: '#/$defs/FilePublishParams' },
-      result: { $ref: '#/$defs/FileReference' }
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.1'
     },
     'tasks.start': {
       permission: 'tasks:control',
@@ -2195,7 +2588,8 @@ export const contract = {
         additionalProperties: false,
         required: ['taskId'],
         properties: { taskId: { type: 'string', minLength: 1, maxLength: 128 } }
-      }
+      },
+      since: '2.2.0-beta.1'
     },
     'tasks.beginCommit': {
       permission: 'tasks:execute',
@@ -2206,13 +2600,15 @@ export const contract = {
         required: ['taskId'],
         additionalProperties: false
       },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'tasks.progress': {
       permission: 'tasks:execute',
       contexts: ['backend'],
       params: { $ref: '#/$defs/TaskProgressParams' },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'network.route': {
       permission: 'network:fetch',
@@ -2231,25 +2627,29 @@ export const contract = {
         },
         required: ['kind'],
         additionalProperties: false
-      }
+      },
+      since: '2.2.0-beta.1'
     },
     'network.fetch': {
       permission: 'network:fetch',
       contexts: ['backend'],
       params: { $ref: '#/$defs/NetworkFetchParams' },
-      result: { $ref: '#/$defs/NetworkFetchResult' }
+      result: { $ref: '#/$defs/NetworkFetchResult' },
+      since: '2.2.0-beta.1'
     },
     'tasks.pause': {
       permission: 'tasks:control',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/TasksGetParams' },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'tasks.resume': {
       permission: 'tasks:control',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/TasksGetParams' },
-      result: { type: 'boolean' }
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.1'
     },
     'tasks.controlState': {
       permission: 'tasks:execute',
@@ -2260,73 +2660,218 @@ export const contract = {
         properties: { paused: { type: 'boolean' }, cancelRequested: { type: 'boolean' } },
         required: ['paused', 'cancelRequested'],
         additionalProperties: false
-      }
+      },
+      since: '2.2.0-beta.1'
     },
     'theme.assets.import': {
       permission: 'theme:assets',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/ThemeAssetImportParams' },
-      result: { $ref: '#/$defs/ThemeAsset' }
+      result: { $ref: '#/$defs/ThemeAsset' },
+      since: '2.2.0-beta.1'
     },
     'theme.assets.importBundled': {
       permission: 'theme:assets',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/ThemeBundledAssetImportParams' },
-      result: { $ref: '#/$defs/ThemeAsset' }
+      result: { $ref: '#/$defs/ThemeAsset' },
+      since: '2.2.0-beta.1'
     },
     'theme.assets.get': {
       permission: 'theme:assets',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/ThemeAssetGetParams' },
-      result: { $ref: '#/$defs/ThemeAsset' }
+      result: { $ref: '#/$defs/ThemeAsset' },
+      since: '2.2.0-beta.1'
     },
     'theme.assets.list': {
       permission: 'theme:assets',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/ThemeAssetListParams' },
-      result: { $ref: '#/$defs/ThemeAssetListResult' }
+      result: { $ref: '#/$defs/ThemeAssetListResult' },
+      since: '2.2.0-beta.1'
     },
     'process.run': {
       permission: 'process:run',
       contexts: ['backend'],
       params: { $ref: '#/$defs/ProcessRunParams' },
-      result: { $ref: '#/$defs/ProcessResult' }
+      result: { $ref: '#/$defs/ProcessResult' },
+      since: '2.2.0-beta.2'
     },
     'runtime.list': {
       permission: null,
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/Empty' },
-      result: { type: 'array', items: { $ref: '#/$defs/RuntimeStatus' }, maxItems: 16 }
+      result: { type: 'array', items: { $ref: '#/$defs/RuntimeStatus' }, maxItems: 16 },
+      since: '2.2.0-beta.2'
     },
     'network.download': {
       permission: 'network:download',
       contexts: ['backend'],
       params: { $ref: '#/$defs/NetworkDownloadParams' },
-      result: { $ref: '#/$defs/FileReference' }
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.2'
     },
     'files.info': {
       permission: 'files:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/FileResolveParams' },
-      result: { $ref: '#/$defs/FileInfo' }
+      result: { $ref: '#/$defs/FileInfo' },
+      since: '2.2.0-beta.2'
     },
     'files.list': {
       permission: 'files:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/FileResolveParams' },
-      result: { type: 'array', items: { $ref: '#/$defs/FileInfo' }, maxItems: 128 }
+      result: { type: 'array', items: { $ref: '#/$defs/FileInfo' }, maxItems: 128 },
+      since: '2.2.0-beta.2'
     },
     'files.writeResult': {
       permission: 'files:publish',
       contexts: ['backend'],
       params: { $ref: '#/$defs/FileWriteResultParams' },
-      result: { $ref: '#/$defs/FileReference' }
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.2'
     },
     'storage.usage': {
       permission: 'storage:read',
       contexts: ['renderer', 'backend'],
       params: { $ref: '#/$defs/Empty' },
-      result: { $ref: '#/$defs/StorageUsage' }
+      result: { $ref: '#/$defs/StorageUsage' },
+      since: '2.2.0-beta.2'
+    },
+    'capabilities.list': {
+      permission: null,
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/CapabilityListParams' },
+      result: { $ref: '#/$defs/CapabilityPage' },
+      since: '2.2.0-beta.7'
+    },
+    'capabilities.describe': {
+      permission: null,
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/CapabilityResolveParams' },
+      result: { $ref: '#/$defs/CapabilityDescription' },
+      since: '2.2.0-beta.7'
+    },
+    'runtime.resolve': {
+      permission: null,
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/CapabilityResolveParams' },
+      result: { $ref: '#/$defs/CapabilityDescription' },
+      since: '2.2.0-beta.7'
+    },
+    'tasks.publishNative': {
+      permission: 'native:publish',
+      contexts: ['backend'],
+      params: { $ref: '#/$defs/NativePublicationParams' },
+      result: { $ref: '#/$defs/NativePublicationResult' },
+      since: '2.2.0-beta.7'
+    },
+    'files.child': {
+      permission: 'files:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileChildParams' },
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.7'
+    },
+    'files.directory.create': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileDirectoryCreateParams' },
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.7'
+    },
+    'files.directory.walk': {
+      permission: 'files:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWalkParams' },
+      result: { $ref: '#/$defs/FileWalkPage' },
+      since: '2.2.0-beta.7'
+    },
+    'files.copy': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileTransferParams' },
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.7'
+    },
+    'files.move': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileTransferParams' },
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.7'
+    },
+    'files.remove': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileRemoveParams' },
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.7'
+    },
+    'files.temporary': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileTemporaryParams' },
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.7'
+    },
+    'files.temporary.release': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileReferenceParams' },
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.7'
+    },
+    'files.write.open': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWriteOpenParams' },
+      result: { $ref: '#/$defs/FileWriteStream' },
+      since: '2.2.0-beta.7'
+    },
+    'files.write.append': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWriteChunkParams' },
+      result: { $ref: '#/$defs/FileWriteChunkResult' },
+      since: '2.2.0-beta.7'
+    },
+    'files.write.commit': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWriteStream' },
+      result: { $ref: '#/$defs/FileReference' },
+      since: '2.2.0-beta.7'
+    },
+    'files.write.abort': {
+      permission: 'files:write',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWriteStream' },
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.7'
+    },
+    'files.watch': {
+      permission: 'files:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWatchParams' },
+      result: { $ref: '#/$defs/FileWatch' },
+      since: '2.2.0-beta.7'
+    },
+    'files.watch.poll': {
+      permission: 'files:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWatchIdParams' },
+      result: { $ref: '#/$defs/FileWatchPoll' },
+      since: '2.2.0-beta.7'
+    },
+    'files.watch.close': {
+      permission: 'files:read',
+      contexts: ['renderer', 'backend'],
+      params: { $ref: '#/$defs/FileWatchIdParams' },
+      result: { type: 'boolean' },
+      since: '2.2.0-beta.7'
     }
   },
   lifecycle: {
@@ -2382,5 +2927,12 @@ export const contract = {
     permissionExpansion: 'explicit-approval',
     failure: 'preserve-old-install-and-user-data',
     resourceImport: 'user-initiated-local-offline-package'
+  },
+  capabilities: {
+    builtins: {
+      providerId: 'cruciblebox-host',
+      providerVersion: '2.2.0-beta.7',
+      interfaceVersion: '1.0.0'
+    }
   }
 }

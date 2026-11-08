@@ -117,6 +117,13 @@ fn validate_capability_schema(rule: &Value) -> Result<(), String> {
 
 pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     let manifest: Manifest = schema::parse(raw, "Manifest", BUDGET_MANIFEST_BYTES)?;
+    if manifest.id
+        == contract()["capabilities"]["builtins"]["providerId"]
+            .as_str()
+            .unwrap()
+    {
+        return Err("RESERVED_PROVIDER_ID".into());
+    }
     let minimum = semver::Version::parse(&manifest.min_host_version).map_err(|e| e.to_string())?;
     let features = manifest.tools.is_some()
         || manifest
@@ -128,7 +135,23 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
             .commands
             .iter()
             .any(|command| command.placements.is_some() || command.keywords.is_some());
-    let required = if features {
+    let required = if manifest.runtime_capabilities.is_some()
+        || manifest.runtime_requirements.is_some()
+        || manifest.permissions.iter().any(|permission| {
+            matches!(
+                permission.as_str(),
+                "runtime:execute" | "native:publish" | "files:write"
+            )
+        })
+        || manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.id.starts_with("host-"))
+    {
+        contract()["versions"]["completionHostVersion"]
+            .as_str()
+            .unwrap()
+    } else if features {
         FEATURES_HOST_VERSION
     } else {
         MIN_HOST_VERSION
@@ -153,6 +176,38 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     unique(manifest.resources.iter().map(|v| v.id.as_str()))?;
     let tools = manifest.tools.as_deref().unwrap_or_default();
     unique(tools.iter().map(|tool| tool.id.as_str()))?;
+    let runtimes = manifest.runtime_capabilities.as_deref().unwrap_or_default();
+    unique(
+        runtimes
+            .iter()
+            .map(|runtime| runtime.capability_id.as_str()),
+    )?;
+    let requirements = manifest.runtime_requirements.as_deref().unwrap_or_default();
+    unique(
+        requirements
+            .iter()
+            .map(|runtime| runtime.capability_id.as_str()),
+    )?;
+    for requirement in requirements {
+        compatible(&requirement.version.min, &requirement.version)?;
+        if !manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.id == requirement.capability_id)
+        {
+            return Err("RUNTIME_DEPENDENCY_UNDECLARED".into());
+        }
+    }
+
+    if runtimes.iter().any(|runtime| {
+        !tools.iter().any(|tool| tool.id == runtime.tool_id)
+            || !manifest.exports.iter().any(|export| {
+                export.id == runtime.capability_id
+                    && export.methods.iter().any(|method| method.name() == "run")
+            })
+    }) {
+        return Err("INVALID_RUNTIME_CAPABILITY".into());
+    }
     if !tools.is_empty()
         && (!manifest
             .permissions
@@ -265,6 +320,11 @@ pub fn validate_resource_manifest(raw: &str) -> Result<ResourceManifest, String>
     let manifest: ResourceManifest =
         schema::parse(raw, "ResourceManifest", BUDGET_RESOURCE_MANIFEST_BYTES)?;
     inventory(&manifest.files)?;
+    if manifest.runtime_identity.is_some()
+        && (manifest.kind != "runtime" || !manifest.contains_native_code)
+    {
+        return Err("INVALID_RUNTIME_RESOURCE".into());
+    }
     compatible(&manifest.plugin_version.min, &manifest.plugin_version)?;
     if manifest.files.iter().map(|v| v.bytes).sum::<u64>() > BUDGET_RESOURCE_BYTES as u64 {
         return Err("BUDGET_EXCEEDED".into());

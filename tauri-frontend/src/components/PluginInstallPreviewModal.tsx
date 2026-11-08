@@ -327,6 +327,8 @@ const PERMISSION_SUMMARIES: Record<string, string> = {
   tasks: '执行和管理任务',
   network: '访问网络',
   process: '运行已批准资源包内的本地工具',
+  runtime: '执行本地运行环境任务，可访问当前用户文件和网络',
+  native: '由可信本地插件提交文件或目录输出',
   browser: '下载文件',
   theme: '调整界面主题',
   dialog: '显示选择或确认窗口',

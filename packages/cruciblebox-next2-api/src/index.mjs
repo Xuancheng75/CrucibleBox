@@ -1,6 +1,14 @@
 import semver from 'semver'
 import { contract } from './generated.mjs'
-import { parse, matches, unique, validRange, validateInventory, validateBudget } from './schema.mjs'
+import {
+  parse,
+  matches,
+  unique,
+  validRange,
+  validateInventory,
+  validateBudget,
+  normalize
+} from './schema.mjs'
 export { contract } from './generated.mjs'
 export { compatible } from './schema.mjs'
 
@@ -40,6 +48,7 @@ function validateCapabilitySchema(rule) {
 
 export function validateManifest(raw) {
   const manifest = parse(raw, 'Manifest', contract.budget.manifestBytes)
+  if (manifest.id === contract.capabilities.builtins.providerId) throw Error('RESERVED_PROVIDER_ID')
   const features =
     manifest.tools !== undefined ||
     manifest.permissions.some((permission) =>
@@ -48,13 +57,45 @@ export function validateManifest(raw) {
     manifest.contributes.commands.some(
       (command) => command.placements !== undefined || command.keywords !== undefined
     )
-  const minimum = features
-    ? contract.versions.featuresHostVersion
-    : contract.versions.minHostVersion
+  const minimum =
+    manifest.runtimeCapabilities !== undefined ||
+    manifest.runtimeRequirements !== undefined ||
+    manifest.permissions.some((permission) =>
+      ['runtime:execute', 'native:publish', 'files:write'].includes(permission)
+    ) ||
+    manifest.dependencies.some((item) => item.id.startsWith('host-'))
+      ? contract.versions.completionHostVersion
+      : features
+        ? contract.versions.featuresHostVersion
+        : contract.versions.minHostVersion
   if (semver.lt(manifest.minHostVersion, minimum)) throw Error('HOST_VERSION_UNDERSTATED')
   if (manifest.dataMigration) validRange(manifest.dataMigration.fromPluginVersion)
   const tools = manifest.tools ?? []
   unique(tools, (tool) => tool.id)
+  const runtimes = manifest.runtimeCapabilities ?? []
+  unique(runtimes, (runtime) => runtime.capabilityId)
+  const requirements = manifest.runtimeRequirements ?? []
+  unique(requirements, (runtime) => runtime.capabilityId)
+  for (const requirement of requirements) {
+    validRange(requirement.version)
+    if (!manifest.dependencies.some((dependency) => dependency.id === requirement.capabilityId))
+      throw Error('RUNTIME_DEPENDENCY_UNDECLARED')
+  }
+
+  if (
+    runtimes.some(
+      (runtime) =>
+        !tools.some((tool) => tool.id === runtime.toolId) ||
+        !manifest.exports.some(
+          (item) =>
+            item.id === runtime.capabilityId &&
+            item.methods.some(
+              (method) => (typeof method === 'string' ? method : method.name) === 'run'
+            )
+        )
+    )
+  )
+    throw Error('INVALID_RUNTIME_CAPABILITY')
   if (
     tools.length &&
     (!manifest.permissions.includes('process:run') ||
@@ -140,6 +181,8 @@ export function validateManifest(raw) {
 export function validateResourceManifest(raw) {
   const manifest = parse(raw, 'ResourceManifest', contract.budget.resourceManifestBytes)
   validateInventory(manifest.files)
+  if (manifest.runtimeIdentity && (manifest.kind !== 'runtime' || !manifest.containsNativeCode))
+    throw Error('INVALID_RUNTIME_RESOURCE')
   validRange(manifest.pluginVersion)
   if (manifest.files.reduce((sum, entry) => sum + entry.bytes, 0) > contract.budget.resourceBytes)
     throw Error('BUDGET_EXCEEDED')
@@ -165,6 +208,7 @@ export function validateRequest(raw) {
   if (request.target.kind === 'platform') {
     const method = contract.methods[request.method]
     if (!method || !matches(method.params, request.params)) throw Error('INVALID_PLATFORM_CALL')
+    normalize(method.params, request.params)
     if (request.method === 'tasks.start' && request.params.target.kind === 'platform')
       throw Error('INVALID_TASK_TARGET')
   }
@@ -211,15 +255,42 @@ export function createClient({ session, exchange }) {
   return {
     platform,
     resolveCapability: (id) => platform('capabilities.resolve', { id }),
+    capabilities: {
+      resolve: (id) => platform('capabilities.resolve', { id }),
+      describe: (id) => platform('capabilities.describe', { id }),
+      list: (options = {}) => platform('capabilities.list', options)
+    },
     writeLog: (entry) => platform('logging.write', entry),
     files: {
       info: (ref) => platform('files.info', { ref }),
       list: (ref) => platform('files.list', { ref }),
-      writeResult: (options) => platform('files.writeResult', options)
+      writeResult: (options) => platform('files.writeResult', options),
+      child: (ref, path) => platform('files.child', { ref, path }),
+      createDirectory: (ref, name) => platform('files.directory.create', { ref, name }),
+      walk: (ref, options = {}) => platform('files.directory.walk', { ...options, ref }),
+      copy: (options) => platform('files.copy', options),
+      move: (options) => platform('files.move', options),
+      remove: (ref, options = {}) => platform('files.remove', { ...options, ref }),
+      temporary: (options) => platform('files.temporary', options),
+      releaseTemporary: (ref) => platform('files.temporary.release', { ref }),
+      write: {
+        open: (options) => platform('files.write.open', options),
+        append: (streamId, data) => platform('files.write.append', { streamId, data }),
+        commit: (streamId) => platform('files.write.commit', { streamId }),
+        abort: (streamId) => platform('files.write.abort', { streamId })
+      },
+      watch: {
+        open: (ref, options = {}) => platform('files.watch', { ...options, ref }),
+        poll: (watchId) => platform('files.watch.poll', { watchId }),
+        close: (watchId) => platform('files.watch.close', { watchId })
+      }
     },
     network: { download: (options) => platform('network.download', options) },
     process: { run: (options) => platform('process.run', options) },
-    runtime: { list: () => platform('runtime.list', {}) },
+    runtime: {
+      list: () => platform('runtime.list', {}),
+      resolve: (id) => platform('runtime.resolve', { id })
+    },
     backend: (method, params, options) =>
       call({ kind: 'backend' }, method, params, options?.signal),
     service: (id, method, params, options) =>

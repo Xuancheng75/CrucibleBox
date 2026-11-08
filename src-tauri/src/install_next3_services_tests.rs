@@ -33,12 +33,20 @@ struct Fixture {
 
 impl Fixture {
     fn install(tag: &str, permissions: &[&str], customize: impl FnOnce(&mut Value)) -> Self {
+        Self::install_script(tag, permissions, None, customize)
+    }
+    fn install_script(
+        tag: &str,
+        permissions: &[&str],
+        script: Option<&str>,
+        customize: impl FnOnce(&mut Value),
+    ) -> Self {
         let (manager, plugins, root) = setup(tag);
         let source = root.join("source");
         write_next2(
             &source,
             "1.0.0",
-            Some(
+            Some(script.unwrap_or(
                 r#"let id = 0;
 module.exports.activate = context => Object.fromEntries(
   ['files.writeResult', 'network.download', 'process.run', 'logging.write'].map(method => [
@@ -52,7 +60,7 @@ module.exports.activate = context => Object.fromEntries(
     }
   ])
 );"#,
-            ),
+            )),
         );
         let path = source.join("plugin.json");
         let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -123,6 +131,67 @@ module.exports.activate = context => Object.fromEntries(
             )
         })
     }
+}
+
+#[test]
+fn extended_files_use_host_tasks_streams_permissions_and_os_notifications() {
+    let fixture = Fixture::install_script(
+        "extended-files",
+        &["files:read", "files:write"],
+        Some(
+            r#"
+module.exports.activate = context => {
+  let sequence = 0;
+  const platform = async (method, params = {}) => {
+    const response = await context.exchange({wireVersion:context.wireVersion,requestId:'test-'+(++sequence),session:context.session,target:{kind:'platform'},method,params});
+    if (!response.ok) throw Object.assign(Error(response.error.message), {code:response.error.code});
+    return response.result;
+  };
+  return {exercise: async () => {
+    const root = await platform('files.temporary',{kind:'directory',name:'files'});
+    const watch = await platform('files.watch',{ref:root.ref,recursive:true});
+    const writer = await platform('files.write.open',{directory:root.ref,name:'中文.txt',bytes:6});
+    await platform('files.write.append',{streamId:writer.streamId,data:'5Lit5paH'});
+    const written = await platform('files.write.commit',writer);
+    const read = await platform('files.read',{ref:written.ref,offset:0,length:24});
+    let traversal;
+    try { await platform('files.child',{ref:root.ref,path:'../escape'}); } catch(error) { traversal=error.code; }
+    const copied = await platform('files.copy',{ref:written.ref,directory:root.ref,name:'copied.txt'});
+    const moved = await platform('files.move',{ref:copied.ref,directory:root.ref,name:'moved.txt'});
+    await platform('files.remove',{ref:moved.ref});
+    const abandoned = await platform('files.write.open',{directory:root.ref,name:'aborted.txt',bytes:6});
+    await platform('files.write.append',{streamId:abandoned.streamId,data:'5Lit5paH'});
+    await platform('files.write.abort',abandoned);
+    let events=[];
+    for(let index=0;index<100&&events.length===0;index++) events=(await platform('files.watch.poll',watch)).events;
+    await platform('files.watch.close',watch);
+    const page=await platform('files.directory.walk',{ref:root.ref,recursive:true});
+    return {root,written,read,traversal,events,paths:page.items.map(item=>item.path)};
+  }};
+};"#,
+        ),
+        |manifest| {
+            manifest["minHostVersion"] = json!("2.2.0-beta.7");
+        },
+    );
+    let builtin = fixture.call("capabilities.describe", json!({"id":"host-files"}));
+    assert_eq!(builtin["result"]["kind"], "host", "{builtin}");
+    assert_eq!(builtin["result"]["availability"]["state"], "ready");
+    assert!(builtin["result"]["methodContracts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|method| method["name"] == "files.write.open"));
+    let result = fixture.finish(&fixture.start("exercise", json!({})));
+    assert_eq!(result["status"], "succeeded", "{result}");
+    assert_eq!(result["result"]["read"]["data"], "5Lit5paH");
+    assert_eq!(result["result"]["traversal"], "INVALID_FILE_NAME");
+    assert!(
+        !result["result"]["events"].as_array().unwrap().is_empty(),
+        "OS watcher must report actual writes"
+    );
+    assert_eq!(result["result"]["paths"], json!(["中文.txt"]));
+    fixture.manager.next_backend.next2.stop(PLUGIN).unwrap();
 }
 
 fn http_fixture(

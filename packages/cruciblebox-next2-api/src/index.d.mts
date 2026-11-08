@@ -1,4 +1,5 @@
 export * from './generated.mjs'
+import type * as Generated from './generated.mjs'
 import type {
   Manifest,
   ResourceManifest,
@@ -7,6 +8,9 @@ import type {
   Response,
   BackendFrame,
   CapabilityBinding,
+  CapabilityDescription,
+  CapabilityListParams,
+  CapabilityPage,
   EventPollResult,
   EventPublishParams,
   EventPublishResult,
@@ -54,15 +58,48 @@ export declare function createClient(options: {
 }): {
   platform(method: string, params?: Json): Promise<Json>
   resolveCapability(id: string): Promise<CapabilityBinding>
+  capabilities: {
+    resolve(id: string): Promise<CapabilityBinding>
+    describe(id: string): Promise<CapabilityDescription>
+    list(options?: CapabilityListParams): Promise<CapabilityPage>
+  }
   writeLog(entry: LogWriteParams): Promise<boolean>
   files: {
     info(ref: string): Promise<FileInfo>
     list(ref: string): Promise<FileInfo[]>
     writeResult(options: FileWriteResultParams): Promise<FileReference>
+    child(ref: string, path: string): Promise<FileReference>
+    createDirectory(ref: string, name: string): Promise<FileReference>
+    walk(
+      ref: string,
+      options?: Omit<Generated.FileWalkParams, 'ref'>
+    ): Promise<Generated.FileWalkPage>
+    copy(options: Generated.FileTransferParams): Promise<FileReference>
+    move(options: Generated.FileTransferParams): Promise<FileReference>
+    remove(ref: string, options?: Omit<Generated.FileRemoveParams, 'ref'>): Promise<boolean>
+    temporary(options: Generated.FileTemporaryParams): Promise<FileReference>
+    releaseTemporary(ref: string): Promise<boolean>
+    write: {
+      open(options: Generated.FileWriteOpenParams): Promise<Generated.FileWriteStream>
+      append(streamId: string, data: string): Promise<Generated.FileWriteChunkResult>
+      commit(streamId: string): Promise<FileReference>
+      abort(streamId: string): Promise<boolean>
+    }
+    watch: {
+      open(
+        ref: string,
+        options?: Omit<Generated.FileWatchParams, 'ref'>
+      ): Promise<Generated.FileWatch>
+      poll(watchId: string): Promise<Generated.FileWatchPoll>
+      close(watchId: string): Promise<boolean>
+    }
   }
   network: { download(options: NetworkDownloadParams): Promise<FileReference> }
   process: { run(options: ProcessRunParams): Promise<ProcessResult> }
-  runtime: { list(): Promise<RuntimeStatus[]> }
+  runtime: {
+    list(): Promise<RuntimeStatus[]>
+    resolve(id: string): Promise<CapabilityDescription>
+  }
   backend(method: string, params?: Json, options?: RpcOptions): Promise<Json>
   service(id: string, method: string, params?: Json, options?: RpcOptions): Promise<Json>
   events: {

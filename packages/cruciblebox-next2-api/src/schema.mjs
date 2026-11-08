@@ -88,6 +88,28 @@ export function validateBudget(value, maxNodes, budgetError = 'BUDGET_EXCEEDED')
   }
   visit(value, 1)
 }
+export function normalize(rule, value) {
+  if (rule.$ref) return normalize(contract.$defs[rule.$ref.split('/').at(-1)], value)
+  if (rule.oneOf)
+    return normalize(
+      rule.oneOf.find((child) => matches(child, value)),
+      value
+    )
+  if (Array.isArray(value)) {
+    value.forEach((item) => normalize(rule.items ?? {}, item))
+    return
+  }
+  if (value && typeof value === 'object') {
+    for (const [name, child] of Object.entries(rule.properties ?? {})) {
+      if (!Object.hasOwn(value, name) && Object.hasOwn(child, 'default'))
+        value[name] = JSON.parse(JSON.stringify(child.default))
+    }
+    for (const [name, item] of Object.entries(value)) {
+      const child = rule.properties?.[name] ?? rule.additionalProperties
+      if (child && typeof child === 'object') normalize(child, item)
+    }
+  }
+}
 export function parse(raw, name, maxBytes = contract.budget.bytes) {
   if (typeof raw !== 'string' || new TextEncoder().encode(raw).length > maxBytes)
     throw Error('BUDGET_EXCEEDED')

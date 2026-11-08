@@ -1,6 +1,10 @@
 //! Next 3.0 admission and generic backend routing.
+mod capability_service;
 mod event_service;
+mod file_mutation;
+mod file_operations;
 mod lifecycle;
+mod native_publication;
 mod network_service;
 pub(crate) mod platform_service;
 mod process_service;
@@ -116,10 +120,12 @@ pub struct Manager {
     services: Arc<crate::host_services::Services>,
     maintenance: Arc<Mutex<HashSet<String>>>,
     workers: Mutex<Instances>,
+    provider_failures: Mutex<HashMap<String, String>>,
     startup_finished: Condvar,
     sessions: Mutex<HashMap<String, SessionEntry>>,
     closing: AtomicBool,
     files: crate::next2_files::Files,
+    file_operations: file_operations::MutableFiles,
     events: event_service::Events,
     streams: stream_service::Streams,
     graph_changes: Mutex<()>,
@@ -137,10 +143,12 @@ impl Manager {
             services,
             maintenance,
             workers: Mutex::new(HashMap::new()),
+            provider_failures: Mutex::new(HashMap::new()),
             startup_finished: Condvar::new(),
             sessions: Mutex::new(HashMap::new()),
             closing: AtomicBool::new(false),
             files: crate::next2_files::Files::default(),
+            file_operations: file_operations::MutableFiles::default(),
             events: event_service::Events::default(),
             streams: stream_service::Streams::default(),
             graph_changes: Mutex::new(()),
@@ -222,7 +230,79 @@ impl Manager {
                 enabled: true,
             });
         }
-        Registry::new(installed)
+        let mut runtimes = HashMap::new();
+        for plugin in &installed {
+            let declarations = plugin
+                .manifest
+                .runtime_capabilities
+                .as_deref()
+                .unwrap_or_default();
+            if declarations.is_empty() {
+                continue;
+            }
+            let metadata = (|| {
+                let row = db
+                    .plugin_find_by_name(&plugin.manifest.id)?
+                    .ok_or("PLUGIN_NOT_FOUND")?;
+                let store = Self::data(&row)?
+                    .parent()
+                    .and_then(Path::parent)
+                    .ok_or("INVALID_DATA_PATH")?
+                    .join("plugin-resources");
+                cruciblebox_next2_runtime::resource::resolve_metadata(
+                    &store,
+                    &plugin.manifest,
+                    &crate::next2_install::keys(&db)?,
+                    &crate::next2_install::resource_approvals(&db, &plugin.manifest.id)?,
+                )
+            })();
+            for runtime in declarations {
+                let value = match &metadata {
+                    Err(failure) => Err(failure.clone()),
+                    Ok(mounts) => plugin
+                        .manifest
+                        .tools
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|tool| tool.id == runtime.tool_id)
+                        .and_then(|tool| {
+                            mounts
+                                .iter()
+                                .find(|(mount, manifest)| {
+                                    mount.id == tool.resource_id
+                                        && manifest.kind == "runtime"
+                                        && manifest.contains_native_code
+                                        && manifest.runtime_identity.as_ref().is_some_and(
+                                            |identity| identity.engine == runtime.engine,
+                                        )
+                                        && manifest
+                                            .files
+                                            .iter()
+                                            .any(|entry| entry.path == tool.entry)
+                                })
+                                .map(|(mount, manifest)| protocol::RuntimeEnvironment {
+                                    engine: runtime.engine.clone(),
+                                    version: manifest
+                                        .runtime_identity
+                                        .as_ref()
+                                        .unwrap()
+                                        .version
+                                        .clone(),
+                                    resource_version: mount.version.clone(),
+                                    resource_id: tool.resource_id.clone(),
+                                    tool_id: tool.id.clone(),
+                                })
+                        })
+                        .ok_or_else(|| "PROCESS_RESOURCE_MISSING".to_string()),
+                };
+                runtimes.insert(
+                    (plugin.manifest.id.clone(), runtime.capability_id.clone()),
+                    value,
+                );
+            }
+        }
+        Registry::new(installed).map(|registry| registry.with_runtimes(runtimes))
     }
     pub fn dispose_renderer_session(&self, token: &str) -> Result<(), String> {
         let entry = self
@@ -242,6 +322,7 @@ impl Manager {
     fn clear_session_resources(&self, token: &str) -> Result<(), String> {
         self.events.clear_session(token)?;
         self.streams.clear_session(token)?;
+        self.file_operations.clear_session(token)?;
         Ok(())
     }
     pub fn dispose_plugin_renderers(&self, plugin_id: &str) -> Result<(), String> {
@@ -518,6 +599,7 @@ impl Manager {
         self.files.clear(&provider)?;
         self.events.clear_plugin(&provider)?;
         self.streams.clear_plugin(&provider)?;
+        self.file_operations.clear_owner(&provider)?;
         crate::diagnostics::record("backend-stop-complete", Some(owner));
         Ok(())
     }
@@ -749,6 +831,7 @@ impl Manager {
                 now(),
             )
             .map_err(error)?;
+        let request = &admitted.request;
         let result = if admitted.route == Route::Platform
             && matches!(
                 request.method.as_str(),
@@ -880,6 +963,11 @@ impl Manager {
                     )
                 }) {
                     self.retire(&row.id, kind, &slot).map_err(error)?;
+                    if kind == InstanceKind::Service {
+                        if let Err(failure) = &result {
+                            self.lifecycle_failure(&row.id, &failure.code);
+                        }
+                    }
                 }
                 result
             }
@@ -1060,6 +1148,17 @@ impl Manager {
         execution.check()?;
         let published = transaction.publish_durable(ctx, false, |_| Ok(()))?;
         let reference = self.files.grant(recipient, &published)?;
+        self.persist_file_reference(recipient, &published, reference)
+    }
+    fn remember_file(&self, owner: &str, path: &Path) -> Result<Value, String> {
+        self.persist_file_reference(owner, path, self.files.grant(owner, path)?)
+    }
+    fn persist_file_reference(
+        &self,
+        recipient: &str,
+        published: &Path,
+        reference: protocol::FileReference,
+    ) -> Result<Value, String> {
         self.db
             .lock()
             .map_err(|_| "STORAGE_UNAVAILABLE")?

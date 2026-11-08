@@ -2,13 +2,14 @@
 export type ContractVersions = {
   readonly manifestVersion: 7
   readonly sdkApiVersion: 7
-  readonly sdkPackageVersion: '7.0.0-beta.2'
+  readonly sdkPackageVersion: '7.0.0-beta.3'
   readonly featuresHostVersion: '2.2.0-beta.2'
   readonly minHostVersion: '2.2.0-beta.1'
   readonly wireVersion: 5
   readonly dataSchemaVersion: 1
   readonly resourceManifestVersion: 1
   readonly catalogVersion: 1
+  readonly completionHostVersion: '2.2.0-beta.7'
 }
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export type Empty = Record<string, never>
@@ -288,6 +289,9 @@ export type Manifest = {
     | 'network:fetch'
     | 'process:run'
     | 'network:download'
+    | 'runtime:execute'
+    | 'native:publish'
+    | 'files:write'
   )[]
   background: boolean
   backgroundIntervalMs?: number
@@ -298,6 +302,8 @@ export type Manifest = {
   files: FileEntry[]
   config?: Record<string, Json>
   tools?: ToolDeclaration[]
+  runtimeCapabilities?: RuntimeCapability[]
+  runtimeRequirements?: RuntimeRequirement[]
 }
 export type ResourceManifest = {
   resourceManifestVersion: 1
@@ -313,6 +319,7 @@ export type ResourceManifest = {
   arch: 'x86_64'
   files: FileEntry[]
   publisher: Publisher
+  runtimeIdentity?: RuntimeIdentity
 }
 export type RendererAppearance = {
   mode: 'light' | 'dark'
@@ -515,6 +522,8 @@ export type ProcessRunParams = {
   args: string[]
   stdin?: string
   timeoutMs?: number
+  workingDirectory?: string
+  environment?: { [key: string]: string }
 }
 export type ProcessResult = { exitCode: number; stdout: string; stderr: string }
 export type RuntimeStatus = {
@@ -528,3 +537,86 @@ export type FileWriteResultParams = { name: string; data: string }
 export type NetworkDownloadParams = { url: string; name: string; bytes: number; sha256: string }
 export type StorageUsage = { usedBytes: number; quotaBytes: number }
 export type CommandPlacement = 'toolbar' | 'sidebar' | 'contextMenu' | 'status'
+export type CapabilityAvailability = {
+  id: string
+  state: 'registered' | 'starting' | 'ready' | 'failed' | 'stopping' | 'stopped' | 'unavailable'
+  providerId?: string
+  providerVersion?: string
+  version?: string
+  error?: RpcError
+}
+export type PlatformMethodContract = {
+  name: string
+  permission: null | string
+  contexts: ('renderer' | 'backend')[]
+  paramsSchema: string
+  resultSchema: string
+}
+export type CapabilityDescription = {
+  availability: CapabilityAvailability
+  binding?: CapabilityBinding
+  kind?: 'host' | 'plugin' | 'runtime'
+  methodContracts?: PlatformMethodContract[]
+  environment?: RuntimeEnvironment
+}
+export type CapabilityListParams = { after?: string; limit?: number }
+export type CapabilityPage = { items: CapabilityAvailability[]; next?: string }
+export type RuntimeCapability = { capabilityId: string; toolId: string; engine: string }
+export type NativePublicationParams = {
+  taskId: string
+  stage: string
+  target: string
+  replace: boolean
+  terminal: boolean
+  reference?: string
+}
+export type NativePublicationResult = { path: string }
+export type FileChildParams = { ref: string; path: string }
+export type FileDirectoryCreateParams = { ref: string; name: string }
+export type FileWalkParams = { ref: string; recursive?: boolean; after?: string; limit?: number }
+export type FileWalkEntry = { path: string; info: FileInfo }
+export type FileWalkPage = { items: FileWalkEntry[]; next?: string }
+export type FileTransferParams = {
+  ref: string
+  directory: string
+  name: string
+  replace?: boolean
+  recursive?: boolean
+}
+export type FileRemoveParams = { ref: string; recursive?: boolean }
+export type FileTemporaryParams = { kind: 'file' | 'directory'; name: string }
+export type FileReferenceParams = { ref: string }
+export type FileWriteManagedParams = { name: string; bytes?: number }
+export type FileWriteDirectoryParams = {
+  directory: string
+  name: string
+  bytes?: number
+  replace?: boolean
+}
+export type FileWriteTargetParams = { ref: string; bytes?: number; replace?: boolean }
+export type FileWriteOpenParams =
+  FileWriteManagedParams | FileWriteDirectoryParams | FileWriteTargetParams
+export type FileWriteStream = { streamId: string }
+export type FileWriteChunkParams = { streamId: string; data: string }
+export type FileWriteChunkResult = { bytes: number }
+export type FileWatchParams = { ref: string; recursive?: boolean }
+export type FileWatch = { watchId: string }
+export type FileWatchIdParams = { watchId: string }
+export type FileWatchEvent = { path: string; kind: 'created' | 'modified' | 'removed' }
+export type FileWatchPoll = { events: FileWatchEvent[]; overflow: boolean }
+export type RuntimeRequirement = { capabilityId: string; engine: string; version: VersionRange }
+export type RuntimeEnvironment = {
+  engine: string
+  version: string
+  toolId: string
+  resourceId: string
+  resourceVersion: string
+}
+export type RuntimeRunParams = {
+  args: string[]
+  stdin?: string
+  timeoutMs?: number
+  workingDirectory?: string
+  environment?: { [key: string]: string }
+}
+export type RuntimeIdentity = { engine: string; version: string }

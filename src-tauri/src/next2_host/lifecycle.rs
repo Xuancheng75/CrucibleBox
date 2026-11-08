@@ -44,6 +44,10 @@ impl Manager {
             self.check(row)?;
             self.supervise(row, kind, &slot)?;
             workers.insert(key.clone(), Instance::Ready(slot.clone()));
+            self.provider_failures
+                .lock()
+                .map_err(|_| "INTERNAL_ERROR")?
+                .remove(&row.id);
             Ok(slot)
         });
         if result.is_err() {
@@ -51,6 +55,9 @@ impl Manager {
                 .lock()
                 .map_err(|_| "INTERNAL_ERROR")?
                 .remove(&key);
+            if let Err(failure) = &result {
+                self.lifecycle_failure(&row.id, failure);
+            }
         }
         self.startup_finished.notify_all();
         result
@@ -193,6 +200,9 @@ impl Manager {
     }
 
     pub(super) fn lifecycle_failure(&self, owner: &str, failure: &str) {
+        if let Ok(mut failures) = self.provider_failures.lock() {
+            failures.insert(owner.into(), super::error(failure.into()).code);
+        }
         if let Ok(db) = self.db.lock() {
             if let Err(error) = db.log_write(owner, "error", &format!("Backend stopped: {failure}"))
             {

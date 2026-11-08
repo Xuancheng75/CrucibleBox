@@ -30,6 +30,8 @@ fn capture(pipe: impl Read) -> Result<Vec<u8>, String> {
 pub fn run(
     executable: &Path,
     directory: &Path,
+    temporary: &Path,
+    environment: &std::collections::HashMap<String, String>,
     args: &[String],
     stdin: &[u8],
     deadline: Instant,
@@ -41,8 +43,10 @@ pub fn run(
         .args(args)
         .current_dir(directory)
         .env_clear()
-        .env("TEMP", directory)
-        .env("TMP", directory)
+        .envs(environment)
+        .env("TEMP", temporary)
+        .env("TMP", temporary)
+        .env("TMPDIR", temporary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

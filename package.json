@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox",
-  "version": "2.2.0-beta.6",
+  "version": "2.2.0-beta.7",
   "private": true,
   "description": "CrucibleBox extensible toolbox built with Tauri",
   "author": "cruciblebox",
@@ -47,14 +47,15 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:renderer && npm run typecheck:test && npm run typecheck:scripts",
     "test": "npm run test:host && npm run test:supply-chain && npm run test:next",
     "test:host": "vitest run --configLoader runner",
-    "test:supply-chain": "node --test scripts/plugin-artifact-provenance.test.mjs scripts/packaged-paths.test.mjs scripts/generate-release-checksums.test.mjs scripts/verify-windows-update-artifacts.test.mjs scripts/next-paired-rollback.test.mjs scripts/plugin-runtime-metadata.test.mjs scripts/next-frame-timeout.test.mjs",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
+    "test:supply-chain": "node --test scripts/plugin-artifact-provenance.test.mjs scripts/packaged-paths.test.mjs scripts/generate-release-checksums.test.mjs scripts/verify-windows-update-artifacts.test.mjs scripts/next-paired-rollback.test.mjs scripts/plugin-runtime-metadata.test.mjs scripts/next-frame-timeout.test.mjs scripts/check-source-boundaries.test.mjs",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run check:source-boundaries && npm test",
     "verify:tauri-runtime": "node scripts/verify-tauri-runtime-assets.mjs --staged .",
     "test:next": "npm run test:next2",
     "generate:next2": "node scripts/generate-next2-contract.mjs",
     "test:next2": "node scripts/generate-next2-contract.mjs --check && node --test packages/cruciblebox-next2-api/test/*.test.mjs && tsc -p packages/cruciblebox-next2-api/test/tsconfig.json",
     "package:base": "node scripts/verify-tauri-runtime-assets.mjs --staged --profile=base . && cd src-tauri && cargo tauri build --config tauri.base.conf.json",
-    "verify:tauri-runtime:base": "node scripts/verify-tauri-runtime-assets.mjs --staged --profile=base ."
+    "verify:tauri-runtime:base": "node scripts/verify-tauri-runtime-assets.mjs --staged --profile=base .",
+    "check:source-boundaries": "node scripts/check-source-boundaries.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.2",

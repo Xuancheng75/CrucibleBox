@@ -1,6 +1,6 @@
 [package]
 name = "cruciblebox"
-version = "2.2.0-beta.6"
+version = "2.2.0-beta.7"
 edition = "2021"
 description = "CrucibleBox - extensible Windows toolbox (Tauri 2)"
 authors = ["CrucibleBox"]
@@ -38,6 +38,8 @@ sha2 = "0.10"
 arboard = "3"
 base64 = "0.22"
 url = "2"
+notify = "=8.2.2"
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

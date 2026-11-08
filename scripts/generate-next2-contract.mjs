@@ -192,19 +192,19 @@ const apiReference = pretty(
     '',
     '由 contracts/next2/contract.json 生成；修改契约后运行 npm run generate:next2。',
     '',
-    `Manifest ${manifestVersion}、API ${sdkApiVersion}、wire ${wireVersion}；JS SDK ${sdkPackageVersion}。基础最低宿主 ${minHostVersion}，新增能力使用方按实际方法声明至少 ${featuresHostVersion}。`,
+    `Manifest ${manifestVersion}、API ${sdkApiVersion}、wire ${wireVersion}；JS SDK ${sdkPackageVersion}。基础最低宿主 ${minHostVersion}；各方法最低宿主见表，既有方法的新选项按契约属性 since 字段声明。`,
     '',
     '完整字段、必需项与大小边界见 [契约 Schema](../contracts/next2/contract.json) 和 [TypeScript 类型](../packages/cruciblebox-next2-api/src/generated.d.mts)。本页不把业务 Json 载荷解释为宿主内建业务方法。',
     '',
     '权限列为空仍需要合法会话、启用的安装身份及对应上下文。backend 并不自动具有任务权限；结果写入、下载和工具执行还要求有效任务归属。界面主题、对话框与通知由可信主窗口完成授权后的操作。',
     '',
-    '| 方法 | 权限 | 上下文 | 参数类型 | 返回类型 |',
-    '| --- | --- | --- | --- | --- |',
+    '| 方法 | 权限 | 上下文 | 参数类型 | 返回类型 | 最低宿主 |',
+    '| --- | --- | --- | --- | --- | --- |',
     ...Object.entries(contract.methods)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(
         ([method, rule]) =>
-          `| ${method} | ${rule.permission ?? '—'} | ${rule.contexts.join(', ')} | ${schemaLabel(rule.params)} | ${schemaLabel(rule.result)} |`
+          `| ${method} | ${rule.permission ?? '—'} | ${rule.contexts.join(', ')} | ${schemaLabel(rule.params)} | ${schemaLabel(rule.result)} | ${rule.since ?? minHostVersion} |`
       ),
     '',
     '业务通过 backend(method, params) 或声明的 service(id, method, params) 调用。成功响应为 ok:true/result，失败为 ok:false/error.code/error.message，requestId 必须关联原调用。示例见 [SDK 指南](plugin-sdk.md)、[Provider 指南](provider-guide.md) 与 [验证指南](testing.md)。',

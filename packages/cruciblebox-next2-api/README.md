@@ -1,4 +1,4 @@
-# @cruciblebox/next2-api 7.0.0-beta.2
+# @cruciblebox/next2-api 7.0.0-beta.3
 
 Next 3.0 candidate SDK for Manifest 7, API 7, wire 5 and storage data schema 1. Use CrucibleBox 2.2.0-beta.2 for this SDK's new public services. Existing manifest shapes can retain the 2.2.0-beta.1 minimum; tools, process/download permissions and command placements/keywords require beta.2.
 

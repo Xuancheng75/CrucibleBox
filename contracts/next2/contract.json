@@ -3,13 +3,14 @@
   "versions": {
     "manifestVersion": 7,
     "sdkApiVersion": 7,
-    "sdkPackageVersion": "7.0.0-beta.2",
+    "sdkPackageVersion": "7.0.0-beta.3",
     "featuresHostVersion": "2.2.0-beta.2",
     "minHostVersion": "2.2.0-beta.1",
     "wireVersion": 5,
     "dataSchemaVersion": 1,
     "resourceManifestVersion": 1,
-    "catalogVersion": 1
+    "catalogVersion": 1,
+    "completionHostVersion": "2.2.0-beta.7"
   },
   "budget": {
     "eventBytes": 8192,
@@ -2114,7 +2115,10 @@
               "browser:downloads",
               "network:fetch",
               "process:run",
-              "network:download"
+              "network:download",
+              "runtime:execute",
+              "native:publish",
+              "files:write"
             ]
           },
           "maxItems": 128,
@@ -2168,6 +2172,20 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/ToolDeclaration"
+          },
+          "maxItems": 16
+        },
+        "runtimeCapabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuntimeCapability"
+          },
+          "maxItems": 16
+        },
+        "runtimeRequirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuntimeRequirement"
           },
           "maxItems": 16
         }
@@ -2248,6 +2266,9 @@
         },
         "publisher": {
           "$ref": "#/$defs/Publisher"
+        },
+        "runtimeIdentity": {
+          "$ref": "#/$defs/RuntimeIdentity"
         }
       }
     },
@@ -3372,6 +3393,20 @@
           "type": "integer",
           "minimum": 100,
           "maximum": 60000
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "since": "2.2.0-beta.7"
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "since": "2.2.0-beta.7"
         }
       }
     },
@@ -3511,6 +3546,694 @@
     },
     "CommandPlacement": {
       "enum": ["toolbar", "sidebar", "contextMenu", "status"]
+    },
+    "CapabilityAvailability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "state": {
+          "enum": [
+            "registered",
+            "starting",
+            "ready",
+            "failed",
+            "stopping",
+            "stopped",
+            "unavailable"
+          ]
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "providerVersion": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "error": {
+          "$ref": "#/$defs/RpcError"
+        }
+      }
+    },
+    "PlatformMethodContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "permission", "contexts", "paramsSchema", "resultSchema"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "permission": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 64
+            }
+          ]
+        },
+        "contexts": {
+          "type": "array",
+          "items": {
+            "enum": ["renderer", "backend"]
+          },
+          "maxItems": 2
+        },
+        "paramsSchema": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "resultSchema": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "CapabilityDescription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["availability"],
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/CapabilityAvailability"
+        },
+        "binding": {
+          "$ref": "#/$defs/CapabilityBinding"
+        },
+        "kind": {
+          "enum": ["host", "plugin", "runtime"]
+        },
+        "methodContracts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlatformMethodContract"
+          },
+          "maxItems": 128
+        },
+        "environment": {
+          "$ref": "#/$defs/RuntimeEnvironment"
+        }
+      }
+    },
+    "CapabilityListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "after": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 16
+        }
+      }
+    },
+    "CapabilityPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapabilityAvailability"
+          },
+          "maxItems": 16
+        },
+        "next": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        }
+      }
+    },
+    "RuntimeCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityId", "toolId", "engine"],
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "toolId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "engine": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        }
+      }
+    },
+    "NativePublicationParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "stage", "target", "replace", "terminal"],
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32760
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32760
+        },
+        "replace": {
+          "type": "boolean"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32760
+        }
+      }
+    },
+    "NativePublicationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32760
+        }
+      }
+    },
+    "FileChildParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "path"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    "FileDirectoryCreateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "name"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      }
+    },
+    "FileWalkParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "recursive": {
+          "type": "boolean",
+          "default": false
+        },
+        "after": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 16
+        }
+      }
+    },
+    "FileWalkEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "info"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "info": {
+          "$ref": "#/$defs/FileInfo"
+        }
+      }
+    },
+    "FileWalkPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileWalkEntry"
+          },
+          "maxItems": 16
+        },
+        "next": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    "FileTransferParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "directory", "name"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "directory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        },
+        "recursive": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "FileRemoveParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "recursive": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "FileTemporaryParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": {
+          "enum": ["file", "directory"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      }
+    },
+    "FileReferenceParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "FileWriteManagedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        }
+      }
+    },
+    "FileWriteDirectoryParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "name"],
+      "properties": {
+        "directory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "FileWriteTargetParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        },
+        "replace": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "FileWriteOpenParams": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/FileWriteManagedParams"
+        },
+        {
+          "$ref": "#/$defs/FileWriteDirectoryParams"
+        },
+        {
+          "$ref": "#/$defs/FileWriteTargetParams"
+        }
+      ]
+    },
+    "FileWriteStream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streamId"],
+      "properties": {
+        "streamId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "FileWriteChunkParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streamId", "data"],
+      "properties": {
+        "streamId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "data": {
+          "type": "string",
+          "maxLength": 32768
+        }
+      }
+    },
+    "FileWriteChunkResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes"],
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184
+        }
+      }
+    },
+    "FileWatchParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "recursive": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "FileWatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["watchId"],
+      "properties": {
+        "watchId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "FileWatchIdParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["watchId"],
+      "properties": {
+        "watchId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "FileWatchEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "kind": {
+          "enum": ["created", "modified", "removed"]
+        }
+      }
+    },
+    "FileWatchPoll": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events", "overflow"],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileWatchEvent"
+          },
+          "maxItems": 16
+        },
+        "overflow": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RuntimeRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityId", "engine", "version"],
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "engine": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "version": {
+          "$ref": "#/$defs/VersionRange"
+        }
+      }
+    },
+    "RuntimeEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "version", "toolId", "resourceId", "resourceVersion"],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "format": "semver-without-build"
+        },
+        "toolId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "resourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "resourceVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "format": "semver-without-build"
+        }
+      }
+    },
+    "RuntimeRunParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["args"],
+      "properties": {
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 1024
+          },
+          "maxItems": 32
+        },
+        "stdin": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 5464
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "since": "2.2.0-beta.7"
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "since": "2.2.0-beta.7"
+        }
+      }
+    },
+    "RuntimeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "version"],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "format": "plugin-id"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "format": "semver-without-build"
+        }
+      }
     }
   },
   "methods": {
@@ -3522,7 +4245,8 @@
       },
       "result": {
         "$ref": "#/$defs/EventSubscription"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "events.publish": {
       "permission": "events:publish",
@@ -3532,7 +4256,8 @@
       },
       "result": {
         "$ref": "#/$defs/EventPublishResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "events.poll": {
       "permission": "events:subscribe",
@@ -3542,7 +4267,8 @@
       },
       "result": {
         "$ref": "#/$defs/EventPollResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "events.unsubscribe": {
       "permission": "events:subscribe",
@@ -3552,7 +4278,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "rpc.cancel": {
       "permission": null,
@@ -3562,7 +4289,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "files.stream.open": {
       "permission": "files:read",
@@ -3572,7 +4300,8 @@
       },
       "result": {
         "$ref": "#/$defs/FileStream"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "files.stream.read": {
       "permission": "files:read",
@@ -3582,7 +4311,8 @@
       },
       "result": {
         "$ref": "#/$defs/FileStreamChunk"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "files.stream.close": {
       "permission": "files:read",
@@ -3592,7 +4322,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "logging.write": {
       "permission": "logging:write",
@@ -3602,7 +4333,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "capabilities.resolve": {
       "permission": null,
@@ -3612,7 +4344,8 @@
       },
       "result": {
         "$ref": "#/$defs/CapabilityBinding"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "runtime.ping": {
       "permission": null,
@@ -3622,7 +4355,8 @@
       },
       "result": {
         "$ref": "#/$defs/RuntimePingResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.get": {
       "permission": "storage:read",
@@ -3632,7 +4366,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageGetResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.set": {
       "permission": "storage:write",
@@ -3642,7 +4377,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageSetResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.delete": {
       "permission": "storage:write",
@@ -3652,7 +4388,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageDeleteResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.batch": {
       "permission": "storage:write",
@@ -3662,7 +4399,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageBatchResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.list": {
       "permission": "storage:read",
@@ -3672,7 +4410,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageListResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.keys": {
       "permission": "storage:read",
@@ -3682,7 +4421,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageKeysResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.read.begin": {
       "permission": "storage:read",
@@ -3692,7 +4432,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageReadBeginResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.read.chunk": {
       "permission": "storage:read",
@@ -3702,7 +4443,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageReadChunkResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.read.close": {
       "permission": "storage:read",
@@ -3712,7 +4454,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageReadCloseResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.write.begin": {
       "permission": "storage:write",
@@ -3722,7 +4465,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageWriteBeginResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.write.chunk": {
       "permission": "storage:write",
@@ -3732,7 +4476,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageWriteChunkResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.write.commit": {
       "permission": "storage:write",
@@ -3742,7 +4487,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageWriteCommitResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "storage.write.abort": {
       "permission": "storage:write",
@@ -3752,7 +4498,8 @@
       },
       "result": {
         "$ref": "#/$defs/StorageWriteAbortResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "config.get": {
       "permission": "storage:read",
@@ -3762,7 +4509,8 @@
       },
       "result": {
         "$ref": "#/$defs/ConfigGetResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "config.patch": {
       "permission": "storage:write",
@@ -3772,7 +4520,8 @@
       },
       "result": {
         "$ref": "#/$defs/ConfigPatchResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.get": {
       "permission": "tasks:read",
@@ -3782,7 +4531,8 @@
       },
       "result": {
         "$ref": "#/$defs/TasksGetResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.cancel": {
       "permission": "tasks:control",
@@ -3792,7 +4542,8 @@
       },
       "result": {
         "$ref": "#/$defs/TasksCancelResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.list": {
       "permission": "tasks:read",
@@ -3802,7 +4553,8 @@
       },
       "result": {
         "$ref": "#/$defs/TasksListResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.get": {
       "permission": "theme:read",
@@ -3812,7 +4564,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeGetResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.list": {
       "permission": "theme:read",
@@ -3822,7 +4575,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeListResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.preview": {
       "permission": "theme:write",
@@ -3832,7 +4586,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemePreviewResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.commit": {
       "permission": "theme:write",
@@ -3842,7 +4597,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeCommitResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.rollback": {
       "permission": "theme:write",
@@ -3852,7 +4608,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeRollbackResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.set": {
       "permission": "theme:write",
@@ -3862,7 +4619,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeSetResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "dialog.open": {
       "permission": "dialog",
@@ -3872,7 +4630,8 @@
       },
       "result": {
         "$ref": "#/$defs/DialogOpenResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "dialog.confirm": {
       "permission": "dialog",
@@ -3882,7 +4641,8 @@
       },
       "result": {
         "$ref": "#/$defs/DialogConfirmResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "notification.show": {
       "permission": "notification",
@@ -3892,7 +4652,8 @@
       },
       "result": {
         "$ref": "#/$defs/NotificationShowResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "clipboard.read": {
       "permission": "clipboard",
@@ -3902,7 +4663,8 @@
       },
       "result": {
         "type": "string"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "clipboard.write": {
       "permission": "clipboard",
@@ -3920,7 +4682,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "data.directory": {
       "permission": null,
@@ -3932,7 +4695,8 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 32767
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "resources.list": {
       "permission": null,
@@ -3946,7 +4710,8 @@
           "$ref": "#/$defs/ResourceMount"
         },
         "maxItems": 64
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "files.choose": {
       "permission": "dialog",
@@ -3986,7 +4751,8 @@
             "maxItems": 128
           }
         ]
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "files.read": {
       "permission": "files:read",
@@ -4007,7 +4773,8 @@
             "type": "boolean"
           }
         }
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "files.resolve": {
       "permission": "files:read",
@@ -4019,7 +4786,8 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 32767
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "files.publish": {
       "permission": "files:publish",
@@ -4029,7 +4797,8 @@
       },
       "result": {
         "$ref": "#/$defs/FileReference"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.start": {
       "permission": "tasks:control",
@@ -4048,7 +4817,8 @@
             "maxLength": 128
           }
         }
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.beginCommit": {
       "permission": "tasks:execute",
@@ -4067,7 +4837,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.progress": {
       "permission": "tasks:execute",
@@ -4077,7 +4848,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "network.route": {
       "permission": "network:fetch",
@@ -4107,7 +4879,8 @@
         },
         "required": ["kind"],
         "additionalProperties": false
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "network.fetch": {
       "permission": "network:fetch",
@@ -4117,7 +4890,8 @@
       },
       "result": {
         "$ref": "#/$defs/NetworkFetchResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.pause": {
       "permission": "tasks:control",
@@ -4127,7 +4901,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.resume": {
       "permission": "tasks:control",
@@ -4137,7 +4912,8 @@
       },
       "result": {
         "type": "boolean"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "tasks.controlState": {
       "permission": "tasks:execute",
@@ -4157,7 +4933,8 @@
         },
         "required": ["paused", "cancelRequested"],
         "additionalProperties": false
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.assets.import": {
       "permission": "theme:assets",
@@ -4167,7 +4944,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeAsset"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.assets.importBundled": {
       "permission": "theme:assets",
@@ -4177,7 +4955,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeAsset"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.assets.get": {
       "permission": "theme:assets",
@@ -4187,7 +4966,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeAsset"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "theme.assets.list": {
       "permission": "theme:assets",
@@ -4197,7 +4977,8 @@
       },
       "result": {
         "$ref": "#/$defs/ThemeAssetListResult"
-      }
+      },
+      "since": "2.2.0-beta.1"
     },
     "process.run": {
       "permission": "process:run",
@@ -4207,7 +4988,8 @@
       },
       "result": {
         "$ref": "#/$defs/ProcessResult"
-      }
+      },
+      "since": "2.2.0-beta.2"
     },
     "runtime.list": {
       "permission": null,
@@ -4221,7 +5003,8 @@
           "$ref": "#/$defs/RuntimeStatus"
         },
         "maxItems": 16
-      }
+      },
+      "since": "2.2.0-beta.2"
     },
     "network.download": {
       "permission": "network:download",
@@ -4231,7 +5014,8 @@
       },
       "result": {
         "$ref": "#/$defs/FileReference"
-      }
+      },
+      "since": "2.2.0-beta.2"
     },
     "files.info": {
       "permission": "files:read",
@@ -4241,7 +5025,8 @@
       },
       "result": {
         "$ref": "#/$defs/FileInfo"
-      }
+      },
+      "since": "2.2.0-beta.2"
     },
     "files.list": {
       "permission": "files:read",
@@ -4255,7 +5040,8 @@
           "$ref": "#/$defs/FileInfo"
         },
         "maxItems": 128
-      }
+      },
+      "since": "2.2.0-beta.2"
     },
     "files.writeResult": {
       "permission": "files:publish",
@@ -4265,7 +5051,8 @@
       },
       "result": {
         "$ref": "#/$defs/FileReference"
-      }
+      },
+      "since": "2.2.0-beta.2"
     },
     "storage.usage": {
       "permission": "storage:read",
@@ -4275,7 +5062,217 @@
       },
       "result": {
         "$ref": "#/$defs/StorageUsage"
-      }
+      },
+      "since": "2.2.0-beta.2"
+    },
+    "capabilities.list": {
+      "permission": null,
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/CapabilityListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CapabilityPage"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "capabilities.describe": {
+      "permission": null,
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/CapabilityResolveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CapabilityDescription"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "runtime.resolve": {
+      "permission": null,
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/CapabilityResolveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CapabilityDescription"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "tasks.publishNative": {
+      "permission": "native:publish",
+      "contexts": ["backend"],
+      "params": {
+        "$ref": "#/$defs/NativePublicationParams"
+      },
+      "result": {
+        "$ref": "#/$defs/NativePublicationResult"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.child": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileChildParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileReference"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.directory.create": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileDirectoryCreateParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileReference"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.directory.walk": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWalkParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileWalkPage"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.copy": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileTransferParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileReference"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.move": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileTransferParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileReference"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.remove": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileRemoveParams"
+      },
+      "result": {
+        "type": "boolean"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.temporary": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileTemporaryParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileReference"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.temporary.release": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileReferenceParams"
+      },
+      "result": {
+        "type": "boolean"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.write.open": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWriteOpenParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileWriteStream"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.write.append": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWriteChunkParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileWriteChunkResult"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.write.commit": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWriteStream"
+      },
+      "result": {
+        "$ref": "#/$defs/FileReference"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.write.abort": {
+      "permission": "files:write",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWriteStream"
+      },
+      "result": {
+        "type": "boolean"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.watch": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWatchParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileWatch"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.watch.poll": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWatchIdParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FileWatchPoll"
+      },
+      "since": "2.2.0-beta.7"
+    },
+    "files.watch.close": {
+      "permission": "files:read",
+      "contexts": ["renderer", "backend"],
+      "params": {
+        "$ref": "#/$defs/FileWatchIdParams"
+      },
+      "result": {
+        "type": "boolean"
+      },
+      "since": "2.2.0-beta.7"
     }
   },
   "lifecycle": {
@@ -4329,5 +5326,12 @@
     "permissionExpansion": "explicit-approval",
     "failure": "preserve-old-install-and-user-data",
     "resourceImport": "user-initiated-local-offline-package"
+  },
+  "capabilities": {
+    "builtins": {
+      "providerId": "cruciblebox-host",
+      "providerVersion": "2.2.0-beta.7",
+      "interfaceVersion": "1.0.0"
+    }
   }
 }

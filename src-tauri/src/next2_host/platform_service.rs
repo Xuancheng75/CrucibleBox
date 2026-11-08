@@ -43,9 +43,22 @@ impl Platform {
             ("events", Manager::events_dispatch),
             ("rpc", Manager::rpc_service),
         ];
+        let mut methods = HashMap::new();
+        for (namespace, handler) in providers {
+            for method in protocol::contract()["methods"].as_object().unwrap().keys() {
+                if method.split_once('.').map(|value| value.0) == Some(namespace) {
+                    methods.insert(method.as_str(), handler);
+                }
+            }
+        }
+        assert_eq!(
+            methods.len(),
+            protocol::contract()["methods"].as_object().unwrap().len(),
+            "Unregistered platform method"
+        );
         Self {
             app_handle,
-            providers: providers.into_iter().collect(),
+            providers: methods,
         }
     }
 
@@ -58,12 +71,9 @@ impl Platform {
         execution: Execution<'_>,
     ) -> Result<Value, RpcError> {
         let row = manager.record(owner).map_err(error)?;
-        let namespace = request
-            .method
-            .split_once('.')
-            .map(|(namespace, _)| namespace);
-        let handler = namespace
-            .and_then(|namespace| self.providers.get(namespace))
+        let handler = self
+            .providers
+            .get(request.method.as_str())
             .ok_or_else(|| error("PLATFORM_METHOD_NOT_CONNECTED".into()))?;
         let value = handler(
             manager,
@@ -112,6 +122,16 @@ impl Manager {
         Ok(json!(accepted))
     }
     fn capability_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
+        if call.request.method == "capabilities.list" {
+            return self
+                .list_capabilities(call.owner, &call.request.params)
+                .map_err(error);
+        }
+        if call.request.method == "capabilities.describe" {
+            return self
+                .describe_capability(call.owner, call.request.params["id"].as_str().unwrap())
+                .map_err(error);
+        }
         let registry = self.registry().map_err(error)?;
         let binding = registry
             .capability(call.owner, call.request.params["id"].as_str().unwrap())
@@ -128,6 +148,7 @@ impl Manager {
         } = *call;
         let params = &request.params;
         let result: Result<Value, String> = match request.method.as_str() {
+            "tasks.publishNative" => self.publish_native(row, params, execution_context),
             "tasks.start" => {
                 if execution_context.task.is_some() {
                     return Err(error("NESTED_TASK_DENIED".into()));
@@ -351,7 +372,7 @@ impl Manager {
                         .map_err(|error| error.to_string())
                 },
             ),
-            _ => Err("PLATFORM_METHOD_NOT_CONNECTED".into()),
+            _ => self.file_operation(owner, row, request, execution),
         };
         result.map_err(error)
     }
@@ -391,6 +412,15 @@ impl Manager {
     fn runtime_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
         match call.request.method.as_str() {
             "runtime.list" => self.runtime_status(call.row).map_err(error),
+            "runtime.resolve" => {
+                let description = self
+                    .describe_capability(call.owner, call.request.params["id"].as_str().unwrap())
+                    .map_err(error)?;
+                if description.get("binding").is_some() && description["kind"] != "runtime" {
+                    return Err(error("RUNTIME_CAPABILITY_REQUIRED".into()));
+                }
+                Ok(description)
+            }
             _ => self.storage_service(call),
         }
     }

@@ -49,6 +49,52 @@ fn session(manifest: Manifest) -> Session {
     )
 }
 #[test]
+fn builtins_share_capability_resolution_versions_and_permission_admission() {
+    let mut manifest = native("unified-consumer");
+    manifest.permissions.clear();
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let binding = registry.capability(&manifest.id, "host-files").unwrap();
+    assert_eq!(binding.provider_id, "cruciblebox-host");
+    assert_eq!(binding.export.version, "1.0.0");
+    assert!(registry
+        .capability_ids(&manifest.id)
+        .unwrap()
+        .contains(&"host-files".into()));
+    let mut gateway = session(manifest.clone());
+    let raw = request(
+        1,
+        json!({"kind":"service","id":"host-files"}),
+        "files.info",
+        json!({"ref":"a".repeat(64)}),
+    );
+    assert_eq!(
+        gateway
+            .admit(&registry, &raw, "main:frame-1", 1)
+            .err()
+            .unwrap(),
+        "PERMISSION_DENIED"
+    );
+    manifest.dependencies.push(serde_json::from_value(json!({"id":"host-files","providerId":"cruciblebox-host","version":{"min":"2.0.0","maxExclusive":"3.0.0"}})).unwrap());
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    assert_eq!(
+        registry.validate_plugin(&manifest.id).unwrap_err(),
+        "DEPENDENCY_INCOMPATIBLE"
+    );
+    let raw = request(
+        2,
+        json!({"kind":"platform"}),
+        "files.info",
+        json!({"ref":"a".repeat(64)}),
+    );
+    assert_eq!(
+        session(manifest)
+            .admit(&registry, &raw, "main:frame-1", 1)
+            .err()
+            .unwrap(),
+        "DEPENDENCY_INCOMPATIBLE"
+    );
+}
+#[test]
 fn ordered_renderer_requests_exceed_opaque_budget_without_forgetting_replay_or_expiry() {
     let manifest = native("acme-independent");
     let registry = Registry::new([installed(manifest.clone())]).unwrap();
@@ -591,4 +637,96 @@ fn updates_revoke_old_sessions_and_task_providers_cannot_impersonate_initiators(
     assert!(!task.may_report("client", "execution-1"));
     assert!(!task.may_report("sample-provider", "old-execution"));
     assert!(task.may_report("sample-provider", "execution-1"));
+}
+
+#[test]
+fn runtime_selection_separates_interface_resource_and_engine_versions() {
+    let provider = |id: &str| {
+        let mut value = serde_json::to_value(native(id)).unwrap();
+        value["minHostVersion"] = json!("2.2.0-beta.7");
+        value["permissions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("process:run"));
+        value["tools"] = json!([{"id":"python","resourceId":"runtime-data","entry":"python.exe"}]);
+        value["resources"] = json!([{"id":"runtime-data","version":{"min":"1.0.0","maxExclusive":"2.0.0"},"optional":true}]);
+        value["exports"] = json!([{"id":"python-runtime","version":"1.0.0","methods":["run"],"interchangeable":true}]);
+        value["runtimeCapabilities"] =
+            json!([{"capabilityId":"python-runtime","toolId":"python","engine":"python"}]);
+        validate_manifest(&value.to_string()).unwrap()
+    };
+    let (first, second) = (provider("runtime-alpha"), provider("runtime-beta"));
+    let mut consumer = serde_json::to_value(native("runtime-consumer")).unwrap();
+    consumer["minHostVersion"] = json!("2.2.0-beta.7");
+    consumer["permissions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("runtime:execute"));
+    consumer["dependencies"] = json!([{"id":"python-runtime","version":{"min":"1.0.0","maxExclusive":"2.0.0"},"optional":true}]);
+    consumer["runtimeRequirements"] = json!([{"capabilityId":"python-runtime","engine":"python","version":{"min":"3.14.0","maxExclusive":"3.15.0"}}]);
+    let consumer = validate_manifest(&consumer.to_string()).unwrap();
+    let make_registry = || {
+        Registry::new([
+            installed(first.clone()),
+            installed(second.clone()),
+            installed(consumer.clone()),
+        ])
+        .unwrap()
+    };
+    let unavailable = make_registry();
+    unavailable.validate_plugin(&consumer.id).unwrap();
+    assert_eq!(
+        unavailable
+            .capability(&consumer.id, "python-runtime")
+            .unwrap_err(),
+        "RUNTIME_UNAVAILABLE"
+    );
+    let metadata = |version: &str| {
+        serde_json::from_value(json!({"engine":"python","version":version,"resourceVersion":"1.4.0","toolId":"python","resourceId":"runtime-data"})).unwrap()
+    };
+    let registry = make_registry().with_runtimes(std::collections::HashMap::from([
+        (
+            (first.id.clone(), "python-runtime".into()),
+            Ok(metadata("3.13.9")),
+        ),
+        (
+            (second.id.clone(), "python-runtime".into()),
+            Ok(metadata("3.14.7")),
+        ),
+    ]));
+    let binding = registry.capability(&consumer.id, "python-runtime").unwrap();
+    assert_eq!(binding.provider_id, second.id);
+    assert_eq!(binding.export.version, "1.0.0");
+    assert_eq!(
+        registry
+            .runtime_environment(&second.id, "python-runtime")
+            .unwrap()
+            .unwrap()
+            .resource_version,
+        "1.4.0"
+    );
+    let admitted = session(consumer)
+        .admit(
+            &registry,
+            &request(
+                1,
+                json!({"kind":"service","id":"python-runtime"}),
+                "run",
+                json!({"args":[]}),
+            ),
+            "main:frame-1",
+            1,
+        )
+        .unwrap();
+    let Route::Backend {
+        service: Some(service),
+        ..
+    } = admitted.route
+    else {
+        panic!("Expected runtime provider route")
+    };
+    assert!(service
+        .validate_result(&json!({"exitCode":0,"stdout":"","stderr":""}))
+        .is_ok());
+    assert!(service.validate_result(&json!({"fake":true})).is_err());
 }

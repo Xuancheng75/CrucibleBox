@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "cruciblebox-plugin-host"
-version = "2.2.0-beta.6"
+version = "2.2.0-beta.7"
 dependencies = [
  "cruciblebox-next2-protocol",
  "cruciblebox-next2-runtime",

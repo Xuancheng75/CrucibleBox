@@ -19,6 +19,8 @@ pub struct Installed {
 pub struct Registry {
     plugins: HashMap<String, Installed>,
     capabilities: HashMap<String, Vec<(Version, CapabilityBinding)>>,
+    platform: HashMap<String, CapabilityBinding>,
+    runtimes: HashMap<(String, String), Result<crate::RuntimeEnvironment, String>>,
 }
 #[derive(Debug, PartialEq)]
 pub enum Route {
@@ -35,14 +37,16 @@ pub enum Route {
 pub struct ServiceCall {
     pub id: String,
     result: Option<Value>,
+    runtime_result: Option<Value>,
 }
 
 impl ServiceCall {
     pub fn validate_result(&self, value: &Value) -> Result<(), String> {
         if self
             .result
-            .as_ref()
-            .is_some_and(|rule| !schema::matches(rule, value))
+            .iter()
+            .chain(self.runtime_result.iter())
+            .any(|rule| !schema::matches(rule, value))
         {
             return Err("INVALID_CAPABILITY_RESULT".into());
         }
@@ -55,7 +59,49 @@ impl Registry {
     pub fn new(plugins: impl IntoIterator<Item = Installed>) -> Result<Self, String> {
         let mut map = HashMap::new();
         let mut capabilities: HashMap<String, Vec<(Version, CapabilityBinding)>> = HashMap::new();
+        let mut platform = HashMap::new();
+        let builtins = &contract()["capabilities"]["builtins"];
+        let provider = builtins["providerId"]
+            .as_str()
+            .expect("built-in provider identity");
+        let mut namespaces: HashMap<&str, Vec<&str>> = HashMap::new();
+        for method in contract()["methods"]
+            .as_object()
+            .expect("platform methods")
+            .keys()
+        {
+            let namespace = method.split_once('.').expect("namespaced method").0;
+            namespaces.entry(namespace).or_default().push(method);
+        }
+        for (namespace, mut methods) in namespaces {
+            methods.sort_unstable();
+            let binding: CapabilityBinding = serde_json::from_value(serde_json::json!({
+                "providerId": provider,
+                "providerVersion": builtins["providerVersion"],
+                "lifecycle": "background",
+                "export": {
+                    "id": format!("host-{namespace}"),
+                    "version": builtins["interfaceVersion"],
+                    "methods": methods,
+                    "interchangeable": true
+                }
+            }))
+            .expect("generated built-in capability");
+            for method in methods {
+                platform.insert(method.into(), binding.clone());
+            }
+            capabilities
+                .entry(binding.export.id.clone())
+                .or_default()
+                .push((
+                    Version::parse(&binding.export.version).expect("built-in interface version"),
+                    binding,
+                ));
+        }
         for plugin in plugins {
+            if plugin.manifest.id == provider {
+                return Err("RESERVED_PROVIDER_ID".into());
+            }
             if plugin.enabled {
                 for export in &plugin.manifest.exports {
                     let version = Version::parse(&export.version).map_err(|_| "INVALID_VERSION")?;
@@ -89,7 +135,55 @@ impl Registry {
         Ok(Self {
             plugins: map,
             capabilities,
+            platform,
+            runtimes: HashMap::new(),
         })
+    }
+    pub fn is_platform_provider(&self, provider: &str) -> bool {
+        provider
+            == contract()["capabilities"]["builtins"]["providerId"]
+                .as_str()
+                .unwrap()
+    }
+    pub fn with_runtimes(
+        mut self,
+        runtimes: HashMap<(String, String), Result<crate::RuntimeEnvironment, String>>,
+    ) -> Self {
+        self.runtimes = runtimes;
+        self
+    }
+    pub fn runtime_environment(
+        &self,
+        provider: &str,
+        capability: &str,
+    ) -> Result<Option<&crate::RuntimeEnvironment>, String> {
+        self.runtimes
+            .get(&(provider.into(), capability.into()))
+            .map(|value| value.as_ref().map_err(Clone::clone))
+            .transpose()
+    }
+    pub fn capability_ids(&self, caller: &str) -> Result<Vec<String>, String> {
+        let plugin = self.enabled(caller)?;
+        let mut ids: Vec<_> = self
+            .platform
+            .values()
+            .map(|item| item.export.id.clone())
+            .chain(
+                plugin
+                    .manifest
+                    .dependencies
+                    .iter()
+                    .map(|item| item.id.clone()),
+            )
+            .collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+    pub fn platform_binding(&self, method: &str) -> Result<&CapabilityBinding, String> {
+        self.platform
+            .get(method)
+            .ok_or_else(|| "METHOD_UNAVAILABLE".into())
     }
     fn enabled(&self, id: &str) -> Result<&Installed, String> {
         self.plugins
@@ -103,9 +197,20 @@ impl Registry {
         dependency: &crate::ServiceDependency,
     ) -> Result<&CapabilityBinding, String> {
         if let Some(provider) = &dependency.provider_id {
-            self.enabled(provider)?;
+            if !self.is_platform_provider(provider) {
+                self.enabled(provider)?;
+            }
         }
         let mut found = false;
+        let runtime = self
+            .enabled(caller)?
+            .manifest
+            .runtime_requirements
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|runtime| runtime.capability_id == dependency.id);
+        let mut runtime_failure = None;
         for (_, binding) in self.capabilities.get(&dependency.id).into_iter().flatten() {
             if binding.provider_id == caller
                 || dependency.provider_id.as_ref().map_or_else(
@@ -117,10 +222,26 @@ impl Registry {
             }
             found = true;
             if compatible(&binding.export.version, &dependency.version)? {
+                if let Some(requirement) = runtime {
+                    let Ok(Some(environment)) =
+                        self.runtime_environment(&binding.provider_id, &binding.export.id)
+                    else {
+                        runtime_failure = Some("RUNTIME_UNAVAILABLE");
+                        continue;
+                    };
+                    if environment.engine != requirement.engine
+                        || !compatible(&environment.version, &requirement.version)?
+                    {
+                        runtime_failure = Some("RUNTIME_VERSION_INCOMPATIBLE");
+                        continue;
+                    }
+                }
                 return Ok(binding);
             }
         }
-        Err(if found {
+        Err(if let Some(failure) = runtime_failure {
+            failure
+        } else if found {
             "DEPENDENCY_INCOMPATIBLE"
         } else {
             "SERVICE_UNAVAILABLE"
@@ -128,20 +249,31 @@ impl Registry {
         .into())
     }
     pub fn capability(&self, caller: &str, id: &str) -> Result<&CapabilityBinding, String> {
-        let dependency = self
-            .enabled(caller)?
+        let plugin = self.enabled(caller)?;
+        let dependency = plugin
             .manifest
             .dependencies
             .iter()
-            .find(|item| item.id == id)
-            .ok_or("DEPENDENCY_UNDECLARED")?;
+            .find(|item| item.id == id);
+        // API 7 declares the baseline built-ins. Explicit dependencies can pin
+        // their interface range/provider without changing existing API 7 calls.
+        if dependency.is_none() {
+            return self
+                .platform
+                .values()
+                .find(|item| item.export.id == id)
+                .ok_or_else(|| "DEPENDENCY_UNDECLARED".into());
+        }
+        let dependency = dependency.unwrap();
         let binding = self.select(caller, dependency)?;
-        self.visit(
-            &binding.provider_id,
-            &mut HashSet::from([caller.to_owned()]),
-            &mut HashSet::new(),
-            &mut Vec::new(),
-        )?;
+        if !self.is_platform_provider(&binding.provider_id) {
+            self.visit(
+                &binding.provider_id,
+                &mut HashSet::from([caller.to_owned()]),
+                &mut HashSet::new(),
+                &mut Vec::new(),
+            )?;
+        }
         Ok(binding)
     }
     pub fn validate_plugin(&self, id: &str) -> Result<(), String> {
@@ -178,6 +310,7 @@ impl Registry {
         let plugin = self.enabled(id)?;
         for dependency in &plugin.manifest.dependencies {
             match self.select(id, dependency) {
+                Ok(binding) if self.is_platform_provider(&binding.provider_id) => {}
                 Ok(binding) => self.visit(&binding.provider_id, stack, visited, order)?,
                 Err(error)
                     if dependency.optional == Some(true)
@@ -186,6 +319,8 @@ impl Registry {
                             "DEPENDENCY_UNAVAILABLE"
                                 | "SERVICE_UNAVAILABLE"
                                 | "DEPENDENCY_INCOMPATIBLE"
+                                | "RUNTIME_UNAVAILABLE"
+                                | "RUNTIME_VERSION_INCOMPATIBLE"
                         ) => {}
                 Err(error) => return Err(error),
             }
@@ -229,10 +364,59 @@ impl Registry {
             return Err("METHOD_UNAVAILABLE".into());
         }
         let (provider, service) = match &request.target {
-            Target::PlatformTarget(_) => return Ok(Route::Platform),
+            Target::PlatformTarget(_) => {
+                let builtin = self.platform_binding(&request.method)?;
+                let selected = self.capability(caller_id, &builtin.export.id)?;
+                if selected != builtin {
+                    return Err("PLATFORM_PROVIDER_MISMATCH".into());
+                }
+                return Ok(Route::Platform);
+            }
             Target::BackendTarget(_) => (caller, None),
             Target::ServiceTarget(target) => {
                 let binding = self.capability(caller_id, &target.id)?;
+                if self.is_platform_provider(&binding.provider_id) {
+                    let builtin = self.platform_binding(&request.method)?;
+                    if binding != builtin {
+                        return Err("METHOD_UNAVAILABLE".into());
+                    }
+                    let mut platform_request = request.clone();
+                    platform_request.target =
+                        serde_json::from_value(serde_json::json!({"kind":"platform"})).unwrap();
+                    validate_request(&serde_json::to_string(&platform_request).unwrap())?;
+                    return Ok(Route::Platform);
+                }
+                let provider = self.enabled(&binding.provider_id)?;
+                let runtime = provider
+                    .manifest
+                    .runtime_capabilities
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|runtime| runtime.capability_id == target.id);
+                if request.method == "run"
+                    && runtime
+                    && !caller
+                        .manifest
+                        .permissions
+                        .iter()
+                        .any(|permission| permission == "runtime:execute")
+                {
+                    return Err("PERMISSION_DENIED".into());
+                }
+                let runtime_result = if runtime && request.method == "run" {
+                    if !schema::matches(&contract()["$defs"]["RuntimeRunParams"], &request.params) {
+                        return Err("INVALID_RUNTIME_PARAMS".into());
+                    }
+                    Some(contract()["$defs"]["ProcessResult"].clone())
+                } else if runtime && request.method == "environment" {
+                    if !schema::matches(&contract()["$defs"]["Empty"], &request.params) {
+                        return Err("INVALID_RUNTIME_PARAMS".into());
+                    }
+                    Some(contract()["methods"]["runtime.list"]["result"].clone())
+                } else {
+                    None
+                };
                 let method = binding
                     .export
                     .methods
@@ -260,6 +444,7 @@ impl Registry {
                     Some(ServiceCall {
                         id: target.id.clone(),
                         result,
+                        runtime_result,
                     }),
                 )
             }
@@ -332,7 +517,7 @@ impl Session {
         binding: &str,
         now_ms: u64,
     ) -> Result<Admitted, String> {
-        let request = validate_request(raw)?;
+        let mut request = validate_request(raw)?;
         if request.session != self.token || binding != self.binding {
             return Err("SESSION_DENIED".into());
         }
@@ -348,6 +533,9 @@ impl Session {
         }
         if route == Route::Platform {
             let method = &contract()["methods"][&request.method];
+            if !matches!(request.target, Target::PlatformTarget(_)) {
+                crate::schema::normalize(&method["params"], &mut request.params);
+            }
             if !method["contexts"]
                 .as_array()
                 .unwrap()
