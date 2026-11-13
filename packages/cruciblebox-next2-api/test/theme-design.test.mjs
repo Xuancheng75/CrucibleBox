@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { validateRequest, validateThemeDesign } from '../src/index.mjs'
 test('new asset RPCs remain bounded and reject unknown fields and invalid IDs', () => {
   const request = {
-    wireVersion: 4,
+    wireVersion: 5,
     requestId: 'theme-1',
     session: 'a'.repeat(64),
     target: { kind: 'platform' },

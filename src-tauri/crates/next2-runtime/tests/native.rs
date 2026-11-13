@@ -41,7 +41,7 @@ fn package(root: &Path, wrong_wire: bool) -> Value {
     manifest
 }
 fn approve(root: &Path) -> ApprovedPlugin {
-    let inspection = inspect_plugin(root, &[], "2.2.0-alpha.1").unwrap();
+    let inspection = inspect_plugin(root, &[], "2.2.0-beta.1").unwrap();
     let digest = inspection.manifest_sha256();
     inspection
         .approve(Approval {
@@ -211,10 +211,13 @@ fn bad_protocol_architecture_integrity_and_consent_are_rejected() {
     package(root.path(), true);
     let approved = approve(root.path());
     let data = tempfile::tempdir().unwrap();
-    assert!(Worker::start(&approved, data.path(), &[]).is_err());
+    assert_eq!(
+        Worker::start(&approved, data.path(), &[]).err().unwrap(),
+        "NATIVE_HANDSHAKE_MISMATCH"
+    );
     let root = tempfile::tempdir().unwrap();
     let mut manifest = package(root.path(), false);
-    let inspection = inspect_plugin(root.path(), &[], "2.2.0-alpha.1").unwrap();
+    let inspection = inspect_plugin(root.path(), &[], "2.2.0-beta.1").unwrap();
     let digest = inspection.manifest_sha256();
     assert!(inspection
         .approve(Approval {
@@ -225,7 +228,7 @@ fn bad_protocol_architecture_integrity_and_consent_are_rejected() {
         })
         .is_err());
     fs::write(root.path().join("dist/renderer.js"), b"tampered").unwrap();
-    assert!(inspect_plugin(root.path(), &[], "2.2.0-alpha.1").is_err());
+    assert!(inspect_plugin(root.path(), &[], "2.2.0-beta.1").is_err());
     package(root.path(), false);
     let exe = root.path().join("bin/backend.exe");
     let mut bytes = fs::read(&exe).unwrap();
@@ -234,7 +237,7 @@ fn bad_protocol_architecture_integrity_and_consent_are_rejected() {
     fs::write(&exe, &bytes).unwrap();
     manifest["files"][0]["sha256"] = json!(format!("{:x}", Sha256::digest(&bytes)));
     fs::write(root.path().join("plugin.json"), manifest.to_string()).unwrap();
-    assert!(inspect_plugin(root.path(), &[], "2.2.0-alpha.1")
+    assert!(inspect_plugin(root.path(), &[], "2.2.0-beta.1")
         .err()
         .unwrap()
         .contains("ARCHITECTURE"));

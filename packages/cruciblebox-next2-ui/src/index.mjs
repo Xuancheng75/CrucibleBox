@@ -7,6 +7,11 @@ const maxValue = contract.budget.storageValueBytes
 const chunkSize = contract.budget.storageChunkBytes
 const encode = (bytes) => btoa(String.fromCharCode(...bytes))
 const decode = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0))
+export function renderStatus(element, state, text) {
+  element.setAttribute('role', state === 'error' ? 'alert' : 'status')
+  element.dataset.state = state
+  element.textContent = text
+}
 function bytes(value, maximum = maxValue) {
   const raw = JSON.stringify(value, (key, value) => {
     if (
@@ -105,6 +110,7 @@ export function createClient(context) {
     }
   }
   const storage = {
+    usage: () => call('storage.usage', {}),
     get: async (key) => {
       try {
         return await call('storage.get', { key })
@@ -138,6 +144,7 @@ export function createClient(context) {
   }
   return {
     ...api,
+    files: { ...api.files, choose: (options) => call('files.choose', options) },
     storage,
     ping: () => call('runtime.ping', {}),
     config: {
@@ -164,7 +171,13 @@ export function createClient(context) {
     },
     notify: (title, body = '') => call('notification.show', { title, body }),
     tasks: {
-      start: (target, method, params = {}) => call('tasks.start', { target, method, params }),
+      start: (target, method, params = {}, options) =>
+        call('tasks.start', {
+          target,
+          method,
+          params,
+          ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs })
+        }),
       get: (taskId) => call('tasks.get', { taskId }),
       cancel: (taskId) => call('tasks.cancel', { taskId }),
       list: (options = {}) =>

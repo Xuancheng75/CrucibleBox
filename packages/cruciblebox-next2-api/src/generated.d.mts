@@ -1,8 +1,20 @@
 // Generated from contracts/next2/contract.json.
+export type ContractVersions = {
+  readonly manifestVersion: 7
+  readonly sdkApiVersion: 7
+  readonly sdkPackageVersion: '7.0.0'
+  readonly featuresHostVersion: '2.2.0-beta.2'
+  readonly minHostVersion: '2.2.0-beta.1'
+  readonly wireVersion: 5
+  readonly dataSchemaVersion: 1
+  readonly resourceManifestVersion: 1
+  readonly catalogVersion: 1
+  readonly completionHostVersion: '2.2.0-beta.7'
+}
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export type Empty = Record<string, never>
 export type VersionRange = { min: string; maxExclusive: string }
-export type ApiRange = { min: 6; maxExclusive: 7 }
+export type ApiRange = { min: 7; maxExclusive: 8 }
 export type Publisher = { id: string; displayName: string }
 export type FileEntry = { path: string; bytes: number; sha256: string }
 export type JsBackend = { kind: 'js'; entry: string }
@@ -15,14 +27,82 @@ export type NativeBackend = {
 }
 export type Backend = JsBackend | NativeBackend
 export type Navigation = { title: string; icon?: string }
-export type Command = { id: string; title: string; method: string }
+export type Command = {
+  id: string
+  title: string
+  method: string
+  placements?: CommandPlacement[]
+  keywords?: string[]
+}
 export type Contributions = {
   navigation?: Navigation
   commands: Command[]
   fileHandlers?: FileHandler[]
 }
-export type ServiceExport = { id: string; version: string; methods: string[] }
-export type ServiceDependency = { id: string; providerId: string; version: VersionRange }
+export type LegacyServiceMethod = string
+export type CapabilitySchema =
+  | { type: 'null' | 'boolean' }
+  | { type: 'integer' | 'number'; minimum?: number; maximum?: number }
+  | { type: 'string'; minLength?: number; maxLength?: number }
+  | { type: 'array'; items: CapabilitySchema; minItems?: number; maxItems?: number }
+  | {
+      type: 'object'
+      properties: { [key: string]: CapabilitySchema }
+      required?: string[]
+      additionalProperties: false
+    }
+export type CapabilityMethod = {
+  name: LegacyServiceMethod
+  params: CapabilitySchema
+  result: CapabilitySchema
+  contexts?: ('renderer' | 'backend')[]
+}
+export type ServiceMethod = LegacyServiceMethod | CapabilityMethod
+export type CapabilityEvent = { name: string; payload: CapabilitySchema }
+export type EventTopicParams = { capabilityId: string; event: string }
+export type EventPublishParams = { capabilityId: string; event: string; payload: Json }
+export type EventSubscriptionParams = { subscriptionId: string }
+export type EventSubscription = { subscriptionId: string; providerId: string }
+export type EventMessage = {
+  sequence: number
+  publisherId: string
+  capabilityId: string
+  event: string
+  payload: Json
+}
+export type EventPollResult = { event: EventMessage | null; dropped: number }
+export type EventPublishResult = { delivered: number }
+export type RequestCancelParams = { requestId: string }
+export type FileStream = { streamId: string; bytes: number }
+export type FileStreamCloseParams = { streamId: string }
+export type FileStreamReadParams = { streamId: string; offset: number; length: number }
+export type FileStreamChunk = { data: string; offset: number; nextOffset: number; eof: boolean }
+export type ServiceExport = {
+  id: string
+  version: string
+  methods: ServiceMethod[]
+  events?: CapabilityEvent[]
+  interchangeable?: boolean
+}
+export type ServiceDependency = {
+  id: string
+  providerId?: string
+  version: VersionRange
+  optional?: boolean
+}
+export type CapabilityResolveParams = { id: string }
+export type CapabilityBinding = {
+  providerId: string
+  providerVersion: string
+  lifecycle: 'on-demand' | 'background'
+  export: ServiceExport
+}
+export type LogWriteParams = {
+  level: 'debug' | 'info' | 'warn' | 'error'
+  message: string
+  code?: string
+  context?: { stage?: string; detail?: string }
+}
 export type ResourceDependency = {
   id: string
   version: VersionRange
@@ -43,7 +123,7 @@ export type BackendTarget = { kind: 'backend' }
 export type ServiceTarget = { kind: 'service'; id: string }
 export type Target = PlatformTarget | BackendTarget | ServiceTarget
 export type Request = {
-  wireVersion: 4
+  wireVersion: 5
   requestId: string
   session: string
   target: Target
@@ -51,14 +131,14 @@ export type Request = {
   params: Json
 }
 export type RpcError = { code: string; message: string }
-export type Success = { wireVersion: 4; requestId: string; ok: true; result: Json }
-export type Failure = { wireVersion: 4; requestId: string; ok: false; error: RpcError }
+export type Success = { wireVersion: 5; requestId: string; ok: true; result: Json }
+export type Failure = { wireVersion: 5; requestId: string; ok: false; error: RpcError }
 export type Response = Success | Failure
 export type FileReference = { ref: string; name: string; bytes: number }
 export type FileReadParams = { ref: string; offset: number; length: number }
 export type FileResolveParams = { ref: string }
 export type FilePublishParams = { taskId: string; path: string; name: string }
-export type TaskStartParams = { target: Target; method: string; params: Json }
+export type TaskStartParams = { target: Target; method: string; params: Json; timeoutMs?: number }
 export type TaskProgressParams = {
   taskId: string
   sequence: number
@@ -66,17 +146,17 @@ export type TaskProgressParams = {
   percent: number
   message: string
 }
-export type BackendHello = { kind: 'hello'; wireVersion: 4; sdkApiVersion: 6 }
+export type BackendHello = { kind: 'hello'; wireVersion: 5; sdkApiVersion: 7 }
 export type BackendInit = {
   kind: 'initialize'
-  wireVersion: 4
+  wireVersion: 5
   session: string
   pluginId: string
   dataDirectory: string
   resources: ResourceMount[]
 }
 export type ResourceMount = { id: string; version: string; directory: string }
-export type BackendReady = { kind: 'ready'; wireVersion: 4 }
+export type BackendReady = { kind: 'ready'; wireVersion: 5 }
 export type BackendExecute = {
   kind: 'execute'
   request: Request
@@ -86,8 +166,8 @@ export type BackendExecute = {
 export type BackendReply = { kind: 'reply'; response: Response }
 export type BackendCapability = { kind: 'capability'; request: Request }
 export type BackendCapabilityReply = { kind: 'capability-result'; response: Response }
-export type BackendCancel = { kind: 'cancel'; wireVersion: 4; taskId: string }
-export type BackendStop = { kind: 'stop'; wireVersion: 4 }
+export type BackendCancel = { kind: 'cancel'; wireVersion: 5; taskId?: string; requestId?: string }
+export type BackendStop = { kind: 'stop'; wireVersion: 5 }
 export type BackendFrame =
   | BackendHello
   | BackendInit
@@ -174,20 +254,25 @@ export type DialogConfirmParams = {
 export type DialogConfirmResult = Json
 export type NotificationShowParams = { title: string; body: string }
 export type NotificationShowResult = Json
+export type PluginDataMigration = { fromPluginVersion: VersionRange; summary: string }
 export type Manifest = {
-  manifestVersion: 6
-  sdkApiVersion: 6
+  manifestVersion: 7
+  sdkApiVersion: 7
   id: string
   version: string
   displayName: string
   description: string
   publisher: Publisher
   minHostVersion: string
+  dataMigration?: PluginDataMigration
   sdk: ApiRange
-  renderer: string
+  renderer?: string
   backend?: Backend
   permissions: (
     | 'storage:read'
+    | 'logging:write'
+    | 'events:publish'
+    | 'events:subscribe'
     | 'storage:write'
     | 'tasks:read'
     | 'tasks:control'
@@ -202,14 +287,23 @@ export type Manifest = {
     | 'tasks:execute'
     | 'browser:downloads'
     | 'network:fetch'
+    | 'process:run'
+    | 'network:download'
+    | 'runtime:execute'
+    | 'native:publish'
+    | 'files:write'
   )[]
   background: boolean
+  backgroundIntervalMs?: number
   contributes: Contributions
   exports: ServiceExport[]
   dependencies: ServiceDependency[]
   resources: ResourceDependency[]
   files: FileEntry[]
   config?: Record<string, Json>
+  tools?: ToolDeclaration[]
+  runtimeCapabilities?: RuntimeCapability[]
+  runtimeRequirements?: RuntimeRequirement[]
 }
 export type ResourceManifest = {
   resourceManifestVersion: 1
@@ -225,6 +319,7 @@ export type ResourceManifest = {
   arch: 'x86_64'
   files: FileEntry[]
   publisher: Publisher
+  runtimeIdentity?: RuntimeIdentity
 }
 export type RendererAppearance = {
   mode: 'light' | 'dark'
@@ -421,3 +516,143 @@ export type RendererThemeStyle = {
   motion: 'full' | 'reduced' | 'off'
   layers: { id: string; scope: 'shell' | 'home' | 'workspace'; text: string }[]
 }
+export type ToolDeclaration = { id: string; resourceId: string; entry: string }
+export type ProcessRunParams = {
+  toolId: string
+  args: string[]
+  stdin?: string
+  timeoutMs?: number
+  workingDirectory?: string
+  environment?: { [key: string]: string }
+}
+export type ProcessResult = { exitCode: number; stdout: string; stderr: string }
+export type RuntimeStatus = {
+  id: string
+  resourceId: string
+  state: 'ready' | 'missing'
+  version?: string
+}
+export type FileInfo = { name: string; kind: 'file' | 'directory'; bytes: number }
+export type FileWriteResultParams = { name: string; data: string }
+export type NetworkDownloadParams = { url: string; name: string; bytes: number; sha256: string }
+export type StorageUsage = { usedBytes: number; quotaBytes: number }
+export type CommandPlacement = 'toolbar' | 'sidebar' | 'contextMenu' | 'status'
+export type CapabilityAvailability = {
+  id: string
+  state: 'registered' | 'starting' | 'ready' | 'failed' | 'stopping' | 'stopped' | 'unavailable'
+  providerId?: string
+  providerVersion?: string
+  version?: string
+  error?: RpcError
+}
+export type PlatformMethodContract = {
+  name: string
+  permission: null | string
+  contexts: ('renderer' | 'backend')[]
+  paramsSchema: string
+  resultSchema: string
+}
+export type CapabilityDescription = {
+  availability: CapabilityAvailability
+  binding?: CapabilityBinding
+  kind?: 'host' | 'plugin' | 'runtime'
+  methodContracts?: PlatformMethodContract[]
+  environment?: RuntimeEnvironment
+}
+export type CapabilityListParams = { after?: string; limit?: number }
+export type CapabilityPage = { items: CapabilityAvailability[]; next?: string }
+export type RuntimeCapability = { capabilityId: string; toolId: string; engine: string }
+export type NativePublicationParams = {
+  taskId: string
+  stage: string
+  target: string
+  replace: boolean
+  terminal: boolean
+  reference?: string
+}
+export type NativePublicationResult = { path: string }
+export type FileChildParams = { ref: string; path: string }
+export type FileDirectoryCreateParams = { ref: string; name: string }
+export type FileWalkParams = { ref: string; recursive?: boolean; after?: string; limit?: number }
+export type FileWalkEntry = { path: string; info: FileInfo }
+export type FileWalkPage = { items: FileWalkEntry[]; next?: string }
+export type FileTransferParams = {
+  ref: string
+  directory: string
+  name: string
+  replace?: boolean
+  recursive?: boolean
+}
+export type FileRemoveParams = { ref: string; recursive?: boolean }
+export type FileTemporaryParams = { kind: 'file' | 'directory'; name: string }
+export type FileReferenceParams = { ref: string }
+export type FileWriteManagedParams = { name: string; bytes?: number }
+export type FileWriteDirectoryParams = {
+  directory: string
+  name: string
+  bytes?: number
+  replace?: boolean
+}
+export type FileWriteTargetParams = { ref: string; bytes?: number; replace?: boolean }
+export type FileWriteOpenParams =
+  FileWriteManagedParams | FileWriteDirectoryParams | FileWriteTargetParams
+export type FileWriteStream = { streamId: string }
+export type FileWriteChunkParams = { streamId: string; data: string }
+export type FileWriteChunkResult = { bytes: number }
+export type FileWatchParams = { ref: string; recursive?: boolean }
+export type FileWatch = { watchId: string }
+export type FileWatchIdParams = { watchId: string }
+export type FileWatchEvent = { path: string; kind: 'created' | 'modified' | 'removed' }
+export type FileWatchPoll = { events: FileWatchEvent[]; overflow: boolean }
+export type RuntimeRequirement = { capabilityId: string; engine: string; version: VersionRange }
+export type RuntimeEnvironment = {
+  engine: string
+  version: string
+  toolId: string
+  resourceId: string
+  resourceVersion: string
+}
+export type RuntimeRunParams = {
+  args: string[]
+  stdin?: string
+  timeoutMs?: number
+  workingDirectory?: string
+  environment?: { [key: string]: string }
+}
+export type RuntimeIdentity = { engine: string; version: string }
+export type NetworkBinaryParams = {
+  url: string
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS'
+  headers?: { [key: string]: string }
+  body?: Base64
+}
+export type NetworkBinaryResponse = {
+  status: number
+  headers: { [key: string]: string }
+  body: Base64
+}
+export type NetworkUploadParams = {
+  url: string
+  method: 'POST' | 'PUT' | 'PATCH'
+  headers?: { [key: string]: string }
+  ref: string
+}
+export type DownloadId = { downloadId: string }
+export type DownloadCheckpoint = { downloadId: string; received: number; total: number }
+export type Base64 = string
+export type WebSocketId = { socketId: string }
+export type WebSocketOpenParams = {
+  url: string
+  headers?: { [key: string]: string }
+  protocols?: string[]
+}
+export type WebSocketOpened = { socketId: string; protocol: string }
+export type WebSocketSendParams =
+  { socketId: string; text: string } | { socketId: string; data: Base64 }
+export type WebSocketPoll = {
+  state: 'open' | 'closed' | 'failed'
+  messages: { kind: 'text' | 'binary'; data: Base64 }[]
+  error?: RpcError
+}
+export type ProviderListParams = { after?: string; limit?: number; id?: string }
+export type ProviderPage = { items: CapabilityAvailability[]; next?: string }

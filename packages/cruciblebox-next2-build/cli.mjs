@@ -28,30 +28,73 @@ if (command === 'init') {
   const root = resolve(directory),
     kind = output ?? 'frontend'
   const id = idFlag?.slice('--id='.length) ?? basename(root)
-  if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id) || !['frontend', 'js', 'native'].includes(kind))
-    throw Error('Choose a valid plugin ID and frontend|js|native kind')
+  if (
+    !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id) ||
+    !['frontend', 'js', 'native', 'provider', 'runtime'].includes(kind)
+  )
+    throw Error('Choose a valid plugin ID and frontend|js|native|provider|runtime kind')
   if (existsSync(root)) throw Error('Init requires a new directory')
   if (kind === 'native' && !sdkFlag)
     throw Error('Native init requires --native-sdk=<unpacked public Rust SDK>')
+  const runtime = kind === 'runtime'
+  const provider = kind === 'provider' || runtime
   const manifest = {
-    manifestVersion: 6,
-    sdkApiVersion: 6,
+    manifestVersion: contract.versions.manifestVersion,
+    sdkApiVersion: contract.versions.sdkApiVersion,
     id,
     version: '1.0.0',
     displayName: id,
     description: 'Independent plugin example',
     publisher: { id: 'local-developer', displayName: 'Local developer' },
-    minHostVersion: '2.1.0',
-    sdk: { min: 6, maxExclusive: 7 },
-    renderer: 'dist/renderer.js',
-    permissions: ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
-    background: false,
-    contributes: { navigation: { title: id }, commands: [] },
-    exports: [],
+    minHostVersion: runtime
+      ? contract.versions.completionHostVersion
+      : contract.versions.featuresHostVersion,
+    sdk: {
+      min: contract.versions.sdkApiVersion,
+      maxExclusive: contract.versions.sdkApiVersion + 1
+    },
+    ...(provider ? {} : { renderer: 'dist/renderer.js' }),
+    permissions: runtime
+      ? ['process:run', 'tasks:execute']
+      : provider
+        ? []
+        : ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
+    background: provider && !runtime,
+    contributes: provider ? { commands: [] } : { navigation: { title: id }, commands: [] },
+    exports: runtime
+      ? [{ id, version: '1.0.0', interchangeable: true, methods: ['run', 'environment'] }]
+      : provider
+        ? [
+            {
+              id,
+              version: '1.0.0',
+              interchangeable: true,
+              methods: [
+                {
+                  name: 'sum',
+                  params: {
+                    type: 'object',
+                    properties: { numbers: { type: 'array', items: { type: 'integer' } } },
+                    required: ['numbers'],
+                    additionalProperties: false
+                  },
+                  result: { type: 'integer' }
+                }
+              ]
+            }
+          ]
+        : [],
     dependencies: [],
     resources: []
   }
-  if (kind === 'js') manifest.backend = { kind: 'js', entry: 'dist/main.js' }
+  if (runtime) {
+    manifest.resources = [
+      { id: 'python-runtime', version: { min: '1.0.0', maxExclusive: '2.0.0' }, optional: true }
+    ]
+    manifest.tools = [{ id: 'python', resourceId: 'python-runtime', entry: 'python.exe' }]
+    manifest.runtimeCapabilities = [{ capabilityId: id, toolId: 'python', engine: 'python' }]
+  }
+  if (kind === 'js' || provider) manifest.backend = { kind: 'js', entry: 'dist/main.js' }
   if (kind === 'native')
     manifest.backend = {
       kind: 'native',
@@ -60,8 +103,16 @@ if (command === 'init') {
       arch: 'x86_64',
       trust: 'trusted-local-code'
     }
-  const config = { schemaVersion: 1, renderer: 'src/renderer.mjs' }
-  if (kind === 'js') config.backend = 'src/main.mjs'
+  if (kind === 'js' || kind === 'native')
+    manifest.contributes.commands.push({
+      id: 'ping',
+      title: 'Check backend',
+      method: 'ping',
+      keywords: ['status'],
+      placements: ['toolbar', 'contextMenu']
+    })
+  const config = { schemaVersion: 1, ...(provider ? {} : { renderer: 'src/renderer.mjs' }) }
+  if (kind === 'js' || provider) config.backend = 'src/main.mjs'
   if (kind === 'native') config.native = { manifest: 'native/Cargo.toml', binary: 'plugin-backend' }
   await mkdir(join(root, 'src'), { recursive: true })
   await writeFile(join(root, 'plugin.source.json'), JSON.stringify(manifest, null, 2) + '\n')
@@ -76,9 +127,13 @@ if (command === 'init') {
         type: 'module',
         scripts: {
           build: 'cruciblebox-next2 build .',
+          test: 'cruciblebox-next2 check .',
           pack: 'cruciblebox-next2 pack . ' + id + '-1.0.0.zip'
         },
-        dependencies: { '@cruciblebox/next2-api': contract.versions.sdkPackageVersion },
+        dependencies: {
+          '@cruciblebox/next2-api': contract.versions.sdkPackageVersion,
+          ...(provider ? {} : { '@cruciblebox/next2-ui': contract.versions.sdkPackageVersion })
+        },
         devDependencies: { '@cruciblebox/next2-build': VERSION }
       },
       null,
@@ -89,14 +144,22 @@ if (command === 'init') {
     kind === 'frontend'
       ? "await api.platform('storage.set',{key:'example.value',value:{numbers:[7,19]}}); const result = await api.platform('storage.get',{key:'example.value'})"
       : "const result = await api.backend('sum',{numbers:[7,19]})"
-  await writeFile(
-    join(root, 'src/renderer.mjs'),
-    `import {createClient} from '@cruciblebox/next2-api'\nexport function mount(context) {\n const api=createClient(context), button=document.createElement('button'), status=document.createElement('p'); button.textContent='Run example'; status.setAttribute('role','status'); context.root.replaceChildren(button,status);\n const run=async()=>{button.disabled=true;try{${operation};status.textContent=JSON.stringify(result)}catch(error){status.textContent=String(error)}finally{button.disabled=false}};button.addEventListener('click',run);return()=>{button.removeEventListener('click',run);context.root.replaceChildren()};\n}\n`
-  )
-  if (kind === 'js')
+  if (!provider)
+    await writeFile(
+      join(root, 'src/renderer.mjs'),
+      `import {createClient,renderStatus} from '@cruciblebox/next2-ui'\nexport function mount(context) {\n const api=createClient(context), button=document.createElement('button'), status=document.createElement('p'); button.textContent='Run example'; button.className='ob-button'; renderStatus(status,'empty','Ready to run'); context.root.replaceChildren(button,status);\n const run=async()=>{button.disabled=true;renderStatus(status,'loading','Running…');try{${operation};renderStatus(status,'success',JSON.stringify(result))}catch(error){renderStatus(status,'error',String(error))}finally{button.disabled=false}};button.addEventListener('click',run);return()=>{button.removeEventListener('click',run);context.root.replaceChildren()};\n}\n`
+    )
+  if (kind === 'js' || provider)
     await writeFile(
       join(root, 'src/main.mjs'),
-      "export function activate(){return {sum(params){if(!Array.isArray(params.numbers)||!params.numbers.every(Number.isSafeInteger))throw Object.assign(Error('Expected integers'),{code:'INVALID_NUMBERS'});const sum=params.numbers.reduce((a,b)=>a+b,0);if(!Number.isSafeInteger(sum))throw Object.assign(Error('Sum overflow'),{code:'OVERFLOW'});return sum}}}\n"
+      runtime
+        ? "import {defineProvider} from '@cruciblebox/next2-api'\nexport const activate=defineProvider(({api})=>({run:params=>api.process.run({...params,toolId:'python'}),environment:()=>api.runtime.list()}))\n"
+        : "import {defineProvider} from '@cruciblebox/next2-api'\nexport const activate=defineProvider(()=>({ping:()=>true,sum(params){if(!Array.isArray(params.numbers)||!params.numbers.every(Number.isSafeInteger))throw Object.assign(Error('Expected integers'),{code:'INVALID_NUMBERS'});const sum=params.numbers.reduce((a,b)=>a+b,0);if(!Number.isSafeInteger(sum))throw Object.assign(Error('Sum overflow'),{code:'OVERFLOW'});return sum}}))\n"
+    )
+  if (runtime)
+    await writeFile(
+      join(root, 'README.md'),
+      `# Runtime Provider\n\nThis template exports capability ${id}, interface 1.0.0. It contains no interpreter. Import an independently verified Python resource into this provider after native-code approval. resource.json declares id python-runtime, resource package version in [1.0.0,2.0.0), runtimeIdentity.engine python, and the actual engine version. Inventory and verify every runtime file, including python.exe.\n\nConsumers declare this interface in dependencies, a compatible engine version in runtimeRequirements, and runtime:execute plus task permissions. Use api.runtime.resolve('${id}') then api.tasks.start({target:{kind:'service',id:'${id}'},method:'run',params:{args:['-I','-S','-B','-c','print(7+19)']}}). Consumers share the provider installation; no per-consumer runtime copy is required.\n`
     )
   if (kind === 'native') {
     const sdk = await realpath(resolve(sdkFlag.slice('--native-sdk='.length)))
@@ -107,6 +170,7 @@ if (command === 'init') {
       'LICENSE',
       'README.md',
       'src/lib.rs',
+      'src/generated.rs',
       'examples/arithmetic.rs'
     ]) {
       await mkdir(dirname(join(target, name)), { recursive: true })
@@ -209,8 +273,8 @@ if (command === 'catalog') {
   })
   process.exit(0)
 }
-if (!['build', 'pack'].includes(command))
-  throw Error('Usage: cruciblebox-plugin-build <build|pack> [plugin-dir] [new-package.zip]')
+if (!['build', 'check', 'pack'].includes(command))
+  throw Error('Usage: cruciblebox-next2 <build|check|pack> [plugin-dir] [new-package.zip]')
 const root = await realpath(resolve(directory))
 const manifestFile = existsSync(join(root, 'plugin.source.json'))
   ? 'plugin.source.json'
@@ -297,7 +361,11 @@ object(
   ['schemaVersion', 'renderer', 'backend', 'native', 'workers', 'assets', 'css', 'jsx', 'aliases'],
   'build configuration'
 )
-if (config.schemaVersion !== 1 || (!manifest.backend && config.backend !== undefined))
+if (
+  config.schemaVersion !== 1 ||
+  (!manifest.backend && config.backend !== undefined) ||
+  (!manifest.renderer && config.renderer !== undefined)
+)
   throw Error('Build configuration/manifest mismatch')
 if (config.css !== undefined && !['style', 'string'].includes(config.css))
   throw Error('Invalid CSS mode')
@@ -311,14 +379,14 @@ if (config.aliases !== undefined) {
     aliases[name] = await file(path(value, 'vendor/'))
   }
 }
-const jobs = [
-  {
+const jobs = []
+if (manifest.renderer)
+  jobs.push({
     source: await entry(config.renderer, 'renderer'),
     target: manifest.renderer,
     platform: 'browser',
     format: 'esm'
-  }
-]
+  })
 if (manifest.backend?.kind === 'js')
   jobs.push({
     source: await entry(config.backend, 'main'),
@@ -555,10 +623,10 @@ if (command === 'build') {
     JSON.stringify([...targets].sort())
   )
     throw Error('Manifest inventory differs from build outputs')
-  if (!output) throw Error('Pack requires a new output zip path')
-  const target = resolve(output)
-  if (existsSync(target)) throw Error('Refusing to replace existing package')
-  const zip = new AdmZip()
+  if (command === 'pack' && !output) throw Error('Pack requires a new output zip path')
+  const target = command === 'pack' ? resolve(output) : null
+  if (target && existsSync(target)) throw Error('Refusing to replace existing package')
+  const zip = target ? new AdmZip() : null
   let size = 0
   for (const name of [
     'plugin.json',
@@ -577,10 +645,16 @@ if (command === 'build') {
         entry.sha256 !== createHash('sha256').update(data).digest('hex'))
     )
       throw Error('Payload changed after build: ' + name)
-    zip.addFile(name, data, '', 0o644)
-    zip.getEntry(name).header.time = new Date(2000, 0, 1)
+    if (zip) {
+      zip.addFile(name, data, '', 0o644)
+      zip.getEntry(name).header.time = new Date(2000, 0, 1)
+    }
   }
-  await mkdir(dirname(target), { recursive: true })
-  await writeFile(target, zip.toBuffer(), { flag: 'wx' })
-  console.log(`Packed ${manifest.id}: ${target}`)
+  if (zip) {
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, zip.toBuffer(), { flag: 'wx' })
+    console.log(`Packed ${manifest.id}: ${target}`)
+  } else {
+    console.log(`Checked ${manifest.id}: manifest and ${manifest.files.length} payload files`)
+  }
 }

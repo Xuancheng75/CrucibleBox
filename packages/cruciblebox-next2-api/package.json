@@ -1,6 +1,6 @@
 {
   "name": "@cruciblebox/next2-api",
-  "version": "6.1.0",
+  "version": "7.0.0",
   "type": "module",
   "exports": {
     ".": {

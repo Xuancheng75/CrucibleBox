@@ -43,6 +43,7 @@ function fixture() {
   const root = {
     dataset: {
       sessionToken: 'b'.repeat(64),
+      wireVersion: '5',
       maxInflight: '32',
       requestTimeout: '10000',
       handshakeTimeout: '10000'
@@ -102,7 +103,7 @@ function fixture() {
         data: {
           kind: 'next-connect',
           nonce: 'b'.repeat(64),
-          wireVersion: 4,
+          wireVersion: 5,
           session: 'a'.repeat(64),
           appearance: value
         },

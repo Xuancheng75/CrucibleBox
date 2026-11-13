@@ -1,6 +1,6 @@
 {
   "name": "@cruciblebox/next2-ui",
-  "version": "6.1.0",
+  "version": "7.0.0",
   "type": "module",
   "exports": {
     ".": {
@@ -13,7 +13,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@cruciblebox/next2-api": "6.1.0"
+    "@cruciblebox/next2-api": "7.0.0"
   },
   "license": "MIT"
 }

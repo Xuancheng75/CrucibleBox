@@ -1,4 +1,4 @@
-//! Manifest/API 6 and generic wire 4. Frozen Manifest/API 5 remains a separate crate.
+//! Next 3.0 manifest, versioned wire frames and platform request validation.
 pub mod gateway;
 mod generated;
 mod schema;
@@ -25,7 +25,7 @@ pub fn validate_payload(raw: &str) -> Result<Value, String> {
 pub fn contract() -> &'static Value {
     static CONTRACT: OnceLock<Value> = OnceLock::new();
     CONTRACT
-        .get_or_init(|| serde_json::from_str(CONTRACT_JSON).expect("generated Next 2.0 contract"))
+        .get_or_init(|| serde_json::from_str(CONTRACT_JSON).expect("generated Next 3.0 contract"))
 }
 pub fn compatible(version: &str, range: &VersionRange) -> Result<bool, String> {
     let version = semver::Version::parse(version).map_err(|e| e.to_string())?;
@@ -75,8 +75,98 @@ fn inventory(files: &[FileEntry]) -> Result<(), String> {
     }
     Ok(())
 }
+impl ServiceMethod {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::LegacyServiceMethod(name) => name,
+            Self::CapabilityMethod(method) => &method.name,
+        }
+    }
+}
+
+fn validate_capability_schema(rule: &Value) -> Result<(), String> {
+    for (min, max) in [
+        ("minimum", "maximum"),
+        ("minLength", "maxLength"),
+        ("minItems", "maxItems"),
+    ] {
+        if rule[min]
+            .as_f64()
+            .zip(rule[max].as_f64())
+            .is_some_and(|(min, max)| min > max)
+        {
+            return Err("INVALID_CAPABILITY_SCHEMA".into());
+        }
+    }
+    if let Some(properties) = rule["properties"].as_object() {
+        if rule["required"].as_array().is_some_and(|keys| {
+            keys.iter()
+                .any(|key| !properties.contains_key(key.as_str().unwrap()))
+        }) {
+            return Err("INVALID_CAPABILITY_SCHEMA".into());
+        }
+        for child in properties.values() {
+            validate_capability_schema(child)?;
+        }
+    }
+    if let Some(items) = rule.get("items") {
+        validate_capability_schema(items)?;
+    }
+    Ok(())
+}
+
 pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     let manifest: Manifest = schema::parse(raw, "Manifest", BUDGET_MANIFEST_BYTES)?;
+    if manifest.id
+        == contract()["capabilities"]["builtins"]["providerId"]
+            .as_str()
+            .unwrap()
+    {
+        return Err("RESERVED_PROVIDER_ID".into());
+    }
+    let minimum = semver::Version::parse(&manifest.min_host_version).map_err(|e| e.to_string())?;
+    let features = manifest.tools.is_some()
+        || manifest
+            .permissions
+            .iter()
+            .any(|permission| matches!(permission.as_str(), "process:run" | "network:download"))
+        || manifest
+            .contributes
+            .commands
+            .iter()
+            .any(|command| command.placements.is_some() || command.keywords.is_some());
+    let required = if manifest.runtime_capabilities.is_some()
+        || manifest.runtime_requirements.is_some()
+        || manifest.permissions.iter().any(|permission| {
+            matches!(
+                permission.as_str(),
+                "runtime:execute" | "native:publish" | "files:write"
+            )
+        })
+        || manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.id.starts_with("host-"))
+    {
+        contract()["versions"]["completionHostVersion"]
+            .as_str()
+            .unwrap()
+    } else if features {
+        FEATURES_HOST_VERSION
+    } else {
+        MIN_HOST_VERSION
+    };
+    if minimum < semver::Version::parse(required).expect("contract minimum host version") {
+        return Err("HOST_VERSION_UNDERSTATED".into());
+    }
+    if let Some(migration) = &manifest.data_migration {
+        compatible(&manifest.version, &migration.from_plugin_version)?;
+    }
+    if manifest.background_interval_ms.is_some()
+        && (!manifest.background || !matches!(manifest.backend, Some(Backend::JsBackend(_))))
+    {
+        return Err("BACKGROUND_INTERVAL_REQUIRES_JS_SERVICE".into());
+    }
     inventory(&manifest.files)?;
     if manifest.files.iter().map(|v| v.bytes).sum::<u64>() > BUDGET_PACKAGE_BYTES as u64 {
         return Err("BUDGET_EXCEEDED".into());
@@ -84,20 +174,104 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
     unique(manifest.exports.iter().map(|v| v.id.as_str()))?;
     unique(manifest.dependencies.iter().map(|v| v.id.as_str()))?;
     unique(manifest.resources.iter().map(|v| v.id.as_str()))?;
+    let tools = manifest.tools.as_deref().unwrap_or_default();
+    unique(tools.iter().map(|tool| tool.id.as_str()))?;
+    let runtimes = manifest.runtime_capabilities.as_deref().unwrap_or_default();
+    unique(
+        runtimes
+            .iter()
+            .map(|runtime| runtime.capability_id.as_str()),
+    )?;
+    let requirements = manifest.runtime_requirements.as_deref().unwrap_or_default();
+    unique(
+        requirements
+            .iter()
+            .map(|runtime| runtime.capability_id.as_str()),
+    )?;
+    for requirement in requirements {
+        compatible(&requirement.version.min, &requirement.version)?;
+        if !manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.id == requirement.capability_id)
+        {
+            return Err("RUNTIME_DEPENDENCY_UNDECLARED".into());
+        }
+    }
+
+    if runtimes.iter().any(|runtime| {
+        !tools.iter().any(|tool| tool.id == runtime.tool_id)
+            || !manifest.exports.iter().any(|export| {
+                export.id == runtime.capability_id
+                    && export.methods.iter().any(|method| method.name() == "run")
+            })
+    }) {
+        return Err("INVALID_RUNTIME_CAPABILITY".into());
+    }
+    if !tools.is_empty()
+        && (!manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "process:run")
+            || tools.iter().any(|tool| {
+                !tool.entry.to_ascii_lowercase().ends_with(".exe")
+                    || !manifest
+                        .resources
+                        .iter()
+                        .any(|resource| resource.id == tool.resource_id)
+            }))
+    {
+        return Err("INVALID_PROCESS_TOOL_DECLARATION".into());
+    }
     unique(manifest.contributes.commands.iter().map(|v| v.id.as_str()))?;
     for export in &manifest.exports {
-        unique(export.methods.iter().map(String::as_str))?;
+        let events = export.events.as_deref().unwrap_or_default();
+        if export.methods.is_empty() && events.is_empty() {
+            return Err("EMPTY_CAPABILITY".into());
+        }
+        unique(events.iter().map(|event| event.name.as_str()))?;
+        for event in events {
+            validate_capability_schema(&event.payload)?;
+        }
+        let descriptor = serde_json::to_value(export).map_err(|error| error.to_string())?;
+        if descriptor.to_string().len() > BUDGET_CAPABILITY_DESCRIPTOR_BYTES {
+            return Err("CAPABILITY_DESCRIPTOR_BUDGET_EXCEEDED".into());
+        }
+        schema::budget(&descriptor, 1, &mut 0, BUDGET_CAPABILITY_DESCRIPTOR_NODES)
+            .map_err(|_| "CAPABILITY_DESCRIPTOR_BUDGET_EXCEEDED")?;
+        unique(export.methods.iter().map(ServiceMethod::name))?;
+        for method in &export.methods {
+            if let ServiceMethod::CapabilityMethod(method) = method {
+                validate_capability_schema(&method.params)?;
+                validate_capability_schema(&method.result)?;
+            }
+        }
     }
     for dependency in &manifest.dependencies {
         compatible(&dependency.version.min, &dependency.version)?;
-        if dependency.provider_id == manifest.id {
+        if dependency.provider_id.as_deref() == Some(manifest.id.as_str()) {
             return Err("SELF_DEPENDENCY".into());
         }
     }
     for resource in &manifest.resources {
         compatible(&resource.version.min, &resource.version)?;
     }
-    let mut entries = vec![manifest.renderer.as_str()];
+    let mut entries = Vec::new();
+    if let Some(renderer) = &manifest.renderer {
+        if !renderer.ends_with(".js") {
+            return Err("INVALID_RENDERER_ENTRY".into());
+        }
+        entries.push(renderer.as_str());
+    } else if manifest.backend.is_none()
+        || manifest.contributes.navigation.is_some()
+        || manifest
+            .contributes
+            .file_handlers
+            .as_ref()
+            .is_some_and(|items| !items.is_empty())
+    {
+        return Err("RENDERER_REQUIRED".into());
+    }
     entries.extend(
         manifest
             .resources
@@ -117,13 +291,14 @@ pub fn validate_manifest(raw: &str) -> Result<Manifest, String> {
             }
             entries.push(&backend.entry);
         }
-        None if manifest.background || !manifest.exports.is_empty() => {
+        None if manifest.background
+            || !manifest.exports.is_empty()
+            || !manifest.contributes.commands.is_empty()
+            || !tools.is_empty() =>
+        {
             return Err("BACKEND_REQUIRED".into())
         }
         None => {}
-    }
-    if !manifest.renderer.ends_with(".js") {
-        return Err("INVALID_RENDERER_ENTRY".into());
     }
     if let Some(icon) = manifest
         .contributes
@@ -145,6 +320,11 @@ pub fn validate_resource_manifest(raw: &str) -> Result<ResourceManifest, String>
     let manifest: ResourceManifest =
         schema::parse(raw, "ResourceManifest", BUDGET_RESOURCE_MANIFEST_BYTES)?;
     inventory(&manifest.files)?;
+    if manifest.runtime_identity.is_some()
+        && (manifest.kind != "runtime" || !manifest.contains_native_code)
+    {
+        return Err("INVALID_RUNTIME_RESOURCE".into());
+    }
     compatible(&manifest.plugin_version.min, &manifest.plugin_version)?;
     if manifest.files.iter().map(|v| v.bytes).sum::<u64>() > BUDGET_RESOURCE_BYTES as u64 {
         return Err("BUDGET_EXCEEDED".into());
@@ -178,7 +358,7 @@ pub fn validate_resource_catalog(raw: &str) -> Result<ResourceCatalog, String> {
     Ok(catalog)
 }
 pub fn validate_request(raw: &str) -> Result<Request, String> {
-    let request: Request = schema::parse(raw, "Request", MAX_FRAME_BYTES)?;
+    let mut request: Request = schema::parse(raw, "Request", MAX_FRAME_BYTES)?;
     if matches!(request.target, Target::PlatformTarget(_)) {
         let method = contract()["methods"]
             .get(&request.method)
@@ -186,9 +366,7 @@ pub fn validate_request(raw: &str) -> Result<Request, String> {
         if !schema::matches(&method["params"], &request.params) {
             return Err("INVALID_PLATFORM_CALL".into());
         }
-        if request.method == "tasks.start" && request.params["target"]["kind"] == "platform" {
-            return Err("INVALID_TASK_TARGET".into());
-        }
+        schema::normalize(&method["params"], &mut request.params);
     }
     Ok(request)
 }
@@ -205,6 +383,10 @@ pub fn validate_response(raw: &str, id: &str) -> Result<Response, String> {
 }
 pub fn validate_backend_frame(raw: &str) -> Result<BackendFrame, String> {
     let frame: BackendFrame = schema::parse(raw, "BackendFrame", MAX_FRAME_BYTES)?;
+    if matches!(&frame, BackendFrame::BackendCancel(cancel) if cancel.task_id.is_some() == cancel.request_id.is_some())
+    {
+        return Err("INVALID_BACKEND_CANCEL".into());
+    }
     let value = serde_json::to_value(&frame).map_err(|e| e.to_string())?;
     if let Some(request) = value.get("request") {
         validate_request(&request.to_string())?;
@@ -216,6 +398,28 @@ pub fn validate_backend_frame(raw: &str) -> Result<BackendFrame, String> {
         )?;
     }
     Ok(frame)
+}
+
+pub fn capability_event<'a>(
+    export: &'a ServiceExport,
+    name: &str,
+) -> Result<&'a CapabilityEvent, String> {
+    export
+        .events
+        .iter()
+        .flatten()
+        .find(|event| event.name == name)
+        .ok_or_else(|| "EVENT_UNDECLARED".into())
+}
+
+pub fn validate_event_payload(event: &CapabilityEvent, payload: &Value) -> Result<(), String> {
+    if payload.to_string().len() > BUDGET_EVENT_BYTES {
+        return Err("EVENT_BUDGET_EXCEEDED".into());
+    }
+    if !schema::matches(&event.payload, payload) {
+        return Err("INVALID_EVENT_PAYLOAD".into());
+    }
+    Ok(())
 }
 pub fn validate_method_result(method: &str, value: &Value) -> bool {
     contract()["methods"]

@@ -8,7 +8,7 @@ import {
 const client = createClient({
   session: 'a'.repeat(64),
   exchange: async (request: Request) => ({
-    wireVersion: 4,
+    wireVersion: 5,
     requestId: request.requestId,
     ok: true,
     result: null
@@ -26,7 +26,7 @@ const native: NativeBackend = {
 void manifest
 void native
 const forged: Request = {
-  wireVersion: 4,
+  wireVersion: 5,
   requestId: 'r',
   session: 'a'.repeat(64),
   // @ts-expect-error The renderer does not choose a service provider or owner.

@@ -1,5 +1,10 @@
-//! Wire 4 backend helpers. Native plugins execute as trusted local code.
-use serde::{Deserialize, Serialize};
+//! Wire 5 backend helpers. Native plugins execute as trusted local code.
+mod generated;
+pub use generated::{
+    CapabilityBinding, CapabilityEvent, CapabilityMethod, CapabilitySchema, RpcError as Error,
+    ServiceExport, ServiceMethod, MAX_FRAME_BYTES,
+};
+use generated::{REQUEST_TIMEOUT_MS, SDK_API_VERSION, WIRE_VERSION};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -11,12 +16,6 @@ use std::{
     },
     time::Duration,
 };
-pub const MAX_FRAME_BYTES: usize = 65536;
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Error {
-    pub code: String,
-    pub message: String,
-}
 impl Error {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
@@ -116,6 +115,14 @@ impl Client {
     pub fn platform(&self, method: &str, params: Value) -> Result<Value> {
         self.call(json!({"kind":"platform"}), method, params)
     }
+    pub fn resolve_capability(&self, id: &str) -> Result<CapabilityBinding> {
+        let value = self.platform("capabilities.resolve", json!({"id":id}))?;
+        serde_json::from_value(value)
+            .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))
+    }
+    pub fn write_log(&self, level: &str, message: &str) -> Result<Value> {
+        self.platform("logging.write", json!({"level":level,"message":message}))
+    }
     pub fn service(&self, id: &str, method: &str, params: Value) -> Result<Value> {
         self.call(json!({"kind":"service","id":id}), method, params)
     }
@@ -141,15 +148,15 @@ impl Client {
                 .insert(id.clone(), tx);
             write(
                 &mut *output,
-                &json!({"kind":"capability","request":{"wireVersion":4,"requestId":id,"session":self.0.init["session"],"target":target,"method":method,"params":params}}),
+                &json!({"kind":"capability","request":{"wireVersion":WIRE_VERSION,"requestId":id,"session":self.0.init["session"],"target":target,"method":method,"params":params}}),
             )
         };
         let result = (|| {
             sent?;
             let response = rx
-                .recv_timeout(Duration::from_secs(30))
+                .recv_timeout(Duration::from_millis(REQUEST_TIMEOUT_MS))
                 .map_err(|error| Error::new("HOST_REQUEST_FAILED", error.to_string()))?;
-            if response["wireVersion"] != 4 || response["requestId"] != id {
+            if response["wireVersion"] != WIRE_VERSION || response["requestId"] != id {
                 return Err(Error::new(
                     "RESPONSE_MISMATCH",
                     "Host response did not correlate",
@@ -179,6 +186,18 @@ pub struct Call {
     sequence: AtomicU64,
 }
 impl Call {
+    pub fn task_context(&self) -> Result<TaskContext<'_>> {
+        if self.task_id.is_none() {
+            return Err(Error::new(
+                "TASK_EXECUTION_REQUIRED",
+                "A host task is required",
+            ));
+        }
+        Ok(TaskContext {
+            call: self,
+            committing: std::cell::Cell::new(false),
+        })
+    }
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
@@ -197,7 +216,80 @@ impl Call {
         Ok(())
     }
 }
-type Active = Arc<Mutex<Option<(Option<String>, Arc<AtomicBool>)>>>;
+/// One host task: progress, cancellation and durable publication stay in the host.
+pub struct TaskContext<'a> {
+    call: &'a Call,
+    committing: std::cell::Cell<bool>,
+}
+impl TaskContext<'_> {
+    pub fn is_cancelled(&self) -> bool {
+        self.call.is_cancelled()
+    }
+    pub fn check_cancelled(&self) -> std::result::Result<(), String> {
+        self.call
+            .check_cancelled()
+            .map_err(|error| error.to_string())
+    }
+    pub fn update_progress(
+        &self,
+        stage: &str,
+        percent: u32,
+        message: &str,
+    ) -> std::result::Result<(), String> {
+        self.call
+            .progress(stage, percent, message)
+            .map_err(|error| error.to_string())
+    }
+    pub fn begin_commit(&self) -> std::result::Result<(), String> {
+        if self.committing.get() {
+            return Ok(());
+        }
+        self.check_cancelled()?;
+        // Once sent, a lost reply can leave a durable host reservation. Retain
+        // staging on uncertain outcomes so host recovery can inspect it.
+        self.committing.set(true);
+        self.call
+            .client
+            .platform("tasks.beginCommit", json!({"taskId":self.call.task_id}))
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    pub fn publication_pending(&self) -> bool {
+        self.committing.get()
+    }
+    pub fn publish_file(
+        &self,
+        stage: &std::path::Path,
+        target: &std::path::Path,
+        replace: bool,
+        terminal: bool,
+    ) -> std::result::Result<Value, String> {
+        self.publish_object(stage, target, replace, terminal, None)
+    }
+    pub fn publish_object(
+        &self,
+        stage: &std::path::Path,
+        target: &std::path::Path,
+        replace: bool,
+        terminal: bool,
+        reference: Option<&std::path::Path>,
+    ) -> std::result::Result<Value, String> {
+        self.begin_commit()?;
+        let mut params = json!({"taskId":self.call.task_id,"stage":stage,"target":target,"replace":replace,"terminal":terminal});
+        if let Some(reference) = reference {
+            params["reference"] = json!(reference);
+        }
+        self.call
+            .client
+            .platform("tasks.publishNative", params)
+            .map_err(|error| error.to_string())
+    }
+}
+struct ActiveCall {
+    request_id: String,
+    task_id: Option<String>,
+    cancelled: Arc<AtomicBool>,
+}
 
 /// Factory and handler run serially on the execution thread. The stdin thread
 /// continues receiving cancellation and correlated capability responses.
@@ -208,12 +300,12 @@ pub fn serve<S: Send + 'static>(
     let mut input = std::io::stdin();
     write(
         &mut std::io::stdout(),
-        &json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}),
+        &json!({"kind":"hello","wireVersion":WIRE_VERSION,"sdkApiVersion":SDK_API_VERSION}),
     )?;
     let init = read(&mut input)?
         .ok_or_else(|| Error::new("HOST_DISCONNECTED", "Missing initialization"))?;
     if init["kind"] != "initialize"
-        || init["wireVersion"] != 4
+        || init["wireVersion"] != WIRE_VERSION
         || init["session"].as_str().is_none()
         || init["pluginId"].as_str().is_none()
         || init["dataDirectory"].as_str().is_none()
@@ -230,7 +322,7 @@ pub fn serve<S: Send + 'static>(
         sequence: AtomicU64::new(1),
         init,
     }));
-    let active: Active = Arc::new(Mutex::new(None));
+    let active = Arc::new(Mutex::new(None::<ActiveCall>));
     let worker_active = active.clone();
     let worker_client = client.clone();
     let (tx, rx) = mpsc::sync_channel::<Value>(1);
@@ -238,7 +330,7 @@ pub fn serve<S: Send + 'static>(
         let mut factory = Some(factory);
         let mut state = None;
         while let Ok(frame) = rx.recv() {
-            let cancelled = worker_active.lock().map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))?.as_ref().expect("execute registered before queueing").1.clone();
+            let cancelled = worker_active.lock().map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))?.as_ref().expect("execute registered before queueing").cancelled.clone();
             let request = &frame["request"];
             let call = Call { client:worker_client.clone(), method:request["method"].as_str().ok_or_else(|| Error::new("INVALID_EXECUTE", "Missing method"))?.into(), params:request["params"].clone(), caller_id:frame["callerId"].as_str().ok_or_else(|| Error::new("INVALID_EXECUTE", "Missing caller"))?.into(), task_id:frame["taskId"].as_str().map(str::to_owned), cancelled, sequence:AtomicU64::new(0) };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -250,22 +342,22 @@ pub fn serve<S: Send + 'static>(
             }));
             let panicked = result.is_err();
             let result = result.unwrap_or_else(|_| Err(Error::new("PLUGIN_PANIC", "Plugin execution panicked; backend will stop")));
-            let response = match result { Ok(result) => json!({"wireVersion":4,"requestId":request["requestId"],"ok":true,"result":result}), Err(error) => json!({"wireVersion":4,"requestId":request["requestId"],"ok":false,"error":error}) };
+            let response = match result { Ok(result) => json!({"wireVersion":WIRE_VERSION,"requestId":request["requestId"],"ok":true,"result":result}), Err(error) => json!({"wireVersion":WIRE_VERSION,"requestId":request["requestId"],"ok":false,"error":error}) };
             *worker_active.lock().map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))? = None;
             if let Err(error) = worker_client.send(&json!({"kind":"reply","response":response})) {
-                let _ = worker_client.send(&json!({"kind":"reply","response":{"wireVersion":4,"requestId":request["requestId"],"ok":false,"error":error}}));
+                let _ = worker_client.send(&json!({"kind":"reply","response":{"wireVersion":WIRE_VERSION,"requestId":request["requestId"],"ok":false,"error":error}}));
                 std::process::exit(70);
             }
             if panicked { std::process::exit(70); }
         }
         Ok(())
     })?;
-    client.send(&json!({"kind":"ready","wireVersion":4}))?;
+    client.send(&json!({"kind":"ready","wireVersion":WIRE_VERSION}))?;
     let result = (|| {
         while let Some(frame) = read(&mut input)? {
             match frame["kind"].as_str() {
                 Some("execute") => {
-                    if frame["request"]["wireVersion"] != 4
+                    if frame["request"]["wireVersion"] != WIRE_VERSION
                         || frame["request"]["session"] != client.0.init["session"]
                     {
                         return Err(Error::new("SESSION_DENIED", "Execution session mismatch"));
@@ -276,10 +368,14 @@ pub fn serve<S: Send + 'static>(
                     if active.is_some() {
                         return Err(Error::new("BUSY", "Execution already active"));
                     }
-                    *active = Some((
-                        frame["taskId"].as_str().map(str::to_owned),
-                        Arc::new(AtomicBool::new(false)),
-                    ));
+                    let request_id = frame["request"]["requestId"]
+                        .as_str()
+                        .ok_or_else(|| Error::new("INVALID_EXECUTE", "Missing request ID"))?;
+                    *active = Some(ActiveCall {
+                        request_id: request_id.into(),
+                        task_id: frame["taskId"].as_str().map(str::to_owned),
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                    });
                     tx.try_send(frame)
                         .map_err(|error| Error::new("EXECUTION_UNAVAILABLE", error.to_string()))?;
                 }
@@ -301,15 +397,19 @@ pub fn serve<S: Send + 'static>(
                     }
                 }
                 Some("cancel") => {
-                    if let Some((task, cancelled)) = active
+                    if let Some(active) = active
                         .lock()
                         .map_err(|_| {
                             Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable")
                         })?
                         .as_ref()
                     {
-                        if task.as_deref() == frame["taskId"].as_str() {
-                            cancelled.store(true, Ordering::SeqCst);
+                        if frame["requestId"].as_str() == Some(active.request_id.as_str())
+                            || frame["taskId"]
+                                .as_str()
+                                .is_some_and(|id| active.task_id.as_deref() == Some(id))
+                        {
+                            active.cancelled.store(true, Ordering::SeqCst);
                         }
                     }
                 }
@@ -324,12 +424,12 @@ pub fn serve<S: Send + 'static>(
         }
         Ok(())
     })();
-    if let Some((_, cancelled)) = active
+    if let Some(active) = active
         .lock()
         .map_err(|_| Error::new("EXECUTION_UNAVAILABLE", "Execution state unavailable"))?
         .as_ref()
     {
-        cancelled.store(true, Ordering::SeqCst);
+        active.cancelled.store(true, Ordering::SeqCst);
     }
     client
         .0

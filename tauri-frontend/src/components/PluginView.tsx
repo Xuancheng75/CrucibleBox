@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Button, Typography, Alert, Tag, theme } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { PluginHost } from './PluginHost'
+import { PluginActions } from './PluginActions'
 import { usePluginStore } from '../store/plugin.store'
 import { useAppStore } from '../store/app.store'
 import { PluginLifecycleStatus } from '../../../shared/types/plugin.types'
@@ -138,14 +139,20 @@ export default function PluginView({ pluginId }: { pluginId?: string } = {}) {
         )}
       </div>
 
-      <PluginHost
-        pluginId={plugin.id}
-        pluginName={plugin.name}
-        rendererEntry={plugin.entryRenderer}
-        config={plugin.configData || {}}
-        permissions={plugin.permissions}
-        onConfigChange={(config) => updatePluginConfig(plugin.id, config)}
-      />
+      <PluginActions key={`${plugin.id}:${plugin.version}`} plugin={plugin}>
+        {plugin.entryRenderer ? (
+          <PluginHost
+            pluginId={plugin.id}
+            pluginName={plugin.name}
+            rendererEntry={plugin.entryRenderer}
+            config={plugin.configData || {}}
+            permissions={plugin.permissions}
+            onConfigChange={(config) => updatePluginConfig(plugin.id, config)}
+          />
+        ) : (
+          <Alert type="info" message="此插件提供后台服务，可在工作台管理配置和启停。" showIcon />
+        )}
+      </PluginActions>
     </div>
   )
 }

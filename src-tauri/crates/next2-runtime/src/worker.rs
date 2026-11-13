@@ -23,6 +23,20 @@ enum Outcome {
     Value(Value),
     DomainError(RpcError),
 }
+
+/// Long-lived service state and the serial task executor have separate processes.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum InstanceKind {
+    Service,
+    Task,
+}
+
+pub struct CallLimits<'a> {
+    pub task_id: Option<&'a str>,
+    pub cancel: &'a AtomicBool,
+    pub deadline: Option<Instant>,
+}
+
 pub struct Worker {
     process: Process,
     input: Option<mpsc::SyncSender<Value>>,
@@ -37,7 +51,6 @@ impl Worker {
         data: &Path,
         resources: &[ResourceMount],
     ) -> Result<Self, String> {
-        plugin.revalidate()?;
         let Some(Backend::NativeBackend(backend)) = &plugin.manifest.backend else {
             return Err("NATIVE_BACKEND_REQUIRED".into());
         };
@@ -51,11 +64,26 @@ impl Worker {
         resources: &[ResourceMount],
         runner: &Path,
     ) -> Result<Self, String> {
-        let Some(Backend::JsBackend(backend)) = &plugin.manifest.backend else {
+        if !matches!(plugin.manifest.backend, Some(Backend::JsBackend(_))) {
             return Err("JS_BACKEND_REQUIRED".into());
+        }
+        Self::launch(plugin, data, resources, runner)
+    }
+    pub fn launch(
+        plugin: &ApprovedPlugin,
+        data: &Path,
+        resources: &[ResourceMount],
+        runner: &Path,
+    ) -> Result<Self, String> {
+        let command = match &plugin.manifest.backend {
+            Some(Backend::NativeBackend(backend)) => Command::new(plugin.root.join(&backend.entry)),
+            Some(Backend::JsBackend(backend)) => {
+                let mut command = Command::new(runner);
+                command.arg("--next2").arg(&plugin.root).arg(&backend.entry);
+                command
+            }
+            None => return Err("BACKEND_UNAVAILABLE".into()),
         };
-        let mut command = Command::new(runner);
-        command.arg("--next2").arg(&plugin.root).arg(&backend.entry);
         Self::start_command(plugin, data, resources, command)
     }
     fn start_command(
@@ -124,14 +152,13 @@ impl Worker {
         };
         let deadline = Instant::now()
             + Duration::from_millis(cruciblebox_next2_protocol::BUDGET_HANDSHAKE_TIMEOUT_MS as u64);
-        if worker.receive(deadline)? != json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}) {
-            return Err("NATIVE_HANDSHAKE_MISMATCH".into());
-        }
-        worker.send(json!({"kind":"initialize","wireVersion":4,"session":worker.session,"pluginId":plugin.manifest.id,
+        worker.expect_handshake(deadline, json!({"kind":"hello","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION}))?;
+        worker.send(json!({"kind":"initialize","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"session":worker.session,"pluginId":plugin.manifest.id,
             "dataDirectory":data,"resources":resources}))?;
-        if worker.receive(deadline)? != json!({"kind":"ready","wireVersion":4}) {
-            return Err("NATIVE_HANDSHAKE_MISMATCH".into());
-        }
+        worker.expect_handshake(
+            deadline,
+            json!({"kind":"ready","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION}),
+        )?;
         Ok(worker)
     }
     fn send(&self, frame: Value) -> Result<(), String> {
@@ -142,7 +169,7 @@ impl Worker {
             .try_send(frame)
             .map_err(|e| format!("NATIVE_QUEUE_UNAVAILABLE: {e}"))
     }
-    fn receive(&self, deadline: Instant) -> Result<Value, String> {
+    fn expect_handshake(&self, deadline: Instant, expected: Value) -> Result<(), String> {
         match self
             .output
             .as_ref()
@@ -150,7 +177,11 @@ impl Worker {
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| "NATIVE_TIMEOUT")?
         {
-            Output::Frame(frame) => Ok(frame),
+            Output::Frame(frame) if frame == expected => Ok(()),
+            Output::Frame(_) => Err("NATIVE_HANDSHAKE_MISMATCH".into()),
+            Output::Failure(error) if error == "INVALID_BACKENDFRAME" => {
+                Err("NATIVE_HANDSHAKE_MISMATCH".into())
+            }
             Output::Failure(error) => Err(error),
         }
     }
@@ -163,6 +194,45 @@ impl Worker {
     pub fn stop_handle(&self) -> StopHandle {
         self.process.stop_handle()
     }
+
+    /// Check the process even when a descendant still has the protocol pipe open.
+    pub fn poll_idle(
+        &mut self,
+        mut capability: impl FnMut(&Request) -> Result<Value, RpcError>,
+    ) -> Result<(), String> {
+        if let Some(status) = self.process.child.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!("BACKEND_EXITED: {status}"));
+        }
+        match self.output.as_ref().ok_or("NATIVE_STOPPED")?.try_recv() {
+            Ok(Output::Frame(frame)) if frame["kind"] == "capability" => {
+                self.reply_capability(&frame, &mut capability)
+            }
+            Ok(Output::Frame(_)) => Err("UNEXPECTED_IDLE_FRAME".into()),
+            Ok(Output::Failure(error)) => Err(error),
+            Err(mpsc::TryRecvError::Empty) => Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => Err("NATIVE_DISCONNECTED".into()),
+        }
+    }
+
+    fn reply_capability(
+        &self,
+        frame: &Value,
+        capability: &mut impl FnMut(&Request) -> Result<Value, RpcError>,
+    ) -> Result<(), String> {
+        let request = cruciblebox_next2_protocol::validate_request(&frame["request"].to_string())?;
+        if request.session != self.session {
+            return Err("SESSION_DENIED".into());
+        }
+        let response = match capability(&request) {
+            Ok(result) => {
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request.request_id,"ok":true,"result":result})
+            }
+            Err(error) => {
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request.request_id,"ok":false,"error":error})
+            }
+        };
+        self.send(json!({"kind":"capability-result","response":response}))
+    }
     /// `caller_id`, task ID and capability authorization come from host admission.
     pub fn call(
         &mut self,
@@ -171,17 +241,37 @@ impl Worker {
         params: Value,
         task_id: Option<&str>,
         cancel: &AtomicBool,
+        capability: impl FnMut(&Request) -> Result<Value, RpcError>,
+    ) -> Result<Value, RpcError> {
+        self.call_with_limits(
+            caller_id,
+            method,
+            params,
+            CallLimits {
+                task_id,
+                cancel,
+                deadline: None,
+            },
+            capability,
+        )
+    }
+
+    pub fn call_with_limits(
+        &mut self,
+        caller_id: &str,
+        method: &str,
+        params: Value,
+        limits: CallLimits<'_>,
         mut capability: impl FnMut(&Request) -> Result<Value, RpcError>,
     ) -> Result<Value, RpcError> {
-        let result = self.call_inner(caller_id, method, params, task_id, cancel, &mut capability);
+        let result = self.call_inner(caller_id, method, params, limits, &mut capability);
         match result {
             Ok(Outcome::Value(value)) => Ok(value),
             Ok(Outcome::DomainError(error)) => Err(error),
             Err(message) => {
-                let code = if message == "CANCELLED" {
-                    "CANCELLED"
-                } else {
-                    "NATIVE_TRANSPORT"
+                let code = match message.as_str() {
+                    "CANCELLED" | "RPC_TIMEOUT" | "TASK_TIMEOUT" => message.as_str(),
+                    _ => "NATIVE_TRANSPORT",
                 };
                 if let Err(stop) = self.process.force_stop() {
                     return Err(RpcError {
@@ -201,27 +291,50 @@ impl Worker {
         caller_id: &str,
         method: &str,
         params: Value,
-        task_id: Option<&str>,
-        cancel: &AtomicBool,
+        limits: CallLimits<'_>,
         capability: &mut impl FnMut(&Request) -> Result<Value, RpcError>,
     ) -> Result<Outcome, String> {
+        let CallLimits {
+            task_id,
+            cancel,
+            deadline,
+        } = limits;
+        let deadline = deadline.or_else(|| {
+            task_id
+                .is_none()
+                .then(|| Instant::now() + Duration::from_millis(BUDGET_REQUEST_TIMEOUT_MS as u64))
+        });
+        let timeout = if task_id.is_some() {
+            "TASK_TIMEOUT"
+        } else {
+            "RPC_TIMEOUT"
+        };
+        if cancel.load(Ordering::SeqCst) {
+            return Err("CANCELLED".into());
+        }
+        if deadline.is_some_and(|end| Instant::now() >= end) {
+            return Err(timeout.into());
+        }
         self.sequence += 1;
         let id = format!("native-{}", self.sequence);
-        let mut frame = json!({"kind":"execute","callerId":caller_id,"request":{"wireVersion":4,"requestId":id,
+        let mut frame = json!({"kind":"execute","callerId":caller_id,"request":{"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":id,
             "session":self.session,"target":{"kind":"backend"},"method":method,"params":params}});
         if let Some(task_id) = task_id {
             frame["taskId"] = json!(task_id);
         }
         self.send(frame)?;
-        let deadline = task_id
-            .is_none()
-            .then(|| Instant::now() + Duration::from_millis(BUDGET_REQUEST_TIMEOUT_MS as u64));
         let mut cancel_deadline = None;
         loop {
             if cancel.load(Ordering::SeqCst) && cancel_deadline.is_none() {
-                if let Some(task_id) = task_id {
-                    self.send(json!({"kind":"cancel","wireVersion":4,"taskId":task_id}))?;
-                }
+                let cancel = match task_id {
+                    Some(task_id) => {
+                        json!({"kind":"cancel","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"taskId":task_id})
+                    }
+                    None => {
+                        json!({"kind":"cancel","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":id})
+                    }
+                };
+                self.send(cancel).map_err(|_| "CANCELLED")?;
                 cancel_deadline = Some(
                     Instant::now()
                         + Duration::from_millis(
@@ -231,11 +344,10 @@ impl Worker {
             }
             let now = Instant::now();
             if cancel_deadline.is_some_and(|end| now >= end) {
-                self.process.force_stop()?;
                 return Err("CANCELLED".into());
             }
-            if deadline.is_some_and(|deadline| now >= deadline) {
-                return Err("NATIVE_TIMEOUT".into());
+            if cancel_deadline.is_none() && deadline.is_some_and(|deadline| now >= deadline) {
+                return Err(timeout.into());
             }
             let frame = match self
                 .output
@@ -244,6 +356,11 @@ impl Worker {
                 .recv_timeout(Duration::from_millis(25))
             {
                 Ok(Output::Frame(frame)) => frame,
+                Ok(Output::Failure(_)) | Err(mpsc::RecvTimeoutError::Disconnected)
+                    if cancel_deadline.is_some() =>
+                {
+                    return Err("CANCELLED".into())
+                }
                 Ok(Output::Failure(error)) => return Err(error),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(error) => return Err(format!("NATIVE_DISCONNECTED: {error}")),
@@ -254,8 +371,11 @@ impl Worker {
                         &frame["response"].to_string(),
                         &id,
                     )?;
-                    if cancel_deadline.is_some() {
+                    if cancel.load(Ordering::SeqCst) {
                         return Err("CANCELLED".into());
+                    }
+                    if deadline.is_some_and(|end| Instant::now() >= end) {
+                        return Err(timeout.into());
                     }
                     return match response {
                         cruciblebox_next2_protocol::Response::Success(success) => {
@@ -267,28 +387,25 @@ impl Worker {
                     };
                 }
                 Some("capability") => {
-                    let request = cruciblebox_next2_protocol::validate_request(
-                        &frame["request"].to_string(),
-                    )?;
-                    if request.session != self.session {
-                        return Err("SESSION_DENIED".into());
-                    }
-                    let response = match capability(&request) {
-                        Ok(result) => {
-                            json!({"wireVersion":4,"requestId":request.request_id,"ok":true,"result":result})
-                        }
-                        Err(error) => {
-                            json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":error})
-                        }
-                    };
-                    self.send(json!({"kind":"capability-result","response":response}))?;
+                    self.reply_capability(&frame, capability)?;
                 }
                 _ => return Err("UNEXPECTED_NATIVE_FRAME".into()),
             }
         }
     }
     pub fn stop(mut self) -> Result<(), String> {
-        self.send(json!({"kind":"stop","wireVersion":4}))?;
+        if self
+            .process
+            .child
+            .try_wait()
+            .map_err(|e| e.to_string())?
+            .is_some()
+            || self
+                .send(json!({"kind":"stop","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION}))
+                .is_err()
+        {
+            return self.process.force_stop();
+        }
         let deadline = Instant::now()
             + Duration::from_millis(cruciblebox_next2_protocol::BUDGET_STOP_TIMEOUT_MS as u64);
         while Instant::now() < deadline {

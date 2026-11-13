@@ -65,10 +65,10 @@ jobs:
       - name: Verify host and public SDK gates
         run: npm run check
 
-      - name: Verify API 6 contract and SDK
-        run: npm run test:next
+      - name: Verify API 7 contract and SDK
+        run: npm run test:next && node scripts/check-platform-boundaries.mjs
 
-      - name: Verify API 6 Rust protocol
+      - name: Verify API 7 Rust protocol
         working-directory: src-tauri/crates/next2-protocol
         shell: bash
         run: |
@@ -81,7 +81,7 @@ jobs:
         working-directory: tauri-frontend
         run: npm run build
 
-      - name: Verify API 6 task core and journal
+      - name: Verify task core and journal
         shell: bash
         run: |
           set -euo pipefail

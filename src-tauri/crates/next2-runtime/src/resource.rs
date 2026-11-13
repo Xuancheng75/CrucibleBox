@@ -43,6 +43,17 @@ impl InspectedResource {
     }
 }
 pub fn inspect_resource(root: &Path, keys: &[PublisherKey]) -> Result<InspectedResource, String> {
+    let resource = inspect_metadata(root, keys)?;
+    verify_files(
+        &resource.root,
+        &resource.manifest.files,
+        "resource.json",
+        resource.manifest.contains_native_code,
+        40000,
+    )?;
+    Ok(resource)
+}
+fn inspect_metadata(root: &Path, keys: &[PublisherKey]) -> Result<InspectedResource, String> {
     let meta = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
     if !plain(&meta) || !meta.is_dir() {
         return Err("INVALID_RESOURCE_ROOT".into());
@@ -55,13 +66,6 @@ pub fn inspect_resource(root: &Path, keys: &[PublisherKey]) -> Result<InspectedR
     let manifest =
         validate_resource_manifest(std::str::from_utf8(&raw).map_err(|e| e.to_string())?)?;
     let provenance = verify_provenance(&root, &raw, &manifest.publisher.id, keys)?;
-    verify_files(
-        &root,
-        &manifest.files,
-        "resource.json",
-        manifest.contains_native_code,
-        40000,
-    )?;
     Ok(InspectedResource {
         root,
         manifest,
@@ -94,6 +98,32 @@ pub fn check_plugin(source: &InspectedResource, plugin: &ApprovedPlugin) -> Resu
         .ok_or("RESOURCE_UNDECLARED")?;
     if !compatible(&source.manifest.version, &dependency.version)? {
         return Err("RESOURCE_VERSION_INCOMPATIBLE".into());
+    }
+    check_runtime_identity(&source.manifest, manifest)?;
+    Ok(())
+}
+fn check_runtime_identity(
+    resource: &ResourceManifest,
+    plugin: &cruciblebox_next2_protocol::Manifest,
+) -> Result<(), String> {
+    if let Some(identity) = &resource.runtime_identity {
+        if !plugin
+            .runtime_capabilities
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|runtime| {
+                runtime.engine == identity.engine
+                    && plugin
+                        .tools
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|tool| tool.id == runtime.tool_id && tool.resource_id == resource.id)
+            })
+        {
+            return Err("RESOURCE_RUNTIME_UNDECLARED".into());
+        }
     }
     Ok(())
 }
@@ -209,7 +239,35 @@ pub fn resolve(
     keys: &[PublisherKey],
     approvals: &[Approval],
 ) -> Result<Vec<ResourceMount>, String> {
-    let manifest = plugin.manifest();
+    resolve_verified(store, plugin, keys, approvals)
+        .map(|verified| verified.into_iter().map(|(mount, _)| mount).collect())
+}
+
+pub fn resolve_verified(
+    store: &Path,
+    plugin: &ApprovedPlugin,
+    keys: &[PublisherKey],
+    approvals: &[Approval],
+) -> Result<Vec<(ResourceMount, ResourceManifest)>, String> {
+    resolve_selected(store, plugin.manifest(), keys, approvals, true)
+}
+/// Approved metadata only, for discovery/version selection. Never use these
+/// mounts to launch code: execution continues through resolve_verified.
+pub fn resolve_metadata(
+    store: &Path,
+    manifest: &cruciblebox_next2_protocol::Manifest,
+    keys: &[PublisherKey],
+    approvals: &[Approval],
+) -> Result<Vec<(ResourceMount, ResourceManifest)>, String> {
+    resolve_selected(store, manifest, keys, approvals, false)
+}
+fn resolve_selected(
+    store: &Path,
+    manifest: &cruciblebox_next2_protocol::Manifest,
+    keys: &[PublisherKey],
+    approvals: &[Approval],
+    payload: bool,
+) -> Result<Vec<(ResourceMount, ResourceManifest)>, String> {
     let mut mounts = Vec::new();
     'dependency: for dependency in &manifest.resources {
         let versions = store.join(&manifest.id).join(&dependency.id);
@@ -255,7 +313,11 @@ pub fn resolve(
             }
             return Err(format!("RESOURCE_VERSION_UNAVAILABLE: {}", dependency.id));
         };
-        let resource = inspect_resource(&directory, keys)?;
+        let resource = if payload {
+            inspect_resource(&directory, keys)?
+        } else {
+            inspect_metadata(&directory, keys)?
+        };
         if resource.manifest.id != dependency.id
             || resource.manifest.plugin_id != manifest.id
             || resource.manifest.version != version.to_string()
@@ -263,19 +325,21 @@ pub fn resolve(
         {
             return Err("RESOURCE_IDENTITY_MISMATCH".into());
         }
+        check_runtime_identity(&resource.manifest, manifest)?;
         let approval = approvals
             .iter()
             .find(|approval| approval.manifest_sha256 == resource.manifest_sha256)
             .ok_or("RESOURCE_APPROVAL_REQUIRED")?;
         resource.check_approval(approval)?;
-        mounts.push(ResourceMount {
+        let mount = ResourceMount {
             id: dependency.id.clone(),
-            version: resource.manifest.version,
+            version: resource.manifest.version.clone(),
             directory: fs::canonicalize(directory)
                 .map_err(|e| e.to_string())?
                 .to_string_lossy()
                 .into(),
-        });
+        };
+        mounts.push((mount, resource.manifest));
     }
     Ok(mounts)
 }

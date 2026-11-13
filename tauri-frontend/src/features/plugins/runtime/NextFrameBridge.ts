@@ -11,7 +11,7 @@ export interface NextSession {
   handshakeToken: string
   indexUrl: string
   origin: 'null'
-  rendererApiVersion: 6
+  rendererApiVersion: typeof contract.versions.sdkApiVersion
   expiresAt: number
 }
 const budget = contract.budget as {
@@ -21,6 +21,7 @@ const budget = contract.budget as {
   handshakeTimeoutMs: number
 }
 export const transport = budget
+const { wireVersion } = contract.versions
 export function isNextReady(
   event: { source: unknown; origin: string; data: unknown },
   source: unknown,
@@ -33,7 +34,7 @@ export function isNextReady(
     event.origin === session.origin &&
     data?.kind === 'next-ready' &&
     data.nonce === session.handshakeToken &&
-    data.wireVersion === 4 &&
+    data.wireVersion === wireVersion &&
     Date.now() < session.expiresAt
   )
 }
@@ -43,7 +44,6 @@ export function createNextDispatcher(
   send: (response: Response) => void,
   ensureLease?: () => Promise<void>
 ) {
-  const wireVersion = 4
   const checkRequest = validateRequest
   const checkResponse = validateResponse
   let disposed = false
@@ -85,7 +85,11 @@ export function createNextDispatcher(
     if (pending.has(id)) {
       return // One response per pending request; native ledger rejects later replay.
     }
-    if (pending.size >= budget.inflight || queued >= budget.inflight) {
+    const control = request.target.kind === 'platform' && request.method === 'rpc.cancel'
+    if (
+      pending.size >= budget.inflight + Number(control) ||
+      (!control && queued >= budget.inflight)
+    ) {
       send(failure(id, 'BUSY'))
       return
     }
@@ -97,10 +101,11 @@ export function createNextDispatcher(
       id,
       setTimeout(() => finish(id, failure(id, 'TIMEOUT')), timeoutMs)
     )
-    queued += 1
-    execution = execution
+    if (!control) queued += 1
+    // Cancellation must reach the host while the ordinary invocation is pending.
+    const invocation = (control ? Promise.resolve() : execution)
       .then(() => {
-        queued -= 1
+        if (!control) queued -= 1
         if (disposed || !pending.has(id)) return
         const execute = () => {
           if (disposed || !pending.has(id)) return
@@ -123,6 +128,7 @@ export function createNextDispatcher(
         }
       })
       .catch(() => finish(id, failure(id, 'INTERNAL_ERROR')))
+    if (!control) execution = invocation
   }
   return {
     dispatch,

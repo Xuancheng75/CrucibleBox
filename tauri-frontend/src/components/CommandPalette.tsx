@@ -106,17 +106,18 @@ export default function CommandPalette() {
       ...plugins
         .filter(
           (plugin) =>
-            !needle ||
-            `${plugin.displayName} ${plugin.name} ${plugin.description} ${userTags
-              .filter((tag) => tag.pluginIds.includes(plugin.id))
-              .map((tag) => tag.name)
-              .join(' ')}`
-              .toLowerCase()
-              .includes(needle)
+            plugin.entryRenderer &&
+            (!needle ||
+              `${plugin.navigationTitle ?? ''} ${plugin.displayName} ${plugin.name} ${plugin.description} ${userTags
+                .filter((tag) => tag.pluginIds.includes(plugin.id))
+                .map((tag) => tag.name)
+                .join(' ')}`
+                .toLowerCase()
+                .includes(needle))
         )
         .map((plugin) => ({
           key: `plugin-${plugin.id}`,
-          label: plugin.displayName,
+          label: plugin.navigationTitle ?? plugin.displayName,
           icon: <AppstoreOutlined />,
           kind: '插件',
           run: () => {

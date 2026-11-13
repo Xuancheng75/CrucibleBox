@@ -228,6 +228,23 @@ export function InstallPreviewDetail({ preview }: { preview: PluginInstallPrevie
         />
       )}
 
+      {preview.isUpgrade && preview.next2?.dataMigration && (
+        <Alert
+          type="info"
+          showIcon
+          message="插件数据迁移说明"
+          description={
+            <>
+              <div>{preview.next2.dataMigration.summary}</div>
+              <div>
+                适用旧版本 {preview.next2.dataMigration.fromPluginVersion.min} 至低于{' '}
+                {preview.next2.dataMigration.fromPluginVersion.maxExclusive}
+              </div>
+            </>
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
       {preview.legacyFullTrust && (
         <Alert
           type="warning"
@@ -305,8 +322,13 @@ function InstallPermissionDetail({ preview }: { preview: PluginInstallPreview })
 const PERMISSION_SUMMARIES: Record<string, string> = {
   files: '读取选定文件或保存输出',
   storage: '保存插件数据',
+  logging: '写入插件日志',
+  events: '发布或订阅插件事件',
   tasks: '执行和管理任务',
   network: '访问网络',
+  process: '运行已批准资源包内的本地工具',
+  runtime: '执行本地运行环境任务，可访问当前用户文件和网络',
+  native: '由可信本地插件提交文件或目录输出',
   browser: '下载文件',
   theme: '调整界面主题',
   dialog: '显示选择或确认窗口',

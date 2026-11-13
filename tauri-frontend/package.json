@@ -1,6 +1,6 @@
 {
   "name": "cruciblebox-tauri-frontend",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -26,6 +26,6 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.6.3",
-    "vite": "^6.0.7"
+    "vite": "6.4.5"
   }
 }

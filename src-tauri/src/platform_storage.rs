@@ -1,4 +1,4 @@
-//! API 6 storage dispatch. Envelope validation and permissions are enforced by admission.
+//! Next 3.0 storage dispatch. Envelope validation and permissions are enforced by admission.
 use crate::db::Db;
 use serde_json::Value;
 
@@ -16,6 +16,7 @@ pub fn dispatch(
         "config.get" => return storage.config_get(owner),
         "config.patch" => return storage.config_patch(owner, &p["values"]),
         "storage.get" => return storage.get(owner, key()).map(|v| v.unwrap_or(Value::Null)),
+        "storage.usage" => return storage.usage(owner),
         "storage.set" => storage.set(owner, key(), &p["value"]),
         "storage.delete" => storage.delete(owner, key()),
         "storage.batch" => storage.batch(owner, p["operations"].as_array().unwrap()),

@@ -956,4 +956,43 @@ mod tests {
         assert_eq!(fs::read(target).unwrap(), b"foreign");
         assert_eq!(fs::read(stage).unwrap(), b"new");
     }
+
+    #[test]
+    fn nested_batch_accepts_ancestor_reference_and_rejects_unrelated_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("output/nested");
+        let unrelated = root.path().join("unrelated");
+        fs::create_dir_all(&directory).unwrap();
+        fs::create_dir(&unrelated).unwrap();
+        let stage = directory.join(".stage");
+        let target = directory.join("file.txt");
+        let reference = root.path().join("output");
+        fs::write(&stage, b"new").unwrap();
+        let store = Store::open(&root.path().join("receipts.sqlite")).unwrap();
+        let request = || Publication {
+            owner: "owner",
+            task_id: "task",
+            journal: "external-file:task:batch",
+            stage: &stage,
+            target: &target,
+            replace: true,
+            terminal: false,
+        };
+        assert!(store
+            .publish_with_reference(request(), Some(&unrelated))
+            .is_err());
+        assert_eq!(fs::read(&stage).unwrap(), b"new");
+        assert!(!target.exists());
+        store
+            .publish_with_reference(request(), Some(&reference))
+            .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        let report = store.recover().unwrap();
+        assert!(report.blocked.is_empty());
+        assert_eq!(report.verified.len(), 1);
+        assert_eq!(
+            report.verified[0].result_reference(),
+            reference.canonicalize().unwrap()
+        );
+    }
 }

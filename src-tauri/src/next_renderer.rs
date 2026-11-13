@@ -1,4 +1,4 @@
-//! API 6 native renderer gate.
+//! Next 3.0 native renderer gate.
 use crate::db::Db;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -30,7 +30,7 @@ pub fn create_next_renderer_session(
         return Err("SESSION_DENIED".into());
     }
     let (name, entry, permissions, directory): (String, String, String, String) = {
-        let db = db.try_lock().map_err(|_| "BUSY")?;
+        let db = db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?;
         let record = db
             .plugin_find_by_id(&id)
             .map_err(|_| "STORAGE_UNAVAILABLE")?
@@ -45,13 +45,15 @@ pub fn create_next_renderer_session(
     };
     let root = std::path::Path::new(&directory);
     let manifest = crate::manifest::read_manifest(root)?;
-    if manifest.manifest_version != Some(6) || manifest.name != name || manifest.renderer != entry {
+    if manifest.manifest_version != Some(cruciblebox_next2_protocol::MANIFEST_VERSION)
+        || manifest.name != name
+        || entry.is_empty()
+        || manifest.renderer != entry
+    {
         return Err("SESSION_DENIED".into());
     }
     crate::manifest::validate_entrypoints(root, &manifest)?;
-    if manifest.manifest_version == Some(6) {
-        crate::next2_install::load(&*db.try_lock().map_err(|_| "BUSY")?, root)?;
-    }
+    crate::next2_install::load(&*db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?, root)?;
     let permissions: Vec<String> =
         serde_json::from_str(&permissions).map_err(|_| "SESSION_DENIED")?;
     let raw = std::fs::read_to_string(root.join("plugin.json")).map_err(|_| "INVALID_MANIFEST")?;
@@ -146,7 +148,7 @@ mod tests {
                 plugin_directory: "E:/approved/code/1.0.0".into(),
                 renderer_entry: "dist/renderer.js".into(),
                 runtime_path: String::new(),
-                renderer_api_version: 6,
+                renderer_api_version: cruciblebox_next2_protocol::SDK_API_VERSION,
                 permissions: vec![],
                 owner_webview_label: "main".into(),
             })
@@ -190,7 +192,7 @@ mod tests {
 }
 
 #[tauri::command(async)]
-pub fn next_renderer_request(
+pub async fn next_renderer_request(
     window: WebviewWindow,
     caller: tauri::ipc::Request<'_>,
     protocol: State<'_, Arc<crate::plugin_protocol::ProtocolContext>>,
@@ -221,5 +223,8 @@ pub fn next_renderer_request(
         .session
         .filter(|_| access.ok)
         .ok_or("SESSION_DENIED")?;
-    backend.next2.renderer(&raw, &metadata)
+    let manager = backend.next2.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.renderer(&raw, &metadata))
+        .await
+        .map_err(|error| format!("IPC_EXECUTION_UNAVAILABLE: {error}"))?
 }

@@ -1,13 +1,25 @@
-//! Manifest 6 admission and generic backend routing. Domain methods stay in plugins.
+//! Next 3.0 admission and generic backend routing.
+mod capability_service;
+mod download_service;
+mod event_service;
+mod file_mutation;
+mod file_operations;
+mod lifecycle;
+mod native_publication;
+mod network_service;
+pub(crate) mod platform_service;
+mod process_service;
+mod stream_service;
+mod websocket_service;
 use crate::{db::Db, plugin_session::RendererSession};
 use cruciblebox_next2_protocol::{
     self as protocol,
     gateway::{Installed, Registry, Route, Session},
-    Backend, Request, RpcError,
+    Request, RpcError,
 };
 use cruciblebox_next2_runtime::{
     package::ApprovedPlugin,
-    worker::{StopHandle, Worker},
+    worker::{CallLimits, InstanceKind, StopHandle, Worker},
 };
 use serde_json::{json, Value};
 use std::{
@@ -15,7 +27,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -26,33 +38,100 @@ fn now() -> u64 {
         .map_or(0, |time| time.as_millis() as u64)
 }
 fn error(message: String) -> RpcError {
+    let code = message
+        .split_once(": ")
+        .map_or(message.as_str(), |(code, _)| code);
     RpcError {
-        code: if message.len() <= 100 && !message.contains(' ') {
-            message.clone()
+        code: if !code.is_empty()
+            && code.len() <= 100
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            code.into()
         } else {
             "PLATFORM_ERROR".into()
         },
         message: message.chars().take(2048).collect(),
     }
 }
+
+fn managed_child(parent: &Path, name: &str) -> Result<PathBuf, String> {
+    let directory = parent.join(name);
+    if let Err(error) = std::fs::create_dir(&directory) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(format!("MANAGED_DIRECTORY_UNAVAILABLE: {error}"));
+        }
+    }
+    crate::transaction::assert_plain_directory(&directory, "Managed plugin data")?;
+    Ok(directory)
+}
 struct Slot {
+    version: String,
+    token: String,
+    background_interval: Option<Duration>,
     worker: Mutex<Option<Worker>>,
     stop: StopHandle,
     admission: Mutex<Session>,
 }
+enum Instance {
+    Starting,
+    Ready(Arc<Slot>),
+}
+type Instances = HashMap<(String, InstanceKind), Instance>;
 struct SessionEntry {
     plugin_id: String,
     session: Arc<Mutex<Session>>,
+}
+struct BackendCall<'a> {
+    provider: &'a str,
+    execution: Execution<'a>,
+    sequence: &'a mut u64,
+}
+#[derive(Clone, Copy, Default)]
+struct Execution<'a> {
+    caller: Option<&'a str>,
+    task: Option<(&'a crate::task_runtime::Context, &'a str)>,
+    cancel: Option<&'a AtomicBool>,
+    deadline: Option<Instant>,
+}
+impl Execution<'_> {
+    fn check(self) -> Result<(), String> {
+        if self.cancel.is_some_and(|flag| flag.load(Ordering::SeqCst))
+            || self.task.is_some_and(|(context, _)| context.is_cancelled())
+        {
+            return Err("CANCELLED".into());
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(if self.task.is_some() {
+                "TASK_TIMEOUT"
+            } else {
+                "RPC_TIMEOUT"
+            }
+            .into());
+        }
+        Ok(())
+    }
 }
 pub struct Manager {
     runner: PathBuf,
     db: Arc<Mutex<Db>>,
     services: Arc<crate::host_services::Services>,
     maintenance: Arc<Mutex<HashSet<String>>>,
-    workers: Mutex<HashMap<(String, bool), Arc<Slot>>>,
+    workers: Mutex<Instances>,
+    provider_failures: Mutex<HashMap<String, String>>,
+    startup_finished: Condvar,
     sessions: Mutex<HashMap<String, SessionEntry>>,
     closing: AtomicBool,
     files: crate::next2_files::Files,
+    file_operations: file_operations::MutableFiles,
+    downloads: download_service::Downloads,
+    websockets: websocket_service::WebSockets,
+    events: event_service::Events,
+    streams: stream_service::Streams,
     graph_changes: Mutex<()>,
 }
 impl Manager {
@@ -68,9 +147,16 @@ impl Manager {
             services,
             maintenance,
             workers: Mutex::new(HashMap::new()),
+            provider_failures: Mutex::new(HashMap::new()),
+            startup_finished: Condvar::new(),
             sessions: Mutex::new(HashMap::new()),
             closing: AtomicBool::new(false),
             files: crate::next2_files::Files::default(),
+            file_operations: file_operations::MutableFiles::default(),
+            downloads: download_service::Downloads::default(),
+            websockets: websocket_service::WebSockets::default(),
+            events: event_service::Events::default(),
+            streams: stream_service::Streams::default(),
             graph_changes: Mutex::new(()),
         }
     }
@@ -100,55 +186,172 @@ impl Manager {
         self.check(row)?;
         let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
         let plugin = crate::next2_install::load(&db, Path::new(&row.installed_path))?;
-        if plugin.manifest().id != row.name
-            || plugin.manifest().version != row.version
-            || serde_json::to_string(&plugin.manifest().permissions).map_err(|e| e.to_string())?
-                != row.permissions
+        Self::verify_record(plugin.manifest(), &row.name, &row.version, &row.permissions)?;
+        Ok(plugin)
+    }
+    fn verify_record(
+        manifest: &protocol::Manifest,
+        id: &str,
+        version: &str,
+        permissions: &str,
+    ) -> Result<(), String> {
+        if manifest.id != id
+            || manifest.version != version
+            || serde_json::to_string(&manifest.permissions).map_err(|e| e.to_string())?
+                != permissions
         {
             return Err("INSTALLATION_METADATA_MISMATCH".into());
         }
-        Ok(plugin)
+        Ok(())
     }
     fn registry(&self) -> Result<Registry, String> {
         self.registry_with(None)
     }
-    fn registry_with(&self, enabling: Option<&crate::db::PluginRow>) -> Result<Registry, String> {
+    fn registry_with(&self, replacement: Option<&protocol::Manifest>) -> Result<Registry, String> {
         let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
         let records = db
-            .enabled_plugin_backend_records()
-            .map_err(|e| e.to_string())?;
+            .plugin_all_roots()?
+            .into_iter()
+            .map(|(id, _, _)| {
+                db.plugin_find_by_id(&id)?
+                    .ok_or_else(|| "PLUGIN_NOT_FOUND".to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let mut installed = Vec::new();
-        for (_, row) in records {
-            let root = Path::new(&row.installed_path);
-            let manifest = crate::manifest::read_manifest(root)?;
-            if manifest.manifest_version == Some(6) {
-                let plugin = crate::next2_install::load(&db, root)?;
+        for row in records {
+            if replacement.is_some_and(|manifest| manifest.id == row.name) {
+                continue;
+            }
+            // A row without approved metadata cannot contribute any capabilities.
+            // Its own activation/request still reports the underlying installation error.
+            let manifest = crate::next2_install::load_manifest(&db, Path::new(&row.installed_path));
+            if let Ok(manifest) = manifest.and_then(|manifest| {
+                Self::verify_record(&manifest, &row.name, &row.version, &row.permissions)?;
+                Ok(manifest)
+            }) {
                 installed.push(Installed {
-                    manifest: plugin.manifest().clone(),
-                    enabled: true,
+                    manifest,
+                    enabled: row.enabled,
                 });
             }
         }
-        if let Some(row) = enabling.filter(|row| !row.enabled) {
+        if let Some(manifest) = replacement {
             installed.push(Installed {
-                manifest: self.installed(row)?.manifest().clone(),
+                manifest: manifest.clone(),
                 enabled: true,
             });
         }
-        Registry::new(installed)
+        let mut runtimes = HashMap::new();
+        for plugin in &installed {
+            if !plugin.enabled {
+                continue;
+            }
+            let declarations = plugin
+                .manifest
+                .runtime_capabilities
+                .as_deref()
+                .unwrap_or_default();
+            if declarations.is_empty() {
+                continue;
+            }
+            let metadata = (|| {
+                let row = db
+                    .plugin_find_by_name(&plugin.manifest.id)?
+                    .ok_or("PLUGIN_NOT_FOUND")?;
+                let store = Self::data(&row)?
+                    .parent()
+                    .and_then(Path::parent)
+                    .ok_or("INVALID_DATA_PATH")?
+                    .join("plugin-resources");
+                cruciblebox_next2_runtime::resource::resolve_metadata(
+                    &store,
+                    &plugin.manifest,
+                    &crate::next2_install::keys(&db)?,
+                    &crate::next2_install::resource_approvals(&db, &plugin.manifest.id)?,
+                )
+            })();
+            for runtime in declarations {
+                let value = match &metadata {
+                    Err(failure) => Err(failure.clone()),
+                    Ok(mounts) => plugin
+                        .manifest
+                        .tools
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|tool| tool.id == runtime.tool_id)
+                        .and_then(|tool| {
+                            mounts
+                                .iter()
+                                .find(|(mount, manifest)| {
+                                    mount.id == tool.resource_id
+                                        && manifest.kind == "runtime"
+                                        && manifest.contains_native_code
+                                        && manifest.runtime_identity.as_ref().is_some_and(
+                                            |identity| identity.engine == runtime.engine,
+                                        )
+                                        && manifest
+                                            .files
+                                            .iter()
+                                            .any(|entry| entry.path == tool.entry)
+                                })
+                                .map(|(mount, manifest)| protocol::RuntimeEnvironment {
+                                    engine: runtime.engine.clone(),
+                                    version: manifest
+                                        .runtime_identity
+                                        .as_ref()
+                                        .unwrap()
+                                        .version
+                                        .clone(),
+                                    resource_version: mount.version.clone(),
+                                    resource_id: tool.resource_id.clone(),
+                                    tool_id: tool.id.clone(),
+                                })
+                        })
+                        .ok_or_else(|| "PROCESS_RESOURCE_MISSING".to_string()),
+                };
+                runtimes.insert(
+                    (plugin.manifest.id.clone(), runtime.capability_id.clone()),
+                    value,
+                );
+            }
+        }
+        Registry::new(installed).map(|registry| registry.with_runtimes(runtimes))
     }
     pub fn dispose_renderer_session(&self, token: &str) -> Result<(), String> {
-        self.sessions
+        let entry = self
+            .sessions
             .lock()
             .map_err(|_| "INTERNAL_ERROR")?
             .remove(token);
+        if let Some(entry) = entry {
+            entry
+                .session
+                .lock()
+                .map_err(|_| "INTERNAL_ERROR")?
+                .cancel_all();
+        }
+        self.clear_session_resources(token)
+    }
+    fn clear_session_resources(&self, token: &str) -> Result<(), String> {
+        self.events.clear_session(token)?;
+        self.streams.clear_session(token)?;
+        self.file_operations.clear_session(token)?;
+        self.websockets.clear_session(token)?;
         Ok(())
     }
     pub fn dispose_plugin_renderers(&self, plugin_id: &str) -> Result<(), String> {
-        self.sessions
+        let tokens: Vec<_> = self
+            .sessions
             .lock()
             .map_err(|_| "INTERNAL_ERROR")?
-            .retain(|_, entry| entry.plugin_id != plugin_id);
+            .iter()
+            .filter(|(_, entry)| entry.plugin_id == plugin_id)
+            .map(|(token, _)| token.clone())
+            .collect();
+        for token in tokens {
+            self.dispose_renderer_session(&token)?;
+        }
         Ok(())
     }
     pub fn graph_change(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
@@ -170,28 +373,31 @@ impl Manager {
         }
     }
     pub fn assert_upgrade(&self, replacement: &protocol::Manifest) -> Result<(), String> {
-        let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
-        let mut installed = Vec::new();
-        for (_, row) in db
-            .enabled_plugin_backend_records()
-            .map_err(|e| e.to_string())?
-        {
-            let root = Path::new(&row.installed_path);
-            if row.name == replacement.id {
-                installed.push(Installed {
-                    manifest: replacement.clone(),
-                    enabled: true,
-                });
-            } else if crate::manifest::read_manifest(root)?.manifest_version == Some(6) {
-                installed.push(Installed {
-                    manifest: crate::next2_install::load(&db, root)?.manifest().clone(),
-                    enabled: true,
-                });
-            }
+        let enabled = self
+            .db
+            .lock()
+            .map_err(|_| "STORAGE_UNAVAILABLE")?
+            .plugin_find_by_name(&replacement.id)?
+            .is_some_and(|row| row.enabled);
+        if enabled {
+            self.validate_graph_change(replacement)?;
         }
-        Registry::new(installed).map(|_| ())
+        Ok(())
     }
-    pub fn activate(&self, owner: &str) -> Result<(), String> {
+    fn validate_graph_change(&self, replacement: &protocol::Manifest) -> Result<(), String> {
+        let current = self.registry()?;
+        let next = self.registry_with(Some(replacement))?;
+        next.validate_plugin(&replacement.id)?;
+        let mut affected = current.dependents(&replacement.id);
+        affected.extend(next.dependents(&replacement.id));
+        affected.sort();
+        affected.dedup();
+        for dependent in affected {
+            next.validate_plugin(&dependent)?;
+        }
+        Ok(())
+    }
+    pub fn activate(self: &Arc<Self>, owner: &str) -> Result<(), String> {
         let row = self
             .db
             .lock()
@@ -199,15 +405,54 @@ impl Manager {
             .plugin_find_by_id(owner)?
             .filter(|row| row.enabled)
             .ok_or("SESSION_DENIED")?;
-        let plugin = self.installed(&row)?;
-        self.registry()?;
-        if plugin.manifest().backend.is_some() {
-            self.slot(&row.name, false)?;
+        self.installed(&row)?;
+        let registry = self.registry()?;
+        for manifest in registry.activation_order(&row.name)? {
+            if manifest.backend.is_some() {
+                self.slot(&manifest.id, InstanceKind::Service)?;
+            }
+        }
+        Ok(())
+    }
+    /// Restore enabled background services after install recovery. Reuse each shared
+    /// dependency's startup outcome for this pass, and leave enabled choices intact.
+    pub fn restore_background(self: &Arc<Self>) -> Result<(), String> {
+        let _graph = self.graph_changes.lock().map_err(|_| "INTERNAL_ERROR")?;
+        let registry = self.registry()?;
+        let mut started = HashMap::new();
+        for id in registry.background_plugins() {
+            if self.closing.load(Ordering::SeqCst) {
+                break;
+            }
+            let result = registry.activation_order(id).and_then(|order| {
+                for plugin in order
+                    .into_iter()
+                    .filter(|manifest| manifest.backend.is_some())
+                {
+                    started
+                        .entry(plugin.id.as_str())
+                        .or_insert_with(|| self.slot(&plugin.id, InstanceKind::Service).map(|_| ()))
+                        .clone()
+                        .map_err(|error| format!("{}: {error}", plugin.id))?;
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                let row = self.record(id)?;
+                let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
+                if let Err(write_error) = db.log_write(
+                    &row.id,
+                    "error",
+                    &format!("Background activation failed: {error}"),
+                ) {
+                    eprintln!("[next2] background activation for {id}: {error}; log write failed: {write_error}");
+                }
+            }
         }
         Ok(())
     }
     /// Start under the lifecycle lock, then persist the user's enabled choice.
-    pub fn enable(&self, owner: &str) -> Result<(), String> {
+    pub fn enable(self: &Arc<Self>, owner: &str) -> Result<(), String> {
         let row = self
             .db
             .lock()
@@ -215,9 +460,15 @@ impl Manager {
             .plugin_find_by_id(owner)?
             .ok_or("PLUGIN_NOT_FOUND")?;
         let plugin = self.installed(&row)?;
-        self.registry_with(Some(&row))?;
+        self.validate_graph_change(plugin.manifest())?;
+        let registry = self.registry_with(Some(plugin.manifest()))?;
+        for dependency in registry.activation_order(&row.name)? {
+            if dependency.id != row.name && dependency.backend.is_some() {
+                self.slot(&dependency.id, InstanceKind::Service)?;
+            }
+        }
         if plugin.manifest().backend.is_some() {
-            self.slot_for_record(&row, false)?;
+            self.slot_for_record(&row, InstanceKind::Service)?;
         }
         let saved = self
             .db
@@ -232,47 +483,9 @@ impl Manager {
         }
         Ok(())
     }
-    fn slot(&self, provider: &str, task: bool) -> Result<Arc<Slot>, String> {
+    fn slot(self: &Arc<Self>, provider: &str, kind: InstanceKind) -> Result<Arc<Slot>, String> {
         let row = self.record(provider)?;
-        self.slot_for_record(&row, task)
-    }
-    fn slot_for_record(&self, row: &crate::db::PluginRow, task: bool) -> Result<Arc<Slot>, String> {
-        self.check(row)?;
-        let mut workers = self.workers.lock().map_err(|_| "INTERNAL_ERROR")?;
-        let key = (row.id.clone(), task);
-        if let Some(slot) = workers.get(&key) {
-            return Ok(slot.clone());
-        }
-        if workers.len() >= 16 {
-            return Err("BUSY".into());
-        }
-        let plugin = self.installed(row)?;
-        let resources = self.mounts(row, &plugin)?;
-        let worker = match plugin.manifest().backend {
-            Some(Backend::NativeBackend(_)) => {
-                Worker::start(&plugin, &Self::data(row)?, &resources)?
-            }
-            Some(Backend::JsBackend(_)) => {
-                Worker::start_js(&plugin, &Self::data(row)?, &resources, &self.runner)?
-            }
-            None => return Err("BACKEND_UNAVAILABLE".into()),
-        };
-        let slot = Arc::new(Slot {
-            stop: worker.stop_handle(),
-            admission: Mutex::new(Session::new(
-                plugin.manifest().clone(),
-                worker.session().into(),
-                "native".into(),
-                "backend".into(),
-                u64::MAX,
-            )),
-            worker: Mutex::new(Some(worker)),
-        });
-        // Maintenance marks the owner before taking this pool lock; a racing
-        // startup must finish and be stopped before the installer can swap files.
-        self.check(row)?;
-        workers.insert(key, slot.clone());
-        Ok(slot)
+        self.slot_for_record(&row, kind)
     }
     fn data(row: &crate::db::PluginRow) -> Result<PathBuf, String> {
         Ok(
@@ -281,18 +494,33 @@ impl Manager {
                 .join(&row.name),
         )
     }
+
+    fn writable_data(row: &crate::db::PluginRow) -> Result<PathBuf, String> {
+        let root = crate::next2_install::data_root(Path::new(&row.installed_path))?;
+        let parent = managed_child(root, "plugin-data")?;
+        managed_child(&parent, &row.name)
+    }
     fn mounts(
         &self,
         row: &crate::db::PluginRow,
         plugin: &ApprovedPlugin,
     ) -> Result<Vec<protocol::ResourceMount>, String> {
+        self.verified_mounts(row, plugin)
+            .map(|verified| verified.into_iter().map(|(mount, _)| mount).collect())
+    }
+
+    fn verified_mounts(
+        &self,
+        row: &crate::db::PluginRow,
+        plugin: &ApprovedPlugin,
+    ) -> Result<Vec<(protocol::ResourceMount, protocol::ResourceManifest)>, String> {
         let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
         let store = Self::data(row)?
             .parent()
             .and_then(Path::parent)
             .ok_or("INVALID_DATA_PATH")?
             .join("plugin-resources");
-        cruciblebox_next2_runtime::resource::resolve(
+        cruciblebox_next2_runtime::resource::resolve_verified(
             &store,
             plugin,
             &crate::next2_install::keys(&db)?,
@@ -302,10 +530,24 @@ impl Manager {
     pub fn stop(&self, owner: &str) -> Result<(), String> {
         crate::diagnostics::record("backend-stop-start", Some(owner));
         let slots: Vec<_> = {
-            let mut workers = self.workers.lock().map_err(|_| "INTERNAL_ERROR")?;
-            [false, true]
+            let workers = self.workers.lock().map_err(|_| "INTERNAL_ERROR")?;
+            let (mut workers, startup) = self
+                .startup_finished
+                .wait_timeout_while(workers, Duration::from_secs(15), |workers| {
+                    workers
+                        .iter()
+                        .any(|((id, _), slot)| id == owner && matches!(slot, Instance::Starting))
+                })
+                .map_err(|_| "INTERNAL_ERROR")?;
+            if startup.timed_out() {
+                return Err("BACKEND_START_STILL_PENDING".into());
+            }
+            [InstanceKind::Task, InstanceKind::Service]
                 .into_iter()
-                .filter_map(|task| workers.remove(&(owner.into(), task)))
+                .filter_map(|kind| match workers.remove(&(owner.into(), kind)) {
+                    Some(Instance::Ready(slot)) => Some(slot),
+                    _ => None,
+                })
                 .collect()
         };
         let runtime = &self.services.runtime;
@@ -319,7 +561,8 @@ impl Manager {
             for task in runtime.list(&id) {
                 let resource = task["resourceKey"].as_str().unwrap_or("");
                 if (resource == format!("next2:{provider}")
-                    || (id == owner && resource.starts_with("next2:")))
+                    || (id == owner
+                        && (resource.starts_with("next2:") || resource.starts_with("platform:"))))
                     && !terminal(&task)
                 {
                     let task_id = task["taskId"].as_str().ok_or("INVALID_TASK")?.to_string();
@@ -356,6 +599,7 @@ impl Manager {
                 }
             }
             slot.stop.wait_empty()?;
+            self.clear_session_resources(&slot.token)?;
         }
         let deadline =
             Instant::now() + Duration::from_millis((protocol::BUDGET_STOP_TIMEOUT_MS * 2) as u64);
@@ -369,6 +613,10 @@ impl Manager {
             std::thread::sleep(Duration::from_millis(10));
         }
         self.files.clear(&provider)?;
+        self.events.clear_plugin(&provider)?;
+        self.streams.clear_plugin(&provider)?;
+        self.file_operations.clear_owner(&provider)?;
+        self.websockets.clear_owner(&provider)?;
         crate::diagnostics::record("backend-stop-complete", Some(owner));
         Ok(())
     }
@@ -381,10 +629,67 @@ impl Manager {
             .keys()
             .map(|(owner, _)| owner.clone())
             .collect();
-        for owner in owners {
-            self.stop(&owner)?;
+        let mut failures = Vec::new();
+        let order = self.shutdown_order(&owners).unwrap_or_else(|failure| {
+            failures.push(format!("Lifecycle graph: {failure}"));
+            let mut owners: Vec<_> = owners.into_iter().collect();
+            owners.sort();
+            owners
+        });
+        for owner in order {
+            if let Err(error) = self.stop(&owner) {
+                failures.push(format!("{owner}: {error}"));
+            }
         }
-        Ok(())
+        if let Err(error) = self.websockets.clear() {
+            failures.push(error);
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("\n"))
+        }
+    }
+    fn shutdown_order(&self, owners: &HashSet<String>) -> Result<Vec<String>, String> {
+        let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
+        let names: HashMap<_, _> = db
+            .plugin_all_roots()?
+            .into_iter()
+            .map(|(id, name, _)| (name, id))
+            .collect();
+        let registry = self.registry()?;
+        let mut all: Vec<_> = names.keys().collect();
+        all.sort_unstable();
+        let mut visited = HashSet::new();
+        let mut order = Vec::new();
+        for name in all {
+            if let Ok(dependencies) = registry.activation_order(name) {
+                for plugin in dependencies {
+                    if let Some(owner) = names.get(&plugin.id) {
+                        if owners.contains(owner) && visited.insert(owner.clone()) {
+                            order.push(owner.clone());
+                        }
+                    }
+                }
+            }
+        }
+        order.reverse();
+        let mut unresolved: Vec<_> = owners.difference(&visited).cloned().collect();
+        unresolved.sort_unstable();
+        order.extend(unresolved);
+        Ok(order)
+    }
+    #[cfg(test)]
+    pub(crate) fn has_backend_slot(&self, owner: &str) -> bool {
+        self.workers
+            .lock()
+            .unwrap()
+            .get(&(owner.to_owned(), InstanceKind::Service))
+            .is_some_and(|instance| matches!(instance, Instance::Ready(_)))
+    }
+    #[cfg(test)]
+    pub(crate) fn grant_fixture_file(&self, owner: &str, path: &Path) -> protocol::FileReference {
+        self.files.grant(owner, path).unwrap()
     }
     /// Host command palette invokes only the method declared by this installation.
     pub fn execute_command(
@@ -408,12 +713,10 @@ impl Manager {
             .iter()
             .find(|command| command.id == command_id)
             .ok_or("COMMAND_NOT_DECLARED")?;
-        let raw = json!({"wireVersion":4,"requestId":crate::rand_token::random_token_hex()?,"session":crate::rand_token::random_token_hex()?,"target":{"kind":"backend"},"method":command.method,"params":{}}).to_string();
+        let raw = json!({"wireVersion":protocol::WIRE_VERSION,"requestId":crate::rand_token::random_token_hex()?,"session":crate::rand_token::random_token_hex()?,"target":{"kind":"backend"},"method":command.method,"params":{}}).to_string();
         let request = protocol::validate_request(&raw)?;
-        let route = self
-            .registry()?
-            .resolve(owner, &request.target, &request.method)?;
-        self.execute(owner, &request, route, None, None)
+        let route = self.registry()?.resolve(owner, &request, "host")?;
+        self.execute(owner, &request, route, Execution::default())
             .map_err(|failure| format!("{}: {}", failure.code, failure.message))
     }
     pub fn renderer(
@@ -423,7 +726,7 @@ impl Manager {
     ) -> Result<Value, String> {
         let request = protocol::validate_request(raw)?;
         let result = (|| -> Result<Value, RpcError> {
-            if metadata.renderer_api_version != 6
+            if metadata.renderer_api_version != protocol::SDK_API_VERSION
                 || metadata.state != "active"
                 || metadata.owner_webview_label != "main"
                 || metadata.token != request.session
@@ -444,11 +747,7 @@ impl Manager {
             {
                 return Err(error("SESSION_REPLACED".into()));
             }
-            // Platform calls with no service dependencies need only their verified owner.
-            // Keep full caller payload/approval checks above; avoid rehashing unrelated packages.
-            let registry = if matches!(request.target, protocol::Target::PlatformTarget(_))
-                && plugin.manifest().dependencies.is_empty()
-            {
+            let registry = if !matches!(request.target, protocol::Target::ServiceTarget(_)) {
                 Registry::new([Installed {
                     manifest: plugin.manifest().clone(),
                     enabled: true,
@@ -488,7 +787,15 @@ impl Manager {
                     .admit(&registry, raw, "main", now())
                     .map_err(error)?
             };
-            let result = self.execute(&admitted.owner, &request, admitted.route, None, None);
+            let result = self.execute(
+                &admitted.owner,
+                &admitted.request,
+                admitted.route,
+                Execution {
+                    cancel: admitted.cancel.as_deref(),
+                    ..Execution::default()
+                },
+            );
             session
                 .lock()
                 .map_err(|_| error("INTERNAL_ERROR".into()))?
@@ -497,35 +804,105 @@ impl Manager {
         })();
         let response = match result {
             Ok(result) => {
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":true,"result":result})
+                json!({"wireVersion":protocol::WIRE_VERSION,"requestId":request.request_id,"ok":true,"result":result})
             }
             Err(error) => {
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":error})
+                json!({"wireVersion":protocol::WIRE_VERSION,"requestId":request.request_id,"ok":false,"error":error})
             }
         };
         match protocol::validate_response(&response.to_string(), &request.request_id) {
             Ok(_) => Ok(response),
             Err(_) => Ok(
-                json!({"wireVersion":4,"requestId":request.request_id,"ok":false,"error":{"code":"BUDGET_EXCEEDED","message":"Response exceeds wire budget; use a task or file result"}}),
+                json!({"wireVersion":protocol::WIRE_VERSION,"requestId":request.request_id,"ok":false,"error":{"code":"BUDGET_EXCEEDED","message":"Response exceeds wire budget; use a task or file result"}}),
             ),
         }
     }
+    fn backend_capability(
+        self: &Arc<Self>,
+        session: &mut Session,
+        request: &Request,
+        mut call: BackendCall<'_>,
+    ) -> Result<Value, RpcError> {
+        let row = self.record(call.provider).map_err(error)?;
+        self.check(&row).map_err(error)?;
+        let registry = if matches!(request.target, protocol::Target::ServiceTarget(_)) {
+            self.registry()
+        } else {
+            let db = self
+                .db
+                .lock()
+                .map_err(|_| error("STORAGE_UNAVAILABLE".into()))?
+                .clone();
+            let manifest = crate::next2_install::load_manifest(&db, Path::new(&row.installed_path))
+                .map_err(error)?;
+            Self::verify_record(&manifest, &row.name, &row.version, &row.permissions)
+                .map_err(error)?;
+            Registry::new([Installed {
+                manifest,
+                enabled: true,
+            }])
+        }
+        .map_err(error)?;
+        let admitted = session
+            .admit(
+                &registry,
+                &serde_json::to_string(request).map_err(|e| error(e.to_string()))?,
+                "native",
+                now(),
+            )
+            .map_err(error)?;
+        let request = &admitted.request;
+        let result = if admitted.route == Route::Platform
+            && matches!(
+                request.method.as_str(),
+                "tasks.beginCommit" | "tasks.progress"
+            ) {
+            task_notification(request, &mut call)
+        } else {
+            self.execute(
+                &admitted.owner,
+                request,
+                admitted.route,
+                Execution {
+                    caller: Some(call.execution.caller.unwrap_or(call.provider)),
+                    ..call.execution
+                },
+            )
+        };
+        session.finish(&request.request_id);
+        result
+    }
+
     fn execute(
         self: &Arc<Self>,
         owner: &str,
         request: &Request,
         route: Route,
-        task: Option<(&crate::task_runtime::Context, &str)>,
-        file_caller: Option<&str>,
+        mut execution: Execution<'_>,
     ) -> Result<Value, RpcError> {
+        execution.check().map_err(error)?;
         match route {
-            Route::Platform => self.platform(owner, request, task, file_caller),
+            Route::Platform => self
+                .services
+                .platform
+                .dispatch(self, owner, request, execution),
             Route::Backend {
                 initiator,
                 provider,
-                ..
+                provider_version,
+                service,
             } => {
-                let slot = self.slot(&provider, task.is_some()).map_err(error)?;
+                let row = self.record(&provider).map_err(error)?;
+                if row.version != provider_version {
+                    return Err(error("PROVIDER_CHANGED".into()));
+                }
+                let task = execution.task;
+                let kind = if task.is_some() {
+                    InstanceKind::Task
+                } else {
+                    InstanceKind::Service
+                };
+                let slot = self.slot_for_record(&row, kind).map_err(error)?;
                 let mut locked = slot.worker.try_lock().map_err(|_| error("BUSY".into()))?;
                 let worker = locked
                     .as_mut()
@@ -536,67 +913,47 @@ impl Manager {
                     .map_err(|_| error("INTERNAL_ERROR".into()))?;
                 let cancelled = AtomicBool::new(false);
                 let mut sequence = 0;
-                let result = worker.call(
+                if execution.deadline.is_none() && task.is_none() {
+                    execution.deadline = Some(
+                        Instant::now()
+                            + Duration::from_millis(protocol::BUDGET_REQUEST_TIMEOUT_MS as u64),
+                    );
+                }
+                let result = worker.call_with_limits(
                     &initiator,
                     &request.method,
                     request.params.clone(),
-                    task.map(|(ctx, _)| ctx.task_id()).as_deref(),
-                    task.map_or(&cancelled, |(ctx, _)| ctx.cancel_flag()),
+                    CallLimits {
+                        task_id: task.map(|(ctx, _)| ctx.task_id()).as_deref(),
+                        cancel: task
+                            .map(|(ctx, _)| ctx.cancel_flag())
+                            .or(execution.cancel)
+                            .unwrap_or(&cancelled),
+                        deadline: execution.deadline,
+                    },
                     |capability| {
-                        let registry = self.registry().map_err(error)?;
-                        let admitted = session
-                            .admit(
-                                &registry,
-                                &serde_json::to_string(capability)
-                                    .map_err(|e| error(e.to_string()))?,
-                                "native",
-                                now(),
-                            )
-                            .map_err(error)?;
-                        let result = if capability.method == "tasks.beginCommit" {
-                            let (ctx, expected_provider) =
-                                task.ok_or_else(|| error("TASK_EXECUTION_REQUIRED".into()))?;
-                            if capability.params["taskId"] != ctx.task_id()
-                                || expected_provider != provider
-                            {
-                                return Err(error("TASK_AUTHORITY_DENIED".into()));
-                            }
-                            ctx.begin_external_commit()
-                                .map(|()| json!(true))
-                                .map_err(error)
-                        } else if capability.method == "tasks.progress" {
-                            let (ctx, expected_provider) =
-                                task.ok_or_else(|| error("TASK_EXECUTION_REQUIRED".into()))?;
-                            let next = capability.params["sequence"].as_u64().unwrap();
-                            if capability.params["taskId"] != ctx.task_id()
-                                || next <= sequence
-                                || expected_provider != provider
-                            {
-                                return Err(error("TASK_AUTHORITY_DENIED".into()));
-                            }
-                            sequence = next;
-                            ctx.update_progress(
-                                capability.params["stage"].as_str().unwrap(),
-                                capability.params["percent"].as_u64().unwrap() as u32,
-                                capability.params["message"].as_str().unwrap(),
-                                None,
-                            );
-                            Ok(json!(true))
-                        } else {
-                            self.execute(
-                                &admitted.owner,
-                                capability,
-                                admitted.route,
-                                task,
-                                Some(&initiator),
-                            )
-                        };
-                        session.finish(&capability.request_id);
-                        result
+                        self.backend_capability(
+                            &mut session,
+                            capability,
+                            BackendCall {
+                                provider: &provider,
+                                execution: Execution {
+                                    caller: Some(&initiator),
+                                    ..execution
+                                },
+                                sequence: &mut sequence,
+                            },
+                        )
                     },
                 );
                 drop(session);
                 drop(locked);
+                let result = result.and_then(|value| {
+                    if let Some(service) = &service {
+                        service.validate_result(&value).map_err(error)?;
+                    }
+                    Ok(value)
+                });
                 if let Some((ctx, _)) = task {
                     let outcome = result.clone().map_err(|failure| {
                         if matches!(
@@ -605,6 +962,8 @@ impl Manager {
                                 | "NATIVE_STOP_FAILED"
                                 | "BACKEND_STOPPED"
                                 | "CANCELLED"
+                                | "TASK_TIMEOUT"
+                                | "RPC_TIMEOUT"
                         ) {
                             format!("EXECUTION_OUTCOME_UNKNOWN: {}", failure.message)
                         } else {
@@ -616,299 +975,30 @@ impl Manager {
                 if result.as_ref().is_err_and(|error| {
                     matches!(
                         error.code.as_str(),
-                        "CANCELLED" | "NATIVE_TRANSPORT" | "NATIVE_STOP_FAILED"
+                        "CANCELLED"
+                            | "NATIVE_TRANSPORT"
+                            | "NATIVE_STOP_FAILED"
+                            | "TASK_TIMEOUT"
+                            | "RPC_TIMEOUT"
                     )
                 }) {
-                    let row = self.record(&provider).map_err(error)?;
-                    let mut workers = self
-                        .workers
-                        .lock()
-                        .map_err(|_| error("INTERNAL_ERROR".into()))?;
-                    let key = (row.id, task.is_some());
-                    if workers
-                        .get(&key)
-                        .is_some_and(|current| Arc::ptr_eq(current, &slot))
-                    {
-                        workers.remove(&key);
+                    self.retire(&row.id, kind, &slot).map_err(error)?;
+                    if kind == InstanceKind::Service {
+                        if let Err(failure) = &result {
+                            self.lifecycle_failure(&row.id, &failure.code);
+                        }
                     }
                 }
                 result
             }
         }
     }
-    fn platform(
-        self: &Arc<Self>,
-        owner: &str,
-        request: &Request,
-        task: Option<(&crate::task_runtime::Context, &str)>,
-        file_caller: Option<&str>,
-    ) -> Result<Value, RpcError> {
-        let row = self.record(owner).map_err(error)?;
-        let params = &request.params;
-        let value = match request.method.as_str() {
-            "tasks.start" => {
-                if task.is_some() {
-                    return Err(error("NESTED_TASK_DENIED".into()));
-                }
-                let target: protocol::Target = serde_json::from_value(params["target"].clone())
-                    .map_err(|e| error(e.to_string()))?;
-                let method = params["method"].as_str().unwrap().to_owned();
-                let route = self
-                    .registry()
-                    .map_err(error)?
-                    .resolve(owner, &target, &method)
-                    .map_err(error)?;
-                let Route::Backend { provider, .. } = &route else {
-                    return Err(error("INVALID_TASK_TARGET".into()));
-                };
-                let resource = format!("next2:{provider}");
-                let app = self.services.platform.app_handle.clone();
-                let emitter = Arc::new(move |event: &str, payload: Value| {
-                    if let Some(app) = &app {
-                        use tauri::Emitter;
-                        let _ = app.emit(event, payload);
-                    }
-                });
-                self.services.runtime.set_observer(
-                    &row.id,
-                    crate::host_task::executor_observer(self.db.clone(), emitter, &row.id),
-                );
-                let task_provider = provider.clone();
-                let execution_owner = row.id.clone();
-                let manager = self.clone();
-                let owner = owner.to_owned();
-                let mut request = request.clone();
-                request.target = target;
-                request.method = method;
-                request.params = params["params"].clone();
-                let id = self
-                    .services
-                    .runtime
-                    .start(
-                        &row.id,
-                        &resource,
-                        Box::new(move |ctx| {
-                            ctx.check_cancelled()?;
-                            let result = manager
-                                .execute(&owner, &request, route, Some((ctx, &task_provider)), None)
-                                .map_err(|error| format!("{}: {}", error.code, error.message));
-                            let created = manager
-                                .services
-                                .runtime
-                                .get(&execution_owner, &ctx.task_id())
-                                .and_then(|value| value["createdAt"].as_u64())
-                                .ok_or("TASK_METADATA_UNAVAILABLE")?;
-                            save_task_outcome(
-                                &*manager.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?,
-                                &execution_owner,
-                                &ctx.task_id(),
-                                created,
-                                &result,
-                            )?;
-                            result
-                        }),
-                    )
-                    .map_err(error)?;
-                Ok(json!({"taskId":id}))
-            }
-            "tasks.controlState" => {
-                let (ctx, expected_provider) =
-                    task.ok_or_else(|| error("TASK_EXECUTION_REQUIRED".into()))?;
-                if params["taskId"] != ctx.task_id() || expected_provider != owner {
-                    return Err(error("TASK_AUTHORITY_DENIED".into()));
-                }
-                if params["executionPaused"] == true {
-                    ctx.confirm_paused().map_err(error)?;
-                }
-                Ok(json!({"paused":ctx.is_paused(), "cancelRequested":ctx.is_cancelled()}))
-            }
-            "tasks.pause" | "tasks.resume" => {
-                let id = params["taskId"].as_str().unwrap();
-                if self.task(owner, &row.id, id, false).map_err(error)?.is_none() {
-                    return Err(error("TASK_AUTHORITY_DENIED".into()));
-                }
-                Ok(json!(if request.method == "tasks.pause" {
-                    self.services.runtime.pause(&row.id, id)
-                } else {
-                    self.services.runtime.resume(&row.id, id)
-                }))
-            }
-            "tasks.get" => self
-                .task(owner, &row.id, params["taskId"].as_str().unwrap(), true)
-                .map(|value| value.unwrap_or(Value::Null)),
-            "tasks.list" => {
-                let limit = params["limit"].as_u64().unwrap() as usize;
-                let after = params["after"].as_str();
-                let mut values = Vec::new();
-                for value in self.services.runtime.list(&row.id) {
-                    let id = value["taskId"]
-                        .as_str()
-                        .ok_or_else(|| error("INVALID_TASK_RECORD".into()))?;
-                    if after.is_some_and(|after| id <= after) {
-                        continue;
-                    }
-                    if let Some(task) = self.task(owner, &row.id, id, false).map_err(error)? {
-                        values.push(task);
-                    }
-                }
-                values.sort_by(|a, b| a["taskId"].as_str().cmp(&b["taskId"].as_str()));
-                let next = if values.len() > limit {
-                    values.truncate(limit);
-                    values.last().map(|value| value["taskId"].clone())
-                } else {
-                    None
-                };
-                Ok(json!({"items":values,"nextCursor":next}))
-            }
-            "tasks.cancel" => {
-                let id = params["taskId"].as_str().unwrap();
-                if self.task(owner, &row.id, id, false).map_err(error)?.is_none() {
-                    return Err(error("TASK_AUTHORITY_DENIED".into()));
-                }
-                let accepted = self.services.runtime.cancel(&row.id, id);
-                Ok(json!({"accepted":accepted,"task":self.task(owner, &row.id, id, false).map_err(error)?}))
-            }
-            "data.directory" => Self::data(&row).map(|path| json!(path)),
-            "resources.list" => self
-                .installed(&row)
-                .and_then(|plugin| self.mounts(&row, &plugin))
-                .map(|mounts| json!(mounts)),
-            "files.choose" => self.choose_files(owner, params),
-            "files.resolve" => self
-                .resolve_file(owner, file_caller, params["ref"].as_str().unwrap())
-                .map(|path| json!(path)),
-            "files.read" => self
-                .resolve_file(owner, file_caller, params["ref"].as_str().unwrap())
-                .and_then(|path| {
-                    crate::next2_files::read(
-                        &path,
-                        params["offset"].as_u64().unwrap(),
-                        params["length"].as_u64().unwrap(),
-                    )
-                }),
-            "files.publish" => self.publish_file(owner, file_caller, params, task),
-            "network.route" => crate::network_policy::current()
-                .resolve(params["url"].as_str().unwrap())
-                .map(|route| match route.proxy_endpoint {
-                    Some(url) => json!({"kind":"proxy","url":url}),
-                    None => json!({"kind":"direct"}),
-                }),
-            "network.fetch" => crate::next2_files::fetch(params),
-            "theme.assets.import" | "theme.assets.importBundled" => {
-                let path = if request.method == "theme.assets.importBundled" {
-                    let plugin = self.installed(&row).map_err(error)?;
-                    crate::theme_assets::bundled_path(plugin.root(), plugin.manifest(), params["path"].as_str().unwrap()).map_err(error)?
-                } else { self
-                    .files
-                    .resolve(&row.id, file_caller, params["fileRef"].as_str().unwrap())
-                    .map_err(error)? };
-                let app = self
-                    .services
-                    .platform
-                    .app_handle
-                    .as_ref()
-                    .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
-                crate::theme_assets::from_app(app).import(&path, params)
-            }
-            "theme.assets.get" => {
-                let app = self
-                    .services
-                    .platform
-                    .app_handle
-                    .as_ref()
-                    .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
-                crate::theme_assets::from_app(app).get(params["id"].as_str().unwrap())
-            }
-            "theme.assets.list" => {
-                let app = self
-                    .services
-                    .platform
-                    .app_handle
-                    .as_ref()
-                    .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
-                crate::theme_assets::from_app(app).list(
-                    params["after"].as_str(),
-                    params["limit"].as_u64().unwrap_or(16) as usize,
-                )
-            }
-            "clipboard.read" => arboard::Clipboard::new()
-                .map_err(|e| format!("clipboard init failed: {e}"))
-                .and_then(|mut clipboard| {
-                    clipboard
-                        .get_text()
-                        .map_err(|e| format!("clipboard read failed: {e}"))
-                })
-                .map(Value::String),
-            "clipboard.write" => arboard::Clipboard::new()
-                .map_err(|e| format!("clipboard init failed: {e}"))
-                .and_then(|mut clipboard| {
-                    clipboard
-                        .set_text(params["text"].as_str().unwrap())
-                        .map_err(|e| format!("clipboard write failed: {e}"))
-                })
-                .map(|()| Value::Bool(true)),
-            method
-                if method.starts_with("storage.")
-                    || method.starts_with("config.")
-                    || method.starts_with("theme.")
-                    || matches!(
-                        method,
-                        "dialog.open" | "dialog.confirm" | "notification.show" | "runtime.ping"
-                    ) =>
-            {
-                if method.starts_with("theme.")
-                    || matches!(
-                        method,
-                        "dialog.open" | "dialog.confirm" | "notification.show"
-                    )
-                {
-                    if matches!(method, "theme.preview" | "theme.set")
-                        && params["theme"]["design"]["assets"]
-                            .as_array()
-                            .is_some_and(|assets| !assets.is_empty())
-                    {
-                        let app = self
-                            .services
-                            .platform
-                            .app_handle
-                            .as_ref()
-                            .ok_or_else(|| error("APPLICATION_UNAVAILABLE".into()))?;
-                        crate::theme_assets::from_app(app)
-                            .validate_theme(&params["theme"])
-                            .map_err(error)?;
-                    }
-                    Ok(json!({"operation":method,"params":params}))
-                } else {
-                    crate::platform_storage::dispatch(
-                        &*self
-                            .db
-                            .lock()
-                            .map_err(|_| error("STORAGE_UNAVAILABLE".into()))?,
-                        &row.id,
-                        &request.session,
-                        method,
-                        params,
-                    )
-                }
-            }
-            _ => Err("PLATFORM_METHOD_NOT_CONNECTED".into()),
-        }
-        .map_err(error)?;
-        // UI grants are checked and executed by the main renderer controller.
-        if (request.method.starts_with("theme.") && !request.method.starts_with("theme.assets."))
-            || matches!(
-                request.method.as_str(),
-                "dialog.open" | "dialog.confirm" | "notification.show"
-            )
-        {
-            return Ok(value);
-        }
-        if !protocol::validate_method_result(&request.method, &value) {
-            return Err(error("INVALID_PLATFORM_RESPONSE".into()));
-        }
-        Ok(value)
-    }
-    fn choose_files(&self, owner: &str, params: &Value) -> Result<Value, String> {
+    fn choose_files(
+        &self,
+        row: &crate::db::PluginRow,
+        params: &Value,
+        mut execution: Execution<'_>,
+    ) -> Result<Value, String> {
         use tauri_plugin_dialog::DialogExt;
         let app = self
             .services
@@ -927,12 +1017,37 @@ impl Manager {
             dialog = dialog.add_filter("文件", &extensions);
         }
         let multiple = params["multiple"].as_bool() == Some(true);
-        let paths = match (params["type"].as_str().unwrap(), multiple) {
-            ("file", true) => dialog.blocking_pick_files(),
-            ("folder", true) => dialog.blocking_pick_folders(),
-            ("file", false) => dialog.blocking_pick_file().map(|path| vec![path]),
-            _ => dialog.blocking_pick_folder().map(|path| vec![path]),
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        match (params["type"].as_str().unwrap(), multiple) {
+            ("file", true) => dialog.pick_files(move |paths| {
+                let _ = send.send(paths);
+            }),
+            ("folder", true) => dialog.pick_folders(move |paths| {
+                let _ = send.send(paths);
+            }),
+            ("file", false) => dialog.pick_file(move |path| {
+                let _ = send.send(path.map(|path| vec![path]));
+            }),
+            _ => dialog.pick_folder(move |path| {
+                let _ = send.send(path.map(|path| vec![path]));
+            }),
+        }
+        execution.deadline.get_or_insert_with(|| {
+            Instant::now() + Duration::from_millis(protocol::BUDGET_INTERACTIVE_TIMEOUT_MS as u64)
+        });
+        let paths = loop {
+            execution.check()?;
+            self.check(row)?;
+            match receive.recv_timeout(Duration::from_millis(100)) {
+                Ok(paths) => break paths,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("FILE_DIALOG_DISCONNECTED".into())
+                }
+            }
         };
+        execution.check()?;
+        self.check(row)?;
         let Some(paths) = paths else {
             return Ok(Value::Null);
         };
@@ -943,7 +1058,7 @@ impl Manager {
             .into_iter()
             .map(|path| {
                 let path = path.into_path().map_err(|e| e.to_string())?;
-                self.files.grant(owner, &path)
+                self.files.grant(&row.name, &path)
             })
             .collect();
         serde_json::to_value(references?).map_err(|e| e.to_string())
@@ -976,18 +1091,13 @@ impl Manager {
     fn publish_file(
         &self,
         owner: &str,
-        caller: Option<&str>,
         params: &Value,
-        task: Option<(&crate::task_runtime::Context, &str)>,
+        execution: Execution<'_>,
     ) -> Result<Value, String> {
         use std::io::{Read, Write};
-        let (ctx, provider) = task.ok_or("TASK_EXECUTION_REQUIRED")?;
+        let (ctx, provider) = execution.task.ok_or("TASK_EXECUTION_REQUIRED")?;
         if provider != owner || params["taskId"] != ctx.task_id() {
             return Err("TASK_AUTHORITY_DENIED".into());
-        }
-        let name = params["name"].as_str().unwrap();
-        if name == "." || name == ".." || name.contains(['/', '\\', ':']) {
-            return Err("INVALID_FILE_NAME".into());
         }
         let row = self.record(owner)?;
         let source_root = Self::data(&row)?
@@ -999,42 +1109,76 @@ impl Manager {
         if !source.starts_with(&source_root) || !source.is_file() {
             return Err("RESULT_MUST_BE_IN_PLUGIN_DATA".into());
         }
-        let recipient = caller.unwrap_or(owner);
-        let output = Self::data(&self.record(recipient)?)?
-            .join("results")
-            .join(ctx.task_id())
-            .join(name);
+        self.write_output(
+            owner,
+            params["name"].as_str().unwrap(),
+            execution,
+            |stage, _| {
+                let mut input = crate::next2_files::open_authorized(&source)?;
+                let mut output = std::fs::File::create(stage).map_err(|e| e.to_string())?;
+                let size = input.metadata().map_err(|e| e.to_string())?.len();
+                if size > 16 * 1024 * 1024 * 1024 {
+                    return Err("FILE_BUDGET_EXCEEDED".into());
+                }
+                let mut bytes = 0;
+                let mut buffer = [0u8; 65536];
+                loop {
+                    execution.check()?;
+                    let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
+                    if count == 0 {
+                        break;
+                    }
+                    bytes += count as u64;
+                    if bytes > size {
+                        return Err("RESULT_CHANGED_DURING_COPY".into());
+                    }
+                    output
+                        .write_all(&buffer[..count])
+                        .map_err(|e| e.to_string())?;
+                }
+                if bytes != size {
+                    return Err("RESULT_CHANGED_DURING_COPY".into());
+                }
+                output.sync_all().map_err(|e| e.to_string())?;
+                Ok(())
+            },
+        )
+    }
+
+    fn write_output(
+        &self,
+        owner: &str,
+        name: &str,
+        execution: Execution<'_>,
+        write: impl FnOnce(&Path, &crate::task_runtime::Context) -> Result<(), String>,
+    ) -> Result<Value, String> {
+        let (ctx, provider) = execution.task.ok_or("TASK_EXECUTION_REQUIRED")?;
+        if provider != owner {
+            return Err("TASK_AUTHORITY_DENIED".into());
+        }
+        if name.ends_with(['.', ' ']) || name.contains(['/', '\\', ':']) {
+            return Err("INVALID_FILE_NAME".into());
+        }
+        let recipient = execution.caller.unwrap_or(owner);
+        let data = Self::writable_data(&self.record(recipient)?)?;
+        let results = managed_child(&data, "results")?;
+        let output = managed_child(&results, &ctx.task_id())?.join(name);
         let transaction = crate::output_transaction::OutputTransaction::new(&output, false)?;
-        let mut input = std::fs::File::open(&source).map_err(|e| e.to_string())?;
-        let mut output =
-            std::fs::File::create(transaction.stage_path()).map_err(|e| e.to_string())?;
-        let size = input.metadata().map_err(|e| e.to_string())?.len();
-        if size > 16 * 1024 * 1024 * 1024 {
-            return Err("FILE_BUDGET_EXCEEDED".into());
-        }
-        let mut bytes = 0;
-        let mut buffer = [0u8; 65536];
-        loop {
-            ctx.check_cancelled()?;
-            let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
-            if count == 0 {
-                break;
-            }
-            bytes += count as u64;
-            if bytes > size {
-                return Err("RESULT_CHANGED_DURING_COPY".into());
-            }
-            output
-                .write_all(&buffer[..count])
-                .map_err(|e| e.to_string())?;
-        }
-        if bytes != size {
-            return Err("RESULT_CHANGED_DURING_COPY".into());
-        }
-        output.sync_all().map_err(|e| e.to_string())?;
-        drop(output);
+        write(transaction.stage_path(), ctx)?;
+        execution.check()?;
         let published = transaction.publish_durable(ctx, false, |_| Ok(()))?;
         let reference = self.files.grant(recipient, &published)?;
+        self.persist_file_reference(recipient, &published, reference)
+    }
+    fn remember_file(&self, owner: &str, path: &Path) -> Result<Value, String> {
+        self.persist_file_reference(owner, path, self.files.grant(owner, path)?)
+    }
+    fn persist_file_reference(
+        &self,
+        recipient: &str,
+        published: &Path,
+        reference: protocol::FileReference,
+    ) -> Result<Value, String> {
         self.db
             .lock()
             .map_err(|_| "STORAGE_UNAVAILABLE")?
@@ -1055,7 +1199,7 @@ impl Manager {
         let Some(mut value) = self.services.runtime.get(owner, id) else {
             return Ok(None);
         };
-        if terminal(&value) && value["completedAt"].as_u64().unwrap_or(0) == 0 {
+        if terminal(&value) {
             restore_task_outcome(
                 &*self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?,
                 owner,
@@ -1071,13 +1215,45 @@ impl Manager {
         }
         let provider = value["resourceKey"]
             .as_str()
-            .and_then(|value| value.strip_prefix("next2:"))
+            .and_then(|value| {
+                value
+                    .strip_prefix("next2:")
+                    .or_else(|| value.strip_prefix("platform:").map(|_| "cruciblebox-host"))
+            })
             .ok_or("INVALID_TASK_RECORD")?
             .to_owned();
         value["initiatorId"] = json!(initiator);
         value["providerId"] = json!(provider);
         Ok(Some(value))
     }
+}
+
+fn task_notification(request: &Request, call: &mut BackendCall<'_>) -> Result<Value, RpcError> {
+    let (ctx, expected_provider) = call
+        .execution
+        .task
+        .ok_or_else(|| error("TASK_EXECUTION_REQUIRED".into()))?;
+    if request.params["taskId"] != ctx.task_id() || expected_provider != call.provider {
+        return Err(error("TASK_AUTHORITY_DENIED".into()));
+    }
+    if request.method == "tasks.beginCommit" {
+        return ctx
+            .begin_external_commit()
+            .map(|()| json!(true))
+            .map_err(error);
+    }
+    let sequence = request.params["sequence"].as_u64().unwrap();
+    if sequence <= *call.sequence {
+        return Err(error("TASK_AUTHORITY_DENIED".into()));
+    }
+    *call.sequence = sequence;
+    ctx.update_progress(
+        request.params["stage"].as_str().unwrap(),
+        request.params["percent"].as_u64().unwrap() as u32,
+        request.params["message"].as_str().unwrap(),
+        None,
+    );
+    Ok(json!(true))
 }
 // Persist only executor outcomes, never the task request or credentials. Core task
 // status remains authoritative; a saved outcome cannot promote an interrupted task.
@@ -1106,6 +1282,14 @@ fn restore_task_outcome(
         .setting_get(&format!("next2.task-result.{id}"))
         .map_err(|e| e.to_string())?;
     let Some(raw) = stored else {
+        // Publication can precede the durable executor outcome. Keep the
+        // existing pending-completion sentinel until that outcome is available.
+        if value["completedAt"].as_u64().is_some_and(|time| time > 0) {
+            if value["status"] == "succeeded" && value.get("executionError").is_none() {
+                value["completedAt"] = json!(0);
+            }
+            return Ok(());
+        }
         value["resultUnavailable"] = json!(true);
         if let Some(previous) = cruciblebox_repository::task_projection::get(db, id)? {
             if previous.owner != owner {
@@ -1163,6 +1347,88 @@ mod task_outcome_tests {
         ));
         std::fs::create_dir(&root).unwrap();
         root
+    }
+    #[test]
+    fn public_completion_time_is_identical_before_and_after_runtime_reopen() {
+        let root = directory();
+        let db = Arc::new(Mutex::new(Db::open(&root.join("data.db")).unwrap()));
+        let path = root.join("tasks.sqlite");
+        let runtime = crate::task_runtime::TaskRuntime::open(&path).unwrap();
+        let task_runtime = runtime.clone();
+        let task_db = db.clone();
+        let (published, publication) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let id = runtime
+            .start(
+                "sample-alpha",
+                "next2:sample-alpha",
+                Box::new(move |ctx| {
+                    let created = task_runtime.get("sample-alpha", &ctx.task_id()).unwrap()
+                        ["createdAt"]
+                        .as_u64()
+                        .unwrap();
+                    let result = Ok(json!({"answer":42}));
+                    ctx.begin_external_commit()?;
+                    ctx.finish_external_commit(&result)?;
+                    published.send(()).map_err(|error| error.to_string())?;
+                    resumed.recv().map_err(|error| error.to_string())?;
+                    save_task_outcome(
+                        &task_db.lock().unwrap(),
+                        "sample-alpha",
+                        &ctx.task_id(),
+                        created,
+                        &result,
+                    )?;
+                    // Executor cleanup occurs after its durable outcome is written.
+                    std::thread::sleep(Duration::from_millis(30));
+                    result
+                }),
+            )
+            .unwrap();
+        publication.recv_timeout(Duration::from_secs(10)).unwrap();
+        let manager = Manager::new(
+            db.clone(),
+            Arc::new(crate::host_services::Services::new(runtime.clone())),
+            Arc::default(),
+            PathBuf::new(),
+        );
+        let published_time = runtime.get("sample-alpha", &id).unwrap()["completedAt"].clone();
+        assert_eq!(
+            manager
+                .task("sample-alpha", "sample-alpha", &id, true)
+                .unwrap()
+                .unwrap()["completedAt"],
+            0
+        );
+        resume.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while runtime.get("sample-alpha", &id).unwrap()["completedAt"] == published_time {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let before = manager
+            .task("sample-alpha", "sample-alpha", &id, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before["result"], json!({"answer":42}));
+        drop(manager);
+        drop(runtime);
+        let reopened = crate::task_runtime::TaskRuntime::open(&path).unwrap();
+        let manager = Manager::new(
+            db,
+            Arc::new(crate::host_services::Services::new(reopened)),
+            Arc::default(),
+            PathBuf::new(),
+        );
+        let after = manager
+            .task("sample-alpha", "sample-alpha", &id, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before["completedAt"], after["completedAt"]);
+        assert_eq!(before["createdAt"], after["createdAt"]);
+        assert_eq!(before["result"], after["result"]);
+        drop(manager);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn full_outcome_survives_database_reopen_and_keeps_owner() {

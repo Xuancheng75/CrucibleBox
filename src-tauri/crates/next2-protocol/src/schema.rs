@@ -85,15 +85,14 @@ pub fn matches(rule: &Value, value: &Value) -> bool {
                 required
                     .iter()
                     .all(|key| object.contains_key(key.as_str().unwrap()))
-            }) && (rule["additionalProperties"] != false
-                || object
-                    .keys()
-                    .all(|key| rule["properties"].get(key).is_some()))
-                && rule["properties"].as_object().is_none_or(|properties| {
-                    properties
-                        .iter()
-                        .all(|(key, child)| object.get(key).is_none_or(|v| matches(child, v)))
-                })
+            }) && object.iter().all(|(key, value)| {
+                if let Some(child) = rule["properties"].get(key) {
+                    matches(child, value)
+                } else {
+                    let additional = &rule["additionalProperties"];
+                    additional != false && (!additional.is_object() || matches(additional, value))
+                }
+            })
         }),
         _ => true,
     }
@@ -109,15 +108,31 @@ pub fn normalize(rule: &Value, value: &mut Value) {
             normalize(choice, value);
         }
     } else if rule["type"] == "integer" || rule["const"].is_number() {
-        *value = Value::from(value.as_f64().expect("validated integer") as u64);
+        let number = value.as_f64().expect("validated integer");
+        *value = if number < 0.0 {
+            Value::from(number as i64)
+        } else {
+            Value::from(number as u64)
+        };
     } else if let Some(items) = value.as_array_mut() {
         for item in items {
             normalize(&rule["items"], item);
         }
     } else if let Some(object) = value.as_object_mut() {
+        if let Some(properties) = rule["properties"].as_object() {
+            for (name, child) in properties {
+                if !object.contains_key(name) {
+                    if let Some(default) = child.get("default") {
+                        object.insert(name.clone(), default.clone());
+                    }
+                }
+            }
+        }
         for (key, item) in object {
             if let Some(child) = rule["properties"].get(key) {
                 normalize(child, item);
+            } else if rule["additionalProperties"].is_object() {
+                normalize(&rule["additionalProperties"], item);
             }
         }
     }

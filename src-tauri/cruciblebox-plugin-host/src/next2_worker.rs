@@ -1,4 +1,4 @@
-//! Generic API 6 JS execution. Stdout contains only bounded wire 4 frames.
+//! Next 3.0 JavaScript execution. Stdout contains only bounded protocol frames.
 use cruciblebox_next2_protocol as protocol;
 use cruciblebox_next2_runtime::transport;
 use rquickjs::{CatchResultExt, Context, Function, Runtime, Value};
@@ -48,7 +48,7 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
     let output = Arc::new(Mutex::new(io::stdout()));
     transport::write_frame(
         &mut *output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?,
-        &json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}),
+        &json!({"kind":"hello","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION}),
     )
     .map_err(|e| e.to_string())?;
     let mut input = io::stdin();
@@ -61,10 +61,10 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
         .ok_or("INVALID_SESSION")?
         .to_owned();
     let cancelled = Arc::new(AtomicBool::new(false));
-    let task = Arc::new(Mutex::new(None::<String>));
+    let active = Arc::new(Mutex::new(None::<(String, Option<String>)>));
     let (tx, rx) = mpsc::sync_channel(32);
     let reader_cancelled = cancelled.clone();
-    let reader_task = task.clone();
+    let reader_active = active.clone();
     // A separate reader receives cancellation while QuickJS is evaluating a task.
     // Process shutdown closes the pipe; the OS reclaims this reader at exit.
     std::thread::Builder::new()
@@ -74,19 +74,22 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
                 .and_then(|frame| frame.ok_or("HOST_DISCONNECTED".into()));
             if let Ok(frame) = &frame {
                 if frame["kind"] == "execute" {
-                    if let Ok(mut task) = reader_task.lock() {
-                        *task = frame["taskId"].as_str().map(str::to_owned);
+                    if let Ok(mut active) = reader_active.lock() {
+                        *active = frame["request"]["requestId"]
+                            .as_str()
+                            .map(|id| (id.into(), frame["taskId"].as_str().map(str::to_owned)));
                     }
                     reader_cancelled.store(false, Ordering::SeqCst);
                 }
                 if frame["kind"] == "cancel" {
-                    if reader_task
-                        .lock()
-                        .ok()
-                        .and_then(|task| task.clone())
-                        .as_deref()
-                        == frame["taskId"].as_str()
-                    {
+                    if reader_active.lock().is_ok_and(|active| {
+                        active.as_ref().is_some_and(|(request, task)| {
+                            frame["requestId"].as_str() == Some(request.as_str())
+                                || frame["taskId"]
+                                    .as_str()
+                                    .is_some_and(|id| task.as_deref() == Some(id))
+                        })
+                    }) {
                         reader_cancelled.store(true, Ordering::SeqCst);
                     }
                     continue;
@@ -118,31 +121,68 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
     context.with(|ctx| -> Result<(), String> {
         super::install_polyfills(&ctx).map_err(|e| e.to_string())?;
         super::install_cjs_host_functions(&ctx, &directory).map_err(|e| e.to_string())?;
-        ctx.eval::<(), _>(super::loader::LOADER_JS).map_err(|e| e.to_string())?;
-        let input = input.clone(); let output = output.clone(); let token = token.clone();
+        ctx.eval::<(), _>(super::loader::LOADER_JS)
+            .map_err(|e| e.to_string())?;
+        let input = input.clone();
+        let output = output.clone();
+        let token = token.clone();
         let sequence = AtomicU64::new(1);
-        ctx.globals().set("__nextExchange", Function::new(ctx.clone(), move |raw: String| -> Result<String, rquickjs::Error> {
-            let result = (|| -> Result<String, String> {
-                let mut request = protocol::validate_request(&raw)?;
-                if request.session != token { return Err("SESSION_DENIED".into()); }
-                let original_id = request.request_id.clone();
-                {
-                    let mut output = output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?;
-                    request.request_id = format!("backend-seq-{}", sequence.fetch_add(1, Ordering::Relaxed));
-                    transport::write_frame(&mut *output, &json!({"kind":"capability","request":request})).map_err(|e| e.to_string())?;
-                }
-                let mut frame = input.lock().map_err(|_| "INPUT_UNAVAILABLE")?.recv().map_err(|e| e.to_string())??;
-                if frame["kind"] != "capability-result" { return Err("UNEXPECTED_CAPABILITY_FRAME".into()); }
-                protocol::validate_response(&frame["response"].to_string(), &request.request_id)?;
-                frame["response"]["requestId"] = json!(original_id);
-                Ok(frame["response"].to_string())
-            })();
-            result.map_err(|e| rquickjs::Error::new_from_js_message("host", "response", e))
-        }).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        ctx.globals()
+            .set(
+                "__nextExchange",
+                Function::new(
+                    ctx.clone(),
+                    move |raw: String| -> Result<String, rquickjs::Error> {
+                        let result = (|| -> Result<String, String> {
+                            let mut request = protocol::validate_request(&raw)?;
+                            if request.session != token {
+                                return Err("SESSION_DENIED".into());
+                            }
+                            let original_id = request.request_id.clone();
+                            {
+                                let mut output = output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?;
+                                request.request_id = format!(
+                                    "backend-seq-{}",
+                                    sequence.fetch_add(1, Ordering::Relaxed)
+                                );
+                                transport::write_frame(
+                                    &mut *output,
+                                    &json!({"kind":"capability","request":request}),
+                                )
+                                .map_err(|e| e.to_string())?;
+                            }
+                            let mut frame = input
+                                .lock()
+                                .map_err(|_| "INPUT_UNAVAILABLE")?
+                                .recv()
+                                .map_err(|e| e.to_string())??;
+                            if frame["kind"] != "capability-result" {
+                                return Err("UNEXPECTED_CAPABILITY_FRAME".into());
+                            }
+                            protocol::validate_response(
+                                &frame["response"].to_string(),
+                                &request.request_id,
+                            )?;
+                            frame["response"]["requestId"] = json!(original_id);
+                            Ok(frame["response"].to_string())
+                        })();
+                        result.map_err(|e| {
+                            rquickjs::Error::new_from_js_message("host", "response", e)
+                        })
+                    },
+                )
+                .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
         let flag = cancelled.clone();
-        ctx.globals().set("__nextCancelled", Function::new(ctx.clone(), move || flag.load(Ordering::SeqCst)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        ctx.globals().set("__nextUtf8", Function::new(ctx.clone(), |value: String| value.into_bytes()).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        ctx.eval::<(), _>("globalThis.TextEncoder=class TextEncoder {encode(value=''){return Uint8Array.from(__nextUtf8(String(value)));}};").map_err(|e| e.to_string())?;
+        ctx.globals()
+            .set(
+                "__nextCancelled",
+                Function::new(ctx.clone(), move || flag.load(Ordering::SeqCst))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        crate::encoding::install(&ctx).map_err(|e| e.to_string())?;
         Ok(())
     })?;
     let entry = directory.join(entry);
@@ -158,9 +198,12 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let session_raw = serde_json::to_string(&token).map_err(|e| e.to_string())?;
     evaluate(&context, &format!("__cjsCurrentDir={parent_raw};globalThis.__nextPlugin=require({entry_raw});globalThis.__nextContext={{...{},session:{session_raw},exchange:async request=>JSON.parse(__nextExchange(JSON.stringify(request))),isCancelled:()=>__nextCancelled()}};Promise.resolve(__nextPlugin.activate(__nextContext)).then(api=>{{globalThis.__nextApi=api;return null;}})", init))?;
+    if manifest.background_interval_ms.is_some() {
+        evaluate(&context, "if (typeof __nextPlugin.background !== 'function') throw Error('BACKGROUND_HOOK_REQUIRED'); null")?;
+    }
     transport::write_frame(
         &mut *output.lock().map_err(|_| "OUTPUT_UNAVAILABLE")?,
-        &json!({"kind":"ready","wireVersion":4}),
+        &json!({"kind":"ready","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION}),
     )
     .map_err(|e| e.to_string())?;
     loop {
@@ -184,16 +227,21 @@ pub fn run(directory: PathBuf, entry: &str) -> Result<(), String> {
         let name = request["method"].to_string();
         let params = request["params"].to_string();
         let execution = json!({"callerId":frame["callerId"],"taskId":frame["taskId"]});
-        let result = evaluate(&context, &format!("Promise.resolve().then(()=>{{const name={name};if(!Object.hasOwn(__nextApi,name)||typeof __nextApi[name]!== 'function')throw Object.assign(Error('Unknown backend method'),{{code:'METHOD_UNAVAILABLE'}});return __nextApi[name]({params},{{...{execution},isCancelled:__nextContext.isCancelled}});}}).then(result=>({{ok:true,result:result===undefined?null:result}}),error=>({{ok:false,error:{{code:typeof error.code==='string'?error.code:'JS_EXECUTION_FAILED',message:String(error.message||error)}}}}))"));
+        let body = if request["method"] == protocol::BACKGROUND_METHOD {
+            "return __nextPlugin.background(__nextContext);".to_owned()
+        } else {
+            format!("const name={name};if(!Object.hasOwn(__nextApi,name)||typeof __nextApi[name]!== 'function')throw Object.assign(Error('Unknown backend method'),{{code:'METHOD_UNAVAILABLE'}});return __nextApi[name]({params},{{...{execution},isCancelled:__nextContext.isCancelled}});")
+        };
+        let result = evaluate(&context, &format!("Promise.resolve().then(()=>{{{body}}}).then(result=>({{ok:true,result:result===undefined?null:result}}),error=>({{ok:false,error:{{code:typeof error.code==='string'?error.code:'JS_EXECUTION_FAILED',message:String(error.message||error)}}}}))"));
         let response = match result {
             Ok(value) => {
                 let mut value = value;
-                value["wireVersion"] = json!(4);
+                value["wireVersion"] = json!(cruciblebox_next2_protocol::WIRE_VERSION);
                 value["requestId"] = request["requestId"].clone();
                 value
             }
             Err(message) => {
-                json!({"wireVersion":4,"requestId":request["requestId"],"ok":false,"error":{"code":if cancelled.load(Ordering::SeqCst) {"CANCELLED"} else {"JS_EXECUTION_FAILED"},"message":message}})
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request["requestId"],"ok":false,"error":{"code":if cancelled.load(Ordering::SeqCst) {"CANCELLED"} else {"JS_EXECUTION_FAILED"},"message":message}})
             }
         };
         protocol::validate_response(

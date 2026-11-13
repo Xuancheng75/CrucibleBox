@@ -138,8 +138,8 @@ impl RendererSessionRegistry {
 
     #[cfg(test)]
     pub fn create(&mut self, input: CreateSessionInput) -> Result<RendererSession, String> {
-        if input.renderer_api_version != 6 {
-            return Err("rendererApiVersion must be 6".into());
+        if input.renderer_api_version != cruciblebox_next2_protocol::SDK_API_VERSION {
+            return Err("Unsupported rendererApiVersion".into());
         }
         self.create_internal(input)
     }
@@ -153,11 +153,11 @@ impl RendererSessionRegistry {
         if !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(&lease_ms) {
             return Err("SESSION_DENIED".into());
         }
-        let issued = if input.renderer_api_version == 6 {
+        let issued = if input.renderer_api_version == cruciblebox_next2_protocol::SDK_API_VERSION {
             let manifest = cruciblebox_next2_protocol::validate_manifest(manifest_json)?;
             if input.owner_webview_label != "main"
                 || input.plugin_name != manifest.id
-                || input.renderer_entry != manifest.renderer
+                || manifest.renderer.as_deref() != Some(input.renderer_entry.as_str())
                 || input.permissions != manifest.permissions
             {
                 return Err("Next session metadata does not match verified installation".into());
@@ -169,7 +169,7 @@ impl RendererSessionRegistry {
             }
             issued
         } else {
-            return Err("API_VERSION_UNSUPPORTED: expected API 6".into());
+            return Err("API_VERSION_UNSUPPORTED".into());
         };
         if let Some(record) = self.sessions.get_mut(&issued.token) {
             record.expires_at_ms = record.created_at_ms + lease_ms;
@@ -433,7 +433,7 @@ mod tests {
             plugin_directory: "C:/plugins/x".into(),
             renderer_entry: "dist/renderer.js".into(),
             runtime_path: "C:/unused/runtime.js".into(),
-            renderer_api_version: 6,
+            renderer_api_version: cruciblebox_next2_protocol::SDK_API_VERSION,
             permissions: vec!["theme:read".into()],
             owner_webview_label: "main".into(),
         }
@@ -442,15 +442,15 @@ mod tests {
     #[test]
     fn next_issuer_binds_verified_manifest_and_rotates_client_tokens() {
         let mut registry = RendererSessionRegistry::new(DEFAULT_TTL);
-        let manifest = serde_json::json!({"manifestVersion":6,"sdkApiVersion":6,"id":"sample-view","version":"1.0.0","displayName":"Sample","description":"Test","publisher":{"id":"local","displayName":"Local"},"minHostVersion":"2.1.0-beta.4","sdk":{"min":6,"maxExclusive":7},"renderer":"dist/renderer.js","permissions":[],"background":false,"contributes":{"commands":[]},"exports":[],"dependencies":[],"resources":[],"files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)}]}).to_string();
+        let manifest = serde_json::json!({"manifestVersion":cruciblebox_next2_protocol::MANIFEST_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION,"id":"sample-view","version":"1.0.0","displayName":"Sample","description":"Test","publisher":{"id":"local","displayName":"Local"},"minHostVersion":cruciblebox_next2_protocol::MIN_HOST_VERSION,"sdk":{"min":cruciblebox_next2_protocol::SDK_API_VERSION,"maxExclusive":cruciblebox_next2_protocol::SDK_API_VERSION+1},"renderer":"dist/renderer.js","permissions":[],"background":false,"contributes":{"commands":[]},"exports":[],"dependencies":[],"resources":[],"files":[{"path":"dist/renderer.js","bytes":0,"sha256":"0".repeat(64)}]}).to_string();
         let mut input = make_input("sample-view");
-        input.renderer_api_version = 6;
+        input.renderer_api_version = cruciblebox_next2_protocol::SDK_API_VERSION;
         input.permissions.clear();
         input.renderer_api_version = 5;
         assert!(registry.create(input).is_err());
         let make = || {
             let mut input = make_input("sample-view");
-            input.renderer_api_version = 6;
+            input.renderer_api_version = cruciblebox_next2_protocol::SDK_API_VERSION;
             input.permissions.clear();
             input
         };
@@ -463,7 +463,10 @@ mod tests {
         assert_ne!(a.token, b.token);
         assert_ne!(a.handshake_token, b.handshake_token);
         assert_eq!(a.origin, "null");
-        assert_eq!(a.renderer_api_version, 6);
+        assert_eq!(
+            a.renderer_api_version,
+            cruciblebox_next2_protocol::SDK_API_VERSION
+        );
         assert_eq!(a.plugin_version, "1.0.0");
         assert!(a
             .index_url

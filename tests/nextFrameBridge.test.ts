@@ -12,19 +12,24 @@ const session: NextSession = {
   token: 'a'.repeat(64),
   handshakeToken: 'b'.repeat(64),
   origin: 'null',
-  rendererApiVersion: 6,
+  rendererApiVersion: next2Contract.versions.sdkApiVersion,
   indexUrl: 'http://cruciblebox-plugin.localhost/test/index.html',
   expiresAt: Date.now() + 60000
 }
 const request = (id = 'r1') => ({
-  wireVersion: 4,
+  wireVersion: next2Contract.versions.wireVersion,
   requestId: id,
   session: session.token,
   target: { kind: 'platform' },
   method: 'runtime.ping',
   params: {}
 })
-const reply = (id = 'r1') => ({ wireVersion: 4, requestId: id, ok: true, result: 'pong' })
+const reply = (id = 'r1') => ({
+  wireVersion: next2Contract.versions.wireVersion,
+  requestId: id,
+  ok: true,
+  result: 'pong'
+})
 afterEach(() => vi.useRealTimers())
 
 const next2Budget = next2Contract.budget as {
@@ -32,9 +37,47 @@ const next2Budget = next2Contract.budget as {
   interactiveTimeoutMs: number
 }
 
-test('API 6 folder selection survives the ordinary deadline and delivers a late result once', async () => {
+test('request cancellation reaches the host while the original renderer call is pending', async () => {
+  let finishWork!: (value: unknown) => void
+  const send = vi.fn()
+  const active = 'renderer-1'
+  const cancel = 'renderer-2'
+  const invoke = vi.fn(async (raw: string) => {
+    const call = JSON.parse(raw)
+    if (call.requestId === active) {
+      return new Promise((resolve) => {
+        finishWork = resolve
+      })
+    }
+    expect(call.params).toEqual({ requestId: active })
+    finishWork({
+      ...reply(active),
+      ok: false,
+      result: undefined,
+      error: { code: 'CANCELLED', message: 'CANCELLED' }
+    })
+    return { ...reply(cancel), result: true }
+  })
+  const bridge = createNextDispatcher(session, invoke, send)
+  try {
+    bridge.dispatch({ ...request(active), target: { kind: 'backend' }, method: 'wait' })
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1))
+    bridge.dispatch({ ...request(cancel), method: 'rpc.cancel', params: { requestId: active } })
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ requestId: active, ok: false }))
+    expect(send).toHaveBeenCalledWith({ ...reply(cancel), result: true })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('API 7 folder selection survives the ordinary deadline and delivers a late result once', async () => {
   vi.useFakeTimers()
-  const next2 = { ...session, rendererApiVersion: 6 as const, expiresAt: Date.now() + 600000 }
+  const next2 = {
+    ...session,
+    rendererApiVersion: next2Contract.versions.sdkApiVersion,
+    expiresAt: Date.now() + 600000
+  }
   let resolve!: (value: unknown) => void
   const send = vi.fn()
   const bridge = createNextDispatcher(
@@ -46,7 +89,7 @@ test('API 6 folder selection survives the ordinary deadline and delivers a late 
     send
   )
   bridge.dispatch({
-    wireVersion: 4,
+    wireVersion: next2Contract.versions.wireVersion,
     requestId: 'picker',
     session: next2.token,
     target: { kind: 'platform' },
@@ -55,7 +98,12 @@ test('API 6 folder selection survives the ordinary deadline and delivers a late 
   })
   await vi.advanceTimersByTimeAsync(next2Budget.requestTimeoutMs + 5000)
   expect(send).not.toHaveBeenCalled()
-  const response = { wireVersion: 4, requestId: 'picker', ok: true, result: null }
+  const response = {
+    wireVersion: next2Contract.versions.wireVersion,
+    requestId: 'picker',
+    ok: true,
+    result: null
+  }
   resolve(response)
   await vi.advanceTimersByTimeAsync(0)
   expect(send).toHaveBeenCalledExactlyOnceWith(response)
@@ -64,9 +112,13 @@ test('API 6 folder selection survives the ordinary deadline and delivers a late 
   bridge.dispose()
 })
 
-test('API 6 folder selection has a bounded interactive deadline and ignores late completion', async () => {
+test('API 7 folder selection has a bounded interactive deadline and ignores late completion', async () => {
   vi.useFakeTimers()
-  const next2 = { ...session, rendererApiVersion: 6 as const, expiresAt: Date.now() + 600000 }
+  const next2 = {
+    ...session,
+    rendererApiVersion: next2Contract.versions.sdkApiVersion,
+    expiresAt: Date.now() + 600000
+  }
   let resolve!: (value: unknown) => void
   const send = vi.fn()
   const bridge = createNextDispatcher(
@@ -78,7 +130,7 @@ test('API 6 folder selection has a bounded interactive deadline and ignores late
     send
   )
   bridge.dispatch({
-    wireVersion: 4,
+    wireVersion: next2Contract.versions.wireVersion,
     requestId: 'picker',
     session: next2.token,
     target: { kind: 'platform' },
@@ -90,7 +142,12 @@ test('API 6 folder selection has a bounded interactive deadline and ignores late
   await vi.advanceTimersByTimeAsync(1)
   expect(send).toHaveBeenCalledTimes(1)
   expect(send.mock.calls[0][0].error.code).toBe('TIMEOUT')
-  resolve({ wireVersion: 4, requestId: 'picker', ok: true, result: null })
+  resolve({
+    wireVersion: next2Contract.versions.wireVersion,
+    requestId: 'picker',
+    ok: true,
+    result: null
+  })
   await vi.advanceTimersByTimeAsync(0)
   expect(send).toHaveBeenCalledTimes(1)
   bridge.dispose()
@@ -99,12 +156,21 @@ test('API 6 folder selection has a bounded interactive deadline and ignores late
 test.each([
   { target: { kind: 'platform' }, method: 'runtime.ping', params: {} },
   { target: { kind: 'backend' }, method: 'files.choose', params: {} }
-])('API 6 $target.kind $method keeps the ordinary deadline', async (call) => {
+])('API 7 $target.kind $method keeps the ordinary deadline', async (call) => {
   vi.useFakeTimers()
-  const next2 = { ...session, rendererApiVersion: 6 as const, expiresAt: Date.now() + 600000 }
+  const next2 = {
+    ...session,
+    rendererApiVersion: next2Contract.versions.sdkApiVersion,
+    expiresAt: Date.now() + 600000
+  }
   const send = vi.fn()
   const bridge = createNextDispatcher(next2, () => new Promise(() => {}), send)
-  bridge.dispatch({ wireVersion: 4, requestId: 'ordinary', session: next2.token, ...call })
+  bridge.dispatch({
+    wireVersion: next2Contract.versions.wireVersion,
+    requestId: 'ordinary',
+    session: next2.token,
+    ...call
+  })
   await vi.advanceTimersByTimeAsync(next2Budget.requestTimeoutMs - 1)
   expect(send).not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(1)
@@ -112,13 +178,17 @@ test.each([
   expect(send.mock.calls[0][0].error.code).toBe('TIMEOUT')
   bridge.dispose()
 })
-test('API 6 binds wire 4 and admits generic domain methods without a host enum', async () => {
-  const next2 = { ...session, rendererApiVersion: 6 as const }
+test('API 7 binds wire 5 and admits generic domain methods without a host enum', async () => {
+  const next2 = { ...session, rendererApiVersion: next2Contract.versions.sdkApiVersion }
   const source = {}
   const ready = {
     source,
     origin: 'null',
-    data: { kind: 'next-ready', nonce: session.handshakeToken, wireVersion: 4 }
+    data: {
+      kind: 'next-ready',
+      nonce: session.handshakeToken,
+      wireVersion: next2Contract.versions.wireVersion
+    }
   }
   expect(isNextReady(ready, source, next2)).toBe(true)
   expect(isNextReady({ ...ready, data: { ...ready.data, wireVersion: 3 } }, source, session)).toBe(
@@ -126,7 +196,7 @@ test('API 6 binds wire 4 and admits generic domain methods without a host enum',
   )
   const send = vi.fn()
   const response = {
-    wireVersion: 4,
+    wireVersion: next2Contract.versions.wireVersion,
     requestId: 'domain',
     ok: false,
     error: { code: 'ACME_DOMAIN_FAILURE', message: 'Domain detail' }
@@ -134,7 +204,7 @@ test('API 6 binds wire 4 and admits generic domain methods without a host enum',
   const invoke = vi.fn(async () => response)
   const bridge = createNextDispatcher(next2, invoke, send)
   bridge.dispatch({
-    wireVersion: 4,
+    wireVersion: next2Contract.versions.wireVersion,
     requestId: 'domain',
     session: next2.token,
     target: { kind: 'backend' },
@@ -151,7 +221,11 @@ test('ready binds opaque origin, exact iframe, nonce and expiry', () => {
   const event = {
     source,
     origin: 'null',
-    data: { kind: 'next-ready', nonce: session.handshakeToken, wireVersion: 4 }
+    data: {
+      kind: 'next-ready',
+      nonce: session.handshakeToken,
+      wireVersion: next2Contract.versions.wireVersion
+    }
   }
   expect(isNextReady(event, source, session)).toBe(true)
   expect(isNextReady(event, {}, session)).toBe(false)

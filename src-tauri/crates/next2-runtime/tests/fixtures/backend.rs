@@ -13,20 +13,24 @@ fn main() {
     if std::path::Path::new("wrong-wire.txt").exists() {
         write_frame(
             &mut output,
-            &json!({"kind":"hello","wireVersion":3,"sdkApiVersion":6}),
+            &json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}),
         )
         .unwrap();
         return;
     }
     write_frame(
         &mut output,
-        &json!({"kind":"hello","wireVersion":4,"sdkApiVersion":6}),
+        &json!({"kind":"hello","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"sdkApiVersion":cruciblebox_next2_protocol::SDK_API_VERSION}),
     )
     .unwrap();
     let initialize = read_frame(&mut input).unwrap().unwrap();
     assert_eq!(initialize["kind"], "initialize");
     let session = initialize["session"].as_str().unwrap();
-    write_frame(&mut output, &json!({"kind":"ready","wireVersion":4})).unwrap();
+    write_frame(
+        &mut output,
+        &json!({"kind":"ready","wireVersion":cruciblebox_next2_protocol::WIRE_VERSION}),
+    )
+    .unwrap();
     while let Some(frame) = read_frame(&mut input).unwrap() {
         if frame["kind"] == "stop" {
             return;
@@ -44,13 +48,13 @@ fn main() {
                     .sum::<i64>())
             }
             "identity" => {
-                write_frame(&mut output,&json!({"kind":"capability","request":{"wireVersion":4,"requestId":"cap-1",
+                write_frame(&mut output,&json!({"kind":"capability","request":{"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"cap-1",
                     "session":session,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"fixture"}}})).unwrap();
                 let response = read_frame(&mut input).unwrap().unwrap();
                 result = json!({"caller":frame["callerId"],"value":response["response"]["result"]});
             }
             "wait-cancel" => {
-                write_frame(&mut output,&json!({"kind":"capability","request":{"wireVersion":4,"requestId":"progress-1",
+                write_frame(&mut output,&json!({"kind":"capability","request":{"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"progress-1",
                     "session":session,"target":{"kind":"platform"},"method":"tasks.progress","params":{"taskId":frame["taskId"],
                     "sequence":1,"stage":"running","percent":25,"message":"Waiting for cancellation"}}})).unwrap();
                 let response = read_frame(&mut input).unwrap().unwrap();
@@ -88,10 +92,10 @@ fn main() {
         }
         let response = match error {
             Some(code) => {
-                json!({"wireVersion":4,"requestId":request["requestId"],"ok":false,"error":{"code":code,"message":code}})
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request["requestId"],"ok":false,"error":{"code":code,"message":code}})
             }
             None => {
-                json!({"wireVersion":4,"requestId":request["requestId"],"ok":true,"result":result})
+                json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":request["requestId"],"ok":true,"result":result})
             }
         };
         write_frame(&mut output, &json!({"kind":"reply","response":response})).unwrap();

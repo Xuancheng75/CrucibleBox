@@ -2,7 +2,7 @@
 ;(() => {
   const root = document.getElementById('root')
   const nonce = root.dataset.sessionToken
-  const wireVersion = 4
+  const wireVersion = Number(root.dataset.wireVersion)
   let connected = false
   let disposed = false
   let port
@@ -73,7 +73,7 @@
     removeEventListener('message', connect)
     port?.close()
     for (const item of pending.values()) {
-      clearTimeout(item.timer)
+      item.cleanup()
       item.reject(new Error(reason))
     }
     pending.clear()
@@ -86,8 +86,10 @@
     delete document.documentElement.dataset.obThemeVersion
     unmount?.()
   }
-  function exchange(request) {
+  function exchange(request, signal) {
     if (disposed) return Promise.reject(new Error('SESSION_DENIED'))
+    if (signal?.aborted)
+      return Promise.reject(Object.assign(new Error('CANCELLED'), { code: 'CANCELLED' }))
     if (pending.size >= Number(root.dataset.maxInflight)) return Promise.reject(new Error('BUSY'))
     const clientId = request.requestId
     if (
@@ -103,12 +105,41 @@
     const wireId = `renderer-${++requestSequence}`
     activeClientIds.add(clientId)
     return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer)
+        pending.delete(wireId)
+        activeClientIds.delete(clientId)
+        signal?.removeEventListener('abort', abort)
+      }
+      const endRequest = (code) => {
+        cleanup()
+        const cancellable =
+          request.target?.kind === 'backend' ||
+          request.target?.kind === 'service' ||
+          request.method === 'files.choose'
+        if (cancellable && requestSequence < Number.MAX_SAFE_INTEGER) {
+          try {
+            port.postMessage({
+              kind: 'next-request',
+              request: {
+                wireVersion: request.wireVersion,
+                session: request.session,
+                requestId: `renderer-${++requestSequence}`,
+                target: { kind: 'platform' },
+                method: 'rpc.cancel',
+                params: { requestId: wireId }
+              }
+            })
+          } catch (error) {
+            reject(error)
+            return
+          }
+        }
+        reject(Object.assign(new Error(code), { code }))
+      }
+      const abort = () => endRequest('CANCELLED')
       const timer = setTimeout(
-        () => {
-          pending.delete(wireId)
-          activeClientIds.delete(clientId)
-          reject(new Error('TIMEOUT'))
-        },
+        () => endRequest('TIMEOUT'),
         Number(
           request.method === 'backend.call'
             ? root.dataset.backendTimeout
@@ -117,13 +148,12 @@
               : root.dataset.requestTimeout
         )
       )
-      pending.set(wireId, { resolve, reject, timer, clientId })
+      pending.set(wireId, { resolve, reject, cleanup, clientId })
+      signal?.addEventListener('abort', abort, { once: true })
       try {
         port.postMessage({ kind: 'next-request', request: { ...request, requestId: wireId } })
       } catch (error) {
-        clearTimeout(timer)
-        pending.delete(wireId)
-        activeClientIds.delete(clientId)
+        cleanup()
         reject(error)
       }
     })
@@ -131,9 +161,7 @@
   function receiveResponse(response) {
     const item = pending.get(response?.requestId)
     if (!item) return // A late wire reply cannot resolve a later client call.
-    pending.delete(response.requestId)
-    activeClientIds.delete(item.clientId)
-    clearTimeout(item.timer)
+    item.cleanup()
     item.resolve({ ...response, requestId: item.clientId }) // SDK correlation remains unchanged.
   }
   async function connect(event) {

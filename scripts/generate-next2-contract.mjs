@@ -6,6 +6,33 @@ import { spawnSync } from 'node:child_process'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const contract = JSON.parse(readFileSync(resolve(root, 'contracts/next2/contract.json'), 'utf8'))
 const defs = contract.$defs
+const {
+  manifestVersion,
+  sdkApiVersion,
+  wireVersion,
+  minHostVersion,
+  sdkPackageVersion,
+  featuresHostVersion
+} = contract.versions
+const manifest = defs.Manifest.properties
+const apiRange = defs.ApiRange.properties
+if (
+  manifest.manifestVersion.const !== manifestVersion ||
+  manifest.sdkApiVersion.const !== sdkApiVersion ||
+  apiRange.min.const !== sdkApiVersion ||
+  apiRange.maxExclusive.const !== sdkApiVersion + 1 ||
+  Object.values(defs).some(
+    (rule) => rule.properties?.wireVersion && rule.properties.wireVersion.const !== wireVersion
+  )
+)
+  throw Error('Protocol version constants disagree with the schema')
+for (const name of ['api', 'ui', 'build']) {
+  const pkg = JSON.parse(
+    readFileSync(resolve(root, `packages/cruciblebox-next2-${name}/package.json`), 'utf8')
+  )
+  const version = name === 'api' ? pkg.version : pkg.dependencies['@cruciblebox/next2-api']
+  if (version !== sdkPackageVersion) throw Error(`SDK version drift in ${pkg.name}`)
+}
 const reference = (rule) => rule.$ref?.split('/').at(-1)
 function ts(rule) {
   if (rule.$ref) return reference(rule)
@@ -14,6 +41,8 @@ function ts(rule) {
   if (rule.oneOf) return rule.oneOf.map(ts).join(' | ')
   if (rule.type === 'array') return `(${ts(rule.items)})[]`
   if (rule.type === 'object') {
+    if (typeof rule.additionalProperties === 'object')
+      return `{ [key: string]: ${ts(rule.additionalProperties)} }`
     if (rule.additionalProperties === true && !Object.keys(rule.properties ?? {}).length)
       return 'Record<string, Json>'
     if (Object.keys(rule.properties ?? {}).length === 0) return 'Record<string, never>'
@@ -54,58 +83,83 @@ const typescript = Object.entries(defs)
       `export type ${name} = ${name === 'Json' ? 'null | boolean | number | string | Json[] | { [key: string]: Json }' : ts(rule)}`
   )
   .join('\n')
-const rustTypes = Object.entries(defs)
-  .map(([name, rule]) => {
-    const derive = '#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]'
-    if (rule.type === 'object' && rule.additionalProperties === false) {
-      const literalNames = Object.fromEntries(
-        Object.entries(rule.properties)
-          .filter(([, value]) => typeof value.const === 'string')
-          .map(([field]) => [field, name + field[0].toUpperCase() + field.slice(1)])
+function rustDefinition([name, rule]) {
+  const derive = '#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]'
+  if (rule.type === 'object' && rule.additionalProperties === false) {
+    const literalNames = Object.fromEntries(
+      Object.entries(rule.properties)
+        .filter(([, value]) => typeof value.const === 'string')
+        .map(([field]) => [field, name + field[0].toUpperCase() + field.slice(1)])
+    )
+    const literals = Object.entries(literalNames)
+      .map(
+        ([field, type]) =>
+          `${derive}\n#[derive(Default)]\npub enum ${type} { #[default] #[serde(rename = ${JSON.stringify(rule.properties[field].const)})] Value }\n`
       )
-      const literals = Object.entries(literalNames)
-        .map(
-          ([field, type]) =>
-            `${derive}\n#[derive(Default)]\npub enum ${type} { #[default] #[serde(rename = ${JSON.stringify(rule.properties[field].const)})] Value }\n`
-        )
-        .join('')
+      .join('')
+    return (
+      literals +
+      `${derive}\n#[serde(rename_all = "camelCase", deny_unknown_fields)]\npub struct ${name} {\n` +
+      Object.entries(rule.properties)
+        .map(([field, value]) => {
+          const required = rule.required.includes(field)
+          const type = literalNames[field] ?? rust(value)
+          return `${required ? '' : '#[serde(default, skip_serializing_if = "Option::is_none")]\n'}pub ${snake(field)}: ${required ? type : `Option<${type}>`},`
+        })
+        .join('\n') +
+      '\n}'
+    )
+  }
+  if (rule.oneOf) {
+    if (rule.oneOf.every((choice) => choice.$ref))
       return (
-        literals +
-        `${derive}\n#[serde(rename_all = "camelCase", deny_unknown_fields)]\npub struct ${name} {\n` +
-        Object.entries(rule.properties)
-          .map(([field, value]) => {
-            const required = rule.required.includes(field)
-            const type = literalNames[field] ?? rust(value)
-            return `${required ? '' : '#[serde(default, skip_serializing_if = "Option::is_none")]\n'}pub ${snake(field)}: ${required ? type : `Option<${type}>`},`
-          })
-          .join('\n') +
+        `${derive}\n#[serde(untagged)]\npub enum ${name} {\n` +
+        rule.oneOf.map((choice) => `${reference(choice)}(${reference(choice)}),`).join('\n') +
         '\n}'
       )
-    }
-    if (rule.oneOf) {
-      if (rule.oneOf.every((choice) => choice.$ref))
-        return (
-          `${derive}\n#[serde(untagged)]\npub enum ${name} {\n` +
-          rule.oneOf.map((choice) => `${reference(choice)}(${reference(choice)}),`).join('\n') +
-          '\n}'
-        )
-    }
-    return `pub type ${name} = ${rust(rule)};`
-  })
-  .join('\n')
+  }
+  return `pub type ${name} = ${rust(rule)};`
+}
+const rustTypes = Object.entries(defs).map(rustDefinition).join('\n')
 const rustSource =
   `// Generated from contracts/next2/contract.json.\npub const CONTRACT_JSON: &str = r###"${JSON.stringify(contract)}"###;\n` +
+  `pub const MANIFEST_VERSION: u8 = ${manifestVersion};\n` +
+  `pub const SDK_API_VERSION: u8 = ${sdkApiVersion};\n` +
+  `pub const WIRE_VERSION: u64 = ${wireVersion};\n` +
+  `pub const MIN_HOST_VERSION: &str = ${JSON.stringify(minHostVersion)};\n` +
+  `pub const FEATURES_HOST_VERSION: &str = ${JSON.stringify(featuresHostVersion)};\n` +
   `pub const CODE_DIRECTORY: &str = ${JSON.stringify(contract.install.codeDirectory)};\n` +
+  `pub const BACKGROUND_METHOD: &str = ${JSON.stringify(contract.transport.backgroundMethod)};\n` +
   Object.entries(contract.budget)
     .map(([name, value]) => `pub const BUDGET_${snake(name).toUpperCase()}: usize = ${value};`)
     .join('\n') +
   `\n${rustTypes}\n`
-const formattedRust = spawnSync('rustfmt', ['--emit', 'stdout', '--edition', '2021'], {
-  input: rustSource,
-  encoding: 'utf8',
-  windowsHide: true
-})
-if (formattedRust.status !== 0) throw Error(formattedRust.stderr || 'rustfmt failed')
+function formatRust(source) {
+  const result = spawnSync('rustfmt', ['--emit', 'stdout', '--edition', '2021'], {
+    input: source,
+    encoding: 'utf8',
+    windowsHide: true
+  })
+  if (result.status !== 0) throw Error(result.stderr || 'rustfmt failed')
+  return result.stdout.replaceAll('\r\n', '\n')
+}
+const nativeDefinitions = [
+  'CapabilitySchema',
+  'LegacyServiceMethod',
+  'CapabilityMethod',
+  'ServiceMethod',
+  'CapabilityEvent',
+  'ServiceExport',
+  'CapabilityBinding',
+  'RpcError'
+]
+const nativeSource =
+  '// Generated from contracts/next2/contract.json.\n' +
+  `pub const MAX_FRAME_BYTES: usize = ${contract.budget.bytes};\n` +
+  `pub(crate) const WIRE_VERSION: u64 = ${contract.versions.wireVersion};\n` +
+  `pub(crate) const SDK_API_VERSION: u64 = ${contract.versions.sdkApiVersion};\n` +
+  `pub(crate) const REQUEST_TIMEOUT_MS: u64 = ${contract.budget.requestTimeoutMs};\n` +
+  nativeDefinitions.map((name) => rustDefinition([name, defs[name]])).join('\n')
 function pretty(source, filename) {
   const result = spawnSync(
     process.execPath,
@@ -116,10 +170,50 @@ function pretty(source, filename) {
   return result.stdout.replaceAll('\r\n', '\n')
 }
 const declarations = pretty(
-  '// Generated from contracts/next2/contract.json.\n' + typescript + '\n',
+  '// Generated from contracts/next2/contract.json.\n' +
+    'export type ContractVersions = { ' +
+    Object.entries(contract.versions)
+      .map(([name, version]) => `readonly ${name}: ${JSON.stringify(version)};`)
+      .join(' ') +
+    ' }\n' +
+    typescript +
+    '\n',
   'generated.d.ts'
 )
+function schemaLabel(rule) {
+  if (rule.$ref) return rule.$ref.split('/').at(-1)
+  if (rule.oneOf) return rule.oneOf.map(schemaLabel).join(' / ')
+  if (rule.type === 'array') return schemaLabel(rule.items) + '[]'
+  return rule.type ?? 'Json'
+}
+const apiReference = pretty(
+  [
+    '# Next 3.0 公共 API 索引',
+    '',
+    '由 contracts/next2/contract.json 生成；修改契约后运行 npm run generate:next2。',
+    '',
+    `Manifest ${manifestVersion}、API ${sdkApiVersion}、wire ${wireVersion}；JS SDK ${sdkPackageVersion}。基础最低宿主 ${minHostVersion}；各方法最低宿主见表，既有方法的新选项按契约属性 since 字段声明。`,
+    '',
+    '完整字段、必需项与大小边界见 [契约 Schema](../contracts/next2/contract.json) 和 [TypeScript 类型](../packages/cruciblebox-next2-api/src/generated.d.mts)。本页不把业务 Json 载荷解释为宿主内建业务方法。',
+    '',
+    '权限列为空仍需要合法会话、启用的安装身份及对应上下文。backend 并不自动具有任务权限；结果写入、下载和工具执行还要求有效任务归属。界面主题、对话框与通知由可信主窗口完成授权后的操作。',
+    '',
+    '| 方法 | 权限 | 上下文 | 参数类型 | 返回类型 | 最低宿主 |',
+    '| --- | --- | --- | --- | --- | --- |',
+    ...Object.entries(contract.methods)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(
+        ([method, rule]) =>
+          `| ${method} | ${rule.permission ?? '—'} | ${rule.contexts.join(', ')} | ${schemaLabel(rule.params)} | ${schemaLabel(rule.result)} | ${rule.since ?? minHostVersion} |`
+      ),
+    '',
+    '业务通过 backend(method, params) 或声明的 service(id, method, params) 调用。成功响应为 ok:true/result，失败为 ok:false/error.code/error.message，requestId 必须关联原调用。示例见 [SDK 指南](plugin-sdk.md)、[Provider 指南](provider-guide.md) 与 [验证指南](testing.md)。',
+    ''
+  ].join('\n'),
+  'generated.md'
+)
 const outputs = {
+  'docs/plugin-api-reference.md': apiReference,
   'packages/cruciblebox-next2-api/src/generated.mjs': pretty(
     `// Generated from contracts/next2/contract.json.\nexport const contract = ${JSON.stringify(contract)}\n`,
     'generated.mjs'
@@ -146,7 +240,8 @@ const outputs = {
     ),
     'frame-validation.mjs'
   ),
-  'src-tauri/crates/next2-protocol/src/generated.rs': formattedRust.stdout.replaceAll('\r\n', '\n')
+  'src-tauri/crates/next2-protocol/src/generated.rs': formatRust(rustSource),
+  'packages/cruciblebox-next2-native/src/generated.rs': formatRust(nativeSource)
 }
 for (const [name, content] of Object.entries(outputs)) {
   const target = resolve(root, name)
@@ -157,4 +252,6 @@ for (const [name, content] of Object.entries(outputs)) {
     writeFileSync(target, content)
   }
 }
-console.log('Next 2.0 contract: Manifest/API 6, wire 4, data 1')
+console.log(
+  `Next 3.0 contract: Manifest ${contract.versions.manifestVersion}, API ${contract.versions.sdkApiVersion}, wire ${contract.versions.wireVersion}, data ${contract.versions.dataSchemaVersion}`
+)

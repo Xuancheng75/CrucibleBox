@@ -1,6 +1,6 @@
 {
   "name": "@cruciblebox/next2-build",
-  "version": "2.0.0-alpha.3",
+  "version": "3.0.0",
   "type": "module",
   "bin": {
     "cruciblebox-next2": "./cli.mjs"
@@ -12,8 +12,8 @@
   ],
   "dependencies": {
     "esbuild": "0.25.12",
-    "adm-zip": "0.6.0",
-    "@cruciblebox/next2-api": "6.1.0"
+    "adm-zip": "0.6.1",
+    "@cruciblebox/next2-api": "7.0.0"
   },
   "engines": {
     "node": ">=24 <25"

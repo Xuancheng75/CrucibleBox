@@ -30,6 +30,9 @@ const TRUSTED_PATHS_CAPACITY: usize = 50;
 #[cfg(test)]
 #[path = "install_next2_tests.rs"]
 mod next2_tests;
+#[cfg(test)]
+#[path = "install_next3_services_tests.rs"]
+mod next3_services_tests;
 
 /// 安装来源（"zip" | "directory"）
 pub struct InstallSource {
@@ -98,7 +101,7 @@ impl InstallManager {
         record: crate::db::PluginBackendRecord,
     ) -> Result<(), String> {
         let manifest = read_manifest(Path::new(&record.installed_path))?;
-        if manifest.manifest_version == Some(6) {
+        if manifest.manifest_version == Some(cruciblebox_next2_protocol::MANIFEST_VERSION) {
             self.next_backend.activate(id)
         } else {
             #[cfg(test)]
@@ -499,14 +502,15 @@ impl InstallManager {
         let root = resolve_plugin_root(extracted)?;
         reject_host_markers(&root)?;
         let manifest = read_manifest(&root)?;
-        validate_entrypoints(&root, &manifest)?;
         assert_manifest_installable(&manifest, self.allow_legacy_full_trust)?;
         assert_host_version_compatible(&manifest, env!("CARGO_PKG_VERSION"))?;
-        let next2_source = if manifest.manifest_version == Some(6) {
-            Some(crate::next2_install::inspect(&lock(&self.db), &root)?)
-        } else {
-            None
-        };
+        validate_entrypoints(&root, &manifest)?;
+        let next2_source =
+            if manifest.manifest_version == Some(cruciblebox_next2_protocol::MANIFEST_VERSION) {
+                Some(crate::next2_install::inspect(&lock(&self.db), &root)?)
+            } else {
+                None
+            };
         if self.is_blocked(&manifest.name) {
             self.recover_blocked_plugin(&manifest.name)?;
         }
@@ -622,6 +626,7 @@ impl InstallManager {
         let review = next2_inspection.as_ref().map(|inspected| json!({
             "manifestSha256": inspected.manifest_sha256(),
             "publisher": inspected.manifest().publisher,
+            "dataMigration": inspected.manifest().data_migration,
             "nativeCode": matches!(inspected.manifest().backend, Some(cruciblebox_next2_protocol::Backend::NativeBackend(_))),
             "unsignedLocal": inspected.provenance() == &cruciblebox_next2_runtime::package::Provenance::LocalUnsigned,
         }));
@@ -679,7 +684,7 @@ impl InstallManager {
     }
 
     fn perform_commit(&self, install: &mut PreparedInstall) -> Result<serde_json::Value, String> {
-        if install.manifest.manifest_version == Some(6) {
+        if install.manifest.manifest_version == Some(cruciblebox_next2_protocol::MANIFEST_VERSION) {
             let plugin =
                 crate::next2_install::load(&lock(&self.db), install.transaction.stage_dir());
             if let Err(error) =
@@ -1369,9 +1374,9 @@ mod tests {
                     plugin_id: manifest.id.clone(),
                     plugin_name: manifest.id,
                     plugin_directory: root.to_string_lossy().into(),
-                    renderer_entry: manifest.renderer,
+                    renderer_entry: manifest.renderer.unwrap(),
                     runtime_path: String::new(),
-                    renderer_api_version: 6,
+                    renderer_api_version: cruciblebox_next2_protocol::SDK_API_VERSION,
                     permissions: manifest.permissions,
                     owner_webview_label: "main".into(),
                 },
@@ -1412,7 +1417,7 @@ mod tests {
             .unwrap();
         mgr.next_backend.activate("acme-independent").unwrap();
         let session = next2_session(&mgr, &plugins);
-        let request = json!({"wireVersion":4,"requestId":"renderer-1","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
+        let request = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"renderer-1","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
         assert_eq!(
             mgr.next_backend
                 .next2
@@ -1429,7 +1434,7 @@ mod tests {
         );
         let mut renewed = session.clone();
         renewed.expires_at_ms += crate::plugin_session::LEASE_MS;
-        let continued = json!({"wireVersion":4,"requestId":"renderer-2","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
+        let continued = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"renderer-2","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
         assert_eq!(
             mgr.next_backend
                 .next2
@@ -1471,7 +1476,7 @@ mod tests {
                 .as_deref(),
             Some(r#"{"text":"原始数据"}"#)
         );
-        let stale = json!({"wireVersion":4,"requestId":"renderer-3","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
+        let stale = json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":"renderer-3","session":session.token,"target":{"kind":"platform"},"method":"storage.get","params":{"key":"sentinel"}});
         assert_eq!(
             mgr.next_backend
                 .next2
@@ -1506,7 +1511,7 @@ mod tests {
                 r#"
           module.exports.activate = async ctx => {
             let sequence = 0;
-            const platform = (method, params) => ctx.exchange({wireVersion:4,requestId:'cap-'+(++sequence),session:ctx.session,target:{kind:'platform'},method,params}).then(response=>{if(!response.ok) throw Object.assign(Error(response.error.message),{code:response.error.code});return response.result;});
+            const platform = (method, params) => ctx.exchange({wireVersion:ctx.wireVersion,requestId:'cap-'+(++sequence),session:ctx.session,target:{kind:'platform'},method,params}).then(response=>{if(!response.ok) throw Object.assign(Error(response.error.message),{code:response.error.code});return response.result;});
             return {
               sum: params => params.numbers.reduce((a,b)=>a+b,0),
               load: () => platform('storage.get',{key:'sentinel'}),
@@ -1542,7 +1547,7 @@ mod tests {
                     method: &str,
                     params: serde_json::Value| {
             sequence.set(sequence.get() + 1);
-            let mut response = mgr.next_backend.next2.renderer(&json!({"wireVersion":4,"requestId":format!("renderer-{}",sequence.get()),"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap();
+            let mut response = mgr.next_backend.next2.renderer(&json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("renderer-{}",sequence.get()),"session":session.token,"target":target,"method":method,"params":params}).to_string(), &session).unwrap();
             response["requestId"] = json!(id);
             response
         };

@@ -31,7 +31,7 @@ fn shared_contract_fixtures() {
     }
 }
 fn request(id: usize, target: Value, method: &str, params: Value) -> String {
-    json!({"wireVersion":4,"requestId":format!("r-{id}"),"session":"a".repeat(64),"target":target,"method":method,"params":params}).to_string()
+    json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("r-{id}"),"session":"a".repeat(64),"target":target,"method":method,"params":params}).to_string()
 }
 fn installed(manifest: Manifest) -> Installed {
     Installed {
@@ -49,12 +49,58 @@ fn session(manifest: Manifest) -> Session {
     )
 }
 #[test]
+fn builtins_share_capability_resolution_versions_and_permission_admission() {
+    let mut manifest = native("unified-consumer");
+    manifest.permissions.clear();
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let binding = registry.capability(&manifest.id, "host-files").unwrap();
+    assert_eq!(binding.provider_id, "cruciblebox-host");
+    assert_eq!(binding.export.version, "1.0.0");
+    assert!(registry
+        .capability_ids(&manifest.id)
+        .unwrap()
+        .contains(&"host-files".into()));
+    let mut gateway = session(manifest.clone());
+    let raw = request(
+        1,
+        json!({"kind":"service","id":"host-files"}),
+        "files.info",
+        json!({"ref":"a".repeat(64)}),
+    );
+    assert_eq!(
+        gateway
+            .admit(&registry, &raw, "main:frame-1", 1)
+            .err()
+            .unwrap(),
+        "PERMISSION_DENIED"
+    );
+    manifest.dependencies.push(serde_json::from_value(json!({"id":"host-files","providerId":"cruciblebox-host","version":{"min":"2.0.0","maxExclusive":"3.0.0"}})).unwrap());
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    assert_eq!(
+        registry.validate_plugin(&manifest.id).unwrap_err(),
+        "DEPENDENCY_INCOMPATIBLE"
+    );
+    let raw = request(
+        2,
+        json!({"kind":"platform"}),
+        "files.info",
+        json!({"ref":"a".repeat(64)}),
+    );
+    assert_eq!(
+        session(manifest)
+            .admit(&registry, &raw, "main:frame-1", 1)
+            .err()
+            .unwrap(),
+        "DEPENDENCY_INCOMPATIBLE"
+    );
+}
+#[test]
 fn ordered_renderer_requests_exceed_opaque_budget_without_forgetting_replay_or_expiry() {
     let manifest = native("acme-independent");
     let registry = Registry::new([installed(manifest.clone())]).unwrap();
     let mut session = Session::renderer(manifest, "a".repeat(64), "main:frame-1".into(), 1000);
     let call = |index| {
-        json!({"wireVersion":4,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":"backend"},"method":"call","params":{}}).to_string()
+        json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":"backend"},"method":"call","params":{}}).to_string()
     };
     for index in 1..=BUDGET_SESSION_REQUESTS + 4 {
         let admitted = session
@@ -99,6 +145,47 @@ fn ordered_renderer_requests_exceed_opaque_budget_without_forgetting_replay_or_e
         )
         .is_ok());
 }
+
+#[test]
+fn renderer_window_accepts_reordering_and_prevents_a_cancelled_late_call() {
+    let manifest = native("acme-independent");
+    let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let mut session = Session::renderer(manifest, "a".repeat(64), "main".into(), 1000);
+    let frame = |index, target, method, params| {
+        json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("renderer-{index}"),"session":"a".repeat(64),"target":{"kind":target},"method":method,"params":params}).to_string()
+    };
+    let cancel = frame(
+        4,
+        "platform",
+        "rpc.cancel",
+        json!({"requestId":"renderer-3"}),
+    );
+    session.admit(&registry, &cancel, "main", 1).unwrap();
+    assert!(session.cancel("renderer-3"));
+    let backend = |id| frame(id, "backend", "work", json!({}));
+    assert_eq!(
+        session
+            .admit(&registry, &backend(3), "main", 1)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+    let admitted = session.admit(&registry, &backend(2), "main", 1).unwrap();
+    assert!(session.cancel("renderer-2"));
+    assert!(admitted
+        .cancel
+        .unwrap()
+        .load(std::sync::atomic::Ordering::SeqCst));
+    session.finish("renderer-2");
+    assert!(!session.cancel("renderer-2"));
+    assert_eq!(
+        session
+            .admit(&registry, &backend(2), "main", 1)
+            .err()
+            .unwrap(),
+        "REPLAY_DENIED"
+    );
+}
 #[test]
 fn ordered_backend_capabilities_outlive_the_opaque_budget_and_keep_replay_protection() {
     let manifest = native("acme-independent");
@@ -111,7 +198,7 @@ fn ordered_backend_capabilities_outlive_the_opaque_budget_and_keep_replay_protec
         1000,
     );
     let call = |index| {
-        json!({"wireVersion":4,"requestId":format!("backend-seq-{index}"),"session":"a".repeat(64),"target":{"kind":"platform"},"method":"storage.get","params":{"key":"identity"}}).to_string()
+        json!({"wireVersion":cruciblebox_next2_protocol::WIRE_VERSION,"requestId":format!("backend-seq-{index}"),"session":"a".repeat(64),"target":{"kind":"platform"},"method":"storage.get","params":{"key":"identity"}}).to_string()
     };
     let completed = BUDGET_SESSION_REQUESTS + 8;
     for index in 1..=completed {
@@ -270,6 +357,7 @@ fn opaque_sessions_keep_their_existing_request_budget_after_renewal() {
 fn owner_is_derived_from_host_and_business_methods_are_opaque() {
     let manifest = native("acme-independent");
     let registry = Registry::new([installed(manifest.clone())]).unwrap();
+    let provider_version = manifest.version.clone();
     let mut session = session(manifest);
     let raw = request(
         1,
@@ -285,6 +373,7 @@ fn owner_is_derived_from_host_and_business_methods_are_opaque() {
         Route::Backend {
             initiator: "acme-independent".into(),
             provider: "acme-independent".into(),
+            provider_version,
             service: None
         }
     );
@@ -321,41 +410,52 @@ fn declared_service_version_identity_and_dependency_failures() {
     provider.exports = vec![ServiceExport {
         id: "transform".into(),
         version: "1.2.0".into(),
-        methods: vec!["recognize".into()],
+        methods: vec![ServiceMethod::LegacyServiceMethod("recognize".into())],
+        events: None,
+        interchangeable: None,
     }];
     let mut caller = native("translate-client");
     caller.dependencies = vec![ServiceDependency {
         id: "transform".into(),
-        provider_id: "sample-provider".into(),
+        provider_id: Some("sample-provider".into()),
+        optional: None,
         version: VersionRange {
             min: "1.0.0".into(),
             max_exclusive: "2.0.0".into(),
         },
     }];
     let registry = Registry::new([installed(caller.clone()), installed(provider.clone())]).unwrap();
+    let call = validate_request(&request(
+        1,
+        json!({"kind":"service","id":"transform"}),
+        "recognize",
+        json!({}),
+    ))
+    .unwrap();
     let route = registry
-        .resolve(
-            "translate-client",
-            &Target::ServiceTarget(ServiceTarget {
-                kind: Default::default(),
-                id: "transform".into(),
-            }),
-            "recognize",
-        )
+        .resolve("translate-client", &call, "renderer")
         .unwrap();
-    assert_eq!(
-        route,
-        Route::Backend {
-            initiator: "translate-client".into(),
-            provider: "sample-provider".into(),
-            service: Some("transform".into())
-        }
-    );
+    let Route::Backend {
+        initiator,
+        provider: resolved,
+        provider_version,
+        service: Some(service),
+    } = route
+    else {
+        panic!("service route required");
+    };
+    assert_eq!(initiator, "translate-client");
+    assert_eq!(resolved, "sample-provider");
+    assert_eq!(provider_version, provider.version);
+    assert_eq!(service.id, "transform");
     assert_eq!(
         registry.dependents("sample-provider"),
         vec!["translate-client"]
     );
-    assert!(Registry::new([installed(caller.clone())]).is_err());
+    assert!(Registry::new([installed(caller.clone())])
+        .unwrap()
+        .validate_plugin(&caller.id)
+        .is_err());
     assert!(Registry::new([
         installed(caller.clone()),
         Installed {
@@ -363,13 +463,21 @@ fn declared_service_version_identity_and_dependency_failures() {
             enabled: false
         }
     ])
+    .unwrap()
+    .validate_plugin(&caller.id)
     .is_err());
     provider.exports[0].version = "2.0.0".into();
-    assert!(Registry::new([installed(caller.clone()), installed(provider.clone())]).is_err());
+    assert!(
+        Registry::new([installed(caller.clone()), installed(provider.clone())])
+            .unwrap()
+            .validate_plugin(&caller.id)
+            .is_err()
+    );
     provider.exports[0].version = "1.2.0".into();
     provider.dependencies = vec![ServiceDependency {
         id: "translation".into(),
-        provider_id: caller.id.clone(),
+        provider_id: Some(caller.id.clone()),
+        optional: None,
         version: VersionRange {
             min: "1.0.0".into(),
             max_exclusive: "2.0.0".into(),
@@ -378,9 +486,131 @@ fn declared_service_version_identity_and_dependency_failures() {
     caller.exports = vec![ServiceExport {
         id: "translation".into(),
         version: "1.0.0".into(),
-        methods: vec!["translate".into()],
+        methods: vec![ServiceMethod::LegacyServiceMethod("translate".into())],
+        events: None,
+        interchangeable: None,
     }];
-    assert!(Registry::new([installed(caller), installed(provider)]).is_err());
+    assert_eq!(
+        Registry::new([installed(caller), installed(provider)])
+            .unwrap()
+            .validate_plugin("translate-client")
+            .unwrap_err(),
+        "DEPENDENCY_CYCLE"
+    );
+}
+
+#[test]
+fn interchangeable_capabilities_select_by_interface_version_then_identity() {
+    let mut client = native("client");
+    client.dependencies.push(ServiceDependency {
+        id: "transform".into(),
+        provider_id: None,
+        optional: Some(true),
+        version: VersionRange {
+            min: "1.0.0".into(),
+            max_exclusive: "2.0.0".into(),
+        },
+    });
+    let provider = |id: &str, version: &str, interchangeable| {
+        let mut manifest = native(id);
+        manifest.exports.push(ServiceExport {
+            id: "transform".into(),
+            version: version.into(),
+            methods: vec![ServiceMethod::LegacyServiceMethod("recognize".into())],
+            events: None,
+            interchangeable,
+        });
+        installed(manifest)
+    };
+    let missing = Registry::new([
+        installed(client.clone()),
+        provider("stateful", "1.9.0", None),
+    ])
+    .unwrap();
+    missing.validate_plugin("client").unwrap();
+    assert_eq!(
+        missing.capability("client", "transform").unwrap_err(),
+        "SERVICE_UNAVAILABLE"
+    );
+    let mut plugins = vec![
+        installed(client),
+        provider("incompatible", "2.0.0", Some(true)),
+        provider("stateful", "1.9.0", None),
+        provider("low", "1.0.0", Some(true)),
+        provider("winner-b", "1.8.0", Some(true)),
+        provider("winner-a", "1.8.0", Some(true)),
+    ];
+    for _ in 0..2 {
+        let registry = Registry::new(plugins.clone()).unwrap();
+        assert_eq!(
+            registry
+                .capability("client", "transform")
+                .unwrap()
+                .provider_id,
+            "winner-a"
+        );
+        assert_eq!(
+            registry.capability("client", "private").unwrap_err(),
+            "DEPENDENCY_UNDECLARED"
+        );
+        assert_eq!(registry.dependents("winner-a"), vec!["client"]);
+        plugins.reverse();
+    }
+}
+
+#[test]
+fn typed_service_admission_checks_context_params_and_result() {
+    let mut manifest = fixtures()["native"].clone();
+    manifest["id"] = json!("calculator");
+    manifest["exports"] = json!([{"id":"arithmetic","version":"1.0.0","interchangeable":true,"methods":[{
+        "name":"sum", "contexts":["renderer"],
+        "params":{"type":"array","items":{"type":"integer","minimum":-20},"minItems":1},
+        "result":{"type":"integer"}
+    }]}]);
+    let provider = validate_manifest(&manifest.to_string()).unwrap();
+    let mut client = native("client");
+    client.dependencies.push(ServiceDependency {
+        id: "arithmetic".into(),
+        provider_id: None,
+        optional: None,
+        version: VersionRange {
+            min: "1.0.0".into(),
+            max_exclusive: "2.0.0".into(),
+        },
+    });
+    let registry = Registry::new([installed(client.clone()), installed(provider)]).unwrap();
+    let target = json!({"kind":"service","id":"arithmetic"});
+    let mut call = validate_request(&request(1, target, "sum", json!([4, -9]))).unwrap();
+    assert_eq!(
+        registry.resolve("client", &call, "backend").unwrap_err(),
+        "CONTEXT_DENIED"
+    );
+    let mut active = session(client);
+    let admitted = active
+        .admit(
+            &registry,
+            &serde_json::to_string(&call).unwrap(),
+            "main:frame-1",
+            1,
+        )
+        .unwrap();
+    let Route::Backend {
+        service: Some(service),
+        ..
+    } = admitted.route
+    else {
+        panic!("service route required");
+    };
+    service.validate_result(&json!(-5)).unwrap();
+    assert_eq!(
+        service.validate_result(&json!("-5")).unwrap_err(),
+        "INVALID_CAPABILITY_RESULT"
+    );
+    call.params = json!([4, -21]);
+    assert_eq!(
+        registry.resolve("client", &call, "renderer").unwrap_err(),
+        "INVALID_CAPABILITY_PARAMS"
+    );
 }
 #[test]
 fn updates_revoke_old_sessions_and_task_providers_cannot_impersonate_initiators() {
@@ -407,4 +637,96 @@ fn updates_revoke_old_sessions_and_task_providers_cannot_impersonate_initiators(
     assert!(!task.may_report("client", "execution-1"));
     assert!(!task.may_report("sample-provider", "old-execution"));
     assert!(task.may_report("sample-provider", "execution-1"));
+}
+
+#[test]
+fn runtime_selection_separates_interface_resource_and_engine_versions() {
+    let provider = |id: &str| {
+        let mut value = serde_json::to_value(native(id)).unwrap();
+        value["minHostVersion"] = json!("2.2.0-beta.7");
+        value["permissions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("process:run"));
+        value["tools"] = json!([{"id":"python","resourceId":"runtime-data","entry":"python.exe"}]);
+        value["resources"] = json!([{"id":"runtime-data","version":{"min":"1.0.0","maxExclusive":"2.0.0"},"optional":true}]);
+        value["exports"] = json!([{"id":"python-runtime","version":"1.0.0","methods":["run"],"interchangeable":true}]);
+        value["runtimeCapabilities"] =
+            json!([{"capabilityId":"python-runtime","toolId":"python","engine":"python"}]);
+        validate_manifest(&value.to_string()).unwrap()
+    };
+    let (first, second) = (provider("runtime-alpha"), provider("runtime-beta"));
+    let mut consumer = serde_json::to_value(native("runtime-consumer")).unwrap();
+    consumer["minHostVersion"] = json!("2.2.0-beta.7");
+    consumer["permissions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("runtime:execute"));
+    consumer["dependencies"] = json!([{"id":"python-runtime","version":{"min":"1.0.0","maxExclusive":"2.0.0"},"optional":true}]);
+    consumer["runtimeRequirements"] = json!([{"capabilityId":"python-runtime","engine":"python","version":{"min":"3.14.0","maxExclusive":"3.15.0"}}]);
+    let consumer = validate_manifest(&consumer.to_string()).unwrap();
+    let make_registry = || {
+        Registry::new([
+            installed(first.clone()),
+            installed(second.clone()),
+            installed(consumer.clone()),
+        ])
+        .unwrap()
+    };
+    let unavailable = make_registry();
+    unavailable.validate_plugin(&consumer.id).unwrap();
+    assert_eq!(
+        unavailable
+            .capability(&consumer.id, "python-runtime")
+            .unwrap_err(),
+        "RUNTIME_UNAVAILABLE"
+    );
+    let metadata = |version: &str| {
+        serde_json::from_value(json!({"engine":"python","version":version,"resourceVersion":"1.4.0","toolId":"python","resourceId":"runtime-data"})).unwrap()
+    };
+    let registry = make_registry().with_runtimes(std::collections::HashMap::from([
+        (
+            (first.id.clone(), "python-runtime".into()),
+            Ok(metadata("3.13.9")),
+        ),
+        (
+            (second.id.clone(), "python-runtime".into()),
+            Ok(metadata("3.14.7")),
+        ),
+    ]));
+    let binding = registry.capability(&consumer.id, "python-runtime").unwrap();
+    assert_eq!(binding.provider_id, second.id);
+    assert_eq!(binding.export.version, "1.0.0");
+    assert_eq!(
+        registry
+            .runtime_environment(&second.id, "python-runtime")
+            .unwrap()
+            .unwrap()
+            .resource_version,
+        "1.4.0"
+    );
+    let admitted = session(consumer)
+        .admit(
+            &registry,
+            &request(
+                1,
+                json!({"kind":"service","id":"python-runtime"}),
+                "run",
+                json!({"args":[]}),
+            ),
+            "main:frame-1",
+            1,
+        )
+        .unwrap();
+    let Route::Backend {
+        service: Some(service),
+        ..
+    } = admitted.route
+    else {
+        panic!("Expected runtime provider route")
+    };
+    assert!(service
+        .validate_result(&json!({"exitCode":0,"stdout":"","stderr":""}))
+        .is_ok());
+    assert!(service.validate_result(&json!({"fake":true})).is_err());
 }
