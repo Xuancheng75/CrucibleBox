@@ -1,6 +1,6 @@
 //! Discovery and availability use the same registry as admission and execution.
-use super::{error, Instance, InstanceKind, Manager};
-use cruciblebox_next2_protocol::{self as protocol, gateway::Registry};
+use super::{error, Instance, Manager};
+use cruciblebox_next2_protocol::{self as protocol, gateway::Registry, CapabilityBinding};
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 
@@ -19,9 +19,22 @@ impl Manager {
                 )
             }
         };
+        self.binding_description(registry, binding)
+    }
+    fn binding_description(
+        &self,
+        registry: &Registry,
+        binding: &CapabilityBinding,
+    ) -> Result<Value, String> {
+        let id = binding.export.id.as_str();
         let mut availability = json!({"id":id,"state":"registered","providerId":binding.provider_id,"providerVersion":binding.provider_version,"version":binding.export.version});
         let mut description =
             json!({"availability":availability,"binding":binding,"kind":"plugin"});
+        if !registry.provider_enabled(&binding.provider_id) {
+            availability["state"] = json!("stopped");
+            description["availability"] = availability;
+            return Ok(description);
+        }
         if registry.is_platform_provider(&binding.provider_id) {
             description["kind"] = json!("host");
             availability["state"] = json!(if self.closing.load(Ordering::SeqCst) {
@@ -42,10 +55,20 @@ impl Manager {
                 return Err("PROVIDER_CHANGED".into());
             }
             let workers = self.workers.lock().map_err(|_| "INTERNAL_ERROR")?;
-            let state = match workers.get(&(row.id.clone(), InstanceKind::Service)) {
-                Some(Instance::Starting) => "starting",
-                Some(Instance::Ready(_)) => "ready",
-                None => "registered",
+            let instances: Vec<_> = workers
+                .iter()
+                .filter(|((owner, _), _)| owner == &row.id)
+                .map(|(_, instance)| instance)
+                .collect();
+            let state = if instances
+                .iter()
+                .any(|instance| matches!(instance, Instance::Ready(_)))
+            {
+                "ready"
+            } else if !instances.is_empty() {
+                "starting"
+            } else {
+                "registered"
             };
             availability["state"] = json!(state);
             drop(workers);
@@ -118,6 +141,37 @@ impl Manager {
 
     pub(super) fn describe_capability(&self, owner: &str, id: &str) -> Result<Value, String> {
         self.capability_description(&self.registry()?, owner, id)
+    }
+    pub(super) fn list_providers(&self, params: &Value) -> Result<Value, String> {
+        let registry = self.registry()?;
+        let after = params["after"].as_str().unwrap_or("");
+        let limit = params["limit"].as_u64().unwrap() as usize;
+        let mut bindings: Vec<_> = registry
+            .providers()
+            .into_iter()
+            .map(|binding| {
+                (
+                    format!("{}|{}", binding.export.id, binding.provider_id),
+                    binding,
+                )
+            })
+            .filter(|(key, binding)| {
+                key.as_str() > after
+                    && params["id"]
+                        .as_str()
+                        .is_none_or(|id| binding.export.id == id)
+            })
+            .collect();
+        bindings.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut items = Vec::new();
+        for (_, binding) in bindings.iter().take(limit) {
+            items.push(self.binding_description(&registry, binding)?["availability"].take());
+        }
+        let mut page = json!({"items":items});
+        if bindings.len() > limit {
+            page["next"] = json!(bindings[limit - 1].0);
+        }
+        Ok(page)
     }
 
     pub(super) fn list_capabilities(&self, owner: &str, params: &Value) -> Result<Value, String> {

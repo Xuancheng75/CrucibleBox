@@ -30,13 +30,14 @@ if (command === 'init') {
   const id = idFlag?.slice('--id='.length) ?? basename(root)
   if (
     !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id) ||
-    !['frontend', 'js', 'native', 'provider'].includes(kind)
+    !['frontend', 'js', 'native', 'provider', 'runtime'].includes(kind)
   )
-    throw Error('Choose a valid plugin ID and frontend|js|native|provider kind')
+    throw Error('Choose a valid plugin ID and frontend|js|native|provider|runtime kind')
   if (existsSync(root)) throw Error('Init requires a new directory')
   if (kind === 'native' && !sdkFlag)
     throw Error('Native init requires --native-sdk=<unpacked public Rust SDK>')
-  const provider = kind === 'provider'
+  const runtime = kind === 'runtime'
+  const provider = kind === 'provider' || runtime
   const manifest = {
     manifestVersion: contract.versions.manifestVersion,
     sdkApiVersion: contract.versions.sdkApiVersion,
@@ -45,40 +46,53 @@ if (command === 'init') {
     displayName: id,
     description: 'Independent plugin example',
     publisher: { id: 'local-developer', displayName: 'Local developer' },
-    minHostVersion: contract.versions.featuresHostVersion,
+    minHostVersion: runtime
+      ? contract.versions.completionHostVersion
+      : contract.versions.featuresHostVersion,
     sdk: {
       min: contract.versions.sdkApiVersion,
       maxExclusive: contract.versions.sdkApiVersion + 1
     },
     ...(provider ? {} : { renderer: 'dist/renderer.js' }),
-    permissions: provider
-      ? []
-      : ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
-    background: provider,
+    permissions: runtime
+      ? ['process:run', 'tasks:execute']
+      : provider
+        ? []
+        : ['storage:read', 'storage:write', 'tasks:read', 'tasks:control', 'tasks:execute'],
+    background: provider && !runtime,
     contributes: provider ? { commands: [] } : { navigation: { title: id }, commands: [] },
-    exports: provider
-      ? [
-          {
-            id,
-            version: '1.0.0',
-            interchangeable: true,
-            methods: [
-              {
-                name: 'sum',
-                params: {
-                  type: 'object',
-                  properties: { numbers: { type: 'array', items: { type: 'integer' } } },
-                  required: ['numbers'],
-                  additionalProperties: false
-                },
-                result: { type: 'integer' }
-              }
-            ]
-          }
-        ]
-      : [],
+    exports: runtime
+      ? [{ id, version: '1.0.0', interchangeable: true, methods: ['run', 'environment'] }]
+      : provider
+        ? [
+            {
+              id,
+              version: '1.0.0',
+              interchangeable: true,
+              methods: [
+                {
+                  name: 'sum',
+                  params: {
+                    type: 'object',
+                    properties: { numbers: { type: 'array', items: { type: 'integer' } } },
+                    required: ['numbers'],
+                    additionalProperties: false
+                  },
+                  result: { type: 'integer' }
+                }
+              ]
+            }
+          ]
+        : [],
     dependencies: [],
     resources: []
+  }
+  if (runtime) {
+    manifest.resources = [
+      { id: 'python-runtime', version: { min: '1.0.0', maxExclusive: '2.0.0' }, optional: true }
+    ]
+    manifest.tools = [{ id: 'python', resourceId: 'python-runtime', entry: 'python.exe' }]
+    manifest.runtimeCapabilities = [{ capabilityId: id, toolId: 'python', engine: 'python' }]
   }
   if (kind === 'js' || provider) manifest.backend = { kind: 'js', entry: 'dist/main.js' }
   if (kind === 'native')
@@ -138,7 +152,14 @@ if (command === 'init') {
   if (kind === 'js' || provider)
     await writeFile(
       join(root, 'src/main.mjs'),
-      "import {defineProvider} from '@cruciblebox/next2-api'\nexport const activate=defineProvider(()=>({ping:()=>true,sum(params){if(!Array.isArray(params.numbers)||!params.numbers.every(Number.isSafeInteger))throw Object.assign(Error('Expected integers'),{code:'INVALID_NUMBERS'});const sum=params.numbers.reduce((a,b)=>a+b,0);if(!Number.isSafeInteger(sum))throw Object.assign(Error('Sum overflow'),{code:'OVERFLOW'});return sum}}))\n"
+      runtime
+        ? "import {defineProvider} from '@cruciblebox/next2-api'\nexport const activate=defineProvider(({api})=>({run:params=>api.process.run({...params,toolId:'python'}),environment:()=>api.runtime.list()}))\n"
+        : "import {defineProvider} from '@cruciblebox/next2-api'\nexport const activate=defineProvider(()=>({ping:()=>true,sum(params){if(!Array.isArray(params.numbers)||!params.numbers.every(Number.isSafeInteger))throw Object.assign(Error('Expected integers'),{code:'INVALID_NUMBERS'});const sum=params.numbers.reduce((a,b)=>a+b,0);if(!Number.isSafeInteger(sum))throw Object.assign(Error('Sum overflow'),{code:'OVERFLOW'});return sum}}))\n"
+    )
+  if (runtime)
+    await writeFile(
+      join(root, 'README.md'),
+      `# Runtime Provider\n\nThis template exports capability ${id}, interface 1.0.0. It contains no interpreter. Import an independently verified Python resource into this provider after native-code approval. resource.json declares id python-runtime, resource package version in [1.0.0,2.0.0), runtimeIdentity.engine python, and the actual engine version. Inventory and verify every runtime file, including python.exe.\n\nConsumers declare this interface in dependencies, a compatible engine version in runtimeRequirements, and runtime:execute plus task permissions. Use api.runtime.resolve('${id}') then api.tasks.start({target:{kind:'service',id:'${id}'},method:'run',params:{args:['-I','-S','-B','-c','print(7+19)']}}). Consumers share the provider installation; no per-consumer runtime copy is required.\n`
     )
   if (kind === 'native') {
     const sdk = await realpath(resolve(sdkFlag.slice('--native-sdk='.length)))

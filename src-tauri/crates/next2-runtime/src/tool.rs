@@ -27,6 +27,7 @@ fn capture(pipe: impl Read) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+#[allow(clippy::too_many_arguments)] // Explicit execution inputs; no shared mutable runner configuration.
 pub fn run(
     executable: &Path,
     directory: &Path,

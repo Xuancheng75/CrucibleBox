@@ -122,6 +122,9 @@ impl Manager {
         Ok(json!(accepted))
     }
     fn capability_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
+        if call.request.method == "capabilities.providers" {
+            return self.list_providers(&call.request.params).map_err(error);
+        }
         if call.request.method == "capabilities.list" {
             return self
                 .list_capabilities(call.owner, &call.request.params)
@@ -158,6 +161,10 @@ impl Manager {
                     .map_err(|e| error(e.to_string()))?;
                 execution.method = params["method"].as_str().unwrap().to_owned();
                 execution.params = params["params"].clone();
+                execution = protocol::validate_request(
+                    &serde_json::to_string(&execution).map_err(|e| error(e.to_string()))?,
+                )
+                .map_err(error)?;
                 let context = if execution_context.caller.is_some() {
                     "backend"
                 } else {
@@ -168,10 +175,32 @@ impl Manager {
                     .map_err(error)?
                     .resolve(owner, &execution, context)
                     .map_err(error)?;
-                let Route::Backend { provider, .. } = &route else {
-                    return Err(error("INVALID_TASK_TARGET".into()));
+                let (task_provider, resource) = match &route {
+                    Route::Backend { provider, .. } => {
+                        (provider.clone(), format!("next2:{provider}"))
+                    }
+                    Route::Platform => {
+                        let manifest = self.installed(row).map_err(error)?;
+                        protocol::gateway::authorize_platform_task(
+                            manifest.manifest(),
+                            &execution.method,
+                            context,
+                        )
+                        .map_err(error)?;
+                        let method = &protocol::contract()["methods"][&execution.method];
+                        if method["task"] != true {
+                            return Err(error("INVALID_TASK_TARGET".into()));
+                        }
+                        // Normalize a host service alias through the same public input boundary.
+                        execution.target =
+                            serde_json::from_value(json!({"kind":"platform"})).unwrap();
+                        execution = protocol::validate_request(
+                            &serde_json::to_string(&execution).map_err(|e| error(e.to_string()))?,
+                        )
+                        .map_err(error)?;
+                        (owner.to_owned(), format!("platform:{owner}"))
+                    }
                 };
-                let resource = format!("next2:{provider}");
                 let app = self.services.platform.app_handle.clone();
                 let emitter = Arc::new(move |event: &str, payload: Value| {
                     if let Some(app) = &app {
@@ -183,7 +212,6 @@ impl Manager {
                     &row.id,
                     crate::host_task::executor_observer(self.db.clone(), emitter, &row.id),
                 );
-                let task_provider = provider.clone();
                 let timeout = params["timeoutMs"].as_u64().map(Duration::from_millis);
                 let execution_owner = row.id.clone();
                 let manager = self.clone();
@@ -208,6 +236,7 @@ impl Manager {
                                     },
                                 )
                                 .map_err(|error| format!("{}: {}", error.code, error.message));
+                            manager.file_operations.clear_task(&ctx.task_id())?;
                             let created = manager
                                 .services
                                 .runtime
@@ -380,6 +409,7 @@ impl Manager {
     fn network_service(self: &Arc<Self>, call: &Call<'_>) -> Result<Value, RpcError> {
         let Call {
             owner,
+            row,
             request,
             execution,
             ..
@@ -393,13 +423,19 @@ impl Manager {
                     None => json!({"kind":"direct"}),
                 }),
             "network.fetch" => network_service::fetch(params),
+            "network.request" => network_service::binary(params, execution),
+            "network.upload" => self.upload_file(owner, params, execution),
+            "network.websocket.open"
+            | "network.websocket.send"
+            | "network.websocket.poll"
+            | "network.websocket.close" => self.websocket_operation(owner, row, request, execution),
             "network.download" => self.write_output(
                 owner,
                 params["name"].as_str().unwrap(),
                 execution,
                 |stage, context| network_service::download(stage, params, execution, context),
             ),
-            _ => Err("PLATFORM_METHOD_NOT_CONNECTED".into()),
+            _ => self.download_operation(owner, row, request, execution),
         };
         result.map_err(error)
     }
@@ -587,14 +623,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_public_platform_namespace_has_a_trusted_provider() {
+    fn each_public_platform_method_has_a_trusted_provider() {
         let platform = Platform::new(None);
-        let namespaces: std::collections::HashSet<_> = protocol::contract()["methods"]
+        let methods: std::collections::HashSet<_> = protocol::contract()["methods"]
             .as_object()
             .unwrap()
             .keys()
-            .map(|method| method.split_once('.').unwrap().0)
+            .map(String::as_str)
             .collect();
-        assert_eq!(namespaces, platform.providers.keys().copied().collect());
+        assert_eq!(methods, platform.providers.keys().copied().collect());
     }
 }

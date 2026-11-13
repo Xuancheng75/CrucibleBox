@@ -12,6 +12,7 @@ Manifest 7、API 7、wire 5；JS SDK 7.0.0-beta.3。基础最低宿主 2.2.0-bet
 | -------------------------- | ---------------- | ----------------- | ----------------------------- | ------------------------ | ------------ |
 | capabilities.describe      | —                | renderer, backend | CapabilityResolveParams       | CapabilityDescription    | 2.2.0-beta.7 |
 | capabilities.list          | —                | renderer, backend | CapabilityListParams          | CapabilityPage           | 2.2.0-beta.7 |
+| capabilities.providers     | —                | renderer, backend | ProviderListParams            | ProviderPage             | 2.2.0-beta.7 |
 | capabilities.resolve       | —                | renderer, backend | CapabilityResolveParams       | CapabilityBinding        | 2.2.0-beta.1 |
 | clipboard.read             | clipboard        | renderer, backend | Empty                         | string                   | 2.2.0-beta.1 |
 | clipboard.write            | clipboard        | renderer, backend | object                        | boolean                  | 2.2.0-beta.1 |
@@ -44,15 +45,25 @@ Manifest 7、API 7、wire 5；JS SDK 7.0.0-beta.3。基础最低宿主 2.2.0-bet
 | files.watch                | files:read       | renderer, backend | FileWatchParams               | FileWatch                | 2.2.0-beta.7 |
 | files.watch.close          | files:read       | renderer, backend | FileWatchIdParams             | boolean                  | 2.2.0-beta.7 |
 | files.watch.poll           | files:read       | renderer, backend | FileWatchIdParams             | FileWatchPoll            | 2.2.0-beta.7 |
-| files.write.abort          | files:write      | renderer, backend | FileWriteStream               | boolean                  | 2.2.0-beta.7 |
-| files.write.append         | files:write      | renderer, backend | FileWriteChunkParams          | FileWriteChunkResult     | 2.2.0-beta.7 |
-| files.write.commit         | files:write      | renderer, backend | FileWriteStream               | FileReference            | 2.2.0-beta.7 |
-| files.write.open           | files:write      | renderer, backend | FileWriteOpenParams           | FileWriteStream          | 2.2.0-beta.7 |
+| files.write.abort          | files:write      | backend           | FileWriteStream               | boolean                  | 2.2.0-beta.7 |
+| files.write.append         | files:write      | backend           | FileWriteChunkParams          | FileWriteChunkResult     | 2.2.0-beta.7 |
+| files.write.commit         | files:write      | backend           | FileWriteStream               | FileReference            | 2.2.0-beta.7 |
+| files.write.open           | files:write      | backend           | FileWriteOpenParams           | FileWriteStream          | 2.2.0-beta.7 |
 | files.writeResult          | files:publish    | backend           | FileWriteResultParams         | FileReference            | 2.2.0-beta.2 |
 | logging.write              | logging:write    | renderer, backend | LogWriteParams                | boolean                  | 2.2.0-beta.1 |
 | network.download           | network:download | backend           | NetworkDownloadParams         | FileReference            | 2.2.0-beta.2 |
+| network.download.discard   | network:download | renderer, backend | DownloadId                    | boolean                  | 2.2.0-beta.7 |
+| network.download.prepare   | network:download | renderer, backend | NetworkDownloadParams         | DownloadCheckpoint       | 2.2.0-beta.7 |
+| network.download.resume    | network:download | renderer, backend | DownloadId                    | FileReference            | 2.2.0-beta.7 |
+| network.download.state     | network:download | renderer, backend | DownloadId                    | DownloadCheckpoint       | 2.2.0-beta.7 |
 | network.fetch              | network:fetch    | backend           | NetworkFetchParams            | NetworkFetchResult       | 2.2.0-beta.1 |
+| network.request            | network:fetch    | renderer, backend | NetworkBinaryParams           | NetworkBinaryResponse    | 2.2.0-beta.7 |
 | network.route              | network:fetch    | backend           | object                        | object                   | 2.2.0-beta.1 |
+| network.upload             | network:fetch    | renderer, backend | NetworkUploadParams           | NetworkBinaryResponse    | 2.2.0-beta.7 |
+| network.websocket.close    | network:fetch    | renderer, backend | WebSocketId                   | boolean                  | 2.2.0-beta.7 |
+| network.websocket.open     | network:fetch    | renderer, backend | WebSocketOpenParams           | WebSocketOpened          | 2.2.0-beta.7 |
+| network.websocket.poll     | network:fetch    | renderer, backend | WebSocketId                   | WebSocketPoll            | 2.2.0-beta.7 |
+| network.websocket.send     | network:fetch    | renderer, backend | WebSocketSendParams           | boolean                  | 2.2.0-beta.7 |
 | notification.show          | notification     | renderer          | NotificationShowParams        | NotificationShowResult   | 2.2.0-beta.1 |
 | process.run                | process:run      | backend           | ProcessRunParams              | ProcessResult            | 2.2.0-beta.2 |
 | resources.list             | —                | backend           | Empty                         | ResourceMount[]          | 2.2.0-beta.1 |

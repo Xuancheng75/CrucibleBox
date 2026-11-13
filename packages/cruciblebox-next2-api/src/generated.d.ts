@@ -620,3 +620,39 @@ export type RuntimeRunParams = {
   environment?: { [key: string]: string }
 }
 export type RuntimeIdentity = { engine: string; version: string }
+export type NetworkBinaryParams = {
+  url: string
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS'
+  headers?: { [key: string]: string }
+  body?: Base64
+}
+export type NetworkBinaryResponse = {
+  status: number
+  headers: { [key: string]: string }
+  body: Base64
+}
+export type NetworkUploadParams = {
+  url: string
+  method: 'POST' | 'PUT' | 'PATCH'
+  headers?: { [key: string]: string }
+  ref: string
+}
+export type DownloadId = { downloadId: string }
+export type DownloadCheckpoint = { downloadId: string; received: number; total: number }
+export type Base64 = string
+export type WebSocketId = { socketId: string }
+export type WebSocketOpenParams = {
+  url: string
+  headers?: { [key: string]: string }
+  protocols?: string[]
+}
+export type WebSocketOpened = { socketId: string; protocol: string }
+export type WebSocketSendParams =
+  { socketId: string; text: string } | { socketId: string; data: Base64 }
+export type WebSocketPoll = {
+  state: 'open' | 'closed' | 'failed'
+  messages: { kind: 'text' | 'binary'; data: Base64 }[]
+  error?: RpcError
+}
+export type ProviderListParams = { after?: string; limit?: number; id?: string }
+export type ProviderPage = { items: CapabilityAvailability[]; next?: string }

@@ -62,6 +62,7 @@ export declare function createClient(options: {
     resolve(id: string): Promise<CapabilityBinding>
     describe(id: string): Promise<CapabilityDescription>
     list(options?: CapabilityListParams): Promise<CapabilityPage>
+    providers(options?: Generated.ProviderListParams): Promise<Generated.ProviderPage>
   }
   writeLog(entry: LogWriteParams): Promise<boolean>
   files: {
@@ -94,7 +95,28 @@ export declare function createClient(options: {
       close(watchId: string): Promise<boolean>
     }
   }
-  network: { download(options: NetworkDownloadParams): Promise<FileReference> }
+  network: {
+    download(options: NetworkDownloadParams): Promise<FileReference>
+    request(options: Generated.NetworkBinaryParams): Promise<Generated.NetworkBinaryResponse>
+    upload(options: Generated.NetworkUploadParams): Promise<Generated.NetworkBinaryResponse>
+    websocket: {
+      open(options: Generated.WebSocketOpenParams): Promise<Generated.WebSocketOpened>
+      send(socketId: string, message: { text: string } | { data: string }): Promise<boolean>
+      poll(socketId: string): Promise<Generated.WebSocketPoll>
+      close(socketId: string): Promise<boolean>
+    }
+    resumable: {
+      prepare(options: NetworkDownloadParams): Promise<Generated.DownloadCheckpoint>
+      state(downloadId: string): Promise<Generated.DownloadCheckpoint>
+      resume(downloadId: string): Promise<FileReference>
+      discard(downloadId: string): Promise<boolean>
+    }
+  }
+  tasks: {
+    start(options: Generated.TaskStartParams): Promise<{ taskId: string }>
+    get(taskId: string): Promise<Generated.TaskSnapshot | null>
+    cancel(taskId: string): Promise<{ accepted: boolean; task: Generated.TaskSnapshot | null }>
+  }
   process: { run(options: ProcessRunParams): Promise<ProcessResult> }
   runtime: {
     list(): Promise<RuntimeStatus[]>

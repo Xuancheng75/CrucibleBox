@@ -1,5 +1,6 @@
 //! Next 3.0 admission and generic backend routing.
 mod capability_service;
+mod download_service;
 mod event_service;
 mod file_mutation;
 mod file_operations;
@@ -9,6 +10,7 @@ mod network_service;
 pub(crate) mod platform_service;
 mod process_service;
 mod stream_service;
+mod websocket_service;
 use crate::{db::Db, plugin_session::RendererSession};
 use cruciblebox_next2_protocol::{
     self as protocol,
@@ -126,6 +128,8 @@ pub struct Manager {
     closing: AtomicBool,
     files: crate::next2_files::Files,
     file_operations: file_operations::MutableFiles,
+    downloads: download_service::Downloads,
+    websockets: websocket_service::WebSockets,
     events: event_service::Events,
     streams: stream_service::Streams,
     graph_changes: Mutex<()>,
@@ -149,6 +153,8 @@ impl Manager {
             closing: AtomicBool::new(false),
             files: crate::next2_files::Files::default(),
             file_operations: file_operations::MutableFiles::default(),
+            downloads: download_service::Downloads::default(),
+            websockets: websocket_service::WebSockets::default(),
             events: event_service::Events::default(),
             streams: stream_service::Streams::default(),
             graph_changes: Mutex::new(()),
@@ -204,10 +210,15 @@ impl Manager {
     fn registry_with(&self, replacement: Option<&protocol::Manifest>) -> Result<Registry, String> {
         let db = self.db.lock().map_err(|_| "STORAGE_UNAVAILABLE")?.clone();
         let records = db
-            .enabled_plugin_backend_records()
-            .map_err(|e| e.to_string())?;
+            .plugin_all_roots()?
+            .into_iter()
+            .map(|(id, _, _)| {
+                db.plugin_find_by_id(&id)?
+                    .ok_or_else(|| "PLUGIN_NOT_FOUND".to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let mut installed = Vec::new();
-        for (_, row) in records {
+        for row in records {
             if replacement.is_some_and(|manifest| manifest.id == row.name) {
                 continue;
             }
@@ -220,7 +231,7 @@ impl Manager {
             }) {
                 installed.push(Installed {
                     manifest,
-                    enabled: true,
+                    enabled: row.enabled,
                 });
             }
         }
@@ -232,6 +243,9 @@ impl Manager {
         }
         let mut runtimes = HashMap::new();
         for plugin in &installed {
+            if !plugin.enabled {
+                continue;
+            }
             let declarations = plugin
                 .manifest
                 .runtime_capabilities
@@ -323,6 +337,7 @@ impl Manager {
         self.events.clear_session(token)?;
         self.streams.clear_session(token)?;
         self.file_operations.clear_session(token)?;
+        self.websockets.clear_session(token)?;
         Ok(())
     }
     pub fn dispose_plugin_renderers(&self, plugin_id: &str) -> Result<(), String> {
@@ -546,7 +561,8 @@ impl Manager {
             for task in runtime.list(&id) {
                 let resource = task["resourceKey"].as_str().unwrap_or("");
                 if (resource == format!("next2:{provider}")
-                    || (id == owner && resource.starts_with("next2:")))
+                    || (id == owner
+                        && (resource.starts_with("next2:") || resource.starts_with("platform:"))))
                     && !terminal(&task)
                 {
                     let task_id = task["taskId"].as_str().ok_or("INVALID_TASK")?.to_string();
@@ -600,6 +616,7 @@ impl Manager {
         self.events.clear_plugin(&provider)?;
         self.streams.clear_plugin(&provider)?;
         self.file_operations.clear_owner(&provider)?;
+        self.websockets.clear_owner(&provider)?;
         crate::diagnostics::record("backend-stop-complete", Some(owner));
         Ok(())
     }
@@ -623,6 +640,9 @@ impl Manager {
             if let Err(error) = self.stop(&owner) {
                 failures.push(format!("{owner}: {error}"));
             }
+        }
+        if let Err(error) = self.websockets.clear() {
+            failures.push(error);
         }
         if failures.is_empty() {
             Ok(())
@@ -769,7 +789,7 @@ impl Manager {
             };
             let result = self.execute(
                 &admitted.owner,
-                &request,
+                &admitted.request,
                 admitted.route,
                 Execution {
                     cancel: admitted.cancel.as_deref(),
@@ -1195,7 +1215,11 @@ impl Manager {
         }
         let provider = value["resourceKey"]
             .as_str()
-            .and_then(|value| value.strip_prefix("next2:"))
+            .and_then(|value| {
+                value
+                    .strip_prefix("next2:")
+                    .or_else(|| value.strip_prefix("platform:").map(|_| "cruciblebox-host"))
+            })
             .ok_or("INVALID_TASK_RECORD")?
             .to_owned();
         value["initiatorId"] = json!(initiator);

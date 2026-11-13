@@ -367,9 +367,6 @@ pub fn validate_request(raw: &str) -> Result<Request, String> {
             return Err("INVALID_PLATFORM_CALL".into());
         }
         schema::normalize(&method["params"], &mut request.params);
-        if request.method == "tasks.start" && request.params["target"]["kind"] == "platform" {
-            return Err("INVALID_TASK_TARGET".into());
-        }
     }
     Ok(request)
 }

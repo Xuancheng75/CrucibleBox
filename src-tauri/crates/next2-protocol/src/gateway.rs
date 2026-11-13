@@ -11,6 +11,48 @@ use std::sync::{
     Arc,
 };
 
+/// Used by session admission and by the inner operation of a host-owned task.
+pub fn authorize_platform(manifest: &Manifest, name: &str, context: &str) -> Result<(), String> {
+    authorize_platform_context(manifest, name, context, false)
+}
+pub fn authorize_platform_task(
+    manifest: &Manifest,
+    name: &str,
+    context: &str,
+) -> Result<(), String> {
+    authorize_platform_context(manifest, name, context, true)
+}
+fn authorize_platform_context(
+    manifest: &Manifest,
+    name: &str,
+    context: &str,
+    task: bool,
+) -> Result<(), String> {
+    let method = contract()["methods"]
+        .get(name)
+        .ok_or("INVALID_PLATFORM_CALL")?;
+    let contexts = if task {
+        method.get("taskContexts").unwrap_or(&method["contexts"])
+    } else {
+        &method["contexts"]
+    };
+    if !contexts
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == context)
+    {
+        return Err("CONTEXT_DENIED".into());
+    }
+    if method["permission"]
+        .as_str()
+        .is_some_and(|permission| !manifest.permissions.iter().any(|value| value == permission))
+    {
+        return Err("PERMISSION_DENIED".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct Installed {
     pub manifest: Manifest,
@@ -102,7 +144,7 @@ impl Registry {
             if plugin.manifest.id == provider {
                 return Err("RESERVED_PROVIDER_ID".into());
             }
-            if plugin.enabled {
+            {
                 for export in &plugin.manifest.exports {
                     let version = Version::parse(&export.version).map_err(|_| "INVALID_VERSION")?;
                     capabilities.entry(export.id.clone()).or_default().push((
@@ -185,6 +227,15 @@ impl Registry {
             .get(method)
             .ok_or_else(|| "METHOD_UNAVAILABLE".into())
     }
+    pub fn provider_enabled(&self, id: &str) -> bool {
+        self.is_platform_provider(id) || self.plugins.get(id).is_some_and(|plugin| plugin.enabled)
+    }
+    pub fn providers(&self) -> Vec<&CapabilityBinding> {
+        self.capabilities
+            .values()
+            .flat_map(|values| values.iter().map(|(_, binding)| binding))
+            .collect()
+    }
     fn enabled(&self, id: &str) -> Result<&Installed, String> {
         self.plugins
             .get(id)
@@ -212,7 +263,8 @@ impl Registry {
             .find(|runtime| runtime.capability_id == dependency.id);
         let mut runtime_failure = None;
         for (_, binding) in self.capabilities.get(&dependency.id).into_iter().flatten() {
-            if binding.provider_id == caller
+            if !self.provider_enabled(&binding.provider_id)
+                || binding.provider_id == caller
                 || dependency.provider_id.as_ref().map_or_else(
                     || binding.export.interchangeable != Some(true),
                     |provider| provider != &binding.provider_id,
@@ -536,19 +588,7 @@ impl Session {
             if !matches!(request.target, Target::PlatformTarget(_)) {
                 crate::schema::normalize(&method["params"], &mut request.params);
             }
-            if !method["contexts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value == &self.context)
-            {
-                return Err("CONTEXT_DENIED".into());
-            }
-            if method["permission"].as_str().is_some_and(|permission| {
-                !self.manifest.permissions.iter().any(|v| v == permission)
-            }) {
-                return Err("PERMISSION_DENIED".into());
-            }
+            authorize_platform(&self.manifest, &request.method, &self.context)?;
         }
         // Ordered backend SDKs opt in on their first capability. Opaque clients
         // keep their bounded replay ledger for the lifetime of the process.
@@ -595,7 +635,11 @@ impl Session {
             self.seen.insert(request.request_id.clone());
         }
         let cancellable = matches!(route, Route::Backend { .. })
-            || (route == Route::Platform && request.method == "files.choose");
+            || (route == Route::Platform
+                && matches!(
+                    request.method.as_str(),
+                    "files.choose" | "network.request" | "network.websocket.open"
+                ));
         let cancel = cancellable.then(|| Arc::new(AtomicBool::new(false)));
         self.inflight
             .insert(request.request_id.clone(), cancel.clone());

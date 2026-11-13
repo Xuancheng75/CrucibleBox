@@ -52,6 +52,14 @@ struct State {
 #[derive(Default)]
 pub(super) struct MutableFiles(Mutex<State>);
 impl MutableFiles {
+    pub(super) fn clear_task(&self, task: &str) -> Result<(), String> {
+        self.0
+            .lock()
+            .map_err(|_| "FILE_OPERATIONS_UNAVAILABLE")?
+            .writers
+            .retain(|_, writer| writer.task != task);
+        Ok(())
+    }
     pub(super) fn clear_session(&self, session: &str) -> Result<(), String> {
         let mut state = self.0.lock().map_err(|_| "FILE_OPERATIONS_UNAVAILABLE")?;
         state.writers.retain(|_, value| value.session != session);

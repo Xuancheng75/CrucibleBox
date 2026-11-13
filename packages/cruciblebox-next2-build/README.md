@@ -6,6 +6,7 @@ Install the published-shape `@cruciblebox/next2-api` and `@cruciblebox/next2-bui
 cruciblebox-next2 init my-plugin frontend
 cruciblebox-next2 init my-js-plugin js
 cruciblebox-next2 init my-sum-service provider
+cruciblebox-next2 init my-python-service runtime
 cruciblebox-next2 init my-native-plugin native --native-sdk=<unpacked-cruciblebox-next2-native-crate>
 ```
 
@@ -15,4 +16,6 @@ Inside the new project, install npm dependencies and run `npm run build`, `npm t
 
 Source aliases and workspace dependency reuse are build conveniences only. The packed renderer is bundled; no host-relative source import or runtime node_modules lookup is supported. Native plugins need explicit local-code trust at installation. The examples exercise platform transport and do not count as official-plugin, OCR, translation or fixed-host P6 acceptance.
 
-The templates require CrucibleBox 2.2.0-beta.2 or newer. The `provider` template uses `defineProvider` with a scoped API client, runs a headless QuickJS backend and exports `sum` under the project ID. A consumer declares that ID and interface version range in `dependencies`, then calls `resolveCapability(id)` and `service(id, 'sum', { numbers: [7, 19] })`. Pin `providerId` when the consumer depends on a specific provider's identity or private state. JS/native templates include a declared ping command. Renderers use the public UI package, theme hooks and accessible status messages.
+The frontend/js/native/provider templates require CrucibleBox 2.2.0-beta.2 or newer. The `runtime` template requires beta.7: it exports the shared Python `run/environment` interface and declares a resource/tool/runtime Capability, without bundling or downloading an interpreter. Import an explicitly approved resource with the actual `runtimeIdentity` engine version. Consumers declare interface dependencies plus `runtimeRequirements` and `runtime:execute`, resolve with `runtime.resolve(id)`, then submit the provider's `run` service as a task. Multiple consumers reuse the same provider-owned resource.
+
+The `provider` template uses `defineProvider` with a scoped API client, runs a headless QuickJS backend and exports `sum` under the project ID. A consumer declares that ID and interface version range in `dependencies`, then calls `resolveCapability(id)` and `service(id, 'sum', { numbers: [7, 19] })`. Pin `providerId` when the consumer depends on a specific provider's identity or private state. JS/native templates include a declared ping command. Renderers use the public UI package, theme hooks and accessible status messages.

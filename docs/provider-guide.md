@@ -86,13 +86,19 @@ const { taskId } = await api.tasks.start({ kind: 'service', id: 'example-sum' },
 const state = await api.tasks.get(taskId)
 ```
 
-任务辅助来自公开 UI 包；基础 API 包可用 platform('tasks.start', ...) 等价调用。等待终态且 completedAt 大于 0 后读取完整结果。取消被接受后仍应等待执行器停止确认；超时、崩溃和提交后的收尾失败分别显示，不自动重跑副作用。
+任务辅助来自公开 API 包，UI 包沿用同一客户端。等待终态且 completedAt 大于 0 后读取完整结果。取消被接受后仍应等待执行器停止确认；超时、崩溃和提交后的收尾失败分别显示，不自动重跑副作用。前端也可以提交契约标记可任务化的内建方法，例如 tasks.start({kind:'platform'},'files.copy',params)，仍由同一 Registry 和权限规则裁决。
+
+capabilities.list/describe 查询调用方声明的绑定及实际可用状态；capabilities.providers 分页列出已安装 Provider，包括已停用项。registered 表示未启动，starting/ready 依据实际运行实例，failed 保留启动或进程故障，stopping 表示维护/退出中，stopped 表示禁用，unavailable 表示依赖或资源不满足。查询结果不授予调用权；执行时重新解析版本、身份和权限。内建 host-* 能力由保留的 cruciblebox-host 提供，通过同一注册表发现和解析。
 
 ## 原生与运行时资源
 
 原生后端使用 serve(factory, handler)，通过 Call 获得宿主签发的 callerId、taskId 和取消标记，通过 Client::platform/service 调用能力。stdout 专用于长度前缀协议，诊断走标准错误或声明的日志 API。实现长操作时检查取消；Job Object 处理最终进程树停止。
 
-外部 Python/二进制工具使用 resources 声明版本范围，tools 指向资源内的 EXE。用户导入并批准资源后，后端在自己的任务中调用 process.run。资源缺失应显示明确状态，不在激活时偷偷下载。当前接口限制输入、输出和执行时间；完整参数见 [API 索引](plugin-api-reference.md) 和契约。可信本地代码拥有当前用户权限，不能宣称 OS 沙箱。
+外部 Python/二进制工具使用 resources 声明版本范围，tools 指向资源内的 EXE。用户导入并批准资源后，后端在任务中调用 process.run，工作目录可使用调用方授权引用，环境变量显式声明。资源缺失应显示明确状态，不在激活时偷偷下载。当前接口限制输入、输出和执行时间；完整参数见 [API 索引](plugin-api-reference.md) 和契约。可信本地代码拥有当前用户权限，不能宣称 OS 沙箱。
+
+共享运行时使用 cruciblebox-next2 init my-python runtime 模板。Provider 声明 runtimeCapabilities:[{capabilityId:'my-python',toolId:'python',engine:'python'}]，导出 run/environment，并持有单份批准资源。资源清单的 runtimeIdentity:{engine:'python',version:'3.14.7'} 记录实际引擎版本；资源包 version（例如 1.4.0）及 Capability 接口 version（例如 1.0.0）分别维护。模板不捆绑或自动下载解释器。
+
+消费者同时声明 dependencies 中的接口兼容范围、runtimeRequirements:[{capabilityId:'my-python',engine:'python',version:{min:'3.14.0',maxExclusive:'3.15.0'}}] 和 runtime:execute 权限，无需声明或复制 Provider 的资源。api.runtime.resolve('my-python') 返回兼容绑定、实际环境和状态；随后 tasks.start({kind:'service',id:'my-python'},'run',{args:[...]}) 经 Provider 调用 process.run。未批准、缺失、不兼容或停用均不返回可执行绑定。公共宿主集成已验证两个消费者复用同一真实 Python；发布形态独立模板及固定候选验证以补完记录为准。
 
 ## 验证和维护
 

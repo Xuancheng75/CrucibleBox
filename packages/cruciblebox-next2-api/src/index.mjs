@@ -209,8 +209,6 @@ export function validateRequest(raw) {
     const method = contract.methods[request.method]
     if (!method || !matches(method.params, request.params)) throw Error('INVALID_PLATFORM_CALL')
     normalize(method.params, request.params)
-    if (request.method === 'tasks.start' && request.params.target.kind === 'platform')
-      throw Error('INVALID_TASK_TARGET')
   }
   return request
 }
@@ -258,7 +256,8 @@ export function createClient({ session, exchange }) {
     capabilities: {
       resolve: (id) => platform('capabilities.resolve', { id }),
       describe: (id) => platform('capabilities.describe', { id }),
-      list: (options = {}) => platform('capabilities.list', options)
+      list: (options = {}) => platform('capabilities.list', options),
+      providers: (options = {}) => platform('capabilities.providers', options)
     },
     writeLog: (entry) => platform('logging.write', entry),
     files: {
@@ -285,7 +284,28 @@ export function createClient({ session, exchange }) {
         close: (watchId) => platform('files.watch.close', { watchId })
       }
     },
-    network: { download: (options) => platform('network.download', options) },
+    network: {
+      download: (options) => platform('network.download', options),
+      request: (options) => platform('network.request', options),
+      upload: (options) => platform('network.upload', options),
+      websocket: {
+        open: (options) => platform('network.websocket.open', options),
+        send: (socketId, message) => platform('network.websocket.send', { socketId, ...message }),
+        poll: (socketId) => platform('network.websocket.poll', { socketId }),
+        close: (socketId) => platform('network.websocket.close', { socketId })
+      },
+      resumable: {
+        prepare: (options) => platform('network.download.prepare', options),
+        state: (downloadId) => platform('network.download.state', { downloadId }),
+        resume: (downloadId) => platform('network.download.resume', { downloadId }),
+        discard: (downloadId) => platform('network.download.discard', { downloadId })
+      }
+    },
+    tasks: {
+      start: (options) => platform('tasks.start', options),
+      get: (taskId) => platform('tasks.get', { taskId }),
+      cancel: (taskId) => platform('tasks.cancel', { taskId })
+    },
     process: { run: (options) => platform('process.run', options) },
     runtime: {
       list: () => platform('runtime.list', {}),
