@@ -2,7 +2,7 @@
 export type ContractVersions = {
   readonly manifestVersion: 7
   readonly sdkApiVersion: 7
-  readonly sdkPackageVersion: '7.0.0-beta.3'
+  readonly sdkPackageVersion: '7.0.0'
   readonly featuresHostVersion: '2.2.0-beta.2'
   readonly minHostVersion: '2.2.0-beta.1'
   readonly wireVersion: 5

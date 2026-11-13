@@ -2,7 +2,7 @@
 
 由 contracts/next2/contract.json 生成；修改契约后运行 npm run generate:next2。
 
-Manifest 7、API 7、wire 5；JS SDK 7.0.0-beta.3。基础最低宿主 2.2.0-beta.1；各方法最低宿主见表，既有方法的新选项按契约属性 since 字段声明。
+Manifest 7、API 7、wire 5；JS SDK 7.0.0。基础最低宿主 2.2.0-beta.1；各方法最低宿主见表，既有方法的新选项按契约属性 since 字段声明。
 
 完整字段、必需项与大小边界见 [契约 Schema](../contracts/next2/contract.json) 和 [TypeScript 类型](../packages/cruciblebox-next2-api/src/generated.d.mts)。本页不把业务 Json 载荷解释为宿主内建业务方法。
 

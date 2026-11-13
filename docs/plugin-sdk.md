@@ -4,7 +4,7 @@ Next 3.0 开发分支的 Capability Descriptor、授权和 SDK 使用见 [P0/P1 
 
 公共方法的权限、上下文与参数/返回类型见自动生成的 [API 索引](plugin-api-reference.md)，Provider 实现与消费示例见 [Provider 指南](provider-guide.md)。
 
-Next 3.0 开发线执行 Manifest 7、API 7、wire 5。当前补完源码候选为 2.2.0-beta.7，JS API/UI 7.0.0-beta.3、CLI 3.0.0-beta.4、Rust SDK 0.2.0-beta.3，正在实现及验证，不能继承 beta.6 的通过结论。原有清单最低宿主 beta.1；工具、下载权限或命令位置/关键词至少 beta.2；Runtime Capability 及内建能力依赖声明至少 beta.7。各方法最低宿主以契约及 API 索引为准。契约来源是 contracts/next2/contract.json，当前进度见 [补完记录](2.2.0-completion-audit.md)。
+Next 3.0 开发线执行 Manifest 7、API 7、wire 5。当前正式交付源码候选为 2.2.0（未发布），JS API/UI 7.0.0、CLI 3.0.0、Rust SDK 0.2.0，正在实现及验证，不能继承 beta.6 的通过结论。原有清单最低宿主 beta.1；工具、下载权限或命令位置/关键词至少 beta.2；Runtime Capability 及内建能力依赖声明至少 beta.7。各方法最低宿主以契约及 API 索引为准。契约来源是 contracts/next2/contract.json，当前进度见 [补完记录](2.2.0-completion-audit.md)。
 
 | 插件形态 | 执行环境                     | 适用范围                                                       |
 | -------- | ---------------------------- | -------------------------------------------------------------- |

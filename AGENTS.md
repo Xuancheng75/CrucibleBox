@@ -21,7 +21,7 @@
 
 ## 当前代码与契约
 
-宿主补完源码候选 2.2.0-beta.7（进行中、未完成验证），P6 已固定验收的基线为 beta.3，Tauri/Rust + React + SQLite。P4/P5 能力见 docs/2.2.0-p4-p5.md；P5/P6 固定宿主验收及完成时间修复见 docs/2.2.0-p5-p6.md。公共 API/UI 为 7.0.0-beta.3，CLI 为 3.0.0-beta.4，Rust SDK 为 0.2.0-beta.3，最低宿主声明按所用能力管理。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
+宿主 2.2.0 正式交付候选（未发布，恢复修补后正在重新验证），P6 已固定验收的基线为 beta.3，Tauri/Rust + React + SQLite。P4/P5 能力见 docs/2.2.0-p4-p5.md；P5/P6 固定宿主验收及完成时间修复见 docs/2.2.0-p5-p6.md。公共 API/UI 为 7.0.0，CLI 为 3.0.0，Rust SDK 为 0.2.0，最低宿主声明按所用能力管理。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
 
 原生插件是可信本地代码；进程隔离不等于 OS 安全沙箱。安装文件清单、签名/确认、路径边界、owner/session 归属、取消确认及数据保留不能删减。
 

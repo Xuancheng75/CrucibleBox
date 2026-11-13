@@ -89,25 +89,38 @@ impl TaskRuntime {
         // Pending publication references stay on interrupted records for diagnosis.
         for record in authority.list_all().map_err(error)? {
             if !record.status.terminal() {
+                let matching: Vec<_> = receipts
+                    .iter()
+                    .filter(|receipt| {
+                        receipt.owner == record.owner
+                            && receipt.task_id == record.id
+                            && (record.publication.as_deref() == Some(receipt.journal.as_str())
+                                || (record.publication.as_deref()
+                                    == Some(format!("external:{}", record.id).as_str())
+                                    && receipt
+                                        .journal
+                                        .starts_with(&format!("external-file:{}:", record.id))))
+                    })
+                    .collect();
                 authority
                     .apply(
                         &record.owner,
                         &record.id,
                         record.sequence,
-                        if let Some(receipt) = receipts.iter().find(|receipt| {
-                            receipt.owner == record.owner
-                                && receipt.task_id == record.id
-                                && record.publication.as_deref() == Some(receipt.journal.as_str())
-                        }) {
-                            let refs =
-                                vec![receipt.result_reference().to_string_lossy().into_owned()];
-                            if receipt.terminal {
+                        if !matching.is_empty() {
+                            let refs = matching
+                                .iter()
+                                .map(|receipt| {
+                                    receipt.result_reference().to_string_lossy().into_owned()
+                                })
+                                .collect();
+                            if matching.iter().any(|receipt| receipt.terminal) {
                                 Action::Recover {
                                     published: Some(refs),
                                 }
                             } else {
                                 Action::RecoverPartialPublication {
-                                    journal: receipt.journal.clone(),
+                                    journal: record.publication.clone().unwrap(),
                                     refs,
                                 }
                             }
@@ -734,7 +747,10 @@ impl Context {
                     refs: result_refs(value),
                 }
             }
-            Err(error) if error.starts_with("EXECUTION_OUTCOME_UNKNOWN") => {
+            Err(error)
+                if error.starts_with("EXECUTION_OUTCOME_UNKNOWN")
+                    || error.starts_with(cruciblebox_file_publication::RECOVERY_REQUIRED) =>
+            {
                 return Err(error.clone())
             }
             Err(_) => Action::PublicationAborted(journal),
@@ -796,7 +812,30 @@ impl Context {
             Ok(json!({"path":reference.unwrap_or(&path).to_string_lossy()}))
         };
         let result = if external {
-            operation()
+            let _gate = self
+                .runtime
+                .gate
+                .lock()
+                .map_err(|_| "task authority unavailable")?;
+            let value = operation()?;
+            // A receipt is acknowledged only after its output reference is durable.
+            // Keep the external batch reservation so cancellation cannot reopen mid-commit.
+            self.runtime
+                .apply(
+                    &self.owner,
+                    &self.id,
+                    Action::PublicationRecorded {
+                        journal: format!("external:{}", self.id),
+                        refs: result_refs(&value),
+                    },
+                )
+                .map_err(|error| {
+                    format!(
+                        "{} {error}",
+                        cruciblebox_file_publication::RECOVERY_REQUIRED
+                    )
+                })?;
+            Ok(value)
         } else {
             self.publish(operation, terminal)
         }?;
@@ -1128,6 +1167,72 @@ mod tests {
         let snapshot = rx.recv().unwrap();
         assert_eq!(snapshot["status"], "succeeded");
         assert_eq!(snapshot["result"]["destination"], "archive.zip");
+    }
+
+    #[test]
+    fn external_outputs_are_durable_before_receipts_are_acknowledged() {
+        for fail_on_refs in [true, false] {
+            for terminal in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let journal = dir.path().join("tasks.sqlite");
+                let stage = dir.path().join(".stage");
+                let target = dir.path().join("output.txt");
+                std::fs::write(&stage, b"verified native output").unwrap();
+                let runtime = TaskRuntime::open(&journal).unwrap();
+                let ctx = runtime
+                    .prepare("sample-native", "native", Some("external-output"))
+                    .unwrap();
+                ctx.start_running().unwrap();
+                ctx.begin_external_commit().unwrap();
+                let fault = rusqlite::Connection::open(&journal).unwrap();
+                let condition = if fail_on_refs {
+                    "json_array_length(NEW.snapshot,'$.resultRefs') > json_array_length(OLD.snapshot,'$.resultRefs')"
+                } else {
+                    "json_extract(NEW.snapshot,'$.status')='succeeded'"
+                };
+                fault.execute_batch(&format!("CREATE TRIGGER fail_native BEFORE UPDATE ON next_tasks WHEN {condition} BEGIN SELECT RAISE(ABORT,'injected native authority failure'); END;")).unwrap();
+                let published = ctx.publish_file(&stage, &target, false, terminal);
+                assert_eq!(std::fs::read(&target).unwrap(), b"verified native output");
+                if fail_on_refs {
+                    let failure = published.unwrap_err();
+                    assert!(failure.starts_with(cruciblebox_file_publication::RECOVERY_REQUIRED));
+                    assert!(ctx.finish_external_commit(&Err(failure)).is_err());
+                    assert!(
+                        stage.exists(),
+                        "receipt was acknowledged before references became durable"
+                    );
+                } else {
+                    let result = published.unwrap();
+                    assert!(
+                        !runtime.cancel("sample-native", "external-output"),
+                        "batch commit reservation was released early"
+                    );
+                    assert!(ctx.finish_external_commit(&Ok(result)).is_err());
+                }
+                drop(ctx);
+                drop(runtime);
+                fault.execute_batch("DROP TRIGGER fail_native").unwrap();
+                drop(fault);
+                let reopened = TaskRuntime::open(&journal).unwrap();
+                let snapshot = reopened.get("sample-native", "external-output").unwrap();
+                assert_eq!(
+                    snapshot["status"],
+                    if fail_on_refs && terminal {
+                        "succeeded"
+                    } else {
+                        "interrupted"
+                    }
+                );
+                assert_eq!(
+                    snapshot["resultRefs"],
+                    json!([target.canonicalize().unwrap().to_string_lossy()])
+                );
+                assert!(
+                    !stage.exists(),
+                    "verified receipt cleanup was not completed"
+                );
+            }
+        }
     }
 
     #[test]

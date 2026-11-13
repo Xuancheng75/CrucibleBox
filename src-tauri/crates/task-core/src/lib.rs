@@ -63,6 +63,11 @@ pub enum Action {
         journal: String,
         refs: Vec<String>,
     },
+    /// Persist a trusted executor's output while its batch commit stays reserved.
+    PublicationRecorded {
+        journal: String,
+        refs: Vec<String>,
+    },
     PublicationAborted(String),
     RecoverPartialPublication {
         journal: String,
@@ -251,6 +256,18 @@ impl Snapshot {
             {
                 next.status = Status::Succeeded;
                 next.progress = 100;
+                for reference in refs {
+                    if !next.result_refs.contains(&reference) {
+                        next.result_refs.push(reference);
+                    }
+                }
+                if !references(&next.result_refs) {
+                    return Err(Error::Invalid);
+                }
+            }
+            Action::PublicationRecorded { journal, refs }
+                if references(&refs) && self.publication.as_ref() == Some(&journal) =>
+            {
                 for reference in refs {
                     if !next.result_refs.contains(&reference) {
                         next.result_refs.push(reference);

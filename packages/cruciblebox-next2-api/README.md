@@ -1,6 +1,6 @@
-# @cruciblebox/next2-api 7.0.0-beta.3
+# @cruciblebox/next2-api 7.0.0
 
-Next 3.0 candidate SDK for Manifest 7, API 7, wire 5 and storage data schema 1. Existing manifest shapes can retain the 2.2.0-beta.1 minimum; tools, process/download permissions and command placements/keywords require beta.2. Runtime Capability declarations, host capability dependencies, mutable files, binary HTTP, uploads, resumable downloads, WebSockets and process working-directory/environment options require 2.2.0-beta.7. Check each generated method's `since` version; beta.7 is undergoing integration and release acceptance.
+Next 3.0 candidate SDK for Manifest 7, API 7, wire 5 and storage data schema 1. Existing manifest shapes can retain the 2.2.0-beta.1 minimum; tools, process/download permissions and command placements/keywords require beta.2. Runtime Capability declarations, host capability dependencies, mutable files, binary HTTP, uploads, resumable downloads, WebSockets and process working-directory/environment options require 2.2.0-beta.7. Check each generated method's `since` version; the 2.2.0 release candidate is undergoing final integration and release acceptance.
 
 Optional `contributes.fileHandlers: [{extensions: ['zip', 'mrpack']}]` routes OS file drops to the active plugin's `context.onFilesDropped` callback. Extensions are unique lowercase alphanumeric strings without dots. It is independent of plugin identity. OS drop paths are input paths, never commands to execute.
 

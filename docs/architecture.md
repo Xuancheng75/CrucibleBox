@@ -1,10 +1,10 @@
 # 工具箱底座架构
 
-当前源码正在补完原任务书，候选为 2.2.0-beta.7，尚未完成验证或正式交付。beta.6 的既有结果仅是历史本地候选证据，不能据此宣布原任务书全部完成。进度见 [补完记录](2.2.0-completion-audit.md)。
+当前源码正在补完原任务书，候选为 2.2.0，尚未完成验证或正式交付。beta.6 的既有结果仅是历史本地候选证据，不能据此宣布原任务书全部完成。进度见 [补完记录](2.2.0-completion-audit.md)。
 
 CrucibleBox 2.2.0 的平台架构名称为 **Next 3.0**。架构名称与宿主版本、Manifest/API、wire 版本和 SDK 包名分别管理。开发分支沿用 `next2` 包名及契约目录，运行行为见 [2.2.0 开发记录](2.2.0-platform-progress.md)。
 
-当前源码候选 beta.7 执行 Manifest 7、API 7、wire 5，数据 schema 为 1。历史 P6 基线为 beta.3；beta.6 的 P7 固定宿主及一小时验证和 P8 本地候选交付已完成，原生人工回执范围与未测项目单列。Tauri/Rust 管理安装、生命周期与持久数据，React 界面管理插件导航、市场、设置与任务。各版本的演进规则见 [P0–P3 复核](2.2.0-p0-p3-recheck.md)，历史阶段见 [P4/P5 验证](2.2.0-p4-p5.md)、[P5/P6](2.2.0-p5-p6.md) 与 [P7/P8](2.2.0-p7-p8.md)，本轮实现和实测状态以补完记录为准。
+当前源码候选 2.2.0 执行 Manifest 7、API 7、wire 5，数据 schema 为 1。历史 P6 基线为 beta.3；beta.6 的 P7 固定宿主及一小时验证和 P8 本地候选交付已完成，原生人工回执范围与未测项目单列。Tauri/Rust 管理安装、生命周期与持久数据，React 界面管理插件导航、市场、设置与任务。各版本的演进规则见 [P0–P3 复核](2.2.0-p0-p3-recheck.md)，历史阶段见 [P4/P5 验证](2.2.0-p4-p5.md)、[P5/P6](2.2.0-p5-p6.md) 与 [P7/P8](2.2.0-p7-p8.md)，本轮实现和实测状态以补完记录为准。
 
 宿主不编译任何插件业务，也不按插件名称选择分发路径。前端插件使用 opaque sandbox iframe 与 MessagePort；JS backend 由独立 QuickJS runner 执行；Windows x64 原生 backend 由通用进程监督器执行。服务由 manifest 的 exports/dependencies 声明；宿主只识别平台方法，业务方法按声明路由。
 

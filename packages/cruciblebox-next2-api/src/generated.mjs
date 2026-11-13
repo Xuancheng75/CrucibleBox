@@ -4,7 +4,7 @@ export const contract = {
   versions: {
     manifestVersion: 7,
     sdkApiVersion: 7,
-    sdkPackageVersion: '7.0.0-beta.3',
+    sdkPackageVersion: '7.0.0',
     featuresHostVersion: '2.2.0-beta.2',
     minHostVersion: '2.2.0-beta.1',
     wireVersion: 5,
