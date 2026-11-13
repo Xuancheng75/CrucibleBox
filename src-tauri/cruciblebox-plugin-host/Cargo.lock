@@ -97,6 +97,7 @@ dependencies = [
 name = "cruciblebox-plugin-host"
 version = "2.2.0"
 dependencies = [
+ "base64",
  "cruciblebox-next2-protocol",
  "cruciblebox-next2-runtime",
  "rquickjs",

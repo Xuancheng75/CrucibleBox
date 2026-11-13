@@ -1,4 +1,5 @@
 //! Next-only backend process. Legacy ctx/lifecycle dispatch is historical test code.
+mod encoding;
 mod loader;
 mod next2_worker;
 use rquickjs::{Function, Object};
