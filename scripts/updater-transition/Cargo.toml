@@ -1,0 +1,13 @@
+[package]
+name = "cruciblebox-updater-transition"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tauri = { version = "=2.11.5", default-features = false, features = ["test"] }
+tauri-plugin-updater = "=2.10.1"
+serde_json = "1"
+
+[patch.crates-io]
+cookie = { path = "../../src-tauri/vendor/cookie" }

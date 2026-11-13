@@ -47,15 +47,9 @@ impl Manager {
             let _target = crate::next2_files::open_authorized(&target)?;
         }
         let reference = params["reference"].as_str().map(Path::new);
-        if let Some(reference) = reference {
-            if reference
-                .canonicalize()
-                .map_err(|error| error.to_string())?
-                != target_parent
-            {
-                return Err("PUBLICATION_REFERENCE_MUST_BE_PARENT".into());
-            }
-        }
+        // The shared publication authority validates a canonical directory
+        // ancestor before writing its journal. This also supports one result
+        // reference for a batch that merges files into nested directories.
         execution.check()?;
         context.publish_object(
             &stage,

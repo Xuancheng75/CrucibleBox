@@ -1,10 +1,12 @@
 # Next 3.0 测试指南
 
-本页区分开发检查、固定宿主验收和原生人工操作。实际结果见 [P7/P8](2.2.0-p7-p8.md)，原安全告警与用户授权的替代实现见 [事件记录](2.2.0-security-incident-20261107.md)。不能据验证规格推断未执行的项目已通过。
+本页区分开发检查、固定宿主验收和原生人工操作。当前补完结果见 [补完记录](2.2.0-completion-audit.md)，历史 beta.6 结果见 [P7/P8](2.2.0-p7-p8.md)，原安全告警与用户授权的替代实现见 [事件记录](2.2.0-security-incident-20261107.md)。不能据验证规格推断未执行的项目已通过。
 
 ## 开发检查
 
 按 development.md 设工作区 TEMP/TMP/TMPDIR、npm cache 和 CARGO_TARGET_DIR。运行 npm run check、npm run build；宿主与 runner 执行 fmt --check、Clippy --all-targets -D warnings、锁定依赖 test。独立 crates 按现有 CI 清单执行，native runtime 使用 test-backend feature。不运行系统安装器测试。
+
+2026-11-13 用户批准的唯一安装器测试例外限 GitHub 托管的一次性 Windows 虚拟机，手动工作流默认关闭，不在本机执行；方案及真实状态见 [签名切换验收](2.2.0-updater-transition.md)。
 
 先构建 runner 并暂存到与 MSVC/GNU 目标匹配的 binaries 文件，再运行宿主集成。不要让旧 sidecar 覆盖新 runner。源码门禁、进程集成、打包和原生人工验收分别记录。
 
