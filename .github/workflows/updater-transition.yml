@@ -43,6 +43,15 @@ jobs:
       - name: Prepare isolated test paths
         shell: pwsh
         run: New-Item -ItemType Directory -Force .workbench/temp, .workbench/updater-transition/old, .workbench/updater-transition/new | Out-Null
+      - name: Enable own-app test IPC on the disposable elevated runner
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:CRUCIBLEBOX_INSTALLER_TEST_APPROVED -ne 'true') { throw 'Requires approved disposable runner' }
+          # Elevated WebView2 ignores environment/HKCU argument overrides.
+          # Scope the supported HKLM override to this app on this disposable VM.
+          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name 'cruciblebox.exe' -Value '--remote-debugging-port=19430 --no-first-run' -PropertyType String -Force | Out-Null
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.15.0

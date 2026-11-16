@@ -28,7 +28,6 @@ const environment = {
   APPDATA: appdata,
   LOCALAPPDATA: join(root, 'local'),
   WEBVIEW2_USER_DATA_FOLDER: join(root, 'webview'),
-  WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=19430 --no-first-run',
   CRUCIBLEBOX_UPDATER_TEST_ROOT: root
 }
 function run(file, args, env = environment) {
