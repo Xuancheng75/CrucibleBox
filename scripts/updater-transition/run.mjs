@@ -203,14 +203,14 @@ try {
   const response = await page.invoke('next_renderer_request', {
     raw: JSON.stringify({
       wireVersion: 4,
-      requestId: 'updater-seed',
+      requestId: 'renderer-1',
       session: descriptor.token,
       target: { kind: 'platform' },
       method: 'storage.set',
       params: { key: 'updater-retained', value: { text: '旧版真实 KV 保留🌏' } }
     })
   })
-  assert.equal(response.ok, true)
+  assert.equal(response.ok, true, JSON.stringify(response))
   page.close()
   await stop(oldApp)
   oldApp = undefined
