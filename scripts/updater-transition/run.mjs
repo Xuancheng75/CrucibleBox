@@ -1,6 +1,6 @@
 // Runs installers only after explicit approval, on a disposable GitHub Windows VM.
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -52,7 +52,7 @@ async function connect() {
     try {
       targets = await (await fetch('http://127.0.0.1:19430/json/list')).json()
     } catch (error) {
-      discovery.error = error.message
+      discovery.error = error.message + ': ' + (error.cause?.message ?? '')
       await delay(250)
       continue
     }
@@ -109,6 +109,18 @@ async function connect() {
         )
     }
   }
+  const processes = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('cruciblebox.exe','msedgewebview2.exe') } | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Depth 3"
+    ],
+    { encoding: 'utf8', windowsHide: true, timeout: 10000 }
+  )
+  discovery.processes = processes.stdout
+  discovery.processInspectionError = processes.stderr
   await writeFile(join(root, 'connect-failure.json'), JSON.stringify(discovery, null, 2) + '\n')
   throw Error('Installed application did not expose its own test IPC: ' + JSON.stringify(discovery))
 }
