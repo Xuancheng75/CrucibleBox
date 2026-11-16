@@ -46,16 +46,19 @@ function run(file, args, env = environment) {
   })
 }
 async function connect() {
+  let discovery = { targets: [], error: null }
   for (const started = Date.now(); Date.now() - started < 60000;) {
     let targets
     try {
       targets = await (await fetch('http://127.0.0.1:19430/json/list')).json()
-    } catch {
+    } catch (error) {
+      discovery.error = error.message
       await delay(250)
       continue
     }
+    discovery = { targets: targets.map(({ type, url }) => ({ type, url })), error: null }
     const target = targets.find(
-      (item) => item.type === 'page' && item.url === 'http://tauri.localhost/'
+      (item) => item.type === 'page' && new URL(item.url).hostname === 'tauri.localhost'
     )
     if (!target) {
       await delay(250)
@@ -106,7 +109,8 @@ async function connect() {
         )
     }
   }
-  throw Error('Installed application did not expose its own test IPC')
+  await writeFile(join(root, 'connect-failure.json'), JSON.stringify(discovery, null, 2) + '\n')
+  throw Error('Installed application did not expose its own test IPC: ' + JSON.stringify(discovery))
 }
 // Only the PIDs started by this script on the disposable runner are terminated.
 async function stop(child) {
@@ -294,6 +298,9 @@ try {
   report.installerSha256 = hash(setup)
   report.executableSha256 = hash(expected)
   report.passed = true
+} catch (error) {
+  report.error = error.stack
+  throw error
 } finally {
   if (oldApp) await stop(oldApp)
   if (server) await new Promise((done) => server.close(done))
