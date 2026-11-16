@@ -29,6 +29,8 @@
 
 ## 验证与交付
 
+用户于 2026-11-13 明确要求：从下一次验证开始，不再执行一小时长测，也不再将其作为交付门槛。保留本轮已经完成的长测报告；后续按实际改动选择必要的功能、回归和既有 CI 检查，不因重新构建或更换候选程序重复一小时验证。用户另有明确要求时再执行。
+
 遵循 docs/development.md 和既有 CI：npm run check、npm run build；宿主及 runner 的 cargo fmt --check、cargo clippy --all-targets -- -D warnings、cargo test；独立 crates 按 CI 清单验证。使用锁定依赖，不运行系统安装器测试。新代码完成后仅更新唯一正式目录，保存真实验证证据。
 
 ## 文档与 Git

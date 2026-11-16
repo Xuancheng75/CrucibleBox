@@ -25,6 +25,10 @@ permissions:
 jobs:
   transition:
     if: ${{ inputs.installer_test_approved }}
+    # GitHub exposes draft releases only to identities with push access.
+    # This approved test downloads the draft; it never publishes or edits it.
+    permissions:
+      contents: write
     runs-on: windows-latest
     timeout-minutes: 30
     env:
