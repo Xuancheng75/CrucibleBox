@@ -95,6 +95,12 @@ async function connect() {
           })
         )
       })
+    if (!(await evaluate('typeof window.__TAURI_INTERNALS__?.invoke === "function"'))) {
+      discovery.bridgeReady = false
+      socket.close()
+      await delay(250)
+      continue
+    }
     return {
       evaluate,
       close: () => socket.close(),
