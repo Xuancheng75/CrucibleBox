@@ -103,5 +103,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-updater-transition
-          path: .workbench/updater-transition/*.json
+          path: |
+            .workbench/updater-transition/*.json
+            .workbench/updater-transition/new/installer-payload/**/cruciblebox.exe
           if-no-files-found: error
