@@ -285,7 +285,23 @@ try {
     } catch (error) {
       if (error.code !== 'ENOENT' && error.code !== 'EBUSY') throw error
     }
-    if (Date.now() - started > 120000) throw Error('Installer did not switch the executable')
+    if (Date.now() - started > 120000) {
+      const diagnostic = spawnSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          "$processes=Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*updater-transition*' -or $_.CommandLine -like '*CrucibleBox*installer*' }; $installs=Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' | Where-Object { $_.DisplayName -eq 'CrucibleBox' }; @{processes=@($processes | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine); installs=@($installs | Select-Object DisplayName,DisplayVersion,InstallLocation,UninstallString)} | ConvertTo-Json -Depth 4"
+        ],
+        { encoding: 'utf8', windowsHide: true, timeout: 10000 }
+      )
+      await writeFile(
+        join(root, 'install-failure.json'),
+        JSON.stringify({ stdout: diagnostic.stdout, stderr: diagnostic.stderr }, null, 2) + '\n'
+      )
+      throw Error('Installer did not switch the executable')
+    }
     await delay(500)
   }
   // /R starts the updated app. Connect to that actual installed application.
