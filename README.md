@@ -1,8 +1,8 @@
 # CrucibleBox
 
-当前源码正在补完原任务书，候选为 2.2.0，尚未完成验证或正式交付。beta.6 的既有结果仅是历史本地候选证据，不能据此宣布原任务书全部完成。进度见 [补完记录](docs/2.2.0-completion-audit.md)。
+2.2.0 已正式发布，架构名称为 Next 3.0。当前交付状态与实际证据见 [交付记录](docs/2.2.0-delivery.md)，原任务书逐项对应及失败历史见 [补完记录](docs/2.2.0-completion-audit.md)。
 
-Windows 10/11 x64 可扩展工具箱底座，基于 Tauri 2、Rust、React 与 SQLite。Next 3.0 的 2.2.0 正式交付候选执行 Manifest 7、API 7、wire 5，数据 schema 为 1；当前仍在固定验证，尚未公开发布。beta.6 的一小时与局部原生回执属于历史证据；beta.7 在新增业务故障测试中发现原生发布恢复缺陷，修补后重新验收，详情见补完记录。当前公开正式版为 2.1.1。
+Windows 10/11 x64 可扩展工具箱底座，基于 Tauri 2、Rust、React 与 SQLite。2.2.0 执行 Manifest 7、API 7、wire 5，数据 schema 为 1。公开正式版为 [2.2.0](https://github.com/Xuancheng75/CrucibleBox/releases/tag/tauri-v2.2.0)，配套日记 0.9.2、压缩与解压 0.6.1；其他旧 API 6 插件保留数据并停用，不宣称已适配。
 
 底座提供插件安装与管理、隔离界面、JS/原生 backend 生命周期、通用存储与配置、任务、文件引用、网络、主题和资源包。业务功能通过独立插件补充；宿主不包含业务插件源码、业务 worker、模型或按插件名称分支的执行规则。
 
