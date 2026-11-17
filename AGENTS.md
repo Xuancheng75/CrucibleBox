@@ -2,6 +2,8 @@
 
 ## 当前范围与约束
 
+- 用户于 2026-11-17 明确回复“允许正式发布，继续执行”，恢复本轮正式发布授权：完成必要验证后，允许公开宿主及公共 SDK/已适配插件分发附件、Release、稳定渠道同步和唯一 Portable 更新。此前“仅继续本地工作，暂不上传”已由本次明确授权替代；插件私有源码、私密构建输入及用户数据仍不公开。
+
 - 用户于 2026-11-13 明确批准签名更新安装切换的单次例外：仅在用完即销毁的 GitHub 托管 Windows 虚拟机运行旧版安装器及新版 updater 安装测试；本机仍禁止安装器测试和额外系统安装。测试方案、批准状态与真实结果见 docs/2.2.0-updater-transition.md，不将编译或签名存在当作实际安装通过。
 
 - 用户于 2026-11-08 指出 beta.6 仅完成本地候选，要求补完原任务书和所列未达成目标，包括公共能力扩展、Runtime Provider、重复任务框架、架构检查、文档、桌面端到端及最终正式交付。此前自行延期不构成授权，本轮不得继续按缩减范围结项。先完成可审阅实现、验证和最终制品；正式交付按本轮列项执行，保留用户关闭旧程序、私有源码/输入不公开、禁止额外系统安装等约束。进度与真实证据见 docs/2.2.0-completion-audit.md。
@@ -23,11 +25,13 @@
 
 ## 当前代码与契约
 
-宿主 2.2.0 正式交付候选（未发布，恢复修补后正在重新验证），P6 已固定验收的基线为 beta.3，Tauri/Rust + React + SQLite。P4/P5 能力见 docs/2.2.0-p4-p5.md；P5/P6 固定宿主验收及完成时间修复见 docs/2.2.0-p5-p6.md。公共 API/UI 为 7.0.0，CLI 为 3.0.0，Rust SDK 为 0.2.0，最低宿主声明按所用能力管理。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
+宿主 2.2.0 已于 2026-11-17 正式发布，架构为 Next 3.0；实际交付及验证结果见 docs/2.2.0-delivery.md。固定源码为 tauri-v2.2.0 / 403f948fb4b04c17e7479528eff8a3d78af18fea，后续文档及不分发验收工具不改变产品二进制。Tauri/Rust + React + SQLite，公共 API/UI 为 7.0.0，CLI 为 3.0.0，Rust SDK 为 0.2.0，最低宿主声明按所用能力管理。packages/cruciblebox-next2-* 为公开 API/UI/CLI/native SDK；contracts/next2 为唯一活动插件契约。src-tauri/src 负责安装、会话、平台路由、资源和生命周期；crates 提供无 Tauri 的协议、数据、任务、持久化和输出发布。tauri-frontend 为活动界面。业务与发布目录都不编入宿主。
 
 原生插件是可信本地代码；进程隔离不等于 OS 安全沙箱。安装文件清单、签名/确认、路径边界、owner/session 归属、取消确认及数据保留不能删减。
 
 ## 验证与交付
+
+用户于 2026-11-13 明确要求：从下一次验证开始，不再执行一小时长测，也不再将其作为交付门槛。保留本轮已经完成的长测报告；后续按实际改动选择必要的功能、回归和既有 CI 检查，不因重新构建或更换候选程序重复一小时验证。用户另有明确要求时再执行。
 
 遵循 docs/development.md 和既有 CI：npm run check、npm run build；宿主及 runner 的 cargo fmt --check、cargo clippy --all-targets -- -D warnings、cargo test；独立 crates 按 CI 清单验证。使用锁定依赖，不运行系统安装器测试。新代码完成后仅更新唯一正式目录，保存真实验证证据。
 

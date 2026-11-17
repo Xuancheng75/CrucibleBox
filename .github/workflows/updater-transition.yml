@@ -25,6 +25,10 @@ permissions:
 jobs:
   transition:
     if: ${{ inputs.installer_test_approved }}
+    # GitHub exposes draft releases only to identities with push access.
+    # This approved test downloads the draft; it never publishes or edits it.
+    permissions:
+      contents: write
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -39,6 +43,15 @@ jobs:
       - name: Prepare isolated test paths
         shell: pwsh
         run: New-Item -ItemType Directory -Force .workbench/temp, .workbench/updater-transition/old, .workbench/updater-transition/new | Out-Null
+      - name: Enable own-app test IPC on the disposable elevated runner
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:CRUCIBLEBOX_INSTALLER_TEST_APPROVED -ne 'true') { throw 'Requires approved disposable runner' }
+          # Elevated WebView2 ignores environment/HKCU argument overrides.
+          # Scope the supported HKLM override to this app on this disposable VM.
+          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name 'cruciblebox.exe' -Value '--remote-debugging-port=19430 --no-first-run' -PropertyType String -Force | Out-Null
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.15.0
@@ -61,6 +74,12 @@ jobs:
           gh release download $env:RELEASE_TAG --pattern '*-setup.exe' --pattern '*-setup.exe.sig' --pattern '*win-x64-portable.zip' --dir .workbench/updater-transition/new
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Expand-Archive ".workbench/updater-transition/new/CrucibleBox_${version}_win-x64-portable.zip" .workbench/updater-transition/new/portable
+          # Compare the signed installer payload before executing any installer.
+          $setup = ".workbench/updater-transition/new/CrucibleBox_${version}_x64-setup.exe"
+          & "$env:ProgramFiles\7-Zip\7z.exe" x -y '-o.workbench/updater-transition/new/installer-payload' $setup | Out-Null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node scripts/updater-transition/verify-payload.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build unshipped production-updater harness
         shell: pwsh
         run: |
@@ -77,5 +96,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-updater-transition
-          path: .workbench/updater-transition/*.json
+          path: |
+            .workbench/updater-transition/*.json
+            .workbench/updater-transition/new/installer-payload/**/cruciblebox.exe
           if-no-files-found: error

@@ -1,19 +1,23 @@
 // Runs installers only after explicit approval, on a disposable GitHub Windows VM.
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { nsisHost } from './verify-payload.mjs'
 
 assert.equal(process.platform, 'win32')
 assert.equal(process.env.GITHUB_ACTIONS, 'true')
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted')
 assert.equal(process.env.CRUCIBLEBOX_INSTALLER_TEST_APPROVED, 'true')
 const root = resolve('.workbench/updater-transition')
-const installed = join(root, 'installed'),
-  appdata = join(root, 'appdata')
+const installed = join(root, 'installed')
+// NSIS restarts through the Windows shell, which does not inherit a caller's
+// overridden APPDATA. Use this disposable VM account's normal profile for both.
+const appdata = process.env.APPDATA
+assert(appdata, 'Disposable Windows account profile missing')
 const executable = join(installed, 'cruciblebox.exe')
 const delay = (ms) => new Promise((done) => setTimeout(done, ms))
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
@@ -22,13 +26,16 @@ await mkdir(appdata, { recursive: true })
 const configuration = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'))
 const retainedArtifact = process.env.CRUCIBLEBOX_UPDATER_TEST_PLUGIN_ARTIFACT
 assert.match(retainedArtifact, /^[a-z0-9][a-z0-9._-]*\.zip$/)
-const report = { passed: false, from: '2.1.1', to: configuration.version, checks: [] }
+const report = {
+  passed: false,
+  from: '2.1.1',
+  to: configuration.version,
+  profile: 'disposable runner account default Windows profile',
+  checks: []
+}
 const environment = {
   ...process.env,
   APPDATA: appdata,
-  LOCALAPPDATA: join(root, 'local'),
-  WEBVIEW2_USER_DATA_FOLDER: join(root, 'webview'),
-  WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=19430 --no-first-run',
   CRUCIBLEBOX_UPDATER_TEST_ROOT: root
 }
 function run(file, args, env = environment) {
@@ -46,16 +53,19 @@ function run(file, args, env = environment) {
   })
 }
 async function connect() {
+  let discovery = { targets: [], error: null }
   for (const started = Date.now(); Date.now() - started < 60000;) {
     let targets
     try {
       targets = await (await fetch('http://127.0.0.1:19430/json/list')).json()
-    } catch {
+    } catch (error) {
+      discovery.error = error.message + ': ' + (error.cause?.message ?? '')
       await delay(250)
       continue
     }
+    discovery = { targets: targets.map(({ type, url }) => ({ type, url })), error: null }
     const target = targets.find(
-      (item) => item.type === 'page' && item.url === 'http://tauri.localhost/'
+      (item) => item.type === 'page' && new URL(item.url).hostname === 'tauri.localhost'
     )
     if (!target) {
       await delay(250)
@@ -93,6 +103,12 @@ async function connect() {
           })
         )
       })
+    if (!(await evaluate('typeof window.__TAURI_INTERNALS__?.invoke === "function"'))) {
+      discovery.bridgeReady = false
+      socket.close()
+      await delay(250)
+      continue
+    }
     return {
       evaluate,
       close: () => socket.close(),
@@ -106,7 +122,20 @@ async function connect() {
         )
     }
   }
-  throw Error('Installed application did not expose its own test IPC')
+  const processes = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('cruciblebox.exe','msedgewebview2.exe') } | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Depth 3"
+    ],
+    { encoding: 'utf8', windowsHide: true, timeout: 10000 }
+  )
+  discovery.processes = processes.stdout
+  discovery.processInspectionError = processes.stderr
+  await writeFile(join(root, 'connect-failure.json'), JSON.stringify(discovery, null, 2) + '\n')
+  throw Error('Installed application did not expose its own test IPC: ' + JSON.stringify(discovery))
 }
 // Only the PIDs started by this script on the disposable runner are terminated.
 async function stop(child) {
@@ -128,7 +157,8 @@ function savedData() {
         .prepare(
           'SELECT plugin_id,migration FROM plugin_storage_migrations ORDER BY plugin_id,migration'
         )
-        .all()
+        .all(),
+      settings: db.prepare('SELECT key,value FROM settings ORDER BY key').all()
     }
   } finally {
     db.close()
@@ -153,6 +183,7 @@ try {
   let page = await connect()
   assert.equal(await page.invoke('app_get_version'), '2.1.1')
   assert.equal(await page.invoke('settings_set', { key: 'updateChannel', value: 'stable' }), true)
+  assert.equal(await page.invoke('settings_get', { key: 'updateChannel' }), 'stable')
   const pluginPath = join(root, 'old', retainedArtifact)
   await page.invoke('plugin_register_import_path', { path: pluginPath })
   const preview = await page.invoke('plugin_install_preview', {
@@ -182,14 +213,14 @@ try {
   const response = await page.invoke('next_renderer_request', {
     raw: JSON.stringify({
       wireVersion: 4,
-      requestId: 'updater-seed',
+      requestId: 'renderer-1',
       session: descriptor.token,
       target: { kind: 'platform' },
       method: 'storage.set',
       params: { key: 'updater-retained', value: { text: '旧版真实 KV 保留🌏' } }
     })
   })
-  assert.equal(response.ok, true)
+  assert.equal(response.ok, true, JSON.stringify(response))
   page.close()
   await stop(oldApp)
   oldApp = undefined
@@ -257,14 +288,31 @@ try {
     JSON.parse(await readFile(join(root, 'signature-verified.json'), 'utf8')).passed,
     true
   )
-  const expected = await readFile(join(root, 'new/portable/CrucibleBox/cruciblebox.exe'))
+  const portableHost = await readFile(join(root, 'new/portable/CrucibleBox/cruciblebox.exe'))
+  const expected = nsisHost(portableHost)
   for (const started = Date.now(); ;) {
     try {
       if (hash(await readFile(executable)) === hash(expected)) break
     } catch (error) {
       if (error.code !== 'ENOENT' && error.code !== 'EBUSY') throw error
     }
-    if (Date.now() - started > 120000) throw Error('Installer did not switch the executable')
+    if (Date.now() - started > 120000) {
+      const diagnostic = spawnSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          "$processes=Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*updater-transition*' -or $_.CommandLine -like '*CrucibleBox*installer*' }; $installs=Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' | Where-Object { $_.DisplayName -eq 'CrucibleBox' }; @{processes=@($processes | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine); installs=@($installs | Select-Object DisplayName,DisplayVersion,InstallLocation,UninstallString)} | ConvertTo-Json -Depth 4"
+        ],
+        { encoding: 'utf8', windowsHide: true, timeout: 10000 }
+      )
+      await writeFile(
+        join(root, 'install-failure.json'),
+        JSON.stringify({ stdout: diagnostic.stdout, stderr: diagnostic.stderr }, null, 2) + '\n'
+      )
+      throw Error('Installer did not switch the executable')
+    }
     await delay(500)
   }
   // /R starts the updated app. Connect to that actual installed application.
@@ -281,19 +329,28 @@ try {
   for (const name of ['cruciblebox.exe', 'cruciblebox-plugin-host.exe'])
     assert.equal(
       hash(await readFile(join(installed, name))),
-      hash(await readFile(join(root, 'new/portable/CrucibleBox', name)))
+      hash(
+        name === 'cruciblebox.exe'
+          ? expected
+          : await readFile(join(root, 'new/portable/CrucibleBox', name))
+      )
     )
   report.checks.push(
     'tampered-update-rejected-by-minisign',
     'valid-update-download-signature-and-NSIS-install',
-    'installed-executables-match-release-portable',
+    'installed-executables-match-signed-NSIS-payload',
+    'NSIS-payload-matches-portable-except-exact-Tauri-bundle-marker',
     'updated-2.2.0-startup',
     'settings-records-config-KV-migration-marks-user-files-retained',
     'old-API6-disabled-with-data-retained'
   )
   report.installerSha256 = hash(setup)
   report.executableSha256 = hash(expected)
+  report.portableExecutableSha256 = hash(portableHost)
   report.passed = true
+} catch (error) {
+  report.error = error.stack
+  throw error
 } finally {
   if (oldApp) await stop(oldApp)
   if (server) await new Promise((done) => server.close(done))

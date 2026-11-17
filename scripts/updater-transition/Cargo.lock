@@ -361,6 +361,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-plugin-updater",
+ "windows",
 ]
 
 [[package]]

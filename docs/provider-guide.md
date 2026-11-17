@@ -1,6 +1,6 @@
 # Next 3.0 Provider 开发指南
 
-当前补完源码使用 API/UI 7.0.0、CLI 3.0.0、Rust SDK 0.2.0；宿主 2.2.0 交付候选（未发布）、Manifest/API 7、wire 5。正在实现与验证，不能沿用 beta.6 的动态通过结论。历史证据见 [P7/P8](2.2.0-p7-p8.md)，当前范围见 [补完记录](2.2.0-completion-audit.md)。
+当前正式版宿主为 2.2.0、Manifest/API 7、wire 5，公共 API/UI 7.0.0、CLI 3.0.0、Rust SDK 0.2.0。固定 CI 程序已验证统一能力发现、实际 Provider 状态及共享 Python 运行时；当前交付见 [交付记录](2.2.0-delivery.md)，逐项证据见 [补完记录](2.2.0-completion-audit.md)。
 
 ## 独立创建
 

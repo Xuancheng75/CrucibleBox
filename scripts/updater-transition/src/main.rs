@@ -20,7 +20,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !matches!(mode.as_str(), "reject" | "install") {
         return Err("expected reject or install mode".into());
     }
-    let root = PathBuf::from(env::var("CRUCIBLEBOX_UPDATER_TEST_ROOT")?).canonicalize()?;
+    // Node supplies an absolute path; preserve its spelling for NSIS's /D argument.
+    let root = PathBuf::from(env::var("CRUCIBLEBOX_UPDATER_TEST_ROOT")?);
     let installed = root.join("installed/cruciblebox.exe");
     if !installed.is_file() {
         return Err("old installed executable is missing".into());
@@ -52,7 +53,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         .installer_arg(format!("/D={}", installed.parent().unwrap().display()))
         .on_before_exit(|| {})
         .build()?;
-    tauri::async_runtime::block_on(async {
+    // MockRuntime does not initialize the desktop COM apartment used by the
+    // production updater's ShellExecuteW installer launch.
+    unsafe {
+        windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED
+                | windows::Win32::System::Com::COINIT_DISABLE_OLE1DDE,
+        )
+        .ok()?;
+    }
+    let result = tauri::async_runtime::block_on(async {
         let update = updater.check().await?.ok_or("update was not offered")?;
         if update.version != configuration["version"].as_str().unwrap() {
             return Err("offered version differs from checked-out release".into());
@@ -85,5 +96,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         update.install(bytes)?;
         Err("Windows updater unexpectedly returned instead of exiting".into())
-    })
+    });
+    unsafe { windows::Win32::System::Com::CoUninitialize() };
+    result
 }
