@@ -13,8 +13,11 @@ assert.equal(process.env.GITHUB_ACTIONS, 'true')
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted')
 assert.equal(process.env.CRUCIBLEBOX_INSTALLER_TEST_APPROVED, 'true')
 const root = resolve('.workbench/updater-transition')
-const installed = join(root, 'installed'),
-  appdata = join(root, 'appdata')
+const installed = join(root, 'installed')
+// NSIS restarts through the Windows shell, which does not inherit a caller's
+// overridden APPDATA. Use this disposable VM account's normal profile for both.
+const appdata = process.env.APPDATA
+assert(appdata, 'Disposable Windows account profile missing')
 const executable = join(installed, 'cruciblebox.exe')
 const delay = (ms) => new Promise((done) => setTimeout(done, ms))
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
@@ -23,12 +26,16 @@ await mkdir(appdata, { recursive: true })
 const configuration = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'))
 const retainedArtifact = process.env.CRUCIBLEBOX_UPDATER_TEST_PLUGIN_ARTIFACT
 assert.match(retainedArtifact, /^[a-z0-9][a-z0-9._-]*\.zip$/)
-const report = { passed: false, from: '2.1.1', to: configuration.version, checks: [] }
+const report = {
+  passed: false,
+  from: '2.1.1',
+  to: configuration.version,
+  profile: 'disposable runner account default Windows profile',
+  checks: []
+}
 const environment = {
   ...process.env,
   APPDATA: appdata,
-  LOCALAPPDATA: join(root, 'local'),
-  WEBVIEW2_USER_DATA_FOLDER: join(root, 'webview'),
   CRUCIBLEBOX_UPDATER_TEST_ROOT: root
 }
 function run(file, args, env = environment) {
@@ -150,7 +157,8 @@ function savedData() {
         .prepare(
           'SELECT plugin_id,migration FROM plugin_storage_migrations ORDER BY plugin_id,migration'
         )
-        .all()
+        .all(),
+      settings: db.prepare('SELECT key,value FROM settings ORDER BY key').all()
     }
   } finally {
     db.close()
@@ -175,6 +183,7 @@ try {
   let page = await connect()
   assert.equal(await page.invoke('app_get_version'), '2.1.1')
   assert.equal(await page.invoke('settings_set', { key: 'updateChannel', value: 'stable' }), true)
+  assert.equal(await page.invoke('settings_get', { key: 'updateChannel' }), 'stable')
   const pluginPath = join(root, 'old', retainedArtifact)
   await page.invoke('plugin_register_import_path', { path: pluginPath })
   const preview = await page.invoke('plugin_install_preview', {
