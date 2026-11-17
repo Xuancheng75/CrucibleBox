@@ -6,6 +6,7 @@ import { createServer } from 'node:http'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { nsisHost } from './verify-payload.mjs'
 
 assert.equal(process.platform, 'win32')
 assert.equal(process.env.GITHUB_ACTIONS, 'true')
@@ -278,7 +279,8 @@ try {
     JSON.parse(await readFile(join(root, 'signature-verified.json'), 'utf8')).passed,
     true
   )
-  const expected = await readFile(join(root, 'new/portable/CrucibleBox/cruciblebox.exe'))
+  const portableHost = await readFile(join(root, 'new/portable/CrucibleBox/cruciblebox.exe'))
+  const expected = nsisHost(portableHost)
   for (const started = Date.now(); ;) {
     try {
       if (hash(await readFile(executable)) === hash(expected)) break
@@ -318,18 +320,24 @@ try {
   for (const name of ['cruciblebox.exe', 'cruciblebox-plugin-host.exe'])
     assert.equal(
       hash(await readFile(join(installed, name))),
-      hash(await readFile(join(root, 'new/portable/CrucibleBox', name)))
+      hash(
+        name === 'cruciblebox.exe'
+          ? expected
+          : await readFile(join(root, 'new/portable/CrucibleBox', name))
+      )
     )
   report.checks.push(
     'tampered-update-rejected-by-minisign',
     'valid-update-download-signature-and-NSIS-install',
-    'installed-executables-match-release-portable',
+    'installed-executables-match-signed-NSIS-payload',
+    'NSIS-payload-matches-portable-except-exact-Tauri-bundle-marker',
     'updated-2.2.0-startup',
     'settings-records-config-KV-migration-marks-user-files-retained',
     'old-API6-disabled-with-data-retained'
   )
   report.installerSha256 = hash(setup)
   report.executableSha256 = hash(expected)
+  report.portableExecutableSha256 = hash(portableHost)
   report.passed = true
 } catch (error) {
   report.error = error.stack

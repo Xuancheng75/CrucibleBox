@@ -20,8 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !matches!(mode.as_str(), "reject" | "install") {
         return Err("expected reject or install mode".into());
     }
-    // Node supplies an absolute path. Keep the normal Windows spelling: NSIS's
-    // /D argument is not a Windows extended-length (\\?\) path contract.
+    // Node supplies an absolute path; preserve its spelling for NSIS's /D argument.
     let root = PathBuf::from(env::var("CRUCIBLEBOX_UPDATER_TEST_ROOT")?);
     let installed = root.join("installed/cruciblebox.exe");
     if !installed.is_file() {

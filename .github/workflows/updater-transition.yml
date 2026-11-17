@@ -78,15 +78,8 @@ jobs:
           $setup = ".workbench/updater-transition/new/CrucibleBox_${version}_x64-setup.exe"
           & "$env:ProgramFiles\7-Zip\7z.exe" x -y '-o.workbench/updater-transition/new/installer-payload' $setup | Out-Null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $payload = foreach ($name in @('cruciblebox.exe','cruciblebox-plugin-host.exe')) {
-            $files = @(Get-ChildItem .workbench/updater-transition/new/installer-payload -Recurse -File -Filter $name)
-            if ($files.Count -ne 1) { throw "Expected one installer payload: $name" }
-            $installedHash = (Get-FileHash -LiteralPath $files[0].FullName -Algorithm SHA256).Hash
-            $portableHash = (Get-FileHash -LiteralPath ".workbench/updater-transition/new/portable/CrucibleBox/$name" -Algorithm SHA256).Hash
-            [pscustomobject]@{name=$name;installerPayloadSha256=$installedHash;portableSha256=$portableHash;equal=($installedHash -eq $portableHash)}
-          }
-          $payload | ConvertTo-Json | Set-Content .workbench/updater-transition/installer-payload.json
-          if (@($payload | Where-Object {-not $_.equal}).Count) { throw 'Installer and Portable payloads differ' }
+          node scripts/updater-transition/verify-payload.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build unshipped production-updater harness
         shell: pwsh
         run: |
