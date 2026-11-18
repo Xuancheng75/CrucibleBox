@@ -291,6 +291,7 @@ export default function HomeFocus() {
 
       {error && (
         <Alert
+          className="cbx-workbench-error"
           type="error"
           showIcon
           message="插件操作失败"
