@@ -16,9 +16,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag (tauri-vX.Y.Z, tauri-vX.Y.Z-beta.N or -rc.N)
+        description: Release tag (tauri-vX.Y.Z, tauri-vX.Y.Z-beta.N or -rc.N)
         required: true
         type: string
+      stage_only:
+        description: Build the selected ref and save signed artifacts to this run
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -40,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.stage_only && github.sha || inputs.tag || github.ref }}
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -323,6 +327,7 @@ jobs:
           push-to-registry: false
 
       - name: Upload verified host artifacts to release draft
+        if: ${{ !inputs.stage_only }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
@@ -332,6 +337,14 @@ jobs:
           draft: true
           overwrite_files: true
           fail_on_unmatched_files: true
+
+      - name: Save signed host artifacts for review
+        if: ${{ inputs.stage_only }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-host-${{ steps.release.outputs.version }}
+          path: artifacts/tauri/*
+          if-no-files-found: error
 
       # The release executor attaches independent plugin packages and notes,
       # then publishes the draft and updates the matching rolling channel.
